@@ -12,6 +12,12 @@ struct PRsTabView: View {
   /// Rebuilt whenever plugin rows change, then read by value per row. See
   /// `PluginContributionIndex` for why rows must not read the service directly.
   @State private var pluginContributions = PluginContributionIndex()
+  /// Contributions addressed to the PRs surface itself: its toolbar, its chips,
+  /// its empty state.
+  @State private var pluginSurfaceContributions = PluginContributionIndex()
+  /// Filter chips the reader has turned on. Applied to the list's INPUT so the
+  /// counts, the sections and the empty state all agree about what is showing.
+  @State private var selectedPluginFilterKeys: Set<String> = []
   @State private var lanes: [LaneSummary] = []
   @State private var laneSnapshots: [LaneListSnapshot] = []
   @State private var integrationProposals: [IntegrationProposal] = []
@@ -155,12 +161,32 @@ struct PRsTabView: View {
   /// Recompute the memoized GitHub-list derivations. Called from `.onChange`
   /// of the snapshot + every filter/search input, so a `body` pass never pays
   /// the filter/sort/count cost.
+  /// The selected chip keys a chip on screen still offers.
+  ///
+  /// A selection outlives the chip that made it: uninstall the plugin, or let
+  /// it stop publishing the key, and the chip disappears while the filter keeps
+  /// hiding every PR — an empty list with no control left to undo it.
+  /// Intersecting at APPLY time (as desktop's Lanes page does) keeps the user's
+  /// choice if the plugin comes back, which clearing the state would not.
+  private var appliedPluginFilterKeys: Set<String> {
+    guard !selectedPluginFilterKeys.isEmpty else { return [] }
+    let offered = Set(pluginSurfaceContributions.filterChips(.prs).compactMap { $0.filterChip?.filterKey })
+    return selectedPluginFilterKeys.intersection(offered)
+  }
+
   private func recomputeGitHubDerived() {
+    // Plugin chips narrow the list's INPUT rather than its output, so the
+    // category counts, the section split and the empty state are all computed
+    // against the same set the reader is looking at.
+    let appliedFilterKeys = appliedPluginFilterKeys
+    let reconciled = prReconcileGitHubPullRequests(
+      snapshotItems: repoScopedGitHubPullRequests(from: githubSnapshot),
+      mappedPrs: prs
+    )
     let next = prComputeGitHubDerivedList(
-      items: prReconcileGitHubPullRequests(
-        snapshotItems: repoScopedGitHubPullRequests(from: githubSnapshot),
-        mappedPrs: prs
-      ),
+      items: appliedFilterKeys.isEmpty ? reconciled : reconciled.filter {
+        pluginContributions.matchesFilterKeys(.pr, String($0.githubPrNumber), selected: appliedFilterKeys)
+      },
       query: searchText,
       status: .all,
       scope: selectedGitHubScopeFilter.wrappedValue,
@@ -432,9 +458,14 @@ struct PRsTabView: View {
         prsInlineTopBar
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: syncService.pluginsProjectionRevision) {
-        pluginContributions = syncService.pluginContributionIndex(entityKind: .pr)
-      }
+      .loadPluginContributions(.pr, into: $pluginContributions)
+      .loadPluginContributions(.surface, into: $pluginSurfaceContributions)
+      .onChange(of: pluginContributions) { _, _ in recomputeGitHubDerived() }
+      // The chips are an input too: when a plugin is uninstalled its chip goes
+      // and the PRs its key was hiding must come back in the same pass — see
+      // `appliedPluginFilterKeys`.
+      .onChange(of: pluginSurfaceContributions) { _, _ in recomputeGitHubDerived() }
+      .onChange(of: selectedPluginFilterKeys) { _, _ in recomputeGitHubDerived() }
       .task(id: prsProjectionReloadKey) {
         guard let revision = prsProjectionReloadKey else { return }
         guard lastHandledPrsProjectionRevision != revision || prs.isEmpty else { return }
@@ -589,6 +620,11 @@ struct PRsTabView: View {
       .layoutPriority(1)
       Spacer(minLength: 0)
       HStack(spacing: 8) {
+        PluginToolbarActions(
+          contributions: pluginSurfaceContributions.toolbarActions(.prs),
+          surface: .prs
+        )
+
         // Filter toggle — collapsed by default, expands the filter chip
         // panel inline in the list. Tints purple when any non-default
         // filter is active so users know they're looking at a subset.
@@ -770,6 +806,25 @@ struct PRsTabView: View {
     return counts
   }
 
+  /// Contributed filter chips, after the tab's own category selector.
+  ///
+  /// Always visible rather than folded into the advanced-filters card: a chip
+  /// the reader cannot see is a subset of their PRs they cannot explain, and
+  /// the collapsed summary chip below only knows about the product's filters.
+  @ViewBuilder
+  private var pluginFilterChipRow: some View {
+    let chips = pluginSurfaceContributions.filterChips(.prs)
+    if !chips.isEmpty {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          PluginFilterChips(contributions: chips, selectedKeys: $selectedPluginFilterKeys)
+        }
+      }
+      .scrollBounceBehavior(.basedOnSize)
+      .prListRow()
+    }
+  }
+
   @ViewBuilder
   private var githubSurfaceRows: some View {
     // Headline three-category selector (Open / Merged / Closed) — the primary
@@ -780,6 +835,8 @@ struct PRsTabView: View {
       counts: githubCategoryCounts
     )
     .prListRowChrome()
+
+    pluginFilterChipRow
 
     if filtersExpanded {
       PrGitHubFiltersCard(
@@ -829,7 +886,12 @@ struct PRsTabView: View {
         message: searchText.isEmpty
           ? "Try a different status or scope, or refresh GitHub state from the machine."
           : "Try a broader query or switch the status and scope filters."
-      )
+      ) {
+        PluginEmptyStateExtras(
+          contributions: pluginSurfaceContributions.emptyStates(.prs),
+          surface: .prs
+        )
+      }
       .prListRow()
     }
 

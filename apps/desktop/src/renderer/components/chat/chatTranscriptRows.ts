@@ -1186,6 +1186,19 @@ function mergeAdeCardEvent(
 ): AdeCardEvent {
   const merged: AdeCardEvent = { ...existing, ...incoming, cardId };
 
+  /**
+   * Authorship and the hosted panel are per-emit facts, never carried forward.
+   *
+   * Everything else in this merge accumulates on purpose — a degraded refresh
+   * keeps the rows it could not refetch. These two must not, because `cardId` is
+   * an emitter-chosen string in a namespace shared by ADE and every installed
+   * plugin. A plugin that emits `pr-ci-4211` and a host poller that later
+   * re-emits the same id would otherwise leave the host's card wearing the
+   * plugin's byline — attribution surviving the emit it describes.
+   */
+  merged.authoredBy = incoming.authoredBy ?? undefined;
+  merged.panel = incoming.panel ?? undefined;
+
   const incomingRows = incoming.rows ?? [];
   const incomingMetrics = incoming.metrics ?? [];
   const incomingProgressTotal = adeCardProgressTotal(incoming.progress);

@@ -2428,6 +2428,66 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  /**
+   * `publishPluginNotification`'s return value becomes `delivered: ["mobile"]`
+   * in the plugin's SDK result. A post the flush is going to drop must not
+   * claim it: the plugin would report a delivery the user can disprove by
+   * looking at a phone that never buzzed.
+   */
+  describe("plugin notifications report reachability honestly", () => {
+    const pluginPost = {
+      pluginId: "acme",
+      pluginLabel: "Acme",
+      title: "Build failed",
+      body: "3 tests failed",
+    };
+
+    it("accepts a post when a paired phone would actually show it", async () => {
+      const { publisher } = makeHarness();
+      await publisher.start();
+
+      expect(publisher.publishPluginNotification(pluginPost)).toBe(true);
+
+      publisher.dispose();
+    });
+
+    it("refuses a post while notifications are switched off", async () => {
+      const off = { ...device, prefs: { ...device.prefs, enabled: false } };
+      const { publisher } = makeHarness(off);
+      await publisher.start();
+
+      expect(publisher.publishPluginNotification(pluginPost)).toBe(false);
+
+      publisher.dispose();
+    });
+
+    it("refuses a post inside quiet hours", async () => {
+      // System time is 12:00 UTC (beforeEach); a 00:00→23:59 UTC window is on.
+      const quiet = {
+        ...device,
+        prefs: { ...device.prefs, quietHours: { start: "00:00", end: "23:59", timezone: "UTC" } },
+      };
+      const { publisher } = makeHarness(quiet);
+      await publisher.start();
+
+      expect(publisher.publishPluginNotification(pluginPost)).toBe(false);
+
+      publisher.dispose();
+    });
+
+    it("still accepts a post for a session the user muted", async () => {
+      // A per-session mute is about one chat. A plugin's post is about none, so
+      // it must not inherit that silence.
+      const muted = { ...device, prefs: { ...device.prefs, mutedSessionIds: ["s-1"] } };
+      const { publisher } = makeHarness(muted);
+      await publisher.start();
+
+      expect(publisher.publishPluginNotification(pluginPost)).toBe(true);
+
+      publisher.dispose();
+    });
+  });
+
   it("suppresses the badge-only item for a device inside quiet hours", async () => {
     // System time is 12:00 UTC (beforeEach); a 00:00→23:59 UTC window is active.
     const quiet = {

@@ -127,6 +127,44 @@ export type WebPluginBridge = {
     keyPrefix?: string;
     limit?: number;
   }) => Promise<PluginCollectionRow[]>;
+  /**
+   * Run a plugin's own handler — every button, form submit and list action a
+   * panel draws lands here.
+   *
+   * MUTATING, so it never degrades to a fallback: a panel button that resolves
+   * quietly on a host that cannot run it is exactly the failure the socket and
+   * vocabulary contracts exist to prevent. Without this member the shared
+   * `invokePluginAction` throws "This build has no plugin support", which is
+   * what every panel button did on web before it existed.
+   */
+  readonly invoke?: (input: {
+    pluginId: string;
+    action: string;
+    args?: Record<string, unknown>;
+    timeoutMs?: number;
+  }) => Promise<unknown>;
+  /**
+   * A plugin's manifest as far as this transport can see it: its socket
+   * declarations, and nothing else.
+   *
+   * Deliberately PARTIAL, and the partiality is the contract. The socket layer
+   * is the only reader that can use this — `contributionsFromSource` reads
+   * `manifest.sockets` and no other field — and the Marketplace's reader runs
+   * what it gets through `parsePluginManifest`, which REJECTS an object missing
+   * `name`/`description`/`vocabVersion`. That rejection is the desired outcome,
+   * not a near miss: settings, readme and runtime actions genuinely are not
+   * readable over sync, so the detail page must keep showing nothing rather
+   * than a half-filled manifest that looks complete. A future edit that
+   * "completes" this object would silently turn those surfaces on with
+   * fabricated content; the test pinning the rejection is there to say so.
+   */
+  readonly getManifest?: (input: { pluginId: string }) => Promise<unknown | null>;
+  /** Host-joined `plugin_contributions` rows for one surface. */
+  readonly listContributions?: (input: {
+    surface: string;
+    entityKind?: string;
+    entityIds?: string[];
+  }) => Promise<unknown>;
   readonly install?: (input: PluginInstallRequest) => Promise<PluginInstallResult>;
   readonly uninstall?: (input: { pluginId: string; machineKey?: string }) => Promise<unknown>;
   readonly setEnabled?: (input: {
@@ -152,6 +190,13 @@ type RemotePluginRecord = {
   status?: PluginRuntimeStatus;
   tabs?: PluginTabDescriptor[];
   theme?: { displayName: string; tokens: Record<string, unknown> } | null;
+  /**
+   * Manifest socket declarations, as `SyncPluginRecordSocket` sends them.
+   * Absent from a host that could not read the manifest — see `getManifest`.
+   */
+  sockets?: unknown[];
+  /** Manifest socket ids the user switched off; absent means none are. */
+  disabledContributions?: string[];
 };
 
 /** One row of the account-wide coverage matrix, as `plugins.presenceMatrix` sends it. */
@@ -184,6 +229,17 @@ function toInstalledPlugin(record: RemotePluginRecord): InstalledPlugin {
     theme: record.theme
       ? { displayName: record.theme.displayName, tokens: record.theme.tokens as never }
       : null,
+    // Forwarded, because the STATIC half of the socket layer filters on it
+    // client-side (`contributionsFromSource`) rather than trusting the host to
+    // have done it. Dropping it here would draw manifest sockets the user has
+    // already switched off — and only on web, since desktop reads the same
+    // field straight off its own registry.
+    ...(record.disabledContributions ? { disabledContributions: record.disabledContributions } : {}),
+    // The keybinding matrix's tie-break: first installed keeps a contested
+    // chord. Forwarded even though this transport carries no `keybindings` yet,
+    // because the ordering is what stops the answer from changing per boot, and
+    // the sync record already knows it.
+    installedAt: record.installedAt,
   };
 }
 
@@ -354,6 +410,57 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     return typeof input.limit === "number" ? rows.slice(0, Math.max(0, input.limit)) : rows;
   };
 
+  /**
+   * The install list again, but shared across a burst of reads.
+   *
+   * `getManifest` is called once per installed plugin the moment any socket
+   * surface first reveals (`readPluginSocketSources` fans out over the whole
+   * list), and each of those would otherwise be its own `plugins.list` round
+   * trip for the same answer. A short TTL is what makes the burst one request:
+   * `commands.call` only consults its coalescing cache when `cacheTtlMs` is
+   * set, so the plain `list` above — which callers expect to be live — keeps
+   * its exact semantics and this is a separate, deliberately cached read.
+   */
+  const listCached = async (): Promise<RemotePluginRecord[]> => {
+    const result = await commands.call<{ plugins?: RemotePluginRecord[] }>(
+      "plugins.list",
+      {},
+      { fallback: () => ({ plugins: [] }), idempotent: true, cacheTtlMs: 5_000 },
+    );
+    return result?.plugins ?? [];
+  };
+
+  const getManifest = async (input: { pluginId: string }): Promise<unknown | null> => {
+    const record = (await listCached()).find((entry) => entry.pluginId === input.pluginId);
+    if (!record) return null;
+    // Absent `sockets` means the host could not read the manifest, which is a
+    // different fact from "declares none" and has to stay different here: null
+    // leaves the socket layer with no source, where `{sockets: []}` would be
+    // this transport asserting the plugin contributes nothing.
+    if (!record.sockets) return null;
+    return { sockets: record.sockets };
+  };
+
+  const listContributions = async (input: {
+    surface: string;
+    entityKind?: string;
+    entityIds?: string[];
+  }): Promise<unknown> => {
+    const result = await commands.call<{ contributions?: unknown[] }>(
+      "plugins.contributions",
+      {
+        surface: input.surface,
+        ...(input.entityKind ? { entityKind: input.entityKind } : {}),
+        ...(input.entityIds && input.entityIds.length > 0 ? { entityIds: input.entityIds } : {}),
+      },
+      // A read, so an older host degrades to "no dynamic contributions" — a
+      // quieter surface, which is what `readPluginContributionRows` already
+      // expects and renders. The static half still arrives via `getManifest`.
+      { fallback: () => ({ contributions: [] }), idempotent: true, cacheTtlMs: 2_000 },
+    );
+    return result?.contributions ?? [];
+  };
+
   const presence = async (): Promise<PluginPresenceRow[]> => {
     const result = await commands.call<{ machines?: RemotePresenceRow[] }>(
       PLUGIN_PRESENCE_MATRIX_ACTION,
@@ -392,6 +499,62 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
         // One subscriber's render failure must not stop the others hearing it.
       }
     }
+  };
+
+  /**
+   * Undo the `plugins.invoke` envelope so a panel sees what the handler
+   * returned.
+   *
+   * The remote command wraps every handler return as
+   * `{ok: true, message?, result}` — a shape the phone decodes — while the
+   * desktop preload hands `plugin.invoke`'s return back untouched. The renderer
+   * that reads it is the same renderer in both places, and it reads the
+   * handler's own keys: `readPluginActionNavigation` looks for `navigate`,
+   * `readPluginActionComposerEdit` for `composer`. Left wrapped, every
+   * `{navigate:{…}}` a plugin returned would be one key too deep and silently
+   * do nothing.
+   *
+   * The unwrap is keyed on the envelope's own construction — `ok === true` AND
+   * a `result` key present, which is exactly what the host writes and never
+   * omits. A handler that itself returns that pair is indistinguishable, and
+   * this prefers the transport reading: the envelope is always there, a
+   * handler that mimics it is a coincidence.
+   */
+  const unwrapInvokeResult = (value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    if (record.ok !== true || !("result" in record)) return value;
+    // A handler that answered nothing sends `result: null`, and the host may
+    // have put its own `message` beside it. Keeping the envelope in that case
+    // is what lets a caller show the message rather than a bare null.
+    return record.result ?? (typeof record.message === "string" ? value : null);
+  };
+
+  const invoke = async (input: {
+    pluginId: string;
+    action: string;
+    args?: Record<string, unknown>;
+    timeoutMs?: number;
+  }): Promise<unknown> => {
+    // `actionId` is the name the remote command reads first; the payload rides
+    // under `payload`, which is where `plugins.invoke` looks for a handler's
+    // arguments. Sending them as `args` — the desktop preload's spelling — is
+    // not a transport error, it is an invoke that reaches the handler with an
+    // empty argument object, so every form submits blank.
+    const envelope = await commands.call<unknown>(
+      "plugins.invoke",
+      {
+        pluginId: input.pluginId,
+        actionId: input.action,
+        ...(input.args ? { payload: input.args } : {}),
+      },
+      {
+        fallback: unavailableOnHost("Running plugin actions isn't available on this computer."),
+        idempotent: false,
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+      },
+    );
+    return unwrapInvokeResult(envelope);
   };
 
   // Mutations pass `idempotent: false`, which is what makes an unserved action
@@ -533,6 +696,21 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     },
     get getCollection() {
       return getCollection;
+    },
+    get invoke() {
+      return commands.hasAction("plugins.invoke") ? invoke : undefined;
+    },
+    // Both halves of the socket taxonomy, gated separately because a host can
+    // serve one without the other: `sockets` rides the `plugins.list` record,
+    // while dynamic rows need their own command. A surface with only the static
+    // half draws a plugin's declared badges and menu items and simply has
+    // nothing per-entity to add, which is the correct degradation rather than a
+    // reason to withhold both.
+    get getManifest() {
+      return commands.hasAction("plugins.list") ? getManifest : undefined;
+    },
+    get listContributions() {
+      return commands.hasAction("plugins.contributions") ? listContributions : undefined;
     },
     get install() {
       return commands.hasAction("plugins.install") ? install : undefined;

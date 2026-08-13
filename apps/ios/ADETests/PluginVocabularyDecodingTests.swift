@@ -455,4 +455,1267 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     guard case let .failed(failure, _) = result else { return XCTFail("expected failure") }
     XCTAssertEqual(failure, .tooDeep)
   }
+
+  // MARK: - Socket payloads
+
+  private func contribution(
+    socket: String,
+    payloadJSON: String,
+    entityKind: String = "surface",
+    entityId: String = "lanes"
+  ) -> PluginContribution? {
+    PluginContributionParser.parse(
+      entityKind: entityKind,
+      entityId: entityId,
+      pluginId: "coverage",
+      socket: socket,
+      payloadJSON: payloadJSON,
+      updatedAt: "2026-08-13T00:00:00Z"
+    )
+  }
+
+  /// The forward-compatibility rule that matters most for sockets: the host is
+  /// free to add payload fields, and a row carrying one this build has never
+  /// heard of must still draw. The alternative is a contribution that vanishes
+  /// from the phone the day the desktop grows a field.
+  func testUnknownPayloadKeysDoNotCostTheContribution() throws {
+    let toolbar = try XCTUnwrap(contribution(
+      socket: "toolbar-action",
+      payloadJSON: #"""
+      {
+        "label": "Scan",
+        "actionId": "coverage.scan",
+        "variant": "ghost",
+        "shortcut": { "key": "s", "modifiers": ["cmd"] },
+        "analytics": [1, 2, 3]
+      }
+      """#
+    ))
+    XCTAssertEqual(toolbar.toolbarAction?.label, "Scan")
+    XCTAssertEqual(toolbar.toolbarAction?.actionId, "coverage.scan")
+    XCTAssertFalse(toolbar.toolbarAction?.disabled ?? true)
+
+    let chip = try XCTUnwrap(contribution(
+      socket: "filter-chip",
+      payloadJSON: #"{ "label": "Risky", "filterKey": "risky", "tone": "warning", "pinned": true }"#
+    ))
+    XCTAssertEqual(chip.filterChip?.filterKey, "risky")
+  }
+
+  /// Every kind the wire defines decodes here now. A kind that did NOT would
+  /// drop its row silently, which is the failure this exists to catch when the
+  /// taxonomy grows a ninth entry.
+  func testEveryWireSocketKindDecodes() {
+    let payloads: [(String, String)] = [
+      ("toolbar-action", #"{ "label": "Scan", "actionId": "a" }"#),
+      ("row-badge", #"{ "text": "82%" }"#),
+      ("row-menu-item", #"{ "label": "Rebuild", "actionId": "a" }"#),
+      ("detail-section", #"{ "panelId": "summary" }"#),
+      ("empty-state", #"{ "title": "Nothing yet" }"#),
+      ("filter-chip", #"{ "label": "Risky", "filterKey": "risky" }"#),
+      ("file-viewer", #"{ "panelId": "parquet", "extensions": [".parquet"] }"#),
+      ("composer-action", #"{ "label": "Expand", "actionId": "a" }"#),
+    ]
+    for (socket, payloadJSON) in payloads {
+      XCTAssertNotNil(
+        contribution(socket: socket, payloadJSON: payloadJSON),
+        "\(socket) must decode — a kind that does not is a contribution that vanishes."
+      )
+    }
+    XCTAssertNil(
+      contribution(socket: "timeline-card", payloadJSON: #"{ "label": "x" }"#),
+      "A kind this build has never heard of drops its row rather than half-drawing it."
+    )
+  }
+
+  func testSocketPayloadsMissingTheirRequiredFieldAreDropped() {
+    XCTAssertNil(contribution(socket: "toolbar-action", payloadJSON: #"{ "label": "Scan" }"#))
+    XCTAssertNil(contribution(socket: "composer-action", payloadJSON: #"{ "actionId": "a" }"#))
+    XCTAssertNil(contribution(socket: "detail-section", payloadJSON: #"{ "title": "Coverage" }"#))
+    XCTAssertNil(contribution(socket: "empty-state", payloadJSON: #"{ "body": "no title" }"#))
+    XCTAssertNil(contribution(socket: "filter-chip", payloadJSON: #"{ "label": "Risky" }"#))
+    XCTAssertNil(contribution(socket: "file-viewer", payloadJSON: #"{ "panelId": "p" }"#))
+    // Extensions that are not extensions leave the registration with nothing to
+    // match on, which is the same as having none.
+    XCTAssertNil(contribution(
+      socket: "file-viewer",
+      payloadJSON: #"{ "panelId": "p", "extensions": ["parquet", "", 7] }"#
+    ))
+  }
+
+  func testFileViewerExtensionsAreLowercasedTheWayTheHostNormalizesThem() throws {
+    let viewer = try XCTUnwrap(contribution(
+      socket: "file-viewer",
+      payloadJSON: #"{ "panelId": "parquet", "extensions": [".PARQUET", ".Avro"] }"#
+    ))
+    XCTAssertEqual(viewer.fileViewer?.extensions, [".parquet", ".avro"])
+  }
+
+  /// `Int(Double)` traps rather than saturating, and this number was written by
+  /// another machine — a chip count of `1e300` must read as absent, not crash.
+  func testFilterChipCountOutsideIntRangeReadsAsAbsent() throws {
+    let huge = try XCTUnwrap(contribution(
+      socket: "filter-chip",
+      payloadJSON: #"{ "label": "Risky", "filterKey": "risky", "count": 1e300 }"#
+    ))
+    XCTAssertNil(huge.filterChip?.count)
+
+    let negative = try XCTUnwrap(contribution(
+      socket: "filter-chip",
+      payloadJSON: #"{ "label": "Risky", "filterKey": "risky", "count": -4 }"#
+    ))
+    XCTAssertNil(negative.filterChip?.count, "A negative count is not a count.")
+
+    let real = try XCTUnwrap(contribution(
+      socket: "filter-chip",
+      payloadJSON: #"{ "label": "Risky", "filterKey": "risky", "count": 12 }"#
+    ))
+    XCTAssertEqual(real.filterChip?.count, 12)
+  }
+
+  /// A `disabled` of `1` is the number one, not the boolean true — the same
+  /// `CFBoolean` distinction the vocabulary decoder makes. Getting this wrong
+  /// would render a live button dead.
+  func testNumericOneDoesNotDisableAnActionButton() throws {
+    let numeric = try XCTUnwrap(contribution(
+      socket: "toolbar-action",
+      payloadJSON: #"{ "label": "Scan", "actionId": "a", "disabled": 1 }"#
+    ))
+    XCTAssertFalse(numeric.toolbarAction?.disabled ?? true)
+
+    let real = try XCTUnwrap(contribution(
+      socket: "toolbar-action",
+      payloadJSON: #"{ "label": "Scan", "actionId": "a", "disabled": true }"#
+    ))
+    XCTAssertTrue(real.toolbarAction?.disabled ?? false)
+  }
+
+  /// An empty-state action label with no action is a button that cannot fire.
+  func testEmptyStateActionLabelWithoutAnActionIsDropped() throws {
+    let labelOnly = try XCTUnwrap(contribution(
+      socket: "empty-state",
+      payloadJSON: #"{ "title": "Nothing yet", "actionLabel": "Do it" }"#
+    ))
+    XCTAssertNil(labelOnly.emptyState?.actionId)
+    XCTAssertNil(labelOnly.emptyState?.actionLabel)
+  }
+
+  // MARK: - Surface placement and filtering
+
+  func testSurfaceScopedContributionsAreAddressedByTheirSurfaceId() throws {
+    let index = PluginContributionIndex(contributions: [
+      try XCTUnwrap(contribution(
+        socket: "toolbar-action",
+        payloadJSON: #"{ "label": "Scan", "actionId": "a" }"#,
+        entityId: "lanes"
+      )),
+      try XCTUnwrap(contribution(
+        socket: "toolbar-action",
+        payloadJSON: #"{ "label": "Audit", "actionId": "b" }"#,
+        entityId: "prs"
+      )),
+    ])
+    XCTAssertEqual(index.toolbarActions(.lanes).count, 1)
+    XCTAssertEqual(index.toolbarActions(.lanes).first?.toolbarAction?.label, "Scan")
+    XCTAssertEqual(index.toolbarActions(.prs).first?.toolbarAction?.label, "Audit")
+    XCTAssertTrue(index.toolbarActions(.files).isEmpty)
+  }
+
+  /// A chip filters because the entities it selects carry its key — on rows of
+  /// ANY kind, since a chip is published against the surface and the rows it
+  /// filters are published against entities.
+  func testFilterKeysAreReadOffEveryRowNotJustChips() throws {
+    let index = PluginContributionIndex(contributions: [
+      try XCTUnwrap(contribution(
+        socket: "row-badge",
+        payloadJSON: #"{ "text": "risk", "filterKey": "risky" }"#,
+        entityKind: "lane",
+        entityId: "lane-1"
+      )),
+      try XCTUnwrap(contribution(
+        socket: "row-badge",
+        payloadJSON: #"{ "text": "ok" }"#,
+        entityKind: "lane",
+        entityId: "lane-2"
+      )),
+    ])
+    XCTAssertTrue(index.matchesFilterKeys(.lane, "lane-1", selected: ["risky"]))
+    XCTAssertFalse(index.matchesFilterKeys(.lane, "lane-2", selected: ["risky"]))
+    // No selection never filters: a chip nobody pressed must not hide rows.
+    XCTAssertTrue(index.matchesFilterKeys(.lane, "lane-2", selected: []))
+    XCTAssertTrue(index.matchesFilterKeys(.lane, "unknown-lane", selected: []))
+  }
+
+  /// Contribution rows replicate across the whole account and outlive an
+  /// uninstall elsewhere. Once presence has answered they are scoped to it;
+  /// before it answers they all show, because blanking every badge for the
+  /// length of a round trip would make a cold launch look like an uninstall.
+  func testContributionsAreScopedToInstalledPluginsOncePresenceHasAnswered() throws {
+    let row = try XCTUnwrap(contribution(
+      socket: "row-badge",
+      payloadJSON: #"{ "text": "82%" }"#,
+      entityKind: "pr",
+      entityId: "42"
+    ))
+    XCTAssertFalse(PluginContributionIndex(contributions: [row]).badges(.pr, "42").isEmpty)
+    XCTAssertFalse(
+      PluginContributionIndex(contributions: [row], installedPluginIds: ["coverage"]).badges(.pr, "42").isEmpty
+    )
+    XCTAssertTrue(
+      PluginContributionIndex(contributions: [row], installedPluginIds: ["something-else"]).badges(.pr, "42").isEmpty,
+      "A badge from a plugin this machine does not have is a ghost."
+    )
+  }
+
+  func testFileViewerMatchesByExtensionAndPrefersARowPublishedForTheFileItself() throws {
+    let surfaceIndex = PluginContributionIndex(contributions: [
+      try XCTUnwrap(contribution(
+        socket: "file-viewer",
+        payloadJSON: #"{ "panelId": "parquet", "extensions": [".parquet"] }"#,
+        entityId: "files"
+      )),
+    ])
+    XCTAssertEqual(
+      surfaceIndex.fileViewer(relativePath: "data/Part.PARQUET", fullPath: "/r/data/Part.PARQUET")?
+        .fileViewer?.panelId,
+      "parquet"
+    )
+    XCTAssertNil(surfaceIndex.fileViewer(relativePath: "src/main.ts", fullPath: "/r/src/main.ts"))
+
+    let fileIndex = PluginContributionIndex(contributions: [
+      try XCTUnwrap(contribution(
+        socket: "file-viewer",
+        payloadJSON: #"{ "panelId": "one-off", "extensions": [".ts"] }"#,
+        entityKind: "file",
+        entityId: "src/main.ts"
+      )),
+    ])
+    XCTAssertEqual(
+      fileIndex.fileViewer(relativePath: "src/main.ts", fullPath: "/r/src/main.ts")?.fileViewer?.panelId,
+      "one-off"
+    )
+  }
+
+  func testFileExtensionMatchesTheHostsOwnDerivation() {
+    XCTAssertEqual(pluginFileExtension("a/b/Report.PARQUET"), ".parquet")
+    XCTAssertEqual(pluginFileExtension("archive.tar.gz"), ".gz")
+    // A dotfile has no extension, and neither does a trailing dot.
+    XCTAssertNil(pluginFileExtension(".gitignore"))
+    XCTAssertNil(pluginFileExtension("src/.env"))
+    XCTAssertNil(pluginFileExtension("weird."))
+    XCTAssertNil(pluginFileExtension("Makefile"))
+  }
+
+  // MARK: - Composer response verb
+
+  private func invokeResult(_ json: String) throws -> PluginInvokeResult {
+    try JSONDecoder().decode(PluginInvokeResult.self, from: XCTUnwrap(json.data(using: .utf8)))
+  }
+
+  /// The verb lives one level down, inside `result` — `plugins.invoke` answers
+  /// `{ok, message?, result}` where `result` is the plugin handler's own return.
+  /// Reading it beside `ok` would find an envelope field no plugin writes.
+  func testComposerEditIsReadFromTheHandlerResultNotTheEnvelope() throws {
+    let inserted = try invokeResult(#"{ "ok": true, "result": { "composer": { "insertText": "Hello" } } }"#)
+    XCTAssertEqual(inserted.composer, .insert("Hello"))
+
+    let envelopeLevel = try invokeResult(#"{ "ok": true, "composer": { "insertText": "Hello" } }"#)
+    XCTAssertNil(envelopeLevel.composer)
+  }
+
+  func testReplaceWinsOverInsertAndEmptyReplaceClearsTheDraft() throws {
+    let both = try invokeResult(
+      #"{ "result": { "composer": { "insertText": "a", "replaceText": "b" } } }"#
+    )
+    XCTAssertEqual(both.composer, .replace("b"))
+
+    let cleared = try invokeResult(#"{ "result": { "composer": { "replaceText": "" } } }"#)
+    XCTAssertEqual(cleared.composer, .replace(""), "An empty replace is how a plugin clears the draft.")
+
+    let emptyInsert = try invokeResult(#"{ "result": { "composer": { "insertText": "" } } }"#)
+    XCTAssertNil(emptyInsert.composer, "An empty insert is a no-op, not an edit.")
+  }
+
+  func testOversizeComposerTextIsDroppedRatherThanTruncated() throws {
+    let huge = String(repeating: "x", count: PluginInvokeComposerEdit.maxBytes + 1)
+    let result = try invokeResult(#"{ "result": { "composer": { "replaceText": "\#(huge)" } } }"#)
+    XCTAssertNil(
+      result.composer,
+      "A prompt cut off mid-sentence and then sent is worse than one that never arrived."
+    )
+  }
+
+  /// The outcome and the sentence are what the user is owed either way, so a
+  /// malformed or absent composer verb must not cost them the result.
+  func testAMalformedComposerVerbLeavesTheRestOfTheResultIntact() throws {
+    let result = try invokeResult(
+      #"{ "ok": false, "error": "Nope", "result": { "composer": { "insertText": 7 } } }"#
+    )
+    XCTAssertFalse(result.ok)
+    XCTAssertEqual(result.message, "Nope")
+    XCTAssertNil(result.composer)
+  }
+
+  // MARK: - chat-card and activity-entry payloads
+
+  func testChatCardAndActivityEntryDecodeAndTolerateUnknownKeys() throws {
+    let card = try XCTUnwrap(contribution(
+      socket: "chat-card",
+      payloadJSON: #"{ "panelId": "coverage", "title": "Coverage", "icon": "chart.bar", "layout": "wide", "v": 3 }"#,
+      entityKind: "session",
+      entityId: "session-1"
+    ))
+    XCTAssertEqual(card.chatCard?.panelId, "coverage")
+    XCTAssertEqual(card.chatCard?.title, "Coverage")
+
+    let entry = try XCTUnwrap(contribution(
+      socket: "activity-entry",
+      payloadJSON: #"{ "title": "Budget exceeded", "body": "3 runs over cap", "tone": "warning", "actionId": "cost.open", "actionLabel": "Review", "priority": 9 }"#,
+      entityId: "app"
+    ))
+    XCTAssertEqual(entry.activityEntry?.title, "Budget exceeded")
+    XCTAssertEqual(entry.activityEntry?.tone, .warning)
+    XCTAssertEqual(entry.activityEntry?.actionLabel, "Review")
+  }
+
+  func testChatCardWithoutAPanelIdIsDropped() {
+    XCTAssertNil(contribution(
+      socket: "chat-card",
+      payloadJSON: #"{ "title": "Coverage" }"#,
+      entityKind: "session",
+      entityId: "session-1"
+    ), "A card declaration naming no panel permits nothing.")
+  }
+
+  /// `PluginBadgeTone` has no red, deliberately, so a plugin cannot make its
+  /// row the loudest thing in a list it does not own.
+  func testActivityEntryToneFoldsRedOntoWarning() throws {
+    for spelling in ["error", "danger", "failed", "red"] {
+      let entry = try XCTUnwrap(contribution(
+        socket: "activity-entry",
+        payloadJSON: #"{ "title": "T", "tone": "\#(spelling)" }"#,
+        entityId: "app"
+      ))
+      XCTAssertEqual(entry.activityEntry?.tone, .warning, "\(spelling) must fold to warning")
+    }
+  }
+
+  func testActivityEntryNeedsATitleAndDropsALabelWithNoAction() throws {
+    XCTAssertNil(contribution(
+      socket: "activity-entry",
+      payloadJSON: #"{ "body": "no title" }"#,
+      entityId: "app"
+    ))
+
+    let labelOnly = try XCTUnwrap(contribution(
+      socket: "activity-entry",
+      payloadJSON: #"{ "title": "T", "actionLabel": "Do it" }"#,
+      entityId: "app"
+    ))
+    XCTAssertNil(labelOnly.activityEntry?.actionId)
+    XCTAssertNil(labelOnly.activityEntry?.actionLabel)
+  }
+
+  /// `socketId` is what the PLUGIN calls the contribution, and it is what an
+  /// activity row's action carries as `entryId` — the only thing the handler
+  /// cannot work out for itself when several rows share one action.
+  func testSocketIdPrefersThePayloadsOwnIdAndFallsBackToTheSocketKind() throws {
+    let named = try XCTUnwrap(contribution(
+      socket: "activity-entry",
+      payloadJSON: #"{ "id": "budget-lane-7", "title": "T" }"#,
+      entityId: "app"
+    ))
+    XCTAssertEqual(named.socketId, "budget-lane-7")
+
+    let anonymous = try XCTUnwrap(contribution(
+      socket: "activity-entry",
+      payloadJSON: #"{ "title": "T" }"#,
+      entityId: "app"
+    ))
+    XCTAssertEqual(anonymous.socketId, "activity-entry")
+  }
+
+  func testActivityEntriesAreAddressedAtTheAppSurface() throws {
+    let index = PluginContributionIndex(contributions: [
+      try XCTUnwrap(contribution(
+        socket: "activity-entry",
+        payloadJSON: #"{ "title": "Budget exceeded" }"#,
+        entityId: "app"
+      )),
+      try XCTUnwrap(contribution(
+        socket: "empty-state",
+        payloadJSON: #"{ "title": "Nothing here" }"#,
+        entityId: "lanes"
+      )),
+    ])
+    XCTAssertEqual(index.activityEntries().count, 1)
+    XCTAssertEqual(index.activityEntries().first?.activityEntry?.title, "Budget exceeded")
+  }
+
+  // MARK: - chat-card permission
+
+  /// The card carries the placement and the contribution carries the
+  /// permission. Neither alone draws a panel.
+  func testAChatCardPanelDrawsOnlyForTheDeclaringPluginPanelAndSession() throws {
+    let index = PluginContributionIndex(contributions: [
+      try XCTUnwrap(contribution(
+        socket: "chat-card",
+        payloadJSON: #"{ "panelId": "coverage" }"#,
+        entityKind: "session",
+        entityId: "session-1"
+      )),
+    ])
+    XCTAssertTrue(index.declaresChatCard(pluginId: "coverage", panelId: "coverage", sessionId: "session-1"))
+    XCTAssertFalse(
+      index.declaresChatCard(pluginId: "coverage", panelId: "secrets", sessionId: "session-1"),
+      "A declaration permits the panel it named and no other."
+    )
+    XCTAssertFalse(
+      index.declaresChatCard(pluginId: "other-plugin", panelId: "coverage", sessionId: "session-1"),
+      "A panel belongs to the plugin that declared it."
+    )
+    XCTAssertFalse(
+      index.declaresChatCard(pluginId: "coverage", panelId: "coverage", sessionId: "session-2"),
+      "A per-session declaration does not carry to another conversation."
+    )
+  }
+
+  // MARK: - ade_card attribution and panel
+
+  private func adeCard(_ json: String) throws -> WorkAdeCardModel {
+    let payload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: XCTUnwrap(json.data(using: .utf8))
+    )
+    return makeWorkAdeCardModel(from: payload)
+  }
+
+  func testAdeCardCarriesItsPluginAuthorAndPanel() throws {
+    let card = try adeCard(#"""
+    {
+      "cardId": "c1", "variant": "pr_ci", "title": "Coverage",
+      "fallbackText": "82% covered",
+      "authoredBy": { "pluginId": "coverage", "displayName": "Coverage" },
+      "panel": { "panelId": "summary", "context": { "prNumber": 42 } }
+    }
+    """#)
+    XCTAssertEqual(card.author?.pluginId, "coverage")
+    XCTAssertEqual(card.author?.label, "Coverage")
+    XCTAssertEqual(card.panel?.panelId, "summary")
+    XCTAssertEqual(card.panel?.context["prNumber"], .number(42))
+  }
+
+  /// An attribution with a blank id is a label claiming provenance it cannot
+  /// support, and a panel with a blank id sends the reader nowhere. Both drop,
+  /// and the card renders as an ordinary card — which is all a card ADE emitted
+  /// for itself ever was.
+  func testBlankAuthorOrPanelIdsDropWithoutCostingTheCard() throws {
+    let card = try adeCard(#"""
+    {
+      "cardId": "c1", "variant": "pr_ci", "title": "Checks", "fallbackText": "Checks passed",
+      "authoredBy": { "pluginId": "   " },
+      "panel": { "panelId": "" }
+    }
+    """#)
+    XCTAssertNil(card.author)
+    XCTAssertNil(card.panel)
+    XCTAssertEqual(card.title, "Checks")
+    XCTAssertEqual(card.fallbackText, "Checks passed")
+  }
+
+  func testACardWithNoPluginFieldsIsUnchanged() throws {
+    let card = try adeCard(#"{ "cardId": "c1", "variant": "pr_ci", "title": "Checks", "fallbackText": "Checks passed" }"#)
+    XCTAssertNil(card.author)
+    XCTAssertNil(card.panel)
+  }
+
+  /// A terse progress ping must not strip a card of whose it is or of the panel
+  /// already on screen — the same later-wins-if-present rule the rest of the
+  /// merge follows.
+  func testAProgressEmitDoesNotStripAuthorOrPanel() throws {
+    let first = try adeCard(#"""
+    {
+      "cardId": "c1", "variant": "pr_ci", "title": "Coverage", "fallbackText": "running",
+      "authoredBy": { "pluginId": "coverage" },
+      "panel": { "panelId": "summary" }
+    }
+    """#)
+    let update = try adeCard(#"""
+    { "cardId": "c1", "variant": "pr_ci", "state": "terminal", "title": "Coverage", "fallbackText": "done" }
+    """#)
+    let merged = first.merging(update)
+    XCTAssertEqual(merged.author?.pluginId, "coverage")
+    XCTAssertEqual(merged.panel?.panelId, "summary")
+    XCTAssertTrue(merged.isTerminal)
+  }
+
+  /// The byline is what keeps a plugin's row out of ADE's own voice, so it must
+  /// never come out blank: a card whose author carries no display name is
+  /// attributed by its id instead.
+  func testTheBylineFallsBackToThePluginIdWhenThereIsNoDisplayName() throws {
+    let noName = try adeCard(#"""
+    {
+      "cardId": "c1", "variant": "pr_ci", "title": "Lint", "fallbackText": "clean",
+      "authoredBy": { "pluginId": "ade-lint" }
+    }
+    """#)
+    XCTAssertEqual(noName.author?.label, "ade-lint")
+
+    let blankName = try adeCard(#"""
+    {
+      "cardId": "c1", "variant": "pr_ci", "title": "Lint", "fallbackText": "clean",
+      "authoredBy": { "pluginId": "ade-lint", "displayName": "   " }
+    }
+    """#)
+    XCTAssertEqual(blankName.author?.label, "ade-lint", "Whitespace is not a name.")
+  }
+
+  /// The replay path is the one that silently loses fields: a transcript
+  /// rebuilt from storage on every cold launch would otherwise drop the byline
+  /// and leave the plugin's card reading as ADE's own.
+  func testTheReplayPathCarriesTheBylineAndPanelToo() {
+    let card = workAdeCardModel(
+      from: [
+        "cardId": "c1",
+        "variant": "pr_ci",
+        "title": "Coverage",
+        "fallbackText": "82% covered",
+        "authoredBy": ["pluginId": "coverage", "displayName": "Coverage"],
+        "panel": ["panelId": "summary", "context": ["prNumber": 42]],
+      ],
+      sessionId: "session-1",
+      timestamp: "2026-08-13T00:00:00Z",
+      sequence: 1,
+      turnId: nil
+    )
+    XCTAssertEqual(card.author?.label, "Coverage")
+    XCTAssertEqual(card.panel?.panelId, "summary")
+    XCTAssertEqual(card.panel?.context["prNumber"], .number(42))
+  }
+
+  func testTheReplayPathLeavesAnOrdinaryCardUnattributed() {
+    let card = workAdeCardModel(
+      from: ["cardId": "c1", "variant": "pr_ci", "title": "Checks", "fallbackText": "passed"],
+      sessionId: "session-1",
+      timestamp: "2026-08-13T00:00:00Z",
+      sequence: 1,
+      turnId: nil
+    )
+    XCTAssertNil(card.author, "A card ADE emitted for itself carries no byline.")
+    XCTAssertNil(card.panel)
+  }
+
+  // MARK: - Manifest socket declarations
+
+  private func installRecord(
+    pluginId: String = "coverage",
+    enabled: Bool = true,
+    sockets: [PluginManifestSocketWire],
+    disabled: [String] = []
+  ) -> PluginInstallRecordEntry {
+    PluginInstallRecordEntry(
+      pluginId: pluginId,
+      enabled: enabled,
+      sockets: sockets,
+      disabledContributions: disabled
+    )
+  }
+
+  /// The whole point of the field: a contribution a plugin only DECLARED used
+  /// to be invisible on the phone and visible on desktop.
+  func testASurfaceScopedDeclarationRendersWithoutAnyPublishedRow() {
+    let index = PluginContributionIndex(
+      contributions: [],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(
+            socket: "toolbar-action", surface: "lanes", id: "scan",
+            label: "Scan", actionId: "coverage.scan"
+          ),
+        ]),
+      ])
+    )
+    let actions = index.toolbarActions(.lanes)
+    XCTAssertEqual(actions.count, 1)
+    XCTAssertEqual(actions.first?.toolbarAction?.label, "Scan")
+    XCTAssertTrue(actions.first?.isDeclaration == true)
+    XCTAssertTrue(index.toolbarActions(.prs).isEmpty, "A declaration renders on the surface it named.")
+  }
+
+  /// A manifest badge says "I badge lanes", not "I badge lane 7", so it applies
+  /// to every lane until a published row fills it in.
+  func testAPerEntityDeclarationAppliesToEveryEntityOfItsSurfacesKind() {
+    let index = PluginContributionIndex(
+      contributions: [],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+        ]),
+      ])
+    )
+    for laneId in ["lane-1", "lane-2", "lane-3"] {
+      let badges = index.badges(.lane, laneId)
+      XCTAssertEqual(badges.visible.count, 1, "every lane carries the declaration")
+      XCTAssertEqual(badges.visible.first?.badge?.text, "Risk")
+      // A manifest badge has no value of its own yet, so it is neutral.
+      XCTAssertEqual(badges.visible.first?.badge?.tone, .neutral)
+    }
+    XCTAssertTrue(index.badges(.pr, "42").isEmpty, "Lanes declarations do not reach PR rows.")
+  }
+
+  /// Published wins: rendering both would show a placeholder next to the real
+  /// thing and burn one of the two visible badge slots doing it.
+  func testAPublishedRowReplacesTheDeclarationItFillsForThatEntityOnly() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "id": "risk", "text": "82%", "tone": "success" }"#,
+      updatedAt: "2026-08-13T00:00:00Z"
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+        ]),
+      ])
+    )
+    let filled = index.badges(.lane, "lane-1")
+    XCTAssertEqual(filled.visible.count, 1, "The row replaces the declaration rather than joining it.")
+    XCTAssertEqual(filled.visible.first?.badge?.text, "82%")
+    XCTAssertFalse(filled.visible.first?.isDeclaration == true)
+
+    let untouched = index.badges(.lane, "lane-2")
+    XCTAssertEqual(untouched.visible.first?.badge?.text, "Risk", "Another lane still shows the declaration.")
+  }
+
+  /// Matching on the plugin alone would delete the declarations a plugin had
+  /// not filled in yet.
+  func testAPublishedRowDoesNotReplaceTheSamePluginsOtherDeclarations() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "id": "risk", "text": "82%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+          PluginManifestSocketWire(socket: "row-menu-item", surface: "lanes", id: "rebuild",
+                                   label: "Rebuild", actionId: "coverage.rebuild"),
+        ]),
+      ])
+    )
+    XCTAssertEqual(index.badges(.lane, "lane-1").visible.first?.badge?.text, "82%")
+    XCTAssertEqual(
+      index.menuItems(.lane, "lane-1").first?.menuItem?.label,
+      "Rebuild",
+      "A row filling one declaration must not delete another."
+    )
+  }
+
+  /// An id-less row against TWO declarations of its kind has no non-arbitrary
+  /// answer, so it is left unmatched and drops — the same answer the host gives,
+  /// and the case `sdk.contributions.publish`'s doc tells authors to
+  /// disambiguate with `payload.id`. Guessing is what produced the bug the host
+  /// fixed against this client.
+  func testAnIdLessRowAgainstTwoDeclarationsOfItsKindIsAmbiguousAndDrops() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "82%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "age", label: "Age"),
+        ]),
+      ])
+    )
+    let badges = index.badges(.lane, "lane-1")
+    XCTAssertEqual(badges.visible.count, 2, "Both declarations stand; the unresolvable row does not.")
+    XCTAssertEqual(Set(badges.visible.compactMap { $0.badge?.text }), ["Risk", "Age"])
+  }
+
+  /// Ambiguity is per SURFACE, as the host computes it.
+  ///
+  /// `listContributions` builds its join inside a per-surface loop, so a plugin
+  /// with one `row-badge` on Lanes and one on PRs has declared each exactly
+  /// once. Keyed without the surface term the phone read that as "declared
+  /// twice", and every id-less badge — which is every badge an older host or an
+  /// `id`-less payload can produce — dropped on the phone while drawing on
+  /// desktop.
+  func testOneDeclarationPerSurfaceIsNotAmbiguousAcrossSurfaces() throws {
+    let laneRow = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "82%" }"#, updatedAt: ""
+    ))
+    let prRow = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "pr", entityId: "916", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "91%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [laneRow, prRow],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+          PluginManifestSocketWire(socket: "row-badge", surface: "prs", id: "coverage", label: "Coverage"),
+        ]),
+      ])
+    )
+
+    XCTAssertEqual(index.badges(.lane, "lane-1").visible.first?.badge?.text, "82%")
+    XCTAssertEqual(index.badges(.pr, "916").visible.first?.badge?.text, "91%")
+  }
+
+  /// Two declarations on ONE surface are still ambiguous — the surface term
+  /// narrows the join, it does not remove it.
+  func testTwoDeclarationsOnTheSameSurfaceStayAmbiguous() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "pr", entityId: "916", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "91%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "prs", id: "risk", label: "Risk"),
+          PluginManifestSocketWire(socket: "row-badge", surface: "prs", id: "age", label: "Age"),
+        ]),
+      ])
+    )
+
+    XCTAssertEqual(
+      Set(index.badges(.pr, "916").visible.compactMap { $0.badge?.text }),
+      ["Risk", "Age"],
+      "The unresolvable row drops; both declarations stand."
+    )
+  }
+
+  /// A row addressed by socket id joins its own surface's declaration, so two
+  /// surfaces reusing one id do not answer for each other.
+  func testAnAddressedRowResolvesAgainstItsOwnSurface() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "pr", entityId: "916", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "id": "risk", "text": "91%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Lane risk"),
+          PluginManifestSocketWire(socket: "row-badge", surface: "prs", id: "risk", label: "PR risk"),
+        ]),
+      ])
+    )
+
+    XCTAssertEqual(index.badges(.pr, "916").visible.first?.badge?.text, "91%")
+  }
+
+  /// The same row against ONE declaration of its kind is unambiguous, so it
+  /// resolves to it and fills it in.
+  func testAnIdLessRowAgainstASingleDeclarationResolvesToIt() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "82%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+        ]),
+      ])
+    )
+    let badges = index.badges(.lane, "lane-1")
+    XCTAssertEqual(badges.visible.count, 1, "It fills the declaration rather than joining it.")
+    XCTAssertEqual(badges.visible.first?.badge?.text, "82%")
+  }
+
+  /// Rows left behind by a plugin that never declared the socket, or has
+  /// stopped declaring it, drop. The host has always done this before a row
+  /// left the machine; the phone could not until it had the declarations.
+  func testRowsNoDeclarationClaimsAreDropped() throws {
+    let undeclaredKind = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "82%" }"#, updatedAt: ""
+    ))
+    let staleId = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-menu-item",
+      payloadJSON: #"{ "id": "retired", "label": "Old", "actionId": "a" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [undeclaredKind, staleId],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "row-menu-item", surface: "lanes", id: "rebuild",
+                                   label: "Rebuild", actionId: "a"),
+        ]),
+      ])
+    )
+    XCTAssertTrue(index.badges(.lane, "lane-1").isEmpty, "The plugin declares no badge at all.")
+    XCTAssertEqual(
+      index.menuItems(.lane, "lane-1").map { $0.menuItem?.label },
+      ["Rebuild"],
+      "A row naming a socket id the plugin no longer declares is stale and drops."
+    )
+  }
+
+  /// A plugin declaring nothing is a DIFFERENT claim from a host that cannot
+  /// read manifests, and only the first may drop rows. Collapsing the two would
+  /// hide every contribution on the phone against any host too old to send the
+  /// field.
+  func testAHostThatCannotReadManifestsLeavesEveryPublishedRowAlone() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "82%" }"#, updatedAt: ""
+    ))
+    // `sockets` absent: an older host, or one with no plugin host bound.
+    let older = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        PluginInstallRecordEntry(pluginId: "coverage", enabled: true, sockets: nil),
+      ])
+    )
+    XCTAssertEqual(older.badges(.lane, "lane-1").visible.count, 1)
+
+    // `sockets: []`: the manifest WAS read and declares none.
+    let declaresNone = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        PluginInstallRecordEntry(pluginId: "coverage", enabled: true, sockets: []),
+      ])
+    )
+    XCTAssertTrue(declaresNone.badges(.lane, "lane-1").isEmpty)
+  }
+
+  func testDisabledPluginsAndSwitchedOffSocketsDeclareNothing() {
+    let switchedOff = PluginContributionIndex(
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(
+          sockets: [
+            PluginManifestSocketWire(socket: "toolbar-action", surface: "lanes", id: "scan",
+                                     label: "Scan", actionId: "a"),
+          ],
+          disabled: ["scan"]
+        ),
+      ])
+    )
+    XCTAssertTrue(
+      switchedOff.toolbarActions(.lanes).isEmpty,
+      "A switch that visibly does nothing is worse than no switch."
+    )
+
+    let disabledPlugin = PluginContributionIndex(
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(enabled: false, sockets: [
+          PluginManifestSocketWire(socket: "toolbar-action", surface: "lanes", id: "scan",
+                                   label: "Scan", actionId: "a"),
+        ]),
+      ])
+    )
+    XCTAssertTrue(disabledPlugin.toolbarActions(.lanes).isEmpty)
+  }
+
+  /// A manifest that parsed but implies a payload with no label is still a
+  /// contribution that must not render.
+  func testADeclarationWhoseImpliedPayloadIsUnusableIsDropped() {
+    let index = PluginContributionIndex(
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          // No label, so no button text.
+          PluginManifestSocketWire(socket: "toolbar-action", surface: "lanes", id: "a", actionId: "x"),
+          // No actionId, so nothing to invoke.
+          PluginManifestSocketWire(socket: "toolbar-action", surface: "lanes", id: "b", label: "Go"),
+          // No panelId, so nothing to draw.
+          PluginManifestSocketWire(socket: "detail-section", surface: "lanes", id: "c", label: "Bits"),
+        ]),
+      ])
+    )
+    XCTAssertTrue(index.toolbarActions(.lanes).isEmpty)
+    XCTAssertTrue(index.detailSections(.lane, "lane-1").isEmpty)
+  }
+
+  /// A kind the phone has no host for never becomes a contribution, so the two
+  /// paths agree about what this client renders.
+  func testDeclarationsForKindsThePhoneCannotDrawAreDropped() {
+    let declarations = PluginSocketDeclarations(records: [
+      installRecord(sockets: [
+        PluginManifestSocketWire(socket: "command-palette-action", surface: "app", id: "p",
+                                 label: "Palette", actionId: "a"),
+        PluginManifestSocketWire(socket: "work-rail-pane", surface: "work", id: "r",
+                                 label: "Rail", panelId: "panel"),
+        PluginManifestSocketWire(socket: "timeline-card", surface: "prs", id: "t", label: "Future"),
+      ]),
+    ])
+    XCTAssertTrue(declarations.isEmpty, "Nothing the phone cannot host becomes a contribution.")
+  }
+
+  func testAFilterChipDeclarationFallsBackToItsSocketIdForTheFilterKey() {
+    let index = PluginContributionIndex(
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "filter-chip", surface: "lanes", id: "risky", label: "Risky"),
+          PluginManifestSocketWire(socket: "filter-chip", surface: "lanes", id: "slow",
+                                   label: "Slow", filterKey: "is-slow"),
+        ]),
+      ])
+    )
+    let chips = index.filterChips(.lanes)
+    XCTAssertEqual(chips.count, 2)
+    XCTAssertEqual(chips.first { $0.filterChip?.label == "Risky" }?.filterChip?.filterKey, "risky")
+    XCTAssertEqual(chips.first { $0.filterChip?.label == "Slow" }?.filterChip?.filterKey, "is-slow")
+  }
+
+  /// The `chat-card` gap the manifest feed closes: desktop drew a declared
+  /// card's panel and the phone did not.
+  func testADeclaredChatCardPermitsItsPanelInEveryChat() {
+    let index = PluginContributionIndex(
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "chat-card", surface: "work", id: "summary",
+                                   label: "Coverage", panelId: "summary"),
+        ]),
+      ])
+    )
+    XCTAssertTrue(index.declaresChatCard(pluginId: "coverage", panelId: "summary", sessionId: "any-chat"))
+    XCTAssertFalse(index.declaresChatCard(pluginId: "coverage", panelId: "other", sessionId: "any-chat"))
+  }
+
+  /// Two declarations of one kind from one plugin differ only by manifest id,
+  /// so identity has to include it or they collapse into one row.
+  func testTwoDeclarationsOfOneKindKeepSeparateIdentities() {
+    let index = PluginContributionIndex(
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(socket: "toolbar-action", surface: "lanes", id: "scan",
+                                   order: 1, label: "Scan", actionId: "a"),
+          PluginManifestSocketWire(socket: "toolbar-action", surface: "lanes", id: "audit",
+                                   order: 2, label: "Audit", actionId: "b"),
+        ]),
+      ])
+    )
+    let actions = index.toolbarActions(.lanes)
+    XCTAssertEqual(actions.count, 2)
+    XCTAssertEqual(Set(actions.map(\.id)).count, 2, "Colliding ids would drop one row from a ForEach.")
+    XCTAssertEqual(actions.map { $0.toolbarAction?.label }, ["Scan", "Audit"], "Declared order is honoured.")
+  }
+
+  /// An absent `sockets` field is an older host that cannot see the manifest.
+  /// It must read as "nothing to add", leaving published rows as the whole
+  /// story — never as an error and never as "declares none".
+  func testAnOlderHostWithNoSocketsFieldChangesNothing() throws {
+    let reply = try JSONDecoder().decode(
+      PluginInstallListResult.self,
+      from: XCTUnwrap(#"{ "plugins": [{ "pluginId": "coverage", "enabled": true }] }"#.data(using: .utf8))
+    )
+    XCTAssertEqual(reply.plugins.count, 1)
+    // Absent is nil, NOT an empty list: nil means "this host could not report a
+    // manifest", and collapsing it to [] is the exact blackout this test guards.
+    XCTAssertNil(reply.plugins[0].sockets)
+    XCTAssertTrue(PluginSocketDeclarations(records: reply.plugins).isEmpty)
+  }
+
+  /// The wire shape is a mirror of the manifest entry, so a field this build
+  /// has never heard of must not cost the declaration.
+  func testInstallRecordDecodingToleratesUnknownFields() throws {
+    let reply = try JSONDecoder().decode(
+      PluginInstallListResult.self,
+      from: XCTUnwrap(#"""
+      { "plugins": [{
+        "pluginId": "coverage", "version": "1.2.0", "enabled": true,
+        "displayName": "Coverage", "icon": "", "accent": "#7C6FF0",
+        "source": "registry", "installedAt": "2026-08-13T00:00:00Z",
+        "status": "running", "tabs": [], "theme": null,
+        "sockets": [{
+          "socket": "toolbar-action", "surface": "lanes", "id": "scan",
+          "label": "Scan", "actionId": "coverage.scan", "order": 3,
+          "tooltip": "a field iOS has never heard of"
+        }],
+        "disabledContributions": []
+      }] }
+      """#.data(using: .utf8))
+    )
+    let socket = try XCTUnwrap(reply.plugins.first?.sockets?.first)
+    XCTAssertEqual(socket.socket, "toolbar-action")
+    XCTAssertEqual(socket.order, 3)
+    XCTAssertEqual(socket.actionId, "coverage.scan")
+  }
+
+  /// `order` is a sort key written by another machine, and `Int(_:)` traps
+  /// rather than saturating. Out of range saturates so the phone and desktop
+  /// still agree which contribution comes first.
+  func testAnOutOfRangeDeclarationOrderSaturatesRatherThanTrapping() throws {
+    let reply = try JSONDecoder().decode(
+      PluginInstallListResult.self,
+      from: XCTUnwrap(#"""
+      { "plugins": [{ "pluginId": "p", "enabled": true, "sockets": [
+        { "socket": "toolbar-action", "surface": "lanes", "id": "a", "label": "A", "actionId": "x", "order": -1e300 },
+        { "socket": "toolbar-action", "surface": "lanes", "id": "b", "label": "B", "actionId": "y", "order": 1e300 }
+      ] }] }
+      """#.data(using: .utf8))
+    )
+    let sockets = try XCTUnwrap(reply.plugins.first?.sockets)
+    XCTAssertEqual(sockets[0].order, Int.min)
+    XCTAssertEqual(sockets[1].order, Int.max)
+
+    let index = PluginContributionIndex(declarations: PluginSocketDeclarations(records: reply.plugins))
+    XCTAssertEqual(
+      index.toolbarActions(.lanes).map { $0.toolbarAction?.label },
+      ["A", "B"],
+      "A plugin asking for the front with a huge negative lands first, as it does on desktop."
+    )
+  }
+
+  /// Switching a contribution off has to take the PUBLISHED row with it, not
+  /// just the declaration. Hiding only the declaration leaves the plugin's
+  /// badge on the row and makes the switch look broken.
+  func testSwitchingASocketOffAlsoHidesTheRowItPublished() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "id": "risk", "text": "82%" }"#, updatedAt: ""
+    ))
+    let declarations = PluginSocketDeclarations(records: [
+      installRecord(
+        sockets: [
+          PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+        ],
+        disabled: ["risk"]
+      ),
+    ])
+    let index = PluginContributionIndex(contributions: [published], declarations: declarations)
+    XCTAssertTrue(index.badges(.lane, "lane-1").isEmpty, "The switch governs both halves.")
+  }
+
+  /// An id-less row resolves through its kind's sole declaration, so switching
+  /// that declaration off takes the row with it.
+  ///
+  /// This replaces an earlier assertion that the row survived. That was the
+  /// identity ladder's answer, not the host's: the host resolves a row before it
+  /// ever leaves the machine, so a switched-off socket publishes nothing at all.
+  func testAnIdLessRowIsTakenBySwitchingItsSoleDeclarationOff() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "text": "82%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(
+          sockets: [
+            PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+          ],
+          disabled: ["risk"]
+        ),
+      ])
+    )
+    XCTAssertTrue(index.badges(.lane, "lane-1").isEmpty)
+  }
+
+  /// A switch on one contribution must not reach another the same plugin
+  /// published.
+  func testSwitchingOneSocketOffLeavesThePluginsOtherRows() throws {
+    let risk = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "id": "risk", "text": "82%" }"#, updatedAt: ""
+    ))
+    let menu = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-menu-item",
+      payloadJSON: #"{ "id": "rebuild", "label": "Rebuild", "actionId": "a" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(
+      contributions: [risk, menu],
+      declarations: PluginSocketDeclarations(records: [
+        installRecord(
+          sockets: [
+            PluginManifestSocketWire(socket: "row-badge", surface: "lanes", id: "risk", label: "Risk"),
+            PluginManifestSocketWire(socket: "row-menu-item", surface: "lanes", id: "rebuild",
+                                     label: "Rebuild", actionId: "a"),
+          ],
+          disabled: ["risk"]
+        ),
+      ])
+    )
+    XCTAssertTrue(index.badges(.lane, "lane-1").isEmpty)
+    XCTAssertEqual(index.menuItems(.lane, "lane-1").count, 1)
+  }
+
+  /// An older host sends no declarations at all, so there are no toggles to
+  /// apply and every published row stands — the pre-manifest-feed behaviour,
+  /// unchanged.
+  func testWithNoDeclarationsEveryPublishedRowStands() throws {
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "coverage", socket: "row-badge",
+      payloadJSON: #"{ "id": "risk", "text": "82%" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(contributions: [published], declarations: .none)
+    XCTAssertEqual(index.badges(.lane, "lane-1").visible.count, 1)
+  }
+
+  /// Every kind this client claims in `PLUGIN_SOCKET_CLIENT_SUPPORT` resolves a
+  /// minimal declaration into something renderable.
+  ///
+  /// This binds the shared parity table to the code. A `ios: true` cell is a
+  /// promise that a plugin declaring that kind sees it on the phone, and the
+  /// arm that keeps the promise is one `return nil` away from breaking it
+  /// silently — a contribution that "parses clean and contributes nothing",
+  /// which is the failure the requirement table exists to prevent.
+  ///
+  /// The other half of the guard is structural and cannot live in a test:
+  /// `PluginSocketDeclarations.payload(for:wire:)` switches exhaustively over
+  /// ``PluginSocketKind`` with NO `default:`, so adding an eleventh kind fails
+  /// to compile until someone writes its arm. **If this test ever starts
+  /// passing with a kind missing, check that nobody added a `default:` to that
+  /// switch** — that converts the build error this relies on into a silent drop.
+  func testEveryKindIOSClaimsInTheParityTableResolvesADeclaration() {
+    // Minimal declarations: exactly the fields each kind's payload requires,
+    // on a surface that hosts it. Nothing optional, so an arm that quietly
+    // started depending on an extra field fails here rather than in the field.
+    let minimal: [(kind: String, surface: String, wire: PluginManifestSocketWire)] = [
+      ("toolbar-action", "lanes", PluginManifestSocketWire(
+        socket: "toolbar-action", surface: "lanes", id: "a", label: "A", actionId: "x")),
+      ("row-badge", "lanes", PluginManifestSocketWire(
+        socket: "row-badge", surface: "lanes", id: "b", label: "B")),
+      ("row-menu-item", "lanes", PluginManifestSocketWire(
+        socket: "row-menu-item", surface: "lanes", id: "c", label: "C", actionId: "x")),
+      ("detail-section", "lanes", PluginManifestSocketWire(
+        socket: "detail-section", surface: "lanes", id: "d", panelId: "p")),
+      ("empty-state", "lanes", PluginManifestSocketWire(
+        socket: "empty-state", surface: "lanes", id: "e", label: "E")),
+      ("filter-chip", "lanes", PluginManifestSocketWire(
+        socket: "filter-chip", surface: "lanes", id: "f", label: "F")),
+      ("file-viewer", "files", PluginManifestSocketWire(
+        socket: "file-viewer", surface: "files", id: "g", panelId: "p", extensions: [".parquet"])),
+      ("composer-action", "work", PluginManifestSocketWire(
+        socket: "composer-action", surface: "work", id: "h", label: "H", actionId: "x")),
+      ("chat-card", "work", PluginManifestSocketWire(
+        socket: "chat-card", surface: "work", id: "i", panelId: "p")),
+      ("activity-entry", "app", PluginManifestSocketWire(
+        socket: "activity-entry", surface: "app", id: "j", label: "J")),
+    ]
+
+    for entry in minimal {
+      let declarations = PluginSocketDeclarations(records: [
+        installRecord(sockets: [entry.wire]),
+      ])
+      let resolved = declarations.surfaceScoped.count
+        + declarations.wildcardByEntityKind.values.reduce(0) { $0 + $1.count }
+      XCTAssertEqual(
+        resolved,
+        1,
+        """
+        `\(entry.kind)` is ios: true in PLUGIN_SOCKET_CLIENT_SUPPORT but resolved \
+        no contribution from a minimal declaration. Either its arm in \
+        PluginSocketDeclarations.payload(for:wire:) regressed, or the parity \
+        table now claims a kind this client does not render.
+        """
+      )
+    }
+
+    XCTAssertEqual(minimal.count, 10, "iOS claims ten of the taxonomy's sixteen kinds.")
+  }
+
+  /// The counterpart: a kind the table marks `ios: false` must NOT resolve, or
+  /// the phone is quietly rendering something the table says it does not and
+  /// the other clients are not expecting.
+  func testKindsTheParityTableMarksUnsupportedResolveNothing() {
+    for socket in ["slash-command", "command-palette-action", "settings-section",
+                   "work-rail-pane", "drawer-tab", "dialog-section"] {
+      let declarations = PluginSocketDeclarations(records: [
+        installRecord(sockets: [
+          PluginManifestSocketWire(
+            socket: socket, surface: "work", id: "x",
+            label: "L", panelId: "p", actionId: "a"
+          ),
+        ]),
+      ])
+      XCTAssertTrue(
+        declarations.isEmpty,
+        "`\(socket)` is ios: false in PLUGIN_SOCKET_CLIENT_SUPPORT but resolved a contribution."
+      )
+    }
+  }
+
+  // MARK: - Tolerant list decoding
+
+  /// One unreadable element must cost one element.
+  ///
+  /// These lists cross from a machine that may be running a newer ADE. Decoded
+  /// all-or-nothing, a single entry in a shape this build cannot read emptied
+  /// the whole list — and an empty install list is not "one plugin I could not
+  /// read", it is "no plugins", which drops every contribution on the phone.
+  func testOneUnreadableInstallRecordDoesNotEmptyTheList() throws {
+    let json = """
+    { "plugins": [
+        { "pluginId": "coverage", "enabled": true },
+        "not-an-object",
+        { "pluginId": "lint", "enabled": true }
+    ] }
+    """
+    let result = try JSONDecoder().decode(
+      PluginInstallListResult.self,
+      from: Data(json.utf8)
+    )
+
+    XCTAssertEqual(result.plugins.map(\.pluginId), ["coverage", "lint"])
+  }
+
+  func testOneUnreadablePresenceEntryDoesNotEmptyTheList() throws {
+    let json = """
+    { "plugins": [ 42, { "pluginId": "coverage", "enabled": true } ] }
+    """
+    let result = try JSONDecoder().decode(
+      PluginPresenceListResult.self,
+      from: Data(json.utf8)
+    )
+
+    XCTAssertEqual(result.plugins.map(\.pluginId), ["coverage"])
+  }
+
+  /// The distinction the join depends on: ABSENT `sockets` means "this host
+  /// cannot see manifests" and leaves every published row alone, while an empty
+  /// array is the stronger claim that the manifest declares nothing. A lossy
+  /// decode must never turn the first into the second.
+  func testAbsentSocketsStayNilWhileALossyOneDropsAlone() throws {
+    let absent = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data(#"{ "pluginId": "coverage", "enabled": true }"#.utf8)
+    )
+    XCTAssertNil(absent.sockets, "Absent must not collapse to an empty declaration set.")
+
+    let nulled = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data(#"{ "pluginId": "coverage", "enabled": true, "sockets": null }"#.utf8)
+    )
+    XCTAssertNil(nulled.sockets)
+
+    let lossy = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data("""
+      { "pluginId": "coverage", "enabled": true, "sockets": [
+          { "socket": "row-badge", "surface": "lanes", "id": "risk", "label": "Risk" },
+          "not-an-object"
+      ] }
+      """.utf8)
+    )
+    XCTAssertEqual(lossy.sockets?.count, 1, "The readable socket survives its unreadable sibling.")
+    XCTAssertEqual(lossy.sockets?.first?.id, "risk")
+
+    let empty = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data(#"{ "pluginId": "coverage", "enabled": true, "sockets": [] }"#.utf8)
+    )
+    XCTAssertEqual(empty.sockets?.isEmpty, true, "Empty stays empty — the stronger claim.")
+  }
+
+  func testOneUnreadableDisabledContributionIdDoesNotDropTheRest() throws {
+    let record = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data("""
+      { "pluginId": "coverage", "enabled": true, "disabledContributions": ["risk", 7, "age"] }
+      """.utf8)
+    )
+
+    XCTAssertEqual(record.disabledContributions, ["risk", "age"])
+  }
 }

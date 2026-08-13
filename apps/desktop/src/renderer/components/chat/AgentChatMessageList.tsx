@@ -119,6 +119,11 @@ import {
 } from "./chatTranscriptRows";
 import { BackgroundJobLine, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import { AdeCard } from "./AdeCard";
+import { readAdeCardAuthor } from "../../../shared/adeCard";
+import {
+  PluginChatCard,
+  ensurePluginChatCardActionBridge,
+} from "../plugins/sockets";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
@@ -2528,16 +2533,32 @@ function QueueRecoveryCard({
  *   mount, which is exactly what a rate-limited CI card needs.
  * - anything else is broadcast as `ade:chat:card-action` for a host to pick up,
  *   the same extension shape as `ade:chat:open-info`.
+ *
+ * On a PLUGIN-emitted card the detail carries `pluginId`, taken from the card's
+ * host-stamped `authoredBy` and never from the action, and the plugin bridge
+ * (`plugins/sockets/pluginChatCardBridge`) turns the broadcast into a
+ * `plugin.invoke` on the owning plugin. The bridge is installed here, on the
+ * first such press, so a build that never renders a plugin card never registers
+ * a listener — and so the single listener is not multiplied by the number of
+ * chat panes the Work grid has mounted.
  */
 function dispatchAdeCardAction(
   card: Extract<AgentChatEvent, { type: "ade_card" }>,
   actionId: string,
   sessionId: string | null,
 ): void {
-  if ((actionId === "retry" || actionId === "refresh") && card.navTarget) {
+  const author = readAdeCardAuthor(card);
+  // The host's retry/refresh shortcut applies to ADE's OWN cards. On a plugin's
+  // card those ids are the plugin's — it labelled a button "Retry" because
+  // retrying is what its action does — so navigating instead would swallow the
+  // press and leave the plugin looking broken. Plugin cards reach their plugin
+  // through `PluginChatCard`; this branch is the fallback for one rendered
+  // outside it.
+  if (!author && (actionId === "retry" || actionId === "refresh") && card.navTarget) {
     navigateToAppTarget(card.navTarget);
     return;
   }
+  if (author) ensurePluginChatCardActionBridge();
   try {
     window.dispatchEvent(
       new CustomEvent("ade:chat:card-action", {
@@ -2545,6 +2566,7 @@ function dispatchAdeCardAction(
           actionId,
           cardId: card.cardId,
           variant: card.variant,
+          ...(author ? { pluginId: author.pluginId } : {}),
           ...(sessionId ? { sessionId } : {}),
           ...(card.navTarget ? { navTarget: card.navTarget } : {}),
         },
@@ -2580,6 +2602,11 @@ function renderEvent(
     resolvedInputAnswers?: Map<string, Record<string, string | string[]>>;
     laneId?: string | null;
     sessionId?: string | null;
+    /** The chat's title and runtime, as a plugin card's session context wants them. */
+    sessionTitle?: string | null;
+    sessionProvider?: string | null;
+    /** False while this pane is mounted but not on screen (background grid tile). */
+    paneActive?: boolean;
     runtimeName?: string | null;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
@@ -3879,12 +3906,31 @@ function renderEvent(
     // schema's action row could never be used. `retry`/`refresh` re-enter the
     // card's own surface (which refetches on mount); anything else is broadcast
     // for a host to pick up, mirroring `ade:chat:open-info`.
-    return (
-      <AdeCard
-        card={event}
-        onAction={(actionId) => dispatchAdeCardAction(event, actionId, options?.sessionId ?? null)}
-      />
-    );
+    const onAction = (actionId: string) =>
+      dispatchAdeCardAction(event, actionId, options?.sessionId ?? null);
+    // EVERY plugin-emitted card goes through `PluginChatCard`, not only one
+    // with a panel to draw. The panel is what the socket gates; the button
+    // press, the busy state and the session context belong to any card the
+    // plugin wrote, and routing the panel-less ones straight to `AdeCard` left
+    // those three to a broadcast that could not report back.
+    //
+    // `provider` is the chat's runtime, spelled as the tool type every other
+    // `pluginSessionContext` caller uses. It is deliberately NOT
+    // `options.runtimeName`, which is the REMOTE MACHINE's name (see the
+    // `projectBinding.kind === "remote"` selector that feeds it) — the same key
+    // holding a machine name would be a lie the plugin cannot detect.
+    if (event.authoredBy) {
+      return (
+        <PluginChatCard
+          card={event}
+          sessionId={options?.sessionId ?? null}
+          sessionTitle={options?.sessionTitle ?? null}
+          provider={options?.sessionProvider ?? null}
+          active={options?.paneActive !== false}
+        />
+      );
+    }
+    return <AdeCard card={event} onAction={onAction} />;
   }
 
   /* ── Cloud artifact (auto-pulled into lane) ── */
@@ -4604,6 +4650,9 @@ type EventRowProps = {
   resolvedInputAnswers?: Map<string, Record<string, string | string[]>>;
   laneId?: string | null;
   sessionId?: string | null;
+  sessionTitle?: string | null;
+  sessionProvider?: string | null;
+  paneActive?: boolean;
   runtimeName?: string | null;
   mosaic?: MosaicRenderContext;
   anchored?: boolean;
@@ -4658,6 +4707,9 @@ const EventRow = React.memo(function EventRow({
   resolvedInputAnswers,
   laneId,
   sessionId,
+  sessionTitle,
+  sessionProvider,
+  paneActive,
   runtimeName,
   mosaic,
   anchored,
@@ -4731,6 +4783,9 @@ const EventRow = React.memo(function EventRow({
             resolvedInputAnswers,
             laneId,
             sessionId,
+            sessionTitle,
+            sessionProvider,
+            paneActive,
             runtimeName,
             onRevealChatTerminal,
             chatInfoHostAvailable,
@@ -5215,6 +5270,9 @@ function AgentChatMessageListMain({
   pendingApprovalIds,
   laneId,
   sessionId,
+  sessionTitle,
+  sessionProvider,
+  paneActive = true,
   transcriptCollapseCacheKey,
   onInsertDraft,
   onRevealChatTerminal,
@@ -5263,6 +5321,20 @@ function AgentChatMessageListMain({
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
   sessionId?: string | null;
+  /**
+   * The chat's own title and runtime, threaded down for a plugin card's session
+   * context. A plugin invoked from a card would otherwise see an empty title
+   * and a null provider on the one surface where it has a real conversation to
+   * act on.
+   */
+  sessionTitle?: string | null;
+  sessionProvider?: string | null;
+  /**
+   * False while this transcript is mounted but not visible — a background tile
+   * in the Work grid. Plugin sockets inside the transcript use it to stay
+   * asleep, which is what stops every mounted pane from fetching contributions.
+   */
+  paneActive?: boolean;
   /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
   transcriptCollapseCacheKey?: string | null;
   sessionEnded?: boolean;
@@ -6577,6 +6649,9 @@ function AgentChatMessageListMain({
           resolvedInputAnswers={resolvedInputAnswers}
           laneId={laneId}
           sessionId={sessionId}
+          sessionTitle={sessionTitle}
+          sessionProvider={sessionProvider}
+          paneActive={paneActive}
           runtimeName={runtimeName}
           mosaic={mosaic}
           anchored={anchored}
@@ -6633,6 +6708,9 @@ function AgentChatMessageListMain({
         resolvedInputAnswers={resolvedInputAnswers}
         laneId={laneId}
         sessionId={sessionId}
+        sessionTitle={sessionTitle}
+        sessionProvider={sessionProvider}
+        paneActive={paneActive}
         runtimeName={runtimeName}
         mosaic={mosaic}
         anchored={anchored}
@@ -6644,7 +6722,7 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTitle, sessionProvider, paneActive, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

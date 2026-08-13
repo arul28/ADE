@@ -73,6 +73,11 @@ const manifest: PluginManifest = {
   settings: [],
   cli: [],
   skills: [],
+  tools: [],
+  automationTriggers: [],
+  automationSteps: [],
+  searchProviders: [],
+  keybindings: [],
   official: false,
 };
 

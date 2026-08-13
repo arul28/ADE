@@ -11,10 +11,12 @@
 
 import type {
   PluginAutomationContext,
+  PluginDialogContext,
   PluginLaneContext,
   PluginPrContext,
   PluginSessionContext,
 } from "../../../../shared/plugins/context";
+import type { PluginDialogKind } from "../../../../shared/plugins/sockets";
 
 /** `refs/heads/x` → `x`. Remote prefixes are left alone: they are a different ref. */
 function branchName(ref: string | null | undefined): string | null {
@@ -34,6 +36,32 @@ export function pluginLaneContext(
     branch: branchName(lane.branchRef),
     machineKey: options.machineKey ?? null,
     dirty: lane.status?.dirty === true,
+  };
+}
+
+/**
+ * One of ADE's dialogs, for a `dialog-section`.
+ *
+ * Every field is what the dialog holds RIGHT NOW rather than when it opened —
+ * the section invokes with whatever this last built, and a plugin filling in a
+ * branch name should see the lane the user just renamed. Empty strings fold to
+ * null so "the user has typed nothing yet" and "there is nothing to type" read
+ * the same to a plugin.
+ */
+export function pluginDialogContext(input: {
+  dialog: PluginDialogKind;
+  laneId?: string | null;
+  laneName?: string | null;
+  branch?: string | null;
+  projectKey?: string | null;
+}): PluginDialogContext {
+  return {
+    kind: "dialog",
+    dialog: input.dialog,
+    laneId: input.laneId || null,
+    laneName: input.laneName || null,
+    branch: branchName(input.branch),
+    projectKey: input.projectKey || null,
   };
 }
 

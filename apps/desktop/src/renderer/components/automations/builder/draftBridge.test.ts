@@ -71,6 +71,48 @@ describe("draftBridge step round-trips", () => {
     });
   });
 
+  it("round-trips a plugin step through the action and the draft-union mirror", () => {
+    const saved = applyStepsToDraft(baseDraft(), [
+      { kind: "agent-session", prompt: "look at it" },
+      {
+        kind: "plugin",
+        pluginStep: { pluginId: "ade-linear", action: "comment", args: { issueId: "{{trigger.issue.number}}" } },
+      },
+    ]);
+
+    const actions = saved.execution?.kind === "built-in" ? saved.execution.builtIn?.actions ?? [] : [];
+    expect(actions[1]).toMatchObject({
+      type: "plugin",
+      pluginStep: { pluginId: "ade-linear", action: "comment", args: { issueId: "{{trigger.issue.number}}" } },
+    });
+    // The normalizer builds the chain from the draft-union mirror, so a step
+    // missing from `actions` would save as a rule with the step silently gone.
+    expect(saved.actions?.[1]).toMatchObject({
+      type: "plugin",
+      pluginStep: { pluginId: "ade-linear", action: "comment" },
+    });
+
+    const reloaded = draftToSteps(saved);
+    expect(reloaded[1]).toMatchObject({
+      kind: "plugin",
+      pluginStep: { pluginId: "ade-linear", action: "comment", args: { issueId: "{{trigger.issue.number}}" } },
+    });
+  });
+
+  it("keeps a plugin step whose plugin is not installed rather than dropping it", () => {
+    // The rule is the user's authored content: an uninstalled plugin is
+    // reversible, and a builder that dropped the step on load would destroy
+    // work a reinstall would otherwise restore.
+    const saved = applyStepsToDraft(baseDraft(), [
+      { kind: "plugin", pluginStep: { pluginId: "gone", action: "doThing" } },
+      { kind: "run-command", command: "npm test" },
+    ]);
+
+    const reloaded = draftToSteps(saved);
+    expect(reloaded.map((step) => step.kind)).toEqual(["plugin", "run-command"]);
+    expect(reloaded[0]?.pluginStep).toEqual({ pluginId: "gone", action: "doThing" });
+  });
+
   it("folds a bare single agent step to agent-session execution and back", () => {
     const saved = applyStepsToDraft(baseDraft(), [
       { kind: "agent-session", prompt: "review the diff", sessionTitle: "Review" },

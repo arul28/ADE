@@ -22,6 +22,12 @@ import {
   type DrawerLaneInput,
 } from "../drawerLayout";
 import { Rail, statusGlyph, type StatusKind } from "./designKit";
+import {
+  EMPTY_PLUGIN_ROW_BADGE_STRIP,
+  fitPluginBadgeStrip,
+  pluginBadgeStripWidth,
+  type PluginRowBadgeStrip,
+} from "../pluginSockets";
 import { sessionLifecycleMarker, type SessionLifecycleMarker } from "../sessionLifecycle";
 import type { PrChecksStatus } from "../../../../desktop/src/shared/types/prs";
 
@@ -166,6 +172,33 @@ function chatStatusLine(
   return null;
 }
 
+/**
+ * Plugin row badges, drawn as `[text]` chips in the plugin's declared tone.
+ *
+ * Placement is the host's and it is always LAST on the row: a contribution
+ * never reorders or interleaves with ADE's own metadata (socket invariant 1),
+ * so the caller reserves this width the same way it reserves the PR pill's and
+ * the diff's, and the row's own name truncates before a plugin's badge does.
+ * The same bracketed chip the panel interpreter uses, so a badge reads
+ * identically on a lane row and inside the plugin's own panel.
+ */
+function PluginBadges({ strip }: { strip: PluginRowBadgeStrip }) {
+  if (strip.cells.length === 0) return null;
+  return (
+    <Text>
+      {strip.cells.map((cell, index) => (
+        <Text key={cell.key}>
+          {index > 0 ? <Text> </Text> : null}
+          <Text color={theme.vocabToneColor(cell.tone)}>{`[${cell.text}]`}</Text>
+        </Text>
+      ))}
+      {strip.overflowCount > 0 ? (
+        <Text color={theme.color.t4} dimColor>{` +${strip.overflowCount}`}</Text>
+      ) : null}
+    </Text>
+  );
+}
+
 function truncate(text: string, max: number): string {
   if (max <= 1) return text.slice(0, max);
   if (text.length <= max) return text;
@@ -195,6 +228,9 @@ export function drawerChatLabelWidth(max: number, wakeReserve: number): number {
   return Math.max(0, max - 4 - wakeReserve);
 }
 
+/** Columns a chat title keeps for itself before plugin badges may claim any. */
+const CHAT_TITLE_FLOOR = 8;
+
 function DrawerComponent({
   lanes,
   sessions,
@@ -216,6 +252,8 @@ function DrawerComponent({
   width: requestedWidth,
   scrollOffsetRows = 0,
   closedCliExpandedLaneIds = new Set<string>(),
+  pluginLaneBadges = {},
+  pluginChatBadges = {},
 }: {
   lanes: LaneSummary[];
   sessions: AgentChatSessionSummary[];
@@ -237,6 +275,15 @@ function DrawerComponent({
   width?: number;
   scrollOffsetRows?: number;
   closedCliExpandedLaneIds?: ReadonlySet<string>;
+  /**
+   * Plugin `row-badge` contributions for the rows on screen, already selected
+   * and capped by `pluginSockets`. Keyed by lane id and session id, and absent
+   * for a row no plugin contributes to — which is every row on a machine with
+   * nothing installed, so the drawer pays nothing for the feature it is not
+   * using.
+   */
+  pluginLaneBadges?: Record<string, PluginRowBadgeStrip>;
+  pluginChatBadges?: Record<string, PluginRowBadgeStrip>;
 }) {
   const { stdout } = useStdout();
   const resolvedPanelHeight = panelHeight ?? stdout?.rows ?? 40;
@@ -327,6 +374,8 @@ function DrawerComponent({
         mode={mode}
         loading={loading}
         unavailableLaneIds={unavailableLaneIds}
+        pluginLaneBadges={pluginLaneBadges}
+        pluginChatBadges={pluginChatBadges}
       />
     );
   }
@@ -400,6 +449,7 @@ function DrawerComponent({
                 pr={prByLaneId[lane.id] ?? null}
                 diffStats={diffByLaneId[lane.id] ?? null}
                 worktreeAvailable={worktreeAvailable}
+                pluginBadges={pluginLaneBadges[lane.id] ?? EMPTY_PLUGIN_ROW_BADGE_STRIP}
               />
               {showChatBlock ? (
                 <ChatBlock
@@ -414,6 +464,7 @@ function DrawerComponent({
                   worktreeAvailable={worktreeAvailable}
                   interactive={mode === "chats"}
                   hoveredId={hoveredId}
+                  pluginChatBadges={pluginChatBadges}
                 />
               ) : (
                 <CompactChatPreview
@@ -422,6 +473,7 @@ function DrawerComponent({
                   activeSessionId={activeSessionId}
                   width={laneContentWidth}
                   hoveredId={hoveredId}
+                  pluginChatBadges={pluginChatBadges}
                 />
               )}
             </Box>
@@ -573,6 +625,7 @@ function LaneCard({
   diffStats,
   worktreeAvailable,
   hovered,
+  pluginBadges = EMPTY_PLUGIN_ROW_BADGE_STRIP,
 }: {
   lane: LaneSummary;
   status: LaneStatusKind;
@@ -584,6 +637,7 @@ function LaneCard({
   diffStats: DiffLineStats | null;
   worktreeAvailable: boolean;
   hovered?: boolean;
+  pluginBadges?: PluginRowBadgeStrip;
 }) {
   // Selection/active/hover/primary win with violet; otherwise the lane keeps its
   // user-assigned color (or default text). The name is always bold so the lane
@@ -599,6 +653,8 @@ function LaneCard({
   // info dot.
   const dot = statusGlyph(laneStatusDot(status));
   const LEAD_WIDTH = 2; // status dot + space
+  // Columns a lane name keeps for itself before plugin badges may claim any.
+  const LANE_NAME_FLOOR = 8;
 
   // Right cluster, in priority order: a missing/rebasing worktree, then branch
   // drift, then the live diff. The diff is the common case and refreshes in
@@ -636,7 +692,17 @@ function LaneCard({
   const canShowPrPill = Boolean(prPillText)
     && contentWidth >= 22
     && contentWidth - indicatorWidth - LEAD_WIDTH - rightReservation - prPillWidth - 1 >= 4;
-  const reservedRight = rightReservation + (canShowPrPill ? prPillWidth + 1 : 0);
+  const coreReservedRight = rightReservation + (canShowPrPill ? prPillWidth + 1 : 0);
+  // Plugin badges take only what is left once the lane still has a readable
+  // name: a contribution comes after core content, and "after" has to mean it
+  // cannot push the row's own identity off the end. Below the floor the strip
+  // renders nothing at all rather than a truncated stub.
+  const badges = fitPluginBadgeStrip(
+    pluginBadges,
+    contentWidth - indicatorWidth - LEAD_WIDTH - coreReservedRight - LANE_NAME_FLOOR - 1,
+  );
+  const badgeReservation = badges.cells.length > 0 ? pluginBadgeStripWidth(badges) + 1 : 0;
+  const reservedRight = coreReservedRight + badgeReservation;
   const nameMax = Math.max(3, contentWidth - indicatorWidth - LEAD_WIDTH - reservedRight);
   const name = truncate(lane.name, nameMax);
 
@@ -666,6 +732,12 @@ function LaneCard({
             ) : (
               <Text color={rightCluster.color}>{rightCluster.text}</Text>
             )}
+          </>
+        ) : null}
+        {badges.cells.length > 0 ? (
+          <>
+            <Text> </Text>
+            <PluginBadges strip={badges} />
           </>
         ) : null}
       </Text>
@@ -734,6 +806,7 @@ function ChatRow({
   selected,
   hovered,
   dimTitle,
+  pluginBadges = EMPTY_PLUGIN_ROW_BADGE_STRIP,
 }: {
   session: AgentChatSessionSummary;
   activeSessionId: string | null;
@@ -741,6 +814,7 @@ function ChatRow({
   selected: boolean;
   hovered: boolean;
   dimTitle: boolean;
+  pluginBadges?: PluginRowBadgeStrip;
 }) {
   const lifecycle = session as TuiChatSessionSummary;
   const attention = Boolean(session.awaitingInput || lifecycle.attentionRequestedAt);
@@ -777,11 +851,20 @@ function ChatRow({
     ? truncate(lifecycleText, Math.max(8, Math.floor(max / 2)))
     : null;
   const lifecycleReserve = lifecycleSuffix ? lifecycleSuffix.length + 3 : 0;
+  // Plugin badges are last on the row and take only the slack the core markers
+  // left, with a floor under the chat's own title. Same rule as the lane card.
+  const badges = fitPluginBadgeStrip(
+    pluginBadges,
+    drawerChatLabelWidth(max, wakeReserve + tagReserve + spawnReserve + lifecycleReserve)
+      - CHAT_TITLE_FLOOR
+      - 1,
+  );
+  const badgeReserve = badges.cells.length > 0 ? pluginBadgeStripWidth(badges) + 1 : 0;
   // The age used to reserve trailing room; without it the title can run wider,
   // keeping just a little space for the spinner + active dot.
   const label = truncate(
     formatSessionLabel(session),
-    drawerChatLabelWidth(max, wakeReserve + tagReserve + spawnReserve + lifecycleReserve),
+    drawerChatLabelWidth(max, wakeReserve + tagReserve + spawnReserve + lifecycleReserve + badgeReserve),
   );
   // Selection/hover wins with violet; awaiting-input tints amber as a calm
   // "needs you" signal; otherwise the title sits a touch dimmer under a
@@ -805,6 +888,12 @@ function ChatRow({
         {lifecycleSuffix ? <Text color={attention ? theme.color.attention : theme.color.t4}>{` · ${lifecycleSuffix}`}</Text> : null}
         {tag ? <Text color={theme.color.t4}>{` ${tag}`}</Text> : null}
         {wake ? <Text color={theme.color.t4}>{` ⏰${wake}`}</Text> : null}
+        {badges.cells.length > 0 ? (
+          <>
+            <Text> </Text>
+            <PluginBadges strip={badges} />
+          </>
+        ) : null}
         {running ? <Text> <ActiveChatSpin /></Text> : null}
         {session.sessionId === activeSessionId ? (
           <Text color={theme.color.violet}> ●</Text>
@@ -833,6 +922,7 @@ function ChatBlock({
   worktreeAvailable,
   interactive = true,
   hoveredId,
+  pluginChatBadges = {},
 }: {
   sessions: AgentChatSessionSummary[];
   closedSessions: AgentChatSessionSummary[];
@@ -845,6 +935,7 @@ function ChatBlock({
   worktreeAvailable: boolean;
   interactive?: boolean;
   hoveredId?: string | null;
+  pluginChatBadges?: Record<string, PluginRowBadgeStrip>;
 }) {
   if (!worktreeAvailable) {
     return (
@@ -871,6 +962,7 @@ function ChatBlock({
             selected={selected}
             hovered={hovered}
             dimTitle={false}
+            pluginBadges={pluginChatBadges[session.sessionId] ?? EMPTY_PLUGIN_ROW_BADGE_STRIP}
           />
         );
       })}
@@ -977,12 +1069,14 @@ function CompactChatPreview({
   activeSessionId,
   width,
   hoveredId,
+  pluginChatBadges = {},
 }: {
   sessions: AgentChatSessionSummary[];
   moreCount: number;
   activeSessionId: string | null;
   width: number;
   hoveredId?: string | null;
+  pluginChatBadges?: Record<string, PluginRowBadgeStrip>;
 }) {
   if (sessions.length === 0 && moreCount <= 0) return null;
   const max = Math.max(8, width - 4);
@@ -999,6 +1093,7 @@ function CompactChatPreview({
             selected={false}
             hovered={hovered}
             dimTitle
+            pluginBadges={pluginChatBadges[session.sessionId] ?? EMPTY_PLUGIN_ROW_BADGE_STRIP}
           />
         );
       })}
@@ -1010,6 +1105,9 @@ function CompactChatPreview({
     </Box>
   );
 }
+
+/** Columns a mini-drawer row keeps for its own name before badges may claim any. */
+const MINI_NAME_FLOOR = 8;
 
 /** Mini-row drawer variant (single-line rows). Matches D3MiniRow in the wireframe. */
 function MiniDrawer({
@@ -1033,6 +1131,8 @@ function MiniDrawer({
   mode,
   loading,
   unavailableLaneIds,
+  pluginLaneBadges,
+  pluginChatBadges,
 }: {
   width: number;
   borderColor: string;
@@ -1054,6 +1154,8 @@ function MiniDrawer({
   mode: DrawerMode;
   loading: boolean;
   unavailableLaneIds: ReadonlySet<string>;
+  pluginLaneBadges: Record<string, PluginRowBadgeStrip>;
+  pluginChatBadges: Record<string, PluginRowBadgeStrip>;
 }) {
   void focused;
   void browsingLaneId;
@@ -1080,7 +1182,13 @@ function MiniDrawer({
         const hovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
         // Leading chrome: selection rail (1) + status dot (1) + space (1) = 3.
         const dot = statusGlyph(laneStatusDot(status));
-        const nameMax = Math.max(4, inner - 3 - meta.prefix.length);
+        const available = Math.max(4, inner - 3 - meta.prefix.length);
+        const badges = fitPluginBadgeStrip(
+          pluginLaneBadges[lane.id] ?? EMPTY_PLUGIN_ROW_BADGE_STRIP,
+          available - MINI_NAME_FLOOR - 1,
+        );
+        const badgeReservation = badges.cells.length > 0 ? pluginBadgeStripWidth(badges) + 1 : 0;
+        const nameMax = Math.max(4, available - badgeReservation);
         return (
           <Box key={lane.id} paddingX={1}>
             <Rail on={selected} />
@@ -1094,6 +1202,12 @@ function MiniDrawer({
             >
               {pad(truncate(lane.name, nameMax), nameMax)}
             </Text>
+            {badges.cells.length > 0 ? (
+              <Text>
+                <Text> </Text>
+                <PluginBadges strip={badges} />
+              </Text>
+            ) : null}
           </Box>
         );
       })}
@@ -1120,7 +1234,13 @@ function MiniDrawer({
             // "z wakes in 3h" is the only thing distinguishing a snoozed row in
             // a terminal with no color.
             const markerText = marker ? truncate(marker.text, Math.max(6, Math.floor(inner / 2))) : null;
-            const nameMax = Math.max(4, inner - 4 - (markerText ? markerText.length + 1 : 0));
+            const available = Math.max(4, inner - 4 - (markerText ? markerText.length + 1 : 0));
+            const badges = fitPluginBadgeStrip(
+              pluginChatBadges[session.sessionId] ?? EMPTY_PLUGIN_ROW_BADGE_STRIP,
+              available - MINI_NAME_FLOOR - 1,
+            );
+            const badgeReservation = badges.cells.length > 0 ? pluginBadgeStripWidth(badges) + 1 : 0;
+            const nameMax = Math.max(4, available - badgeReservation);
             return (
               <Box key={session.sessionId} paddingX={1}>
                 {running ? <ActiveChatSpin /> : <Text color={dot.color} bold={attention}>{dot.glyph} </Text>}
@@ -1144,6 +1264,12 @@ function MiniDrawer({
                 >
                   {pad(truncate(formatSessionLabel(session), nameMax), nameMax)}
                 </Text>
+                {badges.cells.length > 0 ? (
+                  <Text>
+                    <Text> </Text>
+                    <PluginBadges strip={badges} />
+                  </Text>
+                ) : null}
                 {markerText ? <Text color={theme.color.t4}>{` ${markerText}`}</Text> : null}
               </Box>
             );

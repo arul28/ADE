@@ -68,6 +68,43 @@ export type AdeCardPluginInstall = {
   adds?: string[];
 };
 
+/**
+ * Who emitted the card, when that was not ADE itself.
+ *
+ * Present only on cards a PLUGIN emitted. It is attribution, so it is stamped
+ * by the host from the invoking plugin's identity and never read from the
+ * payload the emitter sent — `agentChatService.emitAdeCard` deletes any
+ * `authoredBy` that arrives on an incoming card before considering the trusted
+ * value. A card that could name its own author would let any caller of
+ * `chat.emitAdeCard` (an agent, an automation, a second plugin) put a
+ * well-known plugin's name on a row it wrote.
+ *
+ * `displayName` rides along rather than being resolved per client: the TUI and
+ * iOS render this row from the transcript alone, and neither has the install
+ * registry open at that moment.
+ */
+export type AdeCardAuthor = {
+  pluginId: string;
+  displayName?: string | null;
+};
+
+/**
+ * A plugin panel rendered inside the card frame — the `chat-card` socket.
+ *
+ * The card supplies the chronology (a transcript row has a position, a
+ * contribution does not) and the socket supplies the permission: the panel is
+ * drawn only when the plugin DECLARED a `chat-card` contribution naming this
+ * `panelId`, so the user's per-contribution toggle governs it and a plugin
+ * cannot paint an arbitrary panel into a conversation by emitting a card.
+ *
+ * `context` is the panel's `$context` binding, the same object a `plugin`
+ * deeplink's `?ctx=` supplies.
+ */
+export type AdeCardPanel = {
+  panelId: string;
+  context?: Record<string, unknown> | null;
+};
+
 /** Semantic row glyph. Surfaces map these to their own icon vocabulary. */
 export type AdeCardIcon =
   | "pass"
@@ -155,6 +192,17 @@ export type AdeCardPayload = {
    * heard of plugins ignores the field and renders `fallbackText`.
    */
   plugin?: AdeCardPluginInstall | null;
+  /**
+   * The plugin that emitted this card. Host-stamped; see {@link AdeCardAuthor}.
+   * Absent on every card ADE emits for itself.
+   */
+  authoredBy?: AdeCardAuthor | null;
+  /**
+   * A plugin panel to draw inside the card frame — the `chat-card` socket.
+   * Meaningless without {@link AdeCardAuthor}, since the panel belongs to the
+   * emitting plugin. See {@link AdeCardPanel}.
+   */
+  panel?: AdeCardPanel | null;
 };
 
 export const ADE_CARD_TONES: readonly AdeCardTone[] = ["neutral", "accent", "success", "warning"];
@@ -208,6 +256,56 @@ export function readAdeCardPluginInstall(card: AdeCardPayload): AdeCardPluginIns
       ? { version: detail.version.trim() }
       : {}),
     ...(adds.length > 0 ? { adds } : {}),
+  };
+}
+
+/**
+ * The card's plugin attribution, or null when ADE emitted it.
+ *
+ * Validated rather than trusted for the same reason
+ * {@link readAdeCardPluginInstall} is: an attribution row with a blank id is a
+ * label claiming provenance it cannot support, and rendering "via" followed by
+ * nothing is worse than rendering no attribution at all.
+ */
+export function readAdeCardAuthor(card: AdeCardPayload): AdeCardAuthor | null {
+  return normalizeAdeCardAuthor(card.authoredBy);
+}
+
+/** Shared by the reader above and by the host that stamps the field. */
+export function normalizeAdeCardAuthor(value: unknown): AdeCardAuthor | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const detail = value as { pluginId?: unknown; displayName?: unknown };
+  const pluginId = typeof detail.pluginId === "string" ? detail.pluginId.trim() : "";
+  if (!pluginId) return null;
+  const displayName = typeof detail.displayName === "string" ? detail.displayName.trim() : "";
+  return {
+    pluginId,
+    ...(displayName ? { displayName } : {}),
+  };
+}
+
+/** What an attribution reads as in prose: the plugin's name, or its id. */
+export function adeCardAuthorLabel(author: AdeCardAuthor): string {
+  return author.displayName?.trim() || author.pluginId;
+}
+
+/**
+ * The panel this card asks to render, or null.
+ *
+ * A card naming no panel — or naming one with a blank id — is an ordinary card,
+ * which is the honest degradation: the title, rows and metrics it also carries
+ * still render. Whether the panel may actually be DRAWN is a second question,
+ * answered by the client against the plugin's declared `chat-card` sockets.
+ */
+export function readAdeCardPanel(card: AdeCardPayload): AdeCardPanel | null {
+  const detail = card.panel;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
+  const panelId = typeof detail.panelId === "string" ? detail.panelId.trim() : "";
+  if (!panelId) return null;
+  const context = detail.context;
+  return {
+    panelId,
+    ...(context && typeof context === "object" && !Array.isArray(context) ? { context } : {}),
   };
 }
 

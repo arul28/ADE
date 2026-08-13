@@ -6,7 +6,7 @@ import { inputCls } from "../designTokens";
 import { IngressStatusStrip } from "../settings/IngressStatusStrip";
 import { AutomationsEmptyState } from "./AutomationsEmptyState";
 import { RuleRow } from "./RuleRow";
-import { PluginEmptyStateExtra, PluginToolbarActions } from "../../plugins/sockets";
+import { PluginEmptyStateExtra, PluginFilterChips, PluginToolbarActions } from "../../plugins/sockets";
 
 export function RuleList({
   rules,
@@ -28,6 +28,9 @@ export function RuleList({
   onUseTemplate,
   onRefresh,
   onConfirmTrust,
+  pluginFilterKeys,
+  onTogglePluginFilterKey,
+  active = true,
 }: {
   rules: AutomationRuleSummary[];
   selectedRuleId: string | null;
@@ -48,6 +51,11 @@ export function RuleList({
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
   onRefresh: () => void;
   onConfirmTrust: () => void;
+  /** Contributed filter keys currently selected. Owned by the workspace. */
+  pluginFilterKeys: readonly string[];
+  onTogglePluginFilterKey: (filterKey: string) => void;
+  /** False while the Automations tab is mounted but not visible. */
+  active?: boolean;
 }) {
   return (
     <div className="flex min-h-0 w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-white/[0.01]">
@@ -67,7 +75,7 @@ export function RuleList({
             <BookOpen size={12} weight="regular" />
             Templates
           </Button>
-          <PluginToolbarActions surface="automations" />
+          <PluginToolbarActions surface="automations" active={active} />
         </div>
         <div className="relative mt-3">
           <MagnifyingGlass size={12} weight="bold" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50" />
@@ -76,6 +84,16 @@ export function RuleList({
             value={search}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search automations"
+          />
+        </div>
+        {/* Contributed chips, after the list's own search — its only other
+            filter axis. Renders nothing when no plugin contributes one. */}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 empty:mt-0">
+          <PluginFilterChips
+            surface="automations"
+            selected={pluginFilterKeys}
+            onToggle={onTogglePluginFilterKey}
+            active={active}
           />
         </div>
       </div>
@@ -102,7 +120,7 @@ export function RuleList({
         {rules.length === 0 ? (
           <>
             <AutomationsEmptyState onUseTemplate={onUseTemplate} onBrowseTemplates={onOpenTemplates} />
-            <PluginEmptyStateExtra surface="automations" />
+            <PluginEmptyStateExtra surface="automations" active={active} />
           </>
         ) : (
           <div className="space-y-2">

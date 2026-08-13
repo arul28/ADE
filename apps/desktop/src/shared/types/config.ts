@@ -551,6 +551,17 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "linear.issue_labeled",
   "github-webhook",
   "webhook",
+  /**
+   * A plugin fired one of its own declared triggers.
+   *
+   * ONE member for every plugin, not one per declaration. Which plugin and
+   * which of its triggers ride in the trigger bag (`pluginId` /
+   * `pluginTrigger`) because this set is closed by contract: it is validated
+   * against a Set in `projectConfigService` and enumerated into a JSON-schema
+   * enum for the planner, and a per-plugin member would make both unbounded and
+   * would change shape every time a plugin is installed.
+   */
+  "plugin",
 ] as const;
 export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
 
@@ -570,6 +581,8 @@ export type AutomationActionType =
   | "run-tests"
   | "run-command"
   | "ade-action"
+  /** Invoke one of an installed plugin's declared automation steps. */
+  | "plugin"
   // Synthetic kind written into automation_action_results when execution.laneMode
   // is "create"; never authored by the user, but surfaced in run history.
   | "lane-setup";
@@ -664,6 +677,17 @@ export type AutomationTrigger = {
   secretRef?: string;
   /** For `github.*` triggers: restrict to a specific repository. */
   repo?: string;
+  /**
+   * `type: "plugin"` only: which plugin fires this, and which of its declared
+   * triggers.
+   *
+   * Both required in practice. A rule missing either matches NOTHING — see
+   * `triggerMatches` — because the alternative is a half-written rule that
+   * fires on every plugin's every event, which is the one failure mode a
+   * trigger filter must not have.
+   */
+  pluginId?: string;
+  pluginTrigger?: string;
   activeHours?: AutomationActiveHours;
 };
 
@@ -703,6 +727,15 @@ export type AutomationAction = {
   permissionConfig?: AiPermissionSettings;
   /** Configuration payload for actions of kind `ade-action`. */
   adeAction?: RunAdeActionConfig;
+  /**
+   * Configuration payload for actions of kind `plugin`.
+   *
+   * `action` is the plugin handler `plugin.invoke` calls — the manifest step's
+   * `action`, not its id, since a step may point at a handler named something
+   * else. `args` accepts the same `{{trigger.*}}` placeholders `adeAction.args`
+   * does, because the step is dispatched through the very same path.
+   */
+  pluginStep?: { pluginId: string; action: string; args?: Record<string, unknown> };
   /**
    * Prompt + session title for agent-session actions embedded inside a
    * multi-step built-in chain. Not used when the rule's `execution.kind` is

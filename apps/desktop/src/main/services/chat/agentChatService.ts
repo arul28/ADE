@@ -104,9 +104,15 @@ import {
   mcpElicitationQuestions,
 } from "./codexMcpElicitation";
 import { discoverCursorSlashCommands } from "./cursorSlashCommandDiscovery";
+import {
+  buildPluginSlashCommands,
+  readPluginSlashCommandDeclarations,
+  type PluginSlashCommandDeclaration,
+} from "./pluginSlashCommands";
 import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion";
 import { resolveSmartLinkPreview } from "./smartLinkPreviewService";
 import { buildCanonicalAgentChatRuntimeEvent } from "./runtimeEvents";
+import { createPluginRuntimeHookObserver } from "./pluginRuntimeHookObserver";
 import { classifyAgentCliError } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
   RuntimeFilePart as FilePart,
@@ -437,6 +443,15 @@ import {
 } from "../ai/tools/orchestrationTools";
 import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
+import { createPluginAgentToolMap } from "../plugins/pluginAgentTools";
+import {
+  budgetExceeded,
+  encodePluginJsonWithinBudget,
+  PLUGIN_ADE_CARD_BURST_WINDOW_MS,
+  PLUGIN_ADE_CARD_MAX_BYTES,
+  PLUGIN_ADE_CARD_PANEL_CONTEXT_MAX_BYTES,
+  PLUGIN_ADE_CARDS_PER_SESSION_BURST,
+} from "../../../shared/plugins/sdk";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
@@ -462,6 +477,7 @@ import {
   type AdeCardPayload,
   type AdeCardRow,
 } from "../../../shared/adeCard";
+import { readTrustedAdeCardAuthor } from "./adeCardProvenance";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import {
@@ -2726,6 +2742,7 @@ type ManagedChatSession = {
    * re-emit?" without re-reading and re-parsing the whole transcript on every
    * tick of a live card. Optional/lazily created; the durable transcript is
    * still the source of truth on the first emit of a card id in this process.
+   * Bounded by {@link ADE_CARD_FINGERPRINT_CACHE_MAX}, oldest entry first.
    */
   adeCards?: Map<string, { fingerprint: string; createdAt: string }>;
   bufferedReasoning: {
@@ -2770,7 +2787,7 @@ type ManagedChatSession = {
     }) => void;
   }>;
   /** Live HTTP MCP leases, at most one per tool set. */
-  httpMcpServers: Partial<Record<"orchestration" | "cto", HttpMcpLease>>;
+  httpMcpServers: Partial<Record<"orchestration" | "cto" | "plugins", HttpMcpLease>>;
   activeBashControllers: Set<AbortController>;
   eventSequence: number;
   lastActivityTimestamp: number;
@@ -2939,6 +2956,12 @@ type ResolvedChatConfig = {
 
 const MAX_PENDING_STEERS = 10;
 const MAX_INJECTED_PROJECT_COMMANDS = 20;
+/**
+ * How many card fingerprints one session keeps in memory. A chat with more
+ * distinct live cards than this is already unreadable; past it the oldest
+ * entries fall out and their next emit pays one transcript scan.
+ */
+export const ADE_CARD_FINGERPRINT_CACHE_MAX = 512;
 const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
@@ -6238,6 +6261,8 @@ const ORCHESTRATION_CLAUDE_SERVER_NAME = "ade-orchestration";
 const ORCHESTRATION_CODEX_TOOL_NAMESPACE = "ade_orchestration";
 const CTO_MCP_SERVER_NAME = "ade-cto";
 const CTO_CODEX_TOOL_NAMESPACE = "ade_cto";
+const PLUGIN_TOOLS_MCP_SERVER_NAME = "ade-plugins";
+const PLUGIN_TOOLS_CODEX_TOOL_NAMESPACE = "ade_plugins";
 
 /** A started HTTP MCP server bound to one session and one tool set. */
 type HttpMcpLease = {
@@ -6994,6 +7019,12 @@ export function createAgentChatService(args: {
   resolveCodexConfiguredMcpServerNames?: () => readonly string[] | Promise<readonly string[]>;
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
+  /**
+   * Slash commands installed plugins declare, for `getSlashCommands` to fold
+   * into every provider's list. Omitted in production — the default reads the
+   * machine install registry directly; supplied by tests so they need no disk.
+   */
+  getPluginSlashCommands?: () => readonly PluginSlashCommandDeclaration[];
   onEvent?: (event: AgentChatEventEnvelope) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
@@ -7049,6 +7080,14 @@ export function createAgentChatService(args: {
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
+    /**
+     * Defaults to the daemon-free registry read because this service runs in
+     * two processes and only one of them has a plugin host: the desktop main
+     * process never builds one (see `createInstalledPluginRootResolver`), so an
+     * injected host handle would give plugin commands to daemon-bound chats and
+     * silently withhold them from locally-bound ones.
+     */
+    getPluginSlashCommands: readPluginSlashCommands = readPluginSlashCommandDeclarations,
   } = args;
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
@@ -7226,6 +7265,14 @@ export function createAgentChatService(args: {
   };
 
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
+
+  /**
+   * Observe-only plugin runtime hooks. Fed from `commitChatEvent`, which every
+   * runtime's events pass through, so the three hooks cover whatever turn
+   * lifecycle ADE can see without a per-provider call site to keep in sync.
+   * Nothing here can affect a turn: see `pluginRuntimeHookObserver.ts`.
+   */
+  const pluginRuntimeHooks = createPluginRuntimeHookObserver({ projectRoot });
 
   // In-memory ring buffer of recent chat events per session. Populated on every
   // emitted event (see emitChatEvent → commitChatEvent) and merged with the
@@ -13332,6 +13379,30 @@ export function createAgentChatService(args: {
       }
     }
 
+    // Observe-only, and last on purpose: the transcript is written, the
+    // renderer is fed, and only then is anyone told. Synchronous because it
+    // does no I/O — it queues onto a module bus the plugin host drains on its
+    // own tick, and drops rather than backpressures if a plugin stops reading.
+    // Scoped to the SAME three exclusions `createPluginRuntimeToolMap` applies,
+    // for the same reasons. A hook payload is metadata only, but the session id
+    // in it is the argument to `chat.readTranscript` — an allowlisted action —
+    // so telling a plugin that a personal chat exists and is mid-turn hands it
+    // the one thing it was missing to read a conversation deliberately kept
+    // outside the project's context. Withholding the tool while announcing the
+    // session was two halves of one policy built to different shapes.
+    if (
+      !isLightweightSession(managed.session)
+      && !isPersonalSession(managed.session)
+      && !isOrchestrationLeadSession(managed.session)
+    ) {
+      pluginRuntimeHooks.observe({
+        sessionId: managed.session.id,
+        runtime: managed.session.provider,
+        model: managed.session.model ?? null,
+        event: liveEvent,
+      });
+    }
+
     const collector = sessionTurnCollectors.get(managed.session.id);
     if (!collector) return;
 
@@ -16190,6 +16261,39 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * The tools installed plugins declare, for a session that may have them.
+   *
+   * Three session kinds are excluded, each for the same reason the skills path
+   * excludes them: a lightweight side-job (auto-title, lane naming) has one
+   * question to answer and no use for tools; a personal chat is deliberately
+   * outside the project's context; and an orchestration LEAD is a read-only
+   * planner whose MCP is isolated precisely so nothing hands it write
+   * capability back — and a plugin tool is arbitrary plugin code, which is that
+   * door exactly.
+   *
+   * Returns null when nothing is declared, so no lease, no server and no Codex
+   * namespace is spent on an empty tool set.
+   */
+  const createPluginRuntimeToolMap = (
+    managed: ManagedChatSession,
+  ): OrchestrationToolMap | null => {
+    if (isLightweightSession(managed.session)) return null;
+    if (isPersonalSession(managed.session)) return null;
+    if (isOrchestrationLeadSession(managed.session)) return null;
+    try {
+      return createPluginAgentToolMap();
+    } catch (error) {
+      // A machine with no plugin host (a headless brain, a build without it)
+      // is a normal state: no plugin tools, not a session that fails to start.
+      logger.debug("agent_chat.plugin_tools_unavailable", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
   const droidMcpInputShapeForTool = (toolDefinition: ExecutableTool): Record<string, z.ZodTypeAny> => {
     const schema = toolDefinition.inputSchema as unknown as {
       shape?: Record<string, z.ZodTypeAny> | (() => Record<string, z.ZodTypeAny>);
@@ -16214,6 +16318,11 @@ export function createAgentChatService(args: {
       serverName: CTO_MCP_SERVER_NAME,
       codexNamespace: CTO_CODEX_TOOL_NAMESPACE,
       buildTools: (managed: ManagedChatSession) => createCtoRuntimeToolMap(managed),
+    },
+    plugins: {
+      serverName: PLUGIN_TOOLS_MCP_SERVER_NAME,
+      codexNamespace: PLUGIN_TOOLS_CODEX_TOOL_NAMESPACE,
+      buildTools: (managed: ManagedChatSession) => createPluginRuntimeToolMap(managed),
     },
   } as const;
 
@@ -16849,6 +16958,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    pluginRuntimeHooks.forgetSession(managed.session.id);
     revokeBuiltInBrowserActorCapability(managed.session.id);
   };
 
@@ -28093,6 +28203,14 @@ export function createAgentChatService(args: {
     if (ctoMcpServer) {
       opts.mcpServers = { ...(opts.mcpServers ?? {}), [CTO_MCP_SERVER_NAME]: ctoMcpServer };
     }
+    // Claude is the one transport that does not fan out over the tool-set table
+    // on its own — the HTTP-lease runtimes (Cursor, Droid, OpenCode) and Codex
+    // iterate every key, while Claude names the servers it wants here. A new
+    // tool set therefore needs this line, and only this line.
+    const pluginMcpServer = buildClaudeSdkMcpServer(managed, "plugins");
+    if (pluginMcpServer) {
+      opts.mcpServers = { ...(opts.mcpServers ?? {}), [PLUGIN_TOOLS_MCP_SERVER_NAME]: pluginMcpServer };
+    }
     const orchestrationMcpServer = buildClaudeSdkMcpServer(managed, "orchestration");
     if (orchestrationMcpServer) {
       opts.mcpServers = {
@@ -28103,15 +28221,23 @@ export function createAgentChatService(args: {
       const hasOrchestrationMcpServer = existingAllowedMcpServers.some(
         (server) => server.serverName === ORCHESTRATION_CLAUDE_SERVER_NAME,
       );
-      // If a session ever carried both tool sets, `allowManagedMcpServersOnly`
-      // below would block `ade-cto` even though it is in `opts.mcpServers` — a
-      // silent capability loss. Unreachable today (a CTO session has no
-      // orchestration run), but the invariant is implicit, so allow it too.
+      // Every managed server this session actually carries must be allowlisted:
+      // `allowManagedMcpServersOnly` below blocks anything absent from the list
+      // even though it is in `opts.mcpServers`, which is a silent capability
+      // loss rather than an error. `ade-cto` is unreachable here today (a CTO
+      // session has no orchestration run) but the invariant is implicit;
+      // `ade-plugins` is reachable right now, on any orchestration WORKER with a
+      // tool-declaring plugin installed. A lead never gets here — its plugin
+      // tool set is null by construction, which is the isolation the lead wants.
       const managedServerNames = [
         ...(hasOrchestrationMcpServer ? [] : [{ serverName: ORCHESTRATION_CLAUDE_SERVER_NAME }]),
         ...(ctoMcpServer
           && !existingAllowedMcpServers.some((server) => server.serverName === CTO_MCP_SERVER_NAME)
           ? [{ serverName: CTO_MCP_SERVER_NAME }]
+          : []),
+        ...(pluginMcpServer
+          && !existingAllowedMcpServers.some((server) => server.serverName === PLUGIN_TOOLS_MCP_SERVER_NAME)
+          ? [{ serverName: PLUGIN_TOOLS_MCP_SERVER_NAME }]
           : []),
       ];
       opts.managedSettings = {
@@ -32084,6 +32210,55 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Plugin card emits per chat session, newest last, pruned to the window on
+   * every check. Keyed by session because the transcript is what the ceiling
+   * protects; entries drop out of the map once their window empties, so an idle
+   * machine holds nothing.
+   */
+  const pluginAdeCardBurstBySession = new Map<string, number[]>();
+
+  /**
+   * Refuse an oversized plugin card before it reaches the transcript.
+   *
+   * Measured on the payload as the caller sent it, `authoredBy` and all: the
+   * host's stamp is a bounded two-field object, and measuring the version we
+   * rewrote would let a caller ship a card whose stored size exceeds what was
+   * checked.
+   */
+  const enforcePluginAdeCardBudget = (args: AgentChatEmitAdeCardArgs): void => {
+    const context = args.card?.panel?.context;
+    if (context !== undefined && context !== null) {
+      encodePluginJsonWithinBudget(
+        context,
+        "ade_card_panel_context",
+        PLUGIN_ADE_CARD_PANEL_CONTEXT_MAX_BYTES,
+      );
+    }
+    encodePluginJsonWithinBudget(args.card, "ade_card", PLUGIN_ADE_CARD_MAX_BYTES);
+  };
+
+  /**
+   * Count one plugin-authored card against its session's rolling window, or
+   * refuse. Same shape as the `automations.emitTrigger` limiter in
+   * `pluginSdkServer`: a hard window rather than a refilling bucket, so a wedged
+   * plugin cannot settle into a permanent drip.
+   */
+  const reservePluginAdeCardBurst = (sessionId: string): void => {
+    const since = Date.now() - PLUGIN_ADE_CARD_BURST_WINDOW_MS;
+    const recent = (pluginAdeCardBurstBySession.get(sessionId) ?? []).filter((at) => at > since);
+    if (recent.length >= PLUGIN_ADE_CARDS_PER_SESSION_BURST) {
+      pluginAdeCardBurstBySession.set(sessionId, recent);
+      throw budgetExceeded(
+        "ade_cards_per_session_per_minute",
+        PLUGIN_ADE_CARDS_PER_SESSION_BURST,
+        recent.length + 1,
+      );
+    }
+    recent.push(Date.now());
+    pluginAdeCardBurstBySession.set(sessionId, recent);
+  };
+
+  /**
    * Emit (or update) an `ade_card` row in a chat transcript.
    *
    * Deliberately modelled on `markCrossMachineHandoff` above, for three reasons
@@ -32107,18 +32282,30 @@ export function createAgentChatService(args: {
    * recent card with the same `cardId` is skipped (same guard shape as
    * `markCrossMachineHandoff`'s `alreadyMarked`). A CHANGED payload with the
    * same `cardId` is emitted and merges into the existing row client-side.
+   *
+   * `authoredBy` is the one field an emitter cannot set. It is attribution, and
+   * this action is on the allowlist, so an agent or an automation could
+   * otherwise sign a card with a plugin's name. The incoming value is dropped
+   * unconditionally and replaced by whatever the trusted plugin bridge stamped
+   * — see `./adeCardProvenance.ts`.
    */
   const emitAdeCard = async (args: AgentChatEmitAdeCardArgs): Promise<void> => {
     const sessionId = args.sessionId?.trim();
     if (!sessionId) throw new Error("A chat session is required to emit a card.");
     const cardId = args.card?.cardId?.trim();
     if (!cardId) throw new Error("An ade_card requires a stable cardId.");
+    const authoredBy = readTrustedAdeCardAuthor(args);
+    // Size before anything else, so an oversized card is refused before it can
+    // cost a transcript read. Plugin-authored only — see the constant.
+    if (authoredBy) enforcePluginAdeCardBudget(args);
+    const { authoredBy: _claimedAuthor, ...incomingCard } = args.card;
     const card: AdeCardPayload = {
-      ...args.card,
+      ...incomingCard,
       cardId,
       // `fallbackText` is the whole degradation contract; never let an emitter
       // ship an empty one.
       fallbackText: adeCardFallbackText(args.card),
+      ...(authoredBy ? { authoredBy } : {}),
     };
 
     const managed = ensureManagedSession(sessionId);
@@ -32129,23 +32316,43 @@ export function createAgentChatService(args: {
       // Cold for this card in this process — consult the durable transcript
       // once so the guard survives a restart. Subsequent ticks hit the cache
       // instead of re-parsing the (potentially very large) transcript file.
-      for (const entry of readTranscriptEnvelopes(managed)) {
-        if (entry.event.type === "ade_card" && entry.event.cardId === cardId) {
+      //
+      // Backwards, and it STOPS at the first hit. The state to compare against
+      // is the card's latest write, so a forward scan has to read every
+      // envelope in the file to be sure it has it; the last one is also the one
+      // carrying the original `createdAt`, because each emit copies that
+      // forward. On a long transcript with a live card this loop ran per emit.
+      const envelopes = readTranscriptEnvelopes(managed);
+      for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+        const entry = envelopes[index];
+        if (entry?.event.type === "ade_card" && entry.event.cardId === cardId) {
           previous = {
             fingerprint: adeCardFingerprint(entry.event),
             createdAt: entry.event.createdAt ?? nowIso(),
           };
+          break;
         }
       }
     }
 
     const fingerprint = adeCardFingerprint(card);
+    // An identical re-emit is a no-op, and a no-op costs a plugin nothing: the
+    // rate limit below counts cards that actually reach the transcript.
     if (previous && previous.fingerprint === fingerprint) return;
+
+    if (authoredBy) reservePluginAdeCardBurst(sessionId);
 
     const createdAt = previous?.createdAt ?? card.createdAt ?? nowIso();
     emitChatEvent(managed, {
-      type: "ade_card",
       ...card,
+      // `type` is pinned AFTER the spread, never before it. `card` is the
+      // caller's own JSON minus `authoredBy`, and `AdeCardPayload` declares no
+      // `type`, so a `type` riding in on the payload would win a spread that
+      // came first — turning an allowlisted card emit into arbitrary transcript
+      // event injection (`assistant` text, `done`, `approval_request`, a
+      // `user_message` carrying a `scheduledWake`). The union member this
+      // function may write is fixed here and is not the emitter's to choose.
+      type: "ade_card",
       createdAt,
       updatedAt: nowIso(),
     });
@@ -32159,6 +32366,16 @@ export function createAgentChatService(args: {
     // Update the no-op guard only AFTER that durable flush succeeds. A retry
     // after ENOSPC must not be mistaken for an already-persisted card.
     cache.set(cardId, { fingerprint, createdAt });
+    // The guard is a CACHE, not a record: a session that emits thousands of
+    // distinct card ids (one per test, per file, per webhook) would otherwise
+    // hold every fingerprint for the life of the process. Dropping the oldest
+    // entry costs one transcript scan if that card is ever emitted again, which
+    // is the cold path directly above and is still correct.
+    while (cache.size > ADE_CARD_FINGERPRINT_CACHE_MAX) {
+      const oldest = cache.keys().next();
+      if (oldest.done) break;
+      cache.delete(oldest.value);
+    }
     persistChatState(managed);
   };
 
@@ -39463,6 +39680,10 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
+    // Belongs with the other per-session caches: the observer's turn bookkeeping
+    // is LRU-capped, so a deleted session left in it evicts a LIVE session's
+    // open turn and costs that turn its duration.
+    pluginRuntimeHooks.forgetSession(sessionId);
   };
 
   const countActiveForLane = (laneId: string): number => {
@@ -41163,6 +41384,7 @@ export function createAgentChatService(args: {
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
+    pluginRuntimeHooks.forgetSession(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
@@ -41913,6 +42135,50 @@ export function createAgentChatService(args: {
       return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     };
 
+    /**
+     * Merge the runtime's own commands, then fold plugin commands in.
+     *
+     * Every provider branch below ends here, which is the whole point: a
+     * plugin's command reaches Claude, Codex, Cursor, Droid, OpenCode and Pi
+     * alike, instead of only the two runtimes whose skill directories happen to
+     * surface `manifest.skills[]` as commands.
+     *
+     * Plugin names are resolved against the merged core list BEFORE this merge,
+     * so nothing here can collide. The group is still passed first, so that if
+     * a name ever did slip through, `merged.set`'s last-wins would hand it to
+     * core rather than to the plugin.
+     */
+    const withPluginSlashCommands = (groups: AgentChatSlashCommand[][]): AgentChatSlashCommand[] => {
+      const core = mergeSlashCommands(groups);
+      if (!args.includePluginCommands) return core;
+      // The same three session kinds `createPluginRuntimeToolMap` and the
+      // runtime hooks withhold plugins from, withheld here for the same
+      // reasons: a lightweight side-job has one question to answer, a personal
+      // chat is deliberately outside the project's context, and an
+      // orchestration lead is a read-only planner. A slash command is a
+      // labelled invoke of arbitrary plugin code, so offering one in a session
+      // that may not hold plugin tools would be the same door with a menu in
+      // front of it.
+      if (managed && (
+        isLightweightSession(managed.session)
+        || isPersonalSession(managed.session)
+        || isOrchestrationLeadSession(managed.session)
+      )) return core;
+      const declarations = readPluginSlashCommands();
+      if (!declarations.length) return core;
+      const contributed = buildPluginSlashCommands(declarations, core, {
+        onCollision: (info) => {
+          logger.warn("chat.plugin_slash_command_collision", {
+            pluginId: info.pluginId,
+            command: info.command,
+            reason: info.reason,
+            offeredAs: info.offeredAs,
+          });
+        },
+      });
+      return contributed.length ? mergeSlashCommands([contributed, core]) : core;
+    };
+
     const filesystemBackedCommands = (): AgentChatSlashCommand[] => {
       const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath)
         .map((cmd) => ({
@@ -41950,7 +42216,7 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      return mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
+      return withPluginSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
     }
 
     // Codex SDK commands
@@ -41972,7 +42238,7 @@ export function createAgentChatService(args: {
       const promptCommands = managed && isPersonalSession(managed.session)
         ? []
         : filesystemBackedCommands().filter(isVisibleCodexSlashCommand);
-      return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
+      return withPluginSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
     if (provider === "cursor") {
@@ -41983,12 +42249,12 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      return mergeSlashCommands([cursorCommands, localCommands]);
+      return withPluginSlashCommands([cursorCommands, localCommands]);
     }
 
     // Droid and OpenCode can both use the same filesystem-backed prompt and
     // skill list even when their native runtimes do not auto-list it.
-    return mergeSlashCommands([filesystemBackedCommands(), localCommands]);
+    return withPluginSlashCommands([filesystemBackedCommands(), localCommands]);
   };
 
   const normalizeClaudeSessionTimestamp = (value: unknown): string | null => {

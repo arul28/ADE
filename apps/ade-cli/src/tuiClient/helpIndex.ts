@@ -14,18 +14,31 @@ import type { ClaudeKeybinding, TuiKeybindingAction } from "./keybindings";
  * renders it.
  */
 
+/**
+ * The bucket plugin-declared shortcuts are listed under.
+ *
+ * Not a member of {@link CommandCategory}, because it is not a category of
+ * COMMAND — nothing in `BUILTIN_COMMANDS` can land here, and the rows in it are
+ * bindings that happen to be runnable rather than commands that happen to be
+ * bound. Keeping it out of that union is also what keeps this feature from
+ * editing a file every other TUI surface imports.
+ */
+export const HELP_PLUGIN_CATEGORY = "Plugins";
+
+export type HelpCategory = CommandCategory | typeof HELP_PLUGIN_CATEGORY;
+
 export type HelpRow = {
   /** Slash command name, e.g. "/commit". */
   name: string;
   description: string;
   /** Display keybind ("Ctrl+P") or undefined when the command has no binding. */
   keybind?: string;
-  source: "ade" | "user";
-  category: CommandCategory;
+  source: "ade" | "user" | "plugin";
+  category: HelpCategory;
 };
 
 export type HelpGroup = {
-  category: CommandCategory;
+  category: HelpCategory;
   rows: HelpRow[];
 };
 
@@ -87,9 +100,48 @@ export function getKeybindForCommand(
  * explicit category fall into the trailing "System" bucket. Optionally enriches
  * each row with its bound keybind chip from the live registry.
  */
+/**
+ * Reference rows for the plugin chords that survived the collision matrix.
+ *
+ * Attribution is the point. A chord that came from a plugin has to SAY which
+ * plugin, because the user did not write it into their own file and has no
+ * other place to find out where it came from — `/help` is the only listing this
+ * client has. Refused declarations never reach here: `mergePluginKeybindings`
+ * returns them separately, and a row for a shortcut that does not work would be
+ * worse than no row.
+ *
+ * The row's `name` is `/plugin-view <id>`, which is a real command: selecting
+ * the row and pressing ↵ opens that plugin rather than seeding the composer with
+ * a string that is not a command. Uniqueness across a plugin's several bindings
+ * comes from the description, which carries the action's own label.
+ */
+export function buildPluginHelpGroup(
+  pluginBindings: readonly ClaudeKeybinding[] | null | undefined,
+): HelpGroup | null {
+  if (!pluginBindings || pluginBindings.length === 0) return null;
+  const rows: HelpRow[] = [];
+  for (const binding of pluginBindings) {
+    if (!binding.implemented || !binding.key) continue;
+    const target = binding.rawAction ?? "";
+    const pluginId = target.split(":")[1] ?? "";
+    if (!pluginId) continue;
+    const who = binding.pluginName ?? pluginId;
+    rows.push({
+      name: `/plugin-view ${pluginId}`,
+      description: binding.label ? `${who} · ${binding.label}` : `${who} plugin`,
+      keybind: formatChordForDisplay(binding.key),
+      source: "plugin",
+      category: HELP_PLUGIN_CATEGORY,
+    });
+  }
+  if (rows.length === 0) return null;
+  return { category: HELP_PLUGIN_CATEGORY, rows };
+}
+
 export function buildHelpIndex(
   commands: readonly BuiltinCommand[] = BUILTIN_COMMANDS,
   bindings?: readonly ClaudeKeybinding[] | null,
+  pluginBindings?: readonly ClaudeKeybinding[] | null,
 ): HelpGroup[] {
   const byCategory = new Map<CommandCategory, HelpRow[]>();
   for (const category of COMMAND_CATEGORY_ORDER) byCategory.set(category, []);
@@ -111,6 +163,10 @@ export function buildHelpIndex(
     const rows = byCategory.get(category)!;
     if (rows.length > 0) groups.push({ category, rows });
   }
+  // Last, after every command bucket: these are contributed, and a reader
+  // scanning for ADE's own vocabulary should not have to step over them.
+  const pluginGroup = buildPluginHelpGroup(pluginBindings);
+  if (pluginGroup) groups.push(pluginGroup);
   return groups;
 }
 

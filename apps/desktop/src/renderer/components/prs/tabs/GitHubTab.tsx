@@ -75,6 +75,8 @@ export type GitHubTabProps = {
   onOpenRebaseTab?: (laneId?: string) => void;
   relocateHeaderChrome?: boolean;
   onHeaderChromeChange?: (state: GitHubHeaderChromeState | null) => void;
+  /** False while the PRs tab is mounted but not visible. */
+  active?: boolean;
 };
 
 export type GitHubHeaderChromeState = {
@@ -98,8 +100,21 @@ export function GitHubTab({
   onOpenRebaseTab,
   relocateHeaderChrome = false,
   onHeaderChromeChange,
+  active = true,
 }: GitHubTabProps) {
   const navigate = useNavigate();
+  // Contributed filter keys are local state, never persisted into the PRs
+  // route: a key from a plugin that has since been uninstalled would come
+  // back on the next visit and hide pull requests with no chip left on
+  // screen to undo it.
+  const [pluginFilterKeys, setPluginFilterKeys] = React.useState<string[]>([]);
+  const togglePluginFilterKey = React.useCallback((filterKey: string) => {
+    setPluginFilterKeys((current) => (
+      current.includes(filterKey)
+        ? current.filter((entry) => entry !== filterKey)
+        : [...current, filterKey]
+    ));
+  }, []);
   const appStore = useAppStoreApi();
   const {
     prs,
@@ -410,6 +425,8 @@ export function GitHubTab({
     filterCounts,
     canLoadOlderHistory,
   } = useGitHubTabListModel({
+    active,
+    pluginFilterKeys,
     snapshot,
     searchQuery,
     prsByIdMap,
@@ -891,6 +908,9 @@ export function GitHubTab({
           onConnectGitHub: () => navigate(settingsRouteFor("integrations.github")),
         }}
         list={{
+          active,
+          pluginFilterKeys,
+          onTogglePluginFilterKey: togglePluginFilterKey,
           parentRef: listRef,
           filter,
           filterCounts,

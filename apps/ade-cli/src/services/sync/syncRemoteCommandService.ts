@@ -16,6 +16,13 @@ import {
   getPluginPresenceService,
   PLUGIN_MACHINE_UNREACHABLE_CODE,
 } from "../plugins/pluginPresenceService";
+import { readPluginContributions } from "../plugins/pluginTableWriters";
+import {
+  isPluginEntityKind,
+  isPluginSocketKind,
+  isPluginSurfaceId,
+  readPluginContributionEntityTag,
+} from "../../../../desktop/src/shared/plugins/sockets";
 import type {
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
@@ -179,6 +186,7 @@ import type {
   SyncListExternalSessionsArgs,
   SyncListExternalSessionsResult,
   SyncCommandPayload,
+  SyncPluginContributionRow,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
@@ -862,6 +870,10 @@ function parseAgentChatSlashCommandsArgs(value: Record<string, unknown>): AgentC
     ...("laneId" in value ? { laneId: value.laneId == null ? null : asTrimmedString(value.laneId) ?? null } : {}),
     ...("provider" in value ? { provider: value.provider == null ? null : asTrimmedString(value.provider) as AgentChatProvider | null } : {}),
     ...("projectRoot" in value ? { projectRoot: value.projectRoot == null ? null : asTrimmedString(value.projectRoot) ?? null } : {}),
+    // Carried across the wire, not defaulted here: a client that cannot invoke
+    // a plugin command must not be handed one just because it reached this
+    // machine remotely rather than locally.
+    ...(value.includePluginCommands === true ? { includePluginCommands: true } : {}),
   };
 }
 
@@ -2759,6 +2771,15 @@ function parseTranscriptCursor(value: unknown): number | undefined {
   const index = Math.floor(parsed);
   return index >= 0 ? index : undefined;
 }
+
+/**
+ * The most entity ids one `plugins.contributions` call may filter on.
+ *
+ * A list screen asks about the rows it can see, so this is far above any real
+ * viewport; it exists so the bound-parameter count stays inside SQLite's limit
+ * however the caller behaves.
+ */
+const PLUGIN_CONTRIBUTION_ENTITY_IDS_MAX = 500;
 
 const TRANSCRIPT_PAGE_DEFAULT_LIMIT = 200;
 const TRANSCRIPT_PAGE_MAX_LIMIT = 1_000;
@@ -5719,8 +5740,13 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
  * The services are resolved at call time through their late-bound refs. When
  * the plugin host is not present the handler throws a typed
  * `plugins_unavailable` rather than reporting a success that never happened.
+ *
+ * `args` is taken for exactly one command. Every other `plugins.*` here is
+ * machine-global and answers from a late-bound ref, which is why this block
+ * needed no project deps at all until `plugins.contributions` — that one reads
+ * a per-project table, so it needs this instance's project database.
  */
-function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDeps): void {
+function registerPluginRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const parsePluginId = (payload: Record<string, unknown>): string => {
     const pluginId = typeof payload.pluginId === "string" ? payload.pluginId.trim() : "";
     if (!pluginId) throw new Error("A plugin id is required.");
@@ -5859,6 +5885,131 @@ function registerPluginRemoteCommands({ register }: RemoteCommandRegistrationDep
       await getPluginPresenceService()?.publishLocalPresence();
       return record;
     }), "runtime");
+
+  /**
+   * What plugins are saying about the entities on one surface right now.
+   *
+   * The dynamic half of the socket taxonomy. Static manifest sockets say a
+   * plugin CAN badge a lane; these rows say what it says about lane 7 today, and
+   * they are the half that cannot ride {@link SyncPluginInstallRecord}: they
+   * live in the project database and change without an install changing.
+   *
+   * PROJECT-scoped, unlike every `plugins.*` sibling above, and that is a
+   * correctness requirement rather than a preference. `plugin_contributions` is
+   * a per-project table, so this instance's `args.db` — which the sync host
+   * binds per project — is the only db that can answer for the project the
+   * caller is looking at. Registered `runtime`, it would have answered from
+   * whichever project the daemon happened to consider current, which is the
+   * wrong rows silently rather than no rows loudly.
+   *
+   * `viewerAllowed`, matching `plugins.list`: these are the same UI facts, read
+   * from the same install set, and a badge a viewer cannot see is a surface that
+   * silently differs by role.
+   *
+   * The join mirrors `pluginHostService`'s `listContributions` exactly, because
+   * a second answer to "which surface does this row belong on" is a second
+   * chance to disagree with desktop. The table stores a socket KIND; which
+   * surface that kind renders on is per-plugin manifest detail, so the manifest
+   * is the join and rows whose plugin is disabled, whose socket the user
+   * switched off, or whose socket the plugin has stopped declaring all drop out
+   * here rather than in each reader.
+   */
+  register("plugins.contributions", { viewerAllowed: true }, async (payload) => {
+    const surface = typeof payload.surface === "string" ? payload.surface.trim() : "";
+    if (!isPluginSurfaceId(surface)) {
+      throw new Error("A plugin contributions surface is required.");
+    }
+    // No project database bound means no project to answer for. Empty is right
+    // here where it is wrong for `plugins.list`: a surface with no dynamic
+    // contributions is a quieter tab, not a claim about what is installed.
+    if (!args.db) return { contributions: [] };
+
+    const entityKindRaw = typeof payload.entityKind === "string" ? payload.entityKind.trim() : "";
+    const entityKind = isPluginEntityKind(entityKindRaw) ? entityKindRaw : null;
+    // Sliced, not just filtered. Each id becomes one bound `?` in an `in (…)`
+    // clause, so a paired viewer sending tens of thousands blows SQLite's
+    // variable ceiling — a thrown query rather than a crash, but a phone should
+    // not be able to make the daemon fail a read by asking for too much of it.
+    const entityIds = Array.isArray(payload.entityIds)
+      ? payload.entityIds
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+        .slice(0, PLUGIN_CONTRIBUTION_ENTITY_IDS_MAX)
+      : null;
+
+    // Built once per call, not per row: a Lanes list asks for this on every
+    // render and a plugin declares a handful of sockets. The key joins plugin
+    // id to socket kind on a NUL, which neither can contain, so no pair can
+    // collide into one entry — written as the ESCAPE, never the literal byte,
+    // because a source file holding one is binary to git.
+    const declared = new Map<string, { socketId: string; enabled: boolean }>();
+    // The unambiguous case, kept apart: a row naming no socket id can only be
+    // resolved when its kind was declared exactly ONCE. Set to null the moment
+    // a second declaration of that kind lands, which is what lets the row loop
+    // tell "ambiguous" apart from "never declared".
+    const soleByKind = new Map<string, { socketId: string; enabled: boolean } | null>();
+    for (const record of await requirePluginInstallService().list()) {
+      if (!record.enabled || !record.sockets) continue;
+      const off = new Set(record.disabledContributions ?? []);
+      for (const socket of record.sockets) {
+        if (socket.surface !== surface) continue;
+        const declaration = { socketId: socket.id, enabled: !off.has(socket.id) };
+        declared.set(`${record.pluginId}\u0000${socket.socket}\u0000${socket.id}`, declaration);
+        const kindKey = `${record.pluginId}\u0000${socket.socket}`;
+        soleByKind.set(kindKey, soleByKind.has(kindKey) ? null : declaration);
+      }
+    }
+    if (declared.size === 0) return { contributions: [] };
+
+    const rows = readPluginContributions(args.db, {
+      entityKind,
+      entityIds,
+    });
+    const contributions: SyncPluginContributionRow[] = [];
+    for (const row of rows) {
+      // Parsed BEFORE the declaration join, because the payload is what names
+      // the declaration: a row carrying `id` is addressed to one specific
+      // socket the plugin declared, and joining on the kind alone would throw
+      // that away before reading it. Same order the host and iOS use.
+      let parsedPayload: unknown = null;
+      try {
+        parsedPayload = JSON.parse(row.payloadJson) as unknown;
+      } catch {
+        // Plugin-authored content. A malformed payload is one unreadable row,
+        // never a throw that loses the whole surface.
+        parsedPayload = null;
+      }
+      // Through the shared reader, not a local probe. It re-applies the
+      // writer's 64-char ceiling, so a row published by a host with a
+      // different bound cannot seat an unbounded id here and then fail to
+      // match the bounded one the declaration map is keyed on.
+      const declaredId = readPluginContributionEntityTag(parsedPayload).id ?? "";
+      const kindKey = `${row.pluginId}\u0000${row.socket}`;
+      // Addressed rows resolve to their own declaration or to nothing; an
+      // unaddressed row resolves only when its kind was declared once. Guessing
+      // is what made this transport disagree with the desktop.
+      const match = declaredId
+        ? declared.get(`${kindKey}\u0000${declaredId}`)
+        : (soleByKind.get(kindKey) ?? undefined);
+      if (!match || !match.enabled) continue;
+      // `row.socket` matching a `declared` key already implies it is a known
+      // kind — the keys come from parsed manifests. `entityKind` has no such
+      // indirect guarantee: it comes straight off the row with nothing upstream
+      // restricting it, so a row from a future entity kind this build predates
+      // is dropped rather than sent as a value the reader has no case for.
+      if (!isPluginEntityKind(row.entityKind) || !isPluginSocketKind(row.socket)) continue;
+      contributions.push({
+        entityKind: row.entityKind,
+        entityId: row.entityId,
+        pluginId: row.pluginId,
+        socket: row.socket,
+        surface,
+        socketId: match.socketId,
+        payload: parsedPayload,
+        updatedAt: row.updatedAt || null,
+      });
+    }
+    return { contributions };
+  });
 
   // Read-only: this machine reporting its own install state. The CALLER files
   // the answer under the machine key its directory gave, so nothing here has to

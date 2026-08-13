@@ -308,7 +308,18 @@ func workAdeCardModel(
     rowsTruncated: optionalWorkInt(eventDict["rowsTruncated"]).map { max(0, $0) },
     fallbackText: fallbackText,
     turnId: turnId,
-    timestamp: timestamp
+    timestamp: timestamp,
+    // The replay path reads the same two fields the live path does. Without
+    // them a plugin card would lose its attribution and its panel the moment
+    // the transcript was rebuilt from storage — which is every cold launch.
+    author: workAdeCardAuthor(
+      pluginId: optionalString((eventDict["authoredBy"] as? [String: Any])?["pluginId"]),
+      displayName: optionalString((eventDict["authoredBy"] as? [String: Any])?["displayName"])
+    ),
+    panel: workAdeCardPanel(
+      panelId: optionalString((eventDict["panel"] as? [String: Any])?["panelId"]),
+      context: PluginPanelContext.read(object: (eventDict["panel"] as? [String: Any])?["context"])
+    )
   )
 }
 

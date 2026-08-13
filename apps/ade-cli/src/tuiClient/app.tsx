@@ -62,7 +62,12 @@ import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
-import { readPluginActionNavigation } from "../../../desktop/src/shared/plugins/sdk";
+import {
+  hasPluginActionComposerRequest,
+  readPluginActionComposerEdit,
+  readPluginActionNavigation,
+} from "../../../desktop/src/shared/plugins/sdk";
+import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
@@ -107,6 +112,7 @@ import {
   listLaneDiffStats,
   listPlugins,
   listClaudePlugins,
+  loadPluginTuiContributions,
   readPluginCollection,
   readPluginPanel,
   resolvePluginByName,
@@ -287,7 +293,13 @@ import {
   type DrawerChatListItem,
 } from "./closedCliSessions";
 import { sortLanesForStackGraph } from "./laneTree";
-import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
+import {
+  formatLaneLabel,
+  formatSessionLabel,
+  latestExpandableFailureId,
+  renderObject,
+  summarizeDiffChanges,
+} from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { clipboardScratchDir, isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
@@ -364,7 +376,7 @@ import {
   setPendingQuestionOptionIndex,
   type PendingQuestionSelectionState,
 } from "./pendingInput";
-import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
+import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, mergePluginKeybindings, openKeybindingsFile, parsePluginKeybindingAction, readClaudeKeybindingsFile, type ClaudeKeybinding, type KeybindingDispatchState, type PluginKeybindingPlugin, type TuiResolvedKeybindingAction } from "./keybindings";
 import { buildDeeplinkForRow, buildWebClientUrlForRow, type DeeplinkRow } from "./deeplinkRow";
 import { copyToClipboard } from "../lib/clipboard";
 import {
@@ -390,6 +402,16 @@ import {
   type PluginPaneCollectionMap,
   type PluginPaneInput,
 } from "./pluginPane";
+import {
+  buildPluginActionsPane,
+  pluginRowBadgeStrip,
+  tuiLaneContext,
+  tuiSessionContext,
+  EMPTY_PLUGIN_TUI_CONTRIBUTIONS,
+  type PluginRowActionEntry,
+  type PluginRowBadgeStrip,
+  type PluginTuiContributions,
+} from "./pluginSockets";
 import {
   deletePromptSmartLinkBackward,
   deletePromptSmartLinkForward,
@@ -3260,6 +3282,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [notices, setNotices] = useState<LocalNotice[]>([]);
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
   const [keybindings, setKeybindings] = useState(() => readClaudeKeybindingsFile({ create: false }).bindings);
+  /**
+   * Installed plugins, kept only for what they DECLARE — their keybindings and
+   * the install time that decides who wins a contested chord. Refreshed on the
+   * plugin-contributions poll, because an install is the one event that can
+   * change either.
+   */
+  const [pluginKeybindingRoster, setPluginKeybindingRoster] = useState<PluginKeybindingPlugin[]>([]);
   const [models, setModels] = useState<AgentChatModelInfo[]>([]);
   const [initialAdeCodeState] = useState(() => (
     remoteLaunch
@@ -3302,6 +3331,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // selection index: the pane repolls every ten seconds, and an index armed
   // against "Delete lane" would fire whatever the refresh moved into that slot.
   const pluginConfirmArmedRef = useRef<string | null>(null);
+  // Plugin socket contributions for the two surfaces the drawer lists. Empty on
+  // a host without plugin support and on a machine with none installed, which
+  // is the same drawer either way: core rows and nothing added to them.
+  const [pluginContributions, setPluginContributions] = useState<PluginTuiContributions>(
+    EMPTY_PLUGIN_TUI_CONTRIBUTIONS,
+  );
+  // What the open `/plugin-actions` pane's rows resolve to. Held beside the pane
+  // rather than inside it because a list pane carries strings and ids only, and
+  // an action needs the plugin, the verb and the subject it was raised for.
+  const pluginRowActionsRef = useRef<{
+    entriesByKey: Map<string, PluginRowActionEntry>;
+    /** The focused row, for `row-menu-item` entries. */
+    context: PluginSurfaceContext;
+    /**
+     * The surface itself, for `toolbar-action` entries — which are SELECTED
+     * with a surface-only subject and so must be INVOKED with one. The desktop
+     * hands a toolbar action `{kind:"surface"}` unless a detail pane supplies an
+     * entity, and a plugin handler cannot be written against both.
+     */
+    surfaceContext: PluginSurfaceContext;
+  } | null>(null);
   const [subagentPaneViewStateBySessionId, setSubagentPaneViewStateBySessionId] = useState<Record<string, SubagentPaneViewState>>({});
   const subagentPaneViewState = activeSessionId ? (subagentPaneViewStateBySessionId[activeSessionId] ?? {}) : {};
   const updateSubagentPaneViewState = useCallback((update: (current: SubagentPaneViewState) => SubagentPaneViewState) => {
@@ -3419,7 +3469,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const displaySessionsRef = useRef<AgentChatSessionSummary[]>([]);
   // Indexed (grouped, keybind-enriched) command reference. Rebuilt only when the
   // user's Claude keybinding registry changes, so keybind chips reflect config.
-  const helpIndexGroups = useMemo(() => buildHelpIndex(BUILTIN_COMMANDS, keybindings), [keybindings]);
+  /**
+   * The user's bindings with plugin-declared defaults folded in underneath.
+   *
+   * The precedence and the plugin-vs-plugin arbitration are the shared matrix's
+   * (`desktop/src/shared/plugins/keybindings.ts`), not this file's, so a chord
+   * ADE Code refuses is refused in the desktop app for the same stated reason.
+   * Refusals are logged once each rather than dropped: a shortcut that silently
+   * does nothing is exactly what the matrix exists to prevent.
+   */
+  const mergedKeybindings = useMemo(
+    () => mergePluginKeybindings(pluginKeybindingRoster, keybindings),
+    [keybindings, pluginKeybindingRoster],
+  );
+  const pluginKeybindingRowsRef = useRef<ClaudeKeybinding[]>([]);
+  pluginKeybindingRowsRef.current = mergedKeybindings.pluginBindings;
+  const loggedKeybindingRefusalsRef = useRef<Set<string>>(new Set());
+  const helpIndexGroups = useMemo(
+    () => buildHelpIndex(BUILTIN_COMMANDS, keybindings, mergedKeybindings.pluginBindings),
+    [keybindings, mergedKeybindings.pluginBindings],
+  );
   const [drawerSection, setDrawerSection] = useState<"lanes" | "chats">("lanes");
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
@@ -4287,6 +4356,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     [sessions, terminalScheduledWorkById, terminalSessions],
   );
   displaySessionsRef.current = displaySessions;
+  // Contributed badges per drawer row, selected once here rather than per row:
+  // the drawer redraws on every stream frame and a row must never fetch or
+  // re-derive. Rows no plugin contributes to are absent from the map, so a
+  // machine with nothing installed builds two empty objects and stops.
+  const pluginLaneBadges = useMemo(() => {
+    const byLaneId: Record<string, PluginRowBadgeStrip> = {};
+    if (pluginContributions.lanes.identities.size === 0) return byLaneId;
+    for (const lane of lanes) {
+      const strip = pluginRowBadgeStrip(pluginContributions.lanes, tuiLaneContext(lane));
+      if (strip.cells.length > 0) byLaneId[lane.id] = strip;
+    }
+    return byLaneId;
+  }, [lanes, pluginContributions.lanes]);
+  const pluginChatBadges = useMemo(() => {
+    const bySessionId: Record<string, PluginRowBadgeStrip> = {};
+    if (pluginContributions.work.identities.size === 0) return bySessionId;
+    for (const session of displaySessions) {
+      const strip = pluginRowBadgeStrip(pluginContributions.work, tuiSessionContext(session));
+      if (strip.cells.length > 0) bySessionId[session.sessionId] = strip;
+    }
+    return bySessionId;
+  }, [displaySessions, pluginContributions.work]);
   const closedCliSessions = useMemo(
     () => deriveClosedCliSessions(terminalSessions, terminalScheduledWorkById),
     [terminalScheduledWorkById, terminalSessions],
@@ -6356,6 +6447,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       { id: noticeId(), timestamp: new Date().toISOString(), text, tone, sessionId },
     ]);
   }, []);
+
+  /**
+   * Say why a plugin's shortcut is not bound — once, in the matrix's own words.
+   *
+   * A notice rather than a console line because this is an Ink app: stdout is
+   * the render surface, so `console.warn` would corrupt the frame. The message
+   * is never composed here; the shared matrix wrote it so that the desktop and
+   * this client explain the same refusal identically.
+   */
+  useEffect(() => {
+    for (const refusal of mergedKeybindings.refusals) {
+      const id = `${refusal.pluginId}::${refusal.action}::${refusal.binding}::${refusal.reason}`;
+      if (loggedKeybindingRefusalsRef.current.has(id)) continue;
+      loggedKeybindingRefusalsRef.current.add(id);
+      addNotice(refusal.message, "info");
+    }
+  }, [addNotice, mergedKeybindings]);
 
   const runLaneSetupAfterCreate = useCallback((conn: AdeCodeConnection, lane: LaneSummary, options: { templateId?: string | null } = {}) => {
     const templateId = options.templateId?.trim() || null;
@@ -8659,6 +8767,59 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
   }, [chatRefreshPollActive, connection, diffLaneIdsKey]);
 
+  /**
+   * Plugin socket contributions for the drawer, on a calm poll.
+   *
+   * Same precedent as the plugin PANEL pane: the daemon's plugin deltas are a
+   * sync-side protocol this client does not speak, so a poll is how it stays
+   * current. Slower than the diff and PR polls on purpose — a badge changing
+   * within half a minute is fine, and the read is three RPCs plus a manifest per
+   * newly-seen plugin version. A machine with nothing enabled costs exactly one
+   * `plugin.list` and stops there.
+   */
+  useEffect(() => {
+    if (!connection) {
+      setPluginContributions(EMPTY_PLUGIN_TUI_CONTRIBUTIONS);
+      setPluginKeybindingRoster([]);
+      return;
+    }
+    let cancelled = false;
+    const refreshPluginContributions = async () => {
+      try {
+        // The roster rides this poll because keybindings change on exactly the
+        // events it already watches for: an install, an uninstall, an enable.
+        // Only what the matrix reads is kept — declarations and install time —
+        // so this holds no plugin state that could go stale in another way.
+        const roster = await listPlugins(connection, { includeDisabled: true });
+        if (!cancelled) {
+          setPluginKeybindingRoster(roster.state === "ok"
+            ? roster.plugins.map((plugin) => ({
+              pluginId: plugin.pluginId,
+              displayName: plugin.displayName,
+              enabled: plugin.enabled,
+              ...(plugin.installedAt ? { installedAt: plugin.installedAt } : {}),
+              ...(plugin.keybindings ? { keybindings: plugin.keybindings } : {}),
+            }))
+            : []);
+        }
+        const next = await loadPluginTuiContributions(connection);
+        if (!cancelled) setPluginContributions(next);
+      } catch {
+        // Contributions are decoration on rows that render perfectly well
+        // without them. Keep the previous set rather than blanking the drawer
+        // over one failed read.
+      }
+    };
+    void refreshPluginContributions();
+    const timer = setInterval(() => {
+      void refreshPluginContributions();
+    }, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [connection]);
+
   useEffect(() => {
     if (!connection) {
       setPrByLaneId({});
@@ -9855,6 +10016,163 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [addNotice, loadPluginPane, prospectiveRightPaneWidth]);
 
   /**
+   * Apply a composer edit an action asked for, or say why it was ignored.
+   *
+   * A pointer client can write into a composer that is merely on screen; this
+   * one cannot. The prompt line is shared — a plugin panel field borrows it, a
+   * form borrows it, the drawer takes focus away from it — so writing into it
+   * from a background pane would overwrite whatever the user is actually typing
+   * in. The rule is therefore the narrow one: apply when the chat composer holds
+   * focus, and otherwise say the edit was dropped rather than silently doing
+   * nothing to a button the user just pressed.
+   */
+  const applyPluginComposerEdit = useCallback((result: unknown, label: string): void => {
+    if (!hasPluginActionComposerRequest(result)) return;
+    const edit = readPluginActionComposerEdit(result);
+    if (!edit) {
+      addNotice(`${label} sent a composer edit this client could not read.`, "info");
+      return;
+    }
+    if (activePaneRef.current !== "chat") {
+      addNotice(`${label} wanted to write into the composer. Focus the chat and run it again.`, "info");
+      return;
+    }
+    if (edit.mode === "replace") {
+      setPromptValue(edit.text);
+      return;
+    }
+    const draft = promptRef.current;
+    const caret = clampPromptCursor(draft, promptCursorRef.current);
+    setPromptValue(`${draft.slice(0, caret)}${edit.text}${draft.slice(caret)}`, caret + edit.text.length);
+  }, [addNotice, setPromptValue]);
+
+  /**
+   * Run a contributed row/toolbar action and follow whatever it answers with.
+   *
+   * The same three outcomes the panel pane already handles, so a plugin's action
+   * behaves identically whether it was pressed on a row or inside a panel: a
+   * `navigate` opens that plugin's panel in this pane, a `composer` verb reaches
+   * the prompt line, and anything else is just a result the user is told ran.
+   */
+  const runPluginRowAction = useCallback(async (key: string): Promise<void> => {
+    const pane = pluginRowActionsRef.current;
+    const entry = pane?.entriesByKey.get(key);
+    if (!pane || !entry) return;
+    const conn = connectionRef.current;
+    if (!conn) {
+      addNotice("ADE runtime is still connecting.", "error");
+      return;
+    }
+    try {
+      const result = await invokePluginAction(conn, entry.pluginId, entry.actionId, {
+        context: entry.socket === "toolbar-action" ? pane.surfaceContext : pane.context,
+      });
+      addNotice(`${entry.label} ran.`, "success");
+      const navigation = readPluginActionNavigation(result);
+      if (navigation) {
+        setRightSelectionIndex(0);
+        await loadPluginPane({
+          pluginId: entry.pluginId,
+          displayName: entry.pluginName,
+          panelId: navigation.panelId,
+          context: navigation.context ?? null,
+        }, { open: true });
+        return;
+      }
+      applyPluginComposerEdit(result, entry.label);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  }, [addNotice, applyPluginComposerEdit, loadPluginPane]);
+
+  /**
+   * The TUI's row menu: what plugins contribute for the focused lane or chat,
+   * plus the surface's own contributed actions.
+   *
+   * `argument` picks the subject explicitly (`lane` / `chat`); with none, the
+   * drawer's current section decides, because that is the row the user is
+   * looking at. Both sections are reachable either way so the command works from
+   * the chat pane too, where nothing in the drawer has focus.
+   */
+  const openPluginActionsPane = useCallback((argument: string): void => {
+    const requested = argument.trim().toLowerCase();
+    const wantsChat = requested === "chat" || requested === "chats" || requested === "session"
+      || (requested === "" && drawerSection === "chats");
+    const laneId = selectedDrawerLaneId ?? drawerLaneId ?? activeLaneId;
+    const lane = laneId ? lanes.find((entry) => entry.id === laneId) ?? null : null;
+    const sessionId = selectedDrawerChatId ?? activeSessionId;
+    const session = sessionId
+      ? displaySessions.find((entry) => entry.sessionId === sessionId) ?? null
+      : null;
+
+    const target = wantsChat && session
+      ? {
+        surface: "work" as const,
+        set: pluginContributions.work,
+        context: tuiSessionContext(session) as PluginSurfaceContext,
+        entityLabel: formatSessionLabel(session),
+        surfaceLabel: "Work",
+      }
+      : lane
+        ? {
+          surface: "lanes" as const,
+          set: pluginContributions.lanes,
+          context: tuiLaneContext(lane) as PluginSurfaceContext,
+          entityLabel: formatLaneLabel(lane),
+          surfaceLabel: "Lanes",
+        }
+        : null;
+
+    if (!target) {
+      addNotice(
+        wantsChat ? "No chat is focused to run a plugin action on." : "No lane is focused to run a plugin action on.",
+        "info",
+      );
+      return;
+    }
+
+    const built = buildPluginActionsPane({
+      set: target.set,
+      surface: target.surface,
+      context: target.context,
+      entityLabel: target.entityLabel,
+      surfaceLabel: target.surfaceLabel,
+      // The pane's OWN row budget, not the pane's width: a list row is clipped
+      // to `paneWidth - 4` and carries a two-column selection prefix, so
+      // formatting against anything wider hands the clipper the tail of the
+      // plugin's name to eat.
+      width: Math.max(20, prospectiveRightPaneWidth - 6),
+    });
+    pluginRowActionsRef.current = {
+      entriesByKey: built.entriesByKey,
+      context: target.context,
+      surfaceContext: { kind: "surface", surface: target.surface },
+    };
+    // Land on the first row that actually runs something: row 0 is a heading,
+    // and opening onto it makes Enter look broken.
+    setRightSelectionIndex(Math.max(0, built.ids.findIndex((id) => id !== "")));
+    setRightPane({
+      kind: "list",
+      title: "Plugin actions",
+      rows: built.rows,
+      emptyText: built.emptyText,
+      action: { kind: "plugin-row-action", ids: built.ids },
+    });
+  }, [
+    activeLaneId,
+    activeSessionId,
+    addNotice,
+    displaySessions,
+    drawerLaneId,
+    drawerSection,
+    lanes,
+    pluginContributions,
+    prospectiveRightPaneWidth,
+    selectedDrawerChatId,
+    selectedDrawerLaneId,
+  ]);
+
+  /**
    * Run whatever the selected row is: a button or list press invokes the
    * plugin, a typed field takes over the composer, a select or toggle changes
    * in place, and a submit sends the form's values as the action's args.
@@ -9962,6 +10280,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       void applySessionSnooze(sessionId, resolved.untilIso, resolved.confirmation);
       return;
     }
+    if (actionKind === "plugin-row-action") {
+      // Heading and spacer rows carry an empty id and are not activatable.
+      if (!selectedId) return;
+      void runPluginRowAction(selectedId);
+      return;
+    }
     if (actionKind === "plugin-view") {
       if (!selectedId) return;
       // The picker row carries the plugin id; the panel it opens is resolved
@@ -10011,6 +10335,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     displaySessions,
     lanes,
     openPluginPane,
+    runPluginRowAction,
     resumeClosedTerminalSession,
     selectActiveLaneId,
     selectActiveSessionId,
@@ -10226,7 +10551,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         });
         return;
       }
-      if (name === "/plugin-view") {
+      if (name === "/plugin-view" || name === "/plugin-actions") {
         setRightPane({
           kind: "details",
           title: "Plugins",
@@ -10289,6 +10614,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     if (name === "/plugin-view") {
       await openPluginPane(args);
+      return;
+    }
+    if (name === "/plugin-actions") {
+      openPluginActionsPane(args);
       return;
     }
     if (name === "/keybindings") {
@@ -11501,7 +11830,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, applySessionSnooze, archiveChat, archiveLane, displaySessions, ensureActiveSession, focusChat, focusDetails, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openPluginPane, openSecretsPane, openSnoozeDurationPalette, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
+  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, applySessionSnooze, archiveChat, archiveLane, displaySessions, ensureActiveSession, focusChat, focusDetails, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openPluginActionsPane, openPluginPane, openSecretsPane, openSnoozeDurationPalette, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -13294,7 +13623,55 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return null;
   }, [activeLane, drawerLane, drawerOpen, highlightedDrawerLane, rightPane]);
 
-  const runKeybindingAction = useCallback((action: TuiKeybindingAction): boolean => {
+  /**
+   * Run a plugin action a keyboard shortcut fired.
+   *
+   * The three outcomes are `runPluginRowAction`'s, deliberately: a chord and a
+   * row press are the same invocation wearing different affordances, so a
+   * `navigate` opens that plugin's panel, a `composer` verb reaches the prompt
+   * line, and anything else is a result the user is told ran. A second set of
+   * rules here would mean a plugin behaves differently depending on how it was
+   * reached, which is the drift the shared dispatch contract exists to prevent.
+   */
+  const runPluginKeybindingAction = useCallback(async (pluginId: string, actionId: string): Promise<void> => {
+    const conn = connectionRef.current;
+    if (!conn) {
+      addNotice("ADE runtime is still connecting.", "error");
+      return;
+    }
+    const row = pluginKeybindingRowsRef.current
+      .find((entry) => entry.rawAction === `plugin:${pluginId}:${actionId}`);
+    const label = row?.label ?? actionId;
+    const who = row?.pluginName ?? pluginId;
+    try {
+      const result = await invokePluginAction(conn, pluginId, actionId, {});
+      addNotice(`${who} · ${label} ran.`, "success");
+      const navigation = readPluginActionNavigation(result);
+      if (navigation) {
+        setRightSelectionIndex(0);
+        await loadPluginPane({
+          pluginId,
+          displayName: who,
+          panelId: navigation.panelId,
+          context: navigation.context ?? null,
+        }, { open: true });
+        return;
+      }
+      applyPluginComposerEdit(result, label);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  }, [addNotice, applyPluginComposerEdit, loadPluginPane]);
+
+  const runKeybindingAction = useCallback((action: TuiResolvedKeybindingAction): boolean => {
+    // The parameterized plugin escape, checked before the closed union: a
+    // plugin's verbs are not knowable at build time, so `plugin:<id>:<action>`
+    // is the one action shape this chain reads apart rather than compares.
+    const pluginTarget = parsePluginKeybindingAction(action);
+    if (pluginTarget) {
+      void runPluginKeybindingAction(pluginTarget.pluginId, pluginTarget.actionId);
+      return true;
+    }
     const reportUnavailable = (label = action): true => {
       addNotice(`${label} is recognized, but there is no active ADE Code control for it right now.`, "info");
       return true;
@@ -13626,12 +14003,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const url = buildWebClientUrlForRow(row);
       if (!url) {
-        addNotice(
-          row.kind === "plugin"
-            ? "Plugin panels only open on the desktop app. Copy the ADE link instead."
-            : "Cannot build an ADE web link for the focused row.",
-          row.kind === "plugin" ? "info" : "error",
-        );
+        // The hosted client mounts plugin panels now, so a plugin row failing
+        // here means its ids did not survive the shared manifest grammar — the
+        // same reason any other row fails, and the same generic answer.
+        addNotice("Cannot build an ADE web link for the focused row.", "error");
         return true;
       }
       if (copyToClipboard(url)) {
@@ -13649,7 +14024,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return reportUnavailable();
     }
     return reportUnavailable();
-  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, clearOlderHistoryCursor, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openCommandPalette, openHistorySearch, openModelPicker, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
+  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, clearOlderHistoryCursor, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openCommandPalette, openHistorySearch, openModelPicker, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, runPluginKeybindingAction, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
 
   const chatPointFromMouse = useCallback((
     x: number | null,
@@ -14198,12 +14573,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setHelpSelectedIndex(0);
           const parsed = parseCommand(picked.name, slashCommands);
           const placement = parsed?.spec?.placement;
+          // A help row's name may carry its argument: the Plugins group lists
+          // one row per contributed chord, each named `/plugin-view <pluginId>`.
+          // Running the bare command instead dropped the id, and `/plugin-view`
+          // with no argument lists the installed plugins to pick from — so the
+          // row that named a plugin answered with a menu.
+          const pickedArgs = parsed?.args ?? "";
           if (placement === "right") {
-            void runRightCommand(parsed!.name, "")
+            void runRightCommand(parsed!.name, pickedArgs)
               .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
           } else if (placement === "inline") {
             setRightPane({ kind: "empty" });
-            void runInlineCommand(parsed!.name, "")
+            void runInlineCommand(parsed!.name, pickedArgs)
               .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
           } else {
             // chat / unknown placement: seed the prompt so the user can complete it.
@@ -14732,7 +15113,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const keybindingContext = pane === "details"
       ? rightPane.kind === "help" ? "Help" : "Select"
       : pane === "drawer" ? "Tabs" : "Chat";
-    const keybindingAction = dispatchKeybinding(keybindings, keybindingContext, input, key, keybindingDispatchStateRef.current);
+    // The merged set, not the raw file: plugin-declared defaults sit underneath
+    // the user's own bindings and lose every chord the user has claimed.
+    const keybindingAction = dispatchKeybinding(mergedKeybindings.bindings, keybindingContext, input, key, keybindingDispatchStateRef.current);
     if (keybindingAction === null) {
       return;
     }
@@ -17421,6 +17804,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               width={drawerPaneWidth}
               scrollOffsetRows={drawerScrollOffsetRows}
               closedCliExpandedLaneIds={drawerClosedCliExpandedLaneIds}
+              pluginLaneBadges={pluginLaneBadges}
+              pluginChatBadges={pluginChatBadges}
             />
           ) : null}
           <Box width={centerWidth} flexDirection="column">

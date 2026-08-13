@@ -351,9 +351,17 @@ export function pluginMarketplaceCapabilities(): PluginMarketplaceCapabilities {
     machines: typeof plugins?.presence === "function",
     // Not inferred from `install` + `presence`: see the marker's own note.
     remoteInstall: plugins?.remoteInstall === true,
+    // A real config read or write, never `invoke`. The two look
+    // interchangeable and are not: `invoke`'s `action` names a handler the
+    // PLUGIN registered, so `config.get`/`config.set` sent through it reach the
+    // plugin's own child process rather than the store the settings form edits.
+    // The desktop preload publishes `getConfig`/`setConfig`, so the difference
+    // never showed there; the hosted web client publishes `invoke` alone, and
+    // with `invoke` counted here it would offer a settings form whose writes
+    // land somewhere else entirely — or throw, on the overwhelmingly common
+    // plugin that registers no handler by that name.
     config: typeof plugins?.getConfig === "function"
-      || typeof plugins?.get === "function"
-      || typeof plugins?.invoke === "function",
+      || typeof plugins?.get === "function",
     contributions: typeof plugins?.setContributionEnabled === "function",
     usage: typeof plugins?.usageSummary === "function",
     inspect: typeof plugins?.inspectSource === "function",

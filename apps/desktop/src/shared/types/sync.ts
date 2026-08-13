@@ -928,6 +928,30 @@ export type SyncPluginCollectionRow = {
   updatedAt: string;
 };
 
+/**
+ * One `plugin_contributions` row, host-joined and ready to render.
+ *
+ * `surface` and `socketId` are NOT columns of the table — the table stores a
+ * socket kind, and which surface that kind renders on is per-plugin manifest
+ * detail. The host resolves both against the manifest before sending, which is
+ * what lets a peer with no access to that manifest place the row at all.
+ *
+ * `payload` is plugin-authored and stays `unknown`: the renderer validates it
+ * per socket kind, and a wire type that claimed a shape here would be claiming
+ * one for content nobody has checked yet. Null where the stored JSON would not
+ * parse — one unreadable row rather than a lost surface.
+ */
+export type SyncPluginContributionRow = {
+  entityKind: string;
+  entityId: string;
+  pluginId: string;
+  socket: string;
+  surface: string;
+  socketId: string;
+  payload: unknown;
+  updatedAt: string | null;
+};
+
 export type SyncPluginPanelDescriptor = {
   pluginId: string;
   panelId: string;
@@ -2098,6 +2122,10 @@ export type SyncRemoteCommandAction =
   // registration without a union member compiles only until something reads the
   // union, so it belongs here beside the rest.
   | "plugins.invoke"
+  // Host-joined `plugin_contributions` rows for one surface. PROJECT-scoped,
+  // unlike its siblings here, because the table is per project — see the
+  // registration for why that is correctness rather than preference.
+  | "plugins.contributions"
   | "plugins.presenceList"
   | "plugins.presenceSync"
   // Read-only account-wide coverage matrix. Read-only is why it is

@@ -30,10 +30,15 @@ import {
   PLUGIN_SOCKET_KINDS,
   PLUGIN_SOCKET_REQUIREMENTS,
   PLUGIN_SURFACE_IDS,
+  isPluginDialogKind,
+  normalizePluginSlashCommand,
+  type PluginDialogKind,
+  type PluginSocketExtraField,
   type PluginSocketKind,
   type PluginSocketRequirementField,
   type PluginSurfaceId,
 } from "./sockets";
+import { isValidPluginKeybinding } from "./keybindings";
 import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
 
 /**
@@ -221,6 +226,28 @@ export type PluginManifestSocket = {
   extensions?: string[];
   /** `filter-chip` only. */
   filterKey?: string;
+  /**
+   * `slash-command` only: the command word, without the slash.
+   *
+   * One of the {@link PluginSocketExtraField}s — a field only one kind means
+   * anything by, listed in that kind's `manifestExtra` rather than in the four
+   * `manifest` fields every entry is read for.
+   */
+  command?: string;
+  /** `dialog-section` only: which dialog the section mounts on. */
+  dialog?: PluginDialogKind;
+  /**
+   * `slash-command` only: the one line the command menu shows.
+   *
+   * Not a `manifestExtra`, deliberately — the three fields below are all
+   * OPTIONAL, and dropping a whole contribution over a missing menu subtitle
+   * would be the opposite of what the requirement table is for.
+   */
+  description?: string;
+  /** `slash-command` only: what the command takes — `<issue-id>`, `[branch]`. */
+  argumentHint?: string;
+  /** `settings-section` only: which settings page hosts the section. */
+  section?: string;
 };
 
 export type PluginSettingKind = "text" | "secret" | "select" | "toggle" | "number";
@@ -241,12 +268,127 @@ export type PluginManifestCollection = {
   sync: boolean;
 };
 
+/**
+ * The JSON-Schema subset a plugin may use to describe a tool's arguments.
+ *
+ * Deliberately a closed union rather than "any JSON Schema". The declaration
+ * travels through four different runtime transports, each of which needs a
+ * different projection of it — a Zod object with a readable `.shape` (Droid and
+ * the HTTP MCP lease), a Zod schema Claude's SDK can validate against, and a
+ * JSON Schema regenerated from that Zod (Codex). A closed union makes the
+ * conversion total: every declared property has exactly one Zod spelling, so no
+ * runtime ever receives a schema the others silently dropped a constraint from.
+ *
+ * Anything richer — `oneOf`, `$ref`, `pattern`, tuple `items` — is refused at
+ * parse time rather than accepted and quietly ignored by three of the four.
+ */
+export type PluginManifestToolInputNode =
+  | { type: "string"; description?: string; enum?: string[] }
+  | { type: "number" | "integer"; description?: string }
+  | { type: "boolean"; description?: string }
+  | { type: "array"; description?: string; items: PluginManifestToolInputNode }
+  | { type: "object"; description?: string; properties: Record<string, PluginManifestToolInputNode>; required: string[] };
+
+export type PluginManifestToolInput = {
+  type: "object";
+  properties: Record<string, PluginManifestToolInputNode>;
+  required: string[];
+};
+
+/**
+ * A tool the coding agent can call, served by this plugin.
+ *
+ * Declared in the manifest rather than registered by the running child on
+ * purpose. Tool sets are built SYNCHRONOUSLY at session start — Claude bakes its
+ * MCP servers into the query options once, at creation — so a list the child
+ * publishes after it boots would be empty on every cold session and could never
+ * appear on Claude at all without restarting the chat. The manifest is readable
+ * off the install registry with no child running, which also means the tool list
+ * follows install state exactly: disable a plugin and its tools are gone from
+ * the next listing.
+ */
+export type PluginManifestTool = {
+  /** Tool word. An agent sees `plugin__<pluginId>__<name>`. */
+  name: string;
+  description: string;
+  input: PluginManifestToolInput;
+  /** The plugin handler `plugin.invoke` calls. Defaults to `name`. */
+  action: string;
+};
+
 export type PluginManifestTheme = {
   tokens: {
     dark?: Record<string, string>;
     light?: Record<string, string>;
   };
 };
+
+// ---------------------------------------------------------------------------
+// Engine registrations: automations, search, keybindings
+//
+// Four declarations that are not placements. A socket says "draw me here"; each
+// of these says "when X happens, ask me" — an automation trigger the rule
+// builder can fire on, a step a rule can run, a provider universal search may
+// query, a chord that invokes an action. They are declared in the manifest
+// rather than registered by the running child for the reason `tools` gives at
+// length: the rule builder, the shortcut listing and the search palette all
+// have to describe a plugin that is installed but not currently running, and a
+// list the child publishes at boot is empty exactly when the user is looking.
+// It also makes uninstall a non-event — the declaration leaves with the
+// install record, so nothing has to be swept.
+// ---------------------------------------------------------------------------
+
+/**
+ * A trigger kind this plugin can fire, offered in the automations rule builder.
+ *
+ * The plugin does not describe *when* it fires; it fires it, through
+ * `ade.automations.emitTrigger`. What the manifest supplies is the vocabulary
+ * the builder needs to let a user pick it before the plugin has ever fired.
+ */
+export type PluginManifestAutomationTrigger = {
+  /** Stable id. Rules store it, so renaming one orphans every rule using it. */
+  id: string;
+  label: string;
+  description?: string;
+};
+
+/** A step a rule may run, invoking one of this plugin's actions. */
+export type PluginManifestAutomationStep = {
+  id: string;
+  label: string;
+  description?: string;
+  /** The plugin handler `plugin.invoke` calls. Defaults to `id`. */
+  action: string;
+};
+
+/**
+ * A provider universal search may query live.
+ *
+ * Live rather than indexed, deliberately. A plugin's results are whatever its
+ * own store says right now — an issue tracker's search is a network call, not a
+ * copy — and an FTS row ADE wrote at install time would be stale in a way the
+ * user reads as a bug. The cost of that choice is a latency budget, which is
+ * why the query path drops a slow provider instead of waiting for it.
+ */
+export type PluginManifestSearchProvider = {
+  id: string;
+  /** Section heading for this provider's results. */
+  label: string;
+  /** The plugin handler `plugin.invoke` calls with `{ query }`. Defaults to `id`. */
+  action: string;
+};
+
+/** A keyboard shortcut invoking one of this plugin's actions. */
+export type PluginManifestKeybinding = {
+  /** The plugin handler `plugin.invoke` calls. */
+  action: string;
+  /** One chord, e.g. `"Mod+Shift+P"`. See `shared/plugins/keybindings.ts`. */
+  binding: string;
+  /** What the shortcut does, for the listing that shows it. */
+  label: string;
+};
+
+// --------------------------- end engine registrations ----------------------
 
 export type PluginManifest = {
   name: string;
@@ -268,6 +410,16 @@ export type PluginManifest = {
   cli: string[];
   /** Relative paths to agent-skill directories this plugin contributes. */
   skills: string[];
+  /** Tools the coding agent can call, proxied to `plugin.invoke`. */
+  tools: PluginManifestTool[];
+  /** Trigger kinds the automations rule builder offers, fired by this plugin. */
+  automationTriggers: PluginManifestAutomationTrigger[];
+  /** Steps an automation rule may run against this plugin. */
+  automationSteps: PluginManifestAutomationStep[];
+  /** Providers universal search queries live. */
+  searchProviders: PluginManifestSearchProvider[];
+  /** Keyboard shortcuts invoking this plugin's actions. */
+  keybindings: PluginManifestKeybinding[];
   theme?: PluginManifestTheme;
   official: boolean;
 };
@@ -312,6 +464,51 @@ function parseIdentifier(value: unknown): string | null {
   const text = trimmedString(value);
   if (!text || text.length > 64) return null;
   return PLUGIN_IDENTIFIER_PATTERN.test(text) ? text : null;
+}
+
+/**
+ * Ceilings for the two free-text identity fields every surface renders.
+ *
+ * These are the only strings a third party writes that reach a native
+ * notification, a marketplace card, an agent tool description and the shortcut
+ * list, so they are bounded here rather than at each of those call sites — the
+ * desktop notification bridge already clamps its own copy to 48 characters, and
+ * a value that survives the manifest untouched simply arrives at the next
+ * renderer unclamped instead.
+ */
+export const PLUGIN_DISPLAY_NAME_MAX = 64;
+export const PLUGIN_DESCRIPTION_MAX = 512;
+
+/** The same ceilings for a single engine registration's own label and blurb. */
+export const PLUGIN_DECLARATION_LABEL_MAX = 120;
+export const PLUGIN_DECLARATION_DESCRIPTION_MAX = 240;
+
+/**
+ * The most entries this parser will look at in any one manifest array.
+ *
+ * Per-field maxima live in {@link limitDeclarations}, which reports one warning
+ * per over-cap entry — correct for a manifest that declares nine sockets where
+ * eight are allowed, and a 25× byte amplification for one that declares a
+ * hundred thousand. This ceiling is refused once, before the per-entry loop.
+ */
+const PLUGIN_MANIFEST_ARRAY_MAX = 512;
+
+/**
+ * Trimmed, whitespace-collapsed and cut to `max` — shortened rather than
+ * refused, because a plugin whose name is one character too long should still
+ * install with a clipped name rather than fall back to its bare id.
+ *
+ * The newline collapse is the load-bearing half. `displayName` is interpolated
+ * into every agent tool description this plugin contributes ("provided by the
+ * X plugin"), which is model-visible text in the system prompt of every session
+ * on the machine; a multi-line value there reads to the model as structure the
+ * plugin did not earn.
+ */
+function singleLine(value: unknown, max: number): string | null {
+  const text = trimmedString(value);
+  if (text === null) return null;
+  const collapsed = text.replace(/\s+/gu, " ");
+  return collapsed.length <= max ? collapsed : collapsed.slice(0, max);
 }
 
 /**
@@ -482,6 +679,16 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       return ctx.drop(`${label}.extensions must be an array of ".ext" strings`);
     }
     const declaredLabel = trimmedString(entry.label);
+    // Read for every entry, meaningful to one kind each. A malformed value is
+    // dropped to null here and then refused below by the same requirement loop
+    // the four core fields go through, so `command: "Fix It!"` fails with the
+    // kind named rather than installing as a socket with no command.
+    const command = entry.command === undefined ? null : normalizePluginSlashCommand(entry.command);
+    if (entry.command !== undefined && !command) {
+      return ctx.drop(`${label}.command must be a lowercase word like "fix" or "run-tests"`);
+    }
+    const dialog = entry.dialog === undefined ? null : isPluginDialogKind(entry.dialog) ? entry.dialog : null;
+    if (entry.dialog !== undefined && !dialog) return ctx.drop(`${label}.dialog is not a known dialog`);
     // A socket that renders nothing and invokes nothing is a manifest typo, not
     // a contribution. Refusing it here is what keeps empty rows off the surface.
     // The requirement table is shared with the payload validator and the
@@ -493,8 +700,18 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       panelId: panelId !== null,
       extensions: Boolean(extensions && extensions.length > 0),
     };
+    // Held apart from the four above because they mean nothing to any other
+    // kind — see PluginSocketExtraField. Enforced by the same rule, though: a
+    // `slash-command` with no `command` is as empty as a badge with no label.
+    const presentExtra: Record<PluginSocketExtraField, boolean> = {
+      command: command !== null,
+      dialog: dialog !== null,
+    };
     for (const field of PLUGIN_SOCKET_REQUIREMENTS[socket].manifest) {
       if (!present[field]) return ctx.drop(`${label} requires ${field} for socket "${socket}"`);
+    }
+    for (const field of PLUGIN_SOCKET_REQUIREMENTS[socket].manifestExtra ?? []) {
+      if (!presentExtra[field]) return ctx.drop(`${label} requires ${field} for socket "${socket}"`);
     }
     return {
       socket,
@@ -507,6 +724,11 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       ...(actionId ? { actionId } : {}),
       ...(extensions && extensions.length ? { extensions } : {}),
       ...(trimmedString(entry.filterKey) ? { filterKey: trimmedString(entry.filterKey)! } : {}),
+      ...(command ? { command } : {}),
+      ...(dialog ? { dialog } : {}),
+      ...(trimmedString(entry.description) ? { description: trimmedString(entry.description)! } : {}),
+      ...(trimmedString(entry.argumentHint) ? { argumentHint: trimmedString(entry.argumentHint)! } : {}),
+      ...(trimmedString(entry.section) ? { section: trimmedString(entry.section)! } : {}),
     };
   });
 }
@@ -545,6 +767,327 @@ function parseSettings(raw: unknown, ctx: ParseContext): PluginManifestSetting[]
       ...(defaultValue !== null ? { default: defaultValue } : {}),
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Engine registrations: parsing
+//
+// One shape for all four — `{ id, label, action? }` with a per-plugin ceiling
+// and a duplicate sweep — because they are the same kind of promise and a user
+// reading a manifest should not have to learn four spellings of it.
+// ---------------------------------------------------------------------------
+
+/** Eight distinct things worth automating is already a large plugin. */
+const PLUGIN_AUTOMATION_TRIGGERS_PER_PLUGIN = 8;
+const PLUGIN_AUTOMATION_STEPS_PER_PLUGIN = 12;
+
+/**
+ * Search providers are capped hard because every one of them is a live invoke
+ * on a debounced keystroke: the palette's whole latency budget is shared
+ * between them, so a plugin with six providers is a plugin that makes search
+ * feel broken. A plugin that needs to search several things searches them
+ * inside one provider, where it — not the palette — pays for the fan-out.
+ */
+const PLUGIN_SEARCH_PROVIDERS_PER_PLUGIN = 2;
+
+/**
+ * Chords are a scarce shared resource in a way panels are not: there is exactly
+ * one keyboard, every plugin wants the memorable half of it, and the user
+ * cannot see who took what until they press it.
+ */
+const PLUGIN_KEYBINDINGS_PER_PLUGIN = 6;
+
+/**
+ * Drop entries past a per-plugin ceiling, and entries whose key repeats.
+ *
+ * Both refusals are warnings rather than errors: a plugin that declares one
+ * trigger too many is still a working plugin, and refusing to install it would
+ * turn a manifest typo into a dead marketplace listing.
+ */
+function limitDeclarations<T>(
+  entries: T[],
+  field: string,
+  max: number,
+  keyOf: (entry: T) => string,
+  ctx: ParseContext,
+): T[] {
+  const unique: T[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const key = keyOf(entry);
+    if (seen.has(key)) {
+      ctx.drop(`${field} declares "${key}" more than once`);
+      continue;
+    }
+    if (unique.length >= max) {
+      ctx.drop(`${field} declares more than ${max} entries`);
+      continue;
+    }
+    seen.add(key);
+    unique.push(entry);
+  }
+  return unique;
+}
+
+/** `{ id, label, description?, action? }`, shared by three of the four. */
+function parseLabelledDeclarations(
+  raw: unknown,
+  field: string,
+  ctx: ParseContext,
+  options: { action: boolean },
+): { id: string; label: string; description?: string; action: string }[] {
+  return parseArray(raw, field, ctx, (entry, label) => {
+    if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
+    const id = parseIdentifier(entry.id);
+    if (!id) return ctx.drop(`${label}.id is missing or not an identifier`);
+    // Bounded, unlike the socket labels beside them: these two strings have no
+    // payload parser downstream to clamp them, so they reach the automation
+    // rule-builder pickers and the shortcut list exactly as written. They were
+    // the last unbounded free text on the manifest.
+    const entryLabel = singleLine(entry.label, PLUGIN_DECLARATION_LABEL_MAX);
+    if (!entryLabel) return ctx.drop(`${label}.label is required`);
+    // `action` defaults to `id` so the common case — one handler per
+    // declaration, named after it — needs no second field.
+    const action = options.action ? (parseIdentifier(entry.action) ?? id) : id;
+    if (options.action && entry.action !== undefined && !parseIdentifier(entry.action)) {
+      return ctx.drop(`${label}.action is not an identifier`);
+    }
+    const entryDescription = singleLine(entry.description, PLUGIN_DECLARATION_DESCRIPTION_MAX);
+    return {
+      id,
+      label: entryLabel,
+      ...(entryDescription ? { description: entryDescription } : {}),
+      action,
+    };
+  });
+}
+
+function parseAutomationTriggers(raw: unknown, ctx: ParseContext): PluginManifestAutomationTrigger[] {
+  const entries = parseLabelledDeclarations(raw, "automationTriggers", ctx, { action: false })
+    .map(({ id, label, description }) => ({ id, label, ...(description ? { description } : {}) }));
+  return limitDeclarations(entries, "automationTriggers", PLUGIN_AUTOMATION_TRIGGERS_PER_PLUGIN, (e) => e.id, ctx);
+}
+
+function parseAutomationSteps(raw: unknown, ctx: ParseContext): PluginManifestAutomationStep[] {
+  const entries = parseLabelledDeclarations(raw, "automationSteps", ctx, { action: true });
+  return limitDeclarations(entries, "automationSteps", PLUGIN_AUTOMATION_STEPS_PER_PLUGIN, (e) => e.id, ctx);
+}
+
+function parseSearchProviders(raw: unknown, ctx: ParseContext): PluginManifestSearchProvider[] {
+  const entries = parseLabelledDeclarations(raw, "searchProviders", ctx, { action: true })
+    .map(({ id, label, action }) => ({ id, label, action }));
+  return limitDeclarations(entries, "searchProviders", PLUGIN_SEARCH_PROVIDERS_PER_PLUGIN, (e) => e.id, ctx);
+}
+
+function parseKeybindings(raw: unknown, ctx: ParseContext): PluginManifestKeybinding[] {
+  const entries = parseArray(raw, "keybindings", ctx, (entry, label) => {
+    if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
+    const action = parseIdentifier(entry.action);
+    if (!action) return ctx.drop(`${label}.action is missing or not an identifier`);
+    const binding = trimmedString(entry.binding);
+    if (!binding) return ctx.drop(`${label}.binding is required`);
+    // Policy lives in one place for both clients; the manifest only asks.
+    if (!isValidPluginKeybinding(binding)) {
+      return ctx.drop(`${label}.binding "${binding}" is not a shortcut a plugin can bind`);
+    }
+    const entryLabel = singleLine(entry.label, PLUGIN_DECLARATION_LABEL_MAX);
+    if (!entryLabel) return ctx.drop(`${label}.label is required`);
+    return { action, binding, label: entryLabel };
+  });
+  // Keyed by action, not by chord: two chords for one action is the mistake
+  // worth naming, while two actions colliding on a chord is the *matrix's*
+  // call and depends on what else is installed.
+  return limitDeclarations(entries, "keybindings", PLUGIN_KEYBINDINGS_PER_PLUGIN, (e) => e.action, ctx);
+}
+
+// ------------------------ end engine registrations -------------------------
+
+/**
+ * Ceilings on a tool declaration. A tool schema is prompt text: every property
+ * name, description and enum value is rendered into the system prompt of every
+ * session the plugin is enabled in, on every runtime. Unlike a panel (which the
+ * user opens) an agent tool is always loaded, so the budget is tighter than the
+ * 64 KiB panels get.
+ */
+const PLUGIN_TOOLS_PER_PLUGIN = 24;
+const PLUGIN_TOOL_PROPERTIES_PER_OBJECT = 32;
+const PLUGIN_TOOL_INPUT_MAX_DEPTH = 4;
+const PLUGIN_TOOL_ENUM_MAX = 32;
+const PLUGIN_TOOL_TEXT_MAX = 512;
+
+function parseToolText(value: unknown): string | null {
+  const text = trimmedString(value);
+  if (!text || text.length > PLUGIN_TOOL_TEXT_MAX) return null;
+  return text;
+}
+
+/**
+ * A tool's WORD is stricter than the manifest's general identifier rule, and
+ * both halves of the difference are load-bearing.
+ *
+ * The identifier pattern admits `.`, which every provider that receives these
+ * names rejects: Anthropic and OpenAI both constrain a tool name to
+ * `[A-Za-z0-9_-]`. A dotted name parses clean here, installs clean, and then
+ * makes EVERY turn in EVERY Claude and Codex chat on the machine fail with an
+ * opaque provider 400 — because the tool is baked into the session's MCP server
+ * at query creation, not at call time, so nothing points back at the plugin.
+ *
+ * The length ceiling is the same failure by a different route. The name an
+ * agent sees is `mcp__ade-plugins__plugin__<pluginId>__<toolName>`: 18 + 8 + 2
+ * characters of fixed scaffolding around a plugin id of up to 64, which leaves
+ * 36 before Anthropic's 128-character ceiling. 32 keeps the worst case inside
+ * it with room for the separator conventions to change.
+ */
+const PLUGIN_TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const PLUGIN_TOOL_NAME_MAX = 32;
+
+function parseToolName(value: unknown): string | null {
+  const text = trimmedString(value);
+  if (!text || text.length > PLUGIN_TOOL_NAME_MAX) return null;
+  return PLUGIN_TOOL_NAME_PATTERN.test(text) ? text : null;
+}
+
+/**
+ * One node of the input schema. Returns null on anything outside the supported
+ * subset, and the caller drops the whole tool rather than the one property: a
+ * tool whose arguments are half-described is worse than a tool that is absent,
+ * because the agent will call it and the plugin will receive nonsense.
+ */
+function parseToolInputNode(
+  raw: unknown,
+  label: string,
+  depth: number,
+  ctx: ParseContext,
+): PluginManifestToolInputNode | null {
+  if (depth > PLUGIN_TOOL_INPUT_MAX_DEPTH) {
+    return ctx.drop(`${label} nests deeper than ${PLUGIN_TOOL_INPUT_MAX_DEPTH} levels`);
+  }
+  if (!isRecord(raw)) return ctx.drop(`${label} is not a JSON Schema object`);
+  const description = raw.description === undefined ? null : parseToolText(raw.description);
+  if (raw.description !== undefined && !description) {
+    return ctx.drop(`${label}.description must be a string of ${PLUGIN_TOOL_TEXT_MAX} characters or fewer`);
+  }
+  const described = description ? { description } : {};
+  switch (raw.type) {
+    case "string": {
+      if (raw.enum === undefined) return { type: "string", ...described };
+      if (!Array.isArray(raw.enum) || !raw.enum.length || raw.enum.length > PLUGIN_TOOL_ENUM_MAX) {
+        return ctx.drop(`${label}.enum must be 1 to ${PLUGIN_TOOL_ENUM_MAX} strings`);
+      }
+      const values: string[] = [];
+      for (const candidate of raw.enum) {
+        const value = parseToolText(candidate);
+        if (!value) return ctx.drop(`${label}.enum holds a value that is not a short string`);
+        values.push(value);
+      }
+      return { type: "string", ...described, enum: values };
+    }
+    case "number":
+    case "integer":
+      return { type: raw.type, ...described };
+    case "boolean":
+      return { type: "boolean", ...described };
+    case "array": {
+      const items = parseToolInputNode(raw.items, `${label}.items`, depth + 1, ctx);
+      if (!items) return null;
+      return { type: "array", ...described, items };
+    }
+    case "object": {
+      const parsed = parseToolInputObject(raw, label, depth, ctx);
+      if (!parsed) return null;
+      return { type: "object", ...described, properties: parsed.properties, required: parsed.required };
+    }
+    default:
+      return ctx.drop(`${label}.type must be string, number, integer, boolean, array or object`);
+  }
+}
+
+function parseToolInputObject(
+  raw: Record<string, unknown>,
+  label: string,
+  depth: number,
+  ctx: ParseContext,
+): { properties: Record<string, PluginManifestToolInputNode>; required: string[] } | null {
+  const rawProperties = raw.properties === undefined ? {} : raw.properties;
+  if (!isRecord(rawProperties)) return ctx.drop(`${label}.properties must be an object`);
+  const names = Object.keys(rawProperties);
+  if (names.length > PLUGIN_TOOL_PROPERTIES_PER_OBJECT) {
+    return ctx.drop(`${label}.properties declares more than ${PLUGIN_TOOL_PROPERTIES_PER_OBJECT} properties`);
+  }
+  const properties: Record<string, PluginManifestToolInputNode> = {};
+  for (const name of names) {
+    // Property names reach a Zod object key and a JSON Schema key, and the
+    // agent has to type them back verbatim. Same identifier rule the rest of
+    // the manifest uses, so there is one answer to "what may this be called".
+    if (!parseIdentifier(name)) return ctx.drop(`${label}.properties has a key that is not an identifier: ${name}`);
+    const node = parseToolInputNode(rawProperties[name], `${label}.properties.${name}`, depth + 1, ctx);
+    if (!node) return null;
+    properties[name] = node;
+  }
+  const rawRequired = raw.required === undefined ? [] : raw.required;
+  if (!Array.isArray(rawRequired)) return ctx.drop(`${label}.required must be an array`);
+  const required: string[] = [];
+  for (const candidate of rawRequired) {
+    const name = trimmedString(candidate);
+    // A required name with no property is a typo that would make the tool
+    // uncallable — every invocation would fail validation on a key the agent
+    // was never told about.
+    //
+    // `hasOwnProperty`, not `in`: `properties` is a plain object literal, so
+    // `in` also answers true for every `Object.prototype` member and lets
+    // `required: ["toString"]` past the guard this line exists to be.
+    if (!name || !Object.prototype.hasOwnProperty.call(properties, name)) {
+      return ctx.drop(`${label}.required names an undeclared property`);
+    }
+    if (!required.includes(name)) required.push(name);
+  }
+  return { properties, required };
+}
+
+function parseTools(raw: unknown, ctx: ParseContext): PluginManifestTool[] {
+  const parsed = parseArray(raw, "tools", ctx, (entry, label) => {
+    if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
+    const name = parseToolName(entry.name);
+    if (!name) {
+      return ctx.drop(
+        `${label}.name must be ${PLUGIN_TOOL_NAME_MAX} characters or fewer of letters, digits, "_" or "-"`,
+      );
+    }
+    // Not optional and not defaulted: the description IS the tool's interface.
+    // A nameless verb with no sentence is a tool the agent calls at random.
+    const description = parseToolText(entry.description);
+    if (!description) {
+      return ctx.drop(`${label}.description is required and must be ${PLUGIN_TOOL_TEXT_MAX} characters or fewer`);
+    }
+    if (!isRecord(entry.input) || entry.input.type !== "object") {
+      return ctx.drop(`${label}.input must be a JSON Schema object node`);
+    }
+    const input = parseToolInputObject(entry.input, `${label}.input`, 1, ctx);
+    if (!input) return null;
+    const action = entry.action === undefined ? name : parseIdentifier(entry.action);
+    if (!action) return ctx.drop(`${label}.action is not an identifier`);
+    return {
+      name,
+      description,
+      input: { type: "object" as const, properties: input.properties, required: input.required },
+      action,
+    };
+  });
+  const unique: PluginManifestTool[] = [];
+  for (const tool of parsed) {
+    // Two tools with one name would collide on the qualified MCP name, and
+    // whichever the map built last would silently win.
+    if (unique.some((existing) => existing.name === tool.name)) {
+      ctx.drop(`tools declares "${tool.name}" more than once`);
+      continue;
+    }
+    if (unique.length >= PLUGIN_TOOLS_PER_PLUGIN) {
+      ctx.drop(`tools declares more than ${PLUGIN_TOOLS_PER_PLUGIN} tools`);
+      continue;
+    }
+    unique.push(tool);
+  }
+  return unique;
 }
 
 function parseCollections(raw: unknown, ctx: ParseContext): Record<string, PluginManifestCollection> {
@@ -636,6 +1179,10 @@ function parseArray<T>(
     ctx.errors.push(`${field} must be an array`);
     return [];
   }
+  if (raw.length > PLUGIN_MANIFEST_ARRAY_MAX) {
+    ctx.errors.push(`${field} has more than ${PLUGIN_MANIFEST_ARRAY_MAX} entries`);
+    return [];
+  }
   const parsed: T[] = [];
   raw.forEach((entry, index) => {
     const value = parseEntry(entry, `${field}[${index}]`);
@@ -713,6 +1260,11 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const theme = parseTheme(raw.theme, ctx);
   const cli = parseStringList(raw.cli, "cli", ctx, (value) => /^[a-z][a-z0-9-]{0,31}$/.test(value));
   const skills = parseStringList(raw.skills, "skills", ctx, isSafePluginRelativePath);
+  const tools = parseTools(raw.tools, ctx);
+  const automationTriggers = parseAutomationTriggers(raw.automationTriggers, ctx);
+  const automationSteps = parseAutomationSteps(raw.automationSteps, ctx);
+  const searchProviders = parseSearchProviders(raw.searchProviders, ctx);
+  const keybindings = parseKeybindings(raw.keybindings, ctx);
 
   // Identity must be VALID here, not merely present: `manifest.name` is joined
   // into a filesystem path and a secret namespace, so a caller that ignores
@@ -721,8 +1273,8 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
     return { manifest: null, errors, warnings };
   }
 
-  const displayName = trimmedString(raw.displayName) ?? name;
-  const description = trimmedString(raw.description) ?? "";
+  const displayName = singleLine(raw.displayName, PLUGIN_DISPLAY_NAME_MAX) ?? name;
+  const description = singleLine(raw.description, PLUGIN_DESCRIPTION_MAX) ?? "";
 
   return {
     manifest: {
@@ -742,6 +1294,11 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
       settings,
       cli,
       skills,
+      tools,
+      automationTriggers,
+      automationSteps,
+      searchProviders,
+      keybindings,
       ...(theme ? { theme } : {}),
       official,
     },

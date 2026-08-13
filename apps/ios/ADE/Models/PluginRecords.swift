@@ -159,23 +159,75 @@ struct PluginCollectionEntry: Equatable, Identifiable {
 
 // MARK: - Sockets
 
+/// The core surfaces a contribution can be placed on. Mirrors
+/// `PLUGIN_SURFACE_IDS` in `sockets.ts`.
+///
+/// The phone draws five of the eight. `automations`, `cto` and `settings` are
+/// listed because the list is closed and shared — a surface id here that iOS has
+/// no screen for simply never gets asked for its contributions.
+///
+/// `app` is the window itself rather than a tab: the palette and the activity
+/// pane belong to no list, so a contribution for one is keyed by `surface` and
+/// nothing narrower. On the phone that means the Activity drawer.
+enum PluginSurfaceId: String, CaseIterable, Equatable {
+  case work
+  case lanes
+  case files
+  case prs
+  case automations
+  case cto
+  case app
+  case settings
+}
+
 /// Where a plugin is allowed to appear on a core surface.
 ///
-/// The taxonomy is closed on the wire (seven kinds), but this build renders two
-/// of them. The rest decode to ``unsupported`` rather than being dropped, so a
-/// later iOS release adds a rendering arm without any change to what the host
-/// writes.
+/// Ten of the wire's sixteen kinds decode here — every kind the phone has an
+/// honest host for. The rest map to ``unsupported``, which drops the row rather
+/// than failing the read, and that is what lets a kind ship on desktop first.
+///
+/// **What the phone can see is narrower than what desktop can see, and the
+/// reason is the data path, not the taxonomy.** Desktop reads two sources — a
+/// plugin's MANIFEST (its static declarations) and the `plugin_contributions`
+/// rows it publishes per entity. iOS has only the second: manifests never
+/// replicate, and no `plugins.*` command hands one to a phone. So a
+/// contribution reaches this app exactly when the plugin *published* it, and a
+/// manifest-only declaration is invisible here by construction.
+///
+/// That has one consequence worth stating in the type: the surface-scoped kinds
+/// (`toolbar-action`, `empty-state`, `filter-chip`, `activity-entry`) and
+/// `file-viewer` reach iOS through rows keyed to ``PluginEntityKind/surface``,
+/// with the entity id being the surface's own id — see
+/// ``PluginContributionIndex``.
 enum PluginSocketKind: Equatable {
+  case toolbarAction
   case rowBadge
   case rowMenuItem
-  /// A kind the wire defines and this build does not draw — toolbar actions,
-  /// detail sections, empty states, filter chips, file viewers.
+  case detailSection
+  case emptyState
+  case filterChip
+  case fileViewer
+  case composerAction
+  case chatCard
+  case activityEntry
+  /// A kind the wire defines and this build does not draw — slash commands,
+  /// palette actions, settings sections, rail panes, drawer tabs and dialog
+  /// sections, none of which the phone has a host for. Their rows decode to
+  /// nothing rather than half a control.
   case unsupported(String)
 
   init(rawValue: String) {
     switch rawValue {
+    case "toolbar-action": self = .toolbarAction
     case "row-badge": self = .rowBadge
     case "row-menu-item": self = .rowMenuItem
+    case "detail-section": self = .detailSection
+    case "empty-state": self = .emptyState
+    case "filter-chip": self = .filterChip
+    case "file-viewer": self = .fileViewer
+    case "composer-action": self = .composerAction
+    case "chat-card": self = .chatCard
+    case "activity-entry": self = .activityEntry
     default: self = .unsupported(rawValue)
     }
   }
@@ -205,16 +257,119 @@ struct PluginRowMenuItemPayload: Equatable {
   var actionId: String
 }
 
+/// A button on a surface's toolbar, or in the chat composer's accessory row.
+///
+/// One struct for two socket kinds, matching the shared arm in
+/// `parsePluginContributionPayload` — the payloads are identical and only the
+/// CONTEXT differs (a surface or a row, versus the live composer and its unsent
+/// draft). Splitting the payload would mean two identical parsers free to drift.
+struct PluginActionButtonPayload: Equatable {
+  var label: String
+  var icon: String?
+  var actionId: String
+  var disabled: Bool
+}
+
+/// A plugin's vocabulary panel, rendered inside a detail screen after the
+/// product's own sections.
+struct PluginDetailSectionPayload: Equatable {
+  var panelId: String
+  var title: String?
+}
+
+/// What a plugin adds UNDER a surface's own empty state — never instead of it.
+/// An empty Lanes tab still means "you have no lanes".
+struct PluginEmptyStatePayload: Equatable {
+  var title: String
+  var body: String?
+  var actionId: String?
+  var actionLabel: String?
+}
+
+/// A filter chip on a list.
+///
+/// `filterKey` is what makes the chip filter rather than merely select: the
+/// plugin tags the entities that belong to the chip by putting the same key on
+/// the contributions it publishes for them, and the list keeps a row when any
+/// selected key matches. A chip whose key no row carries selects nothing, which
+/// is the honest outcome of a plugin that declared a chip and published no tags.
+struct PluginFilterChipPayload: Equatable {
+  var label: String
+  var filterKey: String
+  var count: Int?
+}
+
+/// A plugin panel offered as the viewer for a file.
+///
+/// `extensions` are lowercased and dot-prefixed, matching the host's
+/// normalization, so a registration for `[".parquet"]` and a file named
+/// `Part.PARQUET` meet in the middle.
+struct PluginFileViewerPayload: Equatable {
+  var panelId: String
+  var extensions: [String]
+}
+
+/// A plugin's panel, drawn inside a transcript card.
+///
+/// This payload is a DECLARATION, not a placement. The card itself arrives as
+/// an ordinary `ade_card` transcript event carrying the plugin's attribution
+/// and the panel it wants drawn; this contribution is what permits the panel to
+/// be drawn at all. The split is what makes the user's per-contribution toggle
+/// govern the panel, and what stops an emit from painting an arbitrary panel
+/// into a conversation.
+///
+/// So the card supplies chronology (a transcript row has a position in a
+/// conversation; a contribution row does not) and the socket supplies
+/// permission. A card whose declaration is missing still renders — title, rows
+/// and metrics are real — just without the panel.
+struct PluginChatCardPayload: Equatable {
+  var panelId: String
+  var title: String?
+  var icon: String?
+}
+
+/// A row in the activity pane: the one place a plugin can say "this needs you"
+/// without inventing a notification.
+///
+/// Rows are ordinary `plugin_contributions`, which is what makes them ephemeral
+/// in the right way — a plugin publishes one when something needs attention and
+/// deletes it when it stops, and an uninstall takes its rows with it. There is
+/// deliberately no per-row dismiss: dismissing ADE's own activity acknowledges
+/// a fact the host owns, while a plugin's row is the plugin's own state, and a
+/// dismiss the next publish undid would read as the button not working.
+struct PluginActivityEntryPayload: Equatable {
+  var title: String
+  var body: String?
+  var tone: PluginVocabTone
+  var actionId: String?
+  var actionLabel: String?
+}
+
 enum PluginContributionPayload: Equatable {
+  case toolbarAction(PluginActionButtonPayload)
   case rowBadge(PluginRowBadgePayload)
   case rowMenuItem(PluginRowMenuItemPayload)
+  case detailSection(PluginDetailSectionPayload)
+  case emptyState(PluginEmptyStatePayload)
+  case filterChip(PluginFilterChipPayload)
+  case fileViewer(PluginFileViewerPayload)
+  case composerAction(PluginActionButtonPayload)
+  case chatCard(PluginChatCardPayload)
+  case activityEntry(PluginActivityEntryPayload)
 }
 
 /// A materialized contribution from `plugin_contributions`, already validated
 /// against its socket kind. A row whose payload does not match its kind never
 /// becomes one of these — surfaces skip it rather than draw half a control.
 struct PluginContribution: Equatable, Identifiable {
-  var id: String { "\(entityKind.rawValue)|\(entityId)|\(pluginId)|\(socketRaw)" }
+  /// Identity for dedupe, ordering and `ForEach`.
+  ///
+  /// `socketId` is part of it and has to be: for a published row the first four
+  /// components are the storage key and are already unique, but a plugin may
+  /// DECLARE two contributions of one kind on one surface — two badges, two
+  /// toolbar buttons — and those differ only by the manifest id. Without it
+  /// they collide into one row.
+  var id: String { "\(entityKind.rawValue)|\(entityId)|\(pluginId)|\(socketRaw)|\(socketId)" }
   var entityKind: PluginEntityKind
   var entityId: String
   var pluginId: String
@@ -222,6 +377,41 @@ struct PluginContribution: Equatable, Identifiable {
   var order: Int?
   var payload: PluginContributionPayload
   var updatedAt: String
+  /// The plugin's own id for this contribution, which is a different thing from
+  /// ``id``: that one is the row's storage key (entity + plugin + socket) and
+  /// this one is what the PLUGIN calls the contribution.
+  ///
+  /// It is the `entryId` an activity row's action carries — an activity list is
+  /// the one surface where a plugin routinely publishes several rows that share
+  /// an action, and "which row" is the only thing the handler cannot work out
+  /// for itself. Identity in the same order of authority desktop uses: an id
+  /// the payload carries, then the socket kind.
+  var socketId: String
+  /// The `id` the payload actually carried, or nil when it carried none.
+  ///
+  /// Distinct from ``socketId``, which folds in the socket-kind fallback and so
+  /// cannot answer "did the author address this row at a declaration". The join
+  /// needs that question: an addressed row resolves to one declaration or to
+  /// nothing, while an id-less one resolves only when its kind was declared
+  /// exactly once.
+  var payloadId: String?
+  /// Whether this came from a plugin's MANIFEST rather than from a row it
+  /// published.
+  ///
+  /// Load-bearing rather than cosmetic: a published row replaces the
+  /// declaration it fills, so the merge has to be able to tell them apart. It
+  /// is not derivable from the data — a declaration and a row can carry
+  /// identical payloads, which is the whole point of one filling in the other.
+  var isDeclaration = false
+  /// The filter chip this row's entity belongs to, read off the RAW payload of
+  /// every kind rather than only off a chip.
+  ///
+  /// That is how a contributed chip actually filters: the chip declares a key,
+  /// and the plugin tags the entities that match by putting the same key on the
+  /// badge or menu item it publishes for them. Reading it only from chip
+  /// payloads would make every chip select nothing, since a chip is published
+  /// against the surface and the rows it filters are published against entities.
+  var filterKey: String?
 
   var badge: PluginRowBadgePayload? {
     if case let .rowBadge(payload) = payload { return payload }
@@ -230,6 +420,46 @@ struct PluginContribution: Equatable, Identifiable {
 
   var menuItem: PluginRowMenuItemPayload? {
     if case let .rowMenuItem(payload) = payload { return payload }
+    return nil
+  }
+
+  var toolbarAction: PluginActionButtonPayload? {
+    if case let .toolbarAction(payload) = payload { return payload }
+    return nil
+  }
+
+  var detailSection: PluginDetailSectionPayload? {
+    if case let .detailSection(payload) = payload { return payload }
+    return nil
+  }
+
+  var emptyState: PluginEmptyStatePayload? {
+    if case let .emptyState(payload) = payload { return payload }
+    return nil
+  }
+
+  var filterChip: PluginFilterChipPayload? {
+    if case let .filterChip(payload) = payload { return payload }
+    return nil
+  }
+
+  var fileViewer: PluginFileViewerPayload? {
+    if case let .fileViewer(payload) = payload { return payload }
+    return nil
+  }
+
+  var composerAction: PluginActionButtonPayload? {
+    if case let .composerAction(payload) = payload { return payload }
+    return nil
+  }
+
+  var chatCard: PluginChatCardPayload? {
+    if case let .chatCard(payload) = payload { return payload }
+    return nil
+  }
+
+  var activityEntry: PluginActivityEntryPayload? {
+    if case let .activityEntry(payload) = payload { return payload }
     return nil
   }
 }
@@ -256,6 +486,31 @@ enum PluginContributionParser {
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
       return nil
     }
+    return parse(
+      entityKind: kind,
+      entityId: entityId,
+      pluginId: pluginId,
+      socket: socket,
+      payloadObject: object,
+      updatedAt: updatedAt
+    )
+  }
+
+  /// The same validation against an already-decoded payload.
+  ///
+  /// Split out so a manifest DECLARATION reaches the identical arms a published
+  /// row does. The alternative — building the payload dictionary and
+  /// re-serializing it to JSON just to parse it back — would be the second
+  /// place the caps and the required-field rules live, and the two would drift.
+  static func parse(
+    entityKind kind: PluginEntityKind,
+    entityId: String,
+    pluginId: String,
+    socket: String,
+    payloadObject object: [String: Any],
+    updatedAt: String
+  ) -> PluginContribution? {
+    guard !entityId.isEmpty, !pluginId.isEmpty else { return nil }
 
     let payload: PluginContributionPayload
     switch PluginSocketKind(rawValue: socket) {
@@ -265,6 +520,30 @@ enum PluginContributionParser {
     case .rowMenuItem:
       guard let item = parseMenuItem(object) else { return nil }
       payload = .rowMenuItem(item)
+    case .toolbarAction:
+      guard let button = parseActionButton(object) else { return nil }
+      payload = .toolbarAction(button)
+    case .composerAction:
+      guard let button = parseActionButton(object) else { return nil }
+      payload = .composerAction(button)
+    case .detailSection:
+      guard let section = parseDetailSection(object) else { return nil }
+      payload = .detailSection(section)
+    case .emptyState:
+      guard let empty = parseEmptyState(object) else { return nil }
+      payload = .emptyState(empty)
+    case .filterChip:
+      guard let chip = parseFilterChip(object) else { return nil }
+      payload = .filterChip(chip)
+    case .fileViewer:
+      guard let viewer = parseFileViewer(object) else { return nil }
+      payload = .fileViewer(viewer)
+    case .chatCard:
+      guard let card = parseChatCard(object) else { return nil }
+      payload = .chatCard(card)
+    case .activityEntry:
+      guard let entry = parseActivityEntry(object) else { return nil }
+      payload = .activityEntry(entry)
     case .unsupported:
       return nil
     }
@@ -276,7 +555,10 @@ enum PluginContributionParser {
       socketRaw: socket,
       order: PluginPanelParser.orderValue(object["order"]),
       payload: payload,
-      updatedAt: updatedAt
+      updatedAt: updatedAt,
+      socketId: PluginPanelParser.cleanString(object["id"], max: 64) ?? socket,
+      payloadId: PluginPanelParser.cleanString(object["id"], max: 64),
+      filterKey: PluginPanelParser.cleanString(object["filterKey"], max: 64)
     )
   }
 
@@ -302,6 +584,96 @@ enum PluginContributionParser {
       actionId: actionId
     )
   }
+
+  /// Shared by `toolbar-action` and `composer-action`, which carry the same
+  /// payload and differ only in what context the press sends.
+  private static func parseActionButton(_ object: [String: Any]) -> PluginActionButtonPayload? {
+    guard let label = PluginPanelParser.cleanString(object["label"], max: 40),
+          let actionId = PluginPanelParser.cleanString(object["actionId"], max: 64) else {
+      return nil
+    }
+    return PluginActionButtonPayload(
+      label: label,
+      icon: PluginPanelParser.cleanString(object["icon"], max: 40),
+      actionId: actionId,
+      // Strictly `true`, never a truthy number: `boolValue` refuses anything
+      // that is not a JSON boolean, so a payload saying `"disabled": 1` leaves
+      // the button live rather than silently dead.
+      disabled: PluginPanelParser.boolValue(object["disabled"]) ?? false
+    )
+  }
+
+  private static func parseDetailSection(_ object: [String: Any]) -> PluginDetailSectionPayload? {
+    guard let panelId = PluginPanelParser.cleanString(object["panelId"], max: 64) else { return nil }
+    return PluginDetailSectionPayload(
+      panelId: panelId,
+      title: PluginPanelParser.cleanString(object["title"], max: 60)
+    )
+  }
+
+  private static func parseEmptyState(_ object: [String: Any]) -> PluginEmptyStatePayload? {
+    guard let title = PluginPanelParser.cleanString(object["title"], max: 80) else { return nil }
+    let actionId = PluginPanelParser.cleanString(object["actionId"], max: 64)
+    return PluginEmptyStatePayload(
+      title: title,
+      body: PluginPanelParser.cleanString(object["body"], max: 240),
+      actionId: actionId,
+      // A label with no action is a button that cannot fire, so it is dropped
+      // with the action rather than drawn. The reverse is fine: an action with
+      // no label falls back to the title, matching desktop.
+      actionLabel: actionId == nil ? nil : PluginPanelParser.cleanString(object["actionLabel"], max: 40)
+    )
+  }
+
+  private static func parseFilterChip(_ object: [String: Any]) -> PluginFilterChipPayload? {
+    guard let label = PluginPanelParser.cleanString(object["label"], max: 40),
+          let filterKey = PluginPanelParser.cleanString(object["filterKey"], max: 64) else {
+      return nil
+    }
+    // `intValue` narrows through `pluginVocabInt`, which refuses anything `Int`
+    // cannot hold — `Int(Double)` traps rather than saturating, and this number
+    // was written by another machine.
+    let count = PluginPanelParser.intValue(object["count"])
+    return PluginFilterChipPayload(
+      label: label,
+      filterKey: filterKey,
+      count: (count ?? -1) >= 0 ? count : nil
+    )
+  }
+
+  private static func parseChatCard(_ object: [String: Any]) -> PluginChatCardPayload? {
+    guard let panelId = PluginPanelParser.cleanString(object["panelId"], max: 64) else { return nil }
+    return PluginChatCardPayload(
+      panelId: panelId,
+      title: PluginPanelParser.cleanString(object["title"], max: 60),
+      icon: PluginPanelParser.cleanString(object["icon"], max: 40)
+    )
+  }
+
+  private static func parseActivityEntry(_ object: [String: Any]) -> PluginActivityEntryPayload? {
+    guard let title = PluginPanelParser.cleanString(object["title"], max: 80) else { return nil }
+    let actionId = PluginPanelParser.cleanString(object["actionId"], max: 64)
+    return PluginActivityEntryPayload(
+      title: title,
+      body: PluginPanelParser.cleanString(object["body"], max: 240),
+      // No red anywhere: `PluginVocabTone` folds every danger-ish spelling onto
+      // warning, so a plugin cannot make its row the loudest thing in a list it
+      // does not own.
+      tone: PluginVocabTone.normalize(object["tone"]),
+      actionId: actionId,
+      // A label with no action is a button that cannot fire, so it goes with it.
+      actionLabel: actionId == nil ? nil : PluginPanelParser.cleanString(object["actionLabel"], max: 40)
+    )
+  }
+
+  private static func parseFileViewer(_ object: [String: Any]) -> PluginFileViewerPayload? {
+    guard let panelId = PluginPanelParser.cleanString(object["panelId"], max: 64) else { return nil }
+    let extensions = (object["extensions"] as? [Any] ?? [])
+      .compactMap { PluginPanelParser.cleanString($0, max: 16)?.lowercased() }
+      .filter { $0.hasPrefix(".") }
+    guard !extensions.isEmpty else { return nil }
+    return PluginFileViewerPayload(panelId: panelId, extensions: extensions)
+  }
 }
 
 // MARK: - Placement
@@ -319,7 +691,10 @@ func pluginContributionPrecedes(_ left: PluginContribution, _ right: PluginContr
   let rightOrder = right.order ?? Int.max
   if leftOrder != rightOrder { return leftOrder < rightOrder }
   if left.pluginId != right.pluginId { return left.pluginId < right.pluginId }
-  return left.socketRaw < right.socketRaw
+  if left.socketRaw != right.socketRaw { return left.socketRaw < right.socketRaw }
+  // Two declarations of one kind from one plugin tie on everything above, so
+  // the manifest id is what keeps their order stable across reads.
+  return left.socketId < right.socketId
 }
 
 /// What one row draws in its trailing cluster: the badges that fit, and a count
@@ -344,24 +719,157 @@ struct PluginRowBadges: Equatable {
 /// constantly for reasons that have nothing to do with plugins.
 struct PluginContributionIndex: Equatable {
   private var byEntity: [String: [PluginContribution]] = [:]
+  /// Filter keys each entity carries, so a selected chip can keep or drop a row
+  /// without re-scanning its contributions.
+  private var filterKeysByEntity: [String: Set<String>] = [:]
+  /// Manifest declarations. The surface-scoped half is already folded into
+  /// `byEntity`; this keeps the per-entity half, which has no entity to be
+  /// filed under until a lookup names one.
+  private var declarations: PluginSocketDeclarations = .none
 
-  init(contributions: [PluginContribution] = []) {
+  /// - Parameter installedPluginIds: plugins the attached machine reports as
+  ///   installed and enabled, or `nil` for "not answered yet".
+  ///
+  ///   Contribution rows replicate across the account and outlive an uninstall
+  ///   elsewhere, so a badge from a plugin this machine no longer has is a
+  ///   ghost — desktop drops those rows and so does this. `nil` keeps
+  ///   everything on purpose: the presence answer is a round trip, and blanking
+  ///   every badge until it lands would make a cold launch look like a mass
+  ///   uninstall. Ghost rows survive a few hundred milliseconds; a flicker on
+  ///   every launch would be permanent.
+  ///
+  /// - Parameter declarations: what plugins DECLARED in their manifests, which
+  ///   the phone learns from `plugins.list`. Folded in beside the published
+  ///   rows so nothing downstream has to know there were two sources.
+  init(
+    contributions: [PluginContribution] = [],
+    declarations: PluginSocketDeclarations = .none,
+    installedPluginIds: Set<String>? = nil
+  ) {
+    self.declarations = declarations
     for contribution in contributions {
-      byEntity[Self.key(contribution.entityKind, contribution.entityId), default: []].append(contribution)
+      if let installedPluginIds, !installedPluginIds.contains(contribution.pluginId) { continue }
+      // The same join the host performs before a row ever leaves it: a switched
+      // -off socket, a socket the plugin never declared, and one it has stopped
+      // declaring all drop here. Doing it client-side is what the manifest feed
+      // made possible — before it, the phone had no declarations to join
+      // against and could only render whatever the mirror held.
+      var resolved = contribution
+      switch declarations.resolve(
+        pluginId: contribution.pluginId,
+        socket: contribution.socketRaw,
+        payloadId: contribution.payloadId,
+        surface: PluginSocketDeclarations.surfaceRaw(
+          entityKind: contribution.entityKind,
+          entityId: contribution.entityId
+        )
+      ) {
+      case .unmatched:
+        continue
+      case let .matched(match):
+        guard match.enabled else { continue }
+        // Stamped from the declaration rather than derived from the payload, so
+        // an id-less row filling a plugin's only declaration of its kind gets
+        // that declaration's real id — which is what lets it REPLACE the
+        // declaration instead of sitting beside it.
+        resolved.socketId = match.socketId
+      case .unknown:
+        break
+      }
+      let key = Self.key(resolved.entityKind, resolved.entityId)
+      byEntity[key, default: []].append(resolved)
+      if let filterKey = resolved.filterKey {
+        filterKeysByEntity[key, default: []].insert(filterKey)
+      }
+    }
+    // Surface-scoped declarations are already entity-shaped, so they join the
+    // published rows in the same bucket and every accessor reads one list.
+    //
+    // Not filtered by `installedPluginIds`, unlike the rows above, and the
+    // asymmetry is the point: contribution ROWS replicate across the account
+    // and outlive an uninstall elsewhere, which is what makes a ghost possible.
+    // Declarations are read from the attached machine's own install list, so
+    // every one of them is installed there by construction — filtering would be
+    // a no-op that implied the two sources carried the same risk.
+    for declaration in declarations.surfaceScoped {
+      byEntity[Self.key(declaration.entityKind, declaration.entityId), default: []].append(declaration)
     }
     for key in byEntity.keys {
-      byEntity[key]?.sort(by: pluginContributionPrecedes)
+      byEntity[key] = Self.merge(byEntity[key] ?? [])
     }
   }
 
-  var isEmpty: Bool { byEntity.isEmpty }
+  /// Order the contributions for one entity and drop declarations a published
+  /// row has already filled in.
+  ///
+  /// A published row REPLACES the declaration it fills, matched on
+  /// `pluginId + socketId`. Rendering both would show a placeholder next to the
+  /// real thing and burn one of the two visible badge slots doing it. Matching
+  /// on the plugin alone would be worse in the other direction: a plugin
+  /// declaring two badges and publishing one would lose the other's
+  /// declaration.
+  ///
+  /// A row whose `socketId` fell back to the socket KIND — which is all an
+  /// older host, or a payload with no `id`, can express — keeps the coarser
+  /// rule and replaces everything that plugin declared for that kind. That host
+  /// can only express one contribution per plugin per socket anyway, and the
+  /// alternative is drawing its published badge beside the placeholder the
+  /// badge exists to fill in.
+  private static func merge(_ all: [PluginContribution]) -> [PluginContribution] {
+    let published = all.filter { !$0.isDeclaration }
+    guard !published.isEmpty else { return all.sorted(by: pluginContributionPrecedes) }
+    var overriddenIds = Set<String>()
+    var overriddenKinds = Set<String>()
+    for row in published {
+      if row.socketId == row.socketRaw {
+        overriddenKinds.insert("\(row.pluginId)\u{0}\(row.socketRaw)")
+      } else {
+        overriddenIds.insert("\(row.pluginId)\u{0}\(row.socketId)")
+      }
+    }
+    let kept = all.filter { entry in
+      guard entry.isDeclaration else { return true }
+      if overriddenKinds.contains("\(entry.pluginId)\u{0}\(entry.socketRaw)") { return false }
+      return !overriddenIds.contains("\(entry.pluginId)\u{0}\(entry.socketId)")
+    }
+    return kept.sorted(by: pluginContributionPrecedes)
+  }
+
+  /// True when nothing would draw for any entity. Declarations count: an index
+  /// holding only a manifest badge is not empty, it just has no entity filed
+  /// under it yet.
+  var isEmpty: Bool { byEntity.isEmpty && declarations.isEmpty }
 
   private static func key(_ kind: PluginEntityKind, _ id: String) -> String {
     "\(kind.rawValue)|\(id)"
   }
 
+  /// Everything one entity draws: the rows published for it, plus every
+  /// declaration for its kind that no published row has filled in.
+  ///
+  /// The wildcard is stamped with the entity at read time rather than at build
+  /// time — a manifest badge applies to every lane, and materializing one copy
+  /// per lane would make the index cost scale with the list it describes.
   func contributions(_ kind: PluginEntityKind, _ entityId: String) -> [PluginContribution] {
-    byEntity[Self.key(kind, entityId)] ?? []
+    let published = byEntity[Self.key(kind, entityId)] ?? []
+    let wildcards = declarations.wildcardByEntityKind[kind] ?? []
+    guard !wildcards.isEmpty else { return published }
+    let stamped = wildcards.map { declaration -> PluginContribution in
+      var copy = declaration
+      copy.entityId = entityId
+      return copy
+    }
+    return Self.merge(published + stamped)
+  }
+
+  /// Contributions a plugin published against a whole surface rather than
+  /// against one of its rows — toolbars, empty states and chips.
+  ///
+  /// Stored as ordinary rows under ``PluginEntityKind/surface`` with the
+  /// surface's own id as the entity id, which is the only address a plugin can
+  /// name for a surface through `sdk.contributions.publish`.
+  func surfaceContributions(_ surface: PluginSurfaceId) -> [PluginContribution] {
+    contributions(.surface, surface.rawValue)
   }
 
   /// The badges a row shows, already capped, plus how many did not fit.
@@ -374,5 +882,387 @@ struct PluginContributionIndex: Equatable {
   /// Menu items a row appends to its context menu, in placement order.
   func menuItems(_ kind: PluginEntityKind, _ entityId: String) -> [PluginContribution] {
     contributions(kind, entityId).filter { $0.menuItem != nil }
+  }
+
+  /// Sections a detail screen appends after its own, in placement order.
+  func detailSections(_ kind: PluginEntityKind, _ entityId: String) -> [PluginContribution] {
+    contributions(kind, entityId).filter { $0.detailSection != nil }
+  }
+
+  /// Buttons the composer's accessory row draws for one chat.
+  func composerActions(sessionId: String) -> [PluginContribution] {
+    contributions(.session, sessionId).filter { $0.composerAction != nil }
+  }
+
+  /// `chat-card` declarations for one chat, in placement order.
+  ///
+  /// A DECLARATION list, not a list of cards to draw: the cards themselves
+  /// arrive as transcript events, and this answers "may that card's panel be
+  /// drawn". See ``PluginChatCardPayload``.
+  func chatCards(sessionId: String) -> [PluginContribution] {
+    contributions(.session, sessionId).filter { $0.chatCard != nil }
+  }
+
+  /// Whether `pluginId` declared a chat card naming `panelId` for this chat.
+  func declaresChatCard(pluginId: String, panelId: String, sessionId: String) -> Bool {
+    chatCards(sessionId: sessionId).contains { contribution in
+      contribution.pluginId == pluginId && contribution.chatCard?.panelId == panelId
+    }
+  }
+
+  /// Rows for the activity pane, in placement order.
+  func activityEntries() -> [PluginContribution] {
+    surfaceContributions(.app).filter { $0.activityEntry != nil }
+  }
+
+  func toolbarActions(_ surface: PluginSurfaceId) -> [PluginContribution] {
+    surfaceContributions(surface).filter { $0.toolbarAction != nil }
+  }
+
+  func emptyStates(_ surface: PluginSurfaceId) -> [PluginContribution] {
+    surfaceContributions(surface).filter { $0.emptyState != nil }
+  }
+
+  func filterChips(_ surface: PluginSurfaceId) -> [PluginContribution] {
+    surfaceContributions(surface).filter { $0.filterChip != nil }
+  }
+
+  /// Whether an entity survives the chips the reader has selected.
+  ///
+  /// An empty selection never filters — every list calls this unconditionally,
+  /// and a chip nobody pressed must not hide rows.
+  func matchesFilterKeys(
+    _ kind: PluginEntityKind,
+    _ entityId: String,
+    selected: Set<String>
+  ) -> Bool {
+    guard !selected.isEmpty else { return true }
+    guard let keys = filterKeysByEntity[Self.key(kind, entityId)] else { return false }
+    return !keys.isDisjoint(with: selected)
+  }
+
+  /// The plugin panel offering to view `path`, if one claims it.
+  ///
+  /// Two addresses answer, in order of specificity: a row published against the
+  /// file itself wins over a registration published against the Files surface,
+  /// which matches by extension. The per-file row is how a plugin says "this
+  /// one file", and it should not be outvoted by its own blanket claim.
+  ///
+  /// A per-file row may be addressed by either the workspace-relative path or
+  /// the absolute one, because a plugin sees whichever its own action was
+  /// handed and the two are the same file.
+  func fileViewer(relativePath: String, fullPath: String) -> PluginContribution? {
+    let exact = contributions(.file, relativePath).first { $0.fileViewer != nil }
+      ?? contributions(.file, fullPath).first { $0.fileViewer != nil }
+    if let exact { return exact }
+    guard let ext = pluginFileExtension(relativePath) else { return nil }
+    return surfaceContributions(.files).first { contribution in
+      contribution.fileViewer?.extensions.contains(ext) == true
+    }
+  }
+}
+
+/// Lowercase extension including the dot, or nil. Mirrors `pluginFileExtension`
+/// in `apps/desktop/src/shared/plugins/context.ts` — including its refusal of a
+/// leading-dot name (`.gitignore` has no extension) and of a trailing dot.
+func pluginFileExtension(_ filePath: String) -> String? {
+  guard let base = filePath.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last else { return nil }
+  guard let dot = base.lastIndex(of: ".") else { return nil }
+  guard dot != base.startIndex, base.index(after: dot) != base.endIndex else { return nil }
+  return String(base[dot...]).lowercased()
+}
+
+// MARK: - Declarations
+
+/// Which entity kind a surface's per-entity contributions attach to. Mirrors
+/// `SURFACE_ENTITY_KIND` in `contributionModel.ts`.
+///
+/// The three subject-less surfaces answer `surface`: the CTO thread, the window
+/// chrome and a settings page all contribute against the surface itself.
+func pluginSurfaceEntityKind(_ surface: PluginSurfaceId) -> PluginEntityKind {
+  switch surface {
+  case .work: return .session
+  case .lanes: return .lane
+  case .files: return .file
+  case .prs: return .pr
+  case .automations: return .automation
+  case .cto, .app, .settings: return .surface
+  }
+}
+
+/// The socket kinds whose contribution belongs to a SURFACE rather than to one
+/// of its rows.
+///
+/// Not derivable from the surface — Lanes hosts both a per-lane badge and a
+/// whole-tab toolbar — so it is a property of the kind, and this is the one
+/// place that says which is which.
+func pluginSocketIsSurfaceScoped(_ kind: PluginSocketKind) -> Bool {
+  switch kind {
+  case .toolbarAction, .emptyState, .filterChip, .fileViewer, .activityEntry:
+    return true
+  case .rowBadge, .rowMenuItem, .detailSection, .chatCard, .composerAction:
+    return false
+  case .unsupported:
+    return false
+  }
+}
+
+/// A plugin's manifest socket declarations, resolved into contributions.
+///
+/// This is the half of the socket taxonomy the phone could not see until
+/// `plugins.list` grew a `sockets` field: declarations live in the manifest on
+/// disk, which no phone has. Before it, iOS rendered only what a plugin had
+/// PUBLISHED, so a contribution a plugin merely declared drew on desktop and
+/// was absent here.
+///
+/// A declaration is turned into an ordinary ``PluginContribution`` as early as
+/// possible, so every surface, accessor and renderer downstream stays unaware
+/// that two sources exist. The one thing a declaration cannot have is an
+/// entity: a manifest badge says "I badge lanes", not "I badge lane 7". So the
+/// two halves land in different places — a surface-scoped declaration is filed
+/// at its surface's own address and is indistinguishable from a published row
+/// there, while a per-entity declaration is held as a WILDCARD and merged into
+/// every entity of its surface's kind at lookup.
+struct PluginSocketDeclarations: Equatable {
+  /// Declarations addressed at a surface, already entity-shaped.
+  private(set) var surfaceScoped: [PluginContribution] = []
+  /// Declarations that apply to every entity of a kind, keyed by that kind.
+  private(set) var wildcardByEntityKind: [PluginEntityKind: [PluginContribution]] = [:]
+  /// One resolved declaration, as a published row's join answers it.
+  struct Match: Equatable {
+    var socketId: String
+    var enabled: Bool
+  }
+
+  /// Declarations keyed `pluginId + socket kind + socket id`.
+  ///
+  /// The triple is what makes two declarations of one kind independent. Keyed
+  /// on plugin and kind alone, a plugin declaring two badges on Lanes collapses
+  /// to whichever it declared last, and every published row is then stamped
+  /// with that arbitrary winner's id and its `enabled` flag — so the toggle for
+  /// one badge hides the other's rows. The host had exactly that bug and fixed
+  /// it against this client's per-declaration resolution; this is the other
+  /// half of the same agreement.
+  private(set) var declaredByTriple: [String: Match] = [:]
+  /// The unambiguous case, kept apart: a row naming no socket id can only be
+  /// resolved when its kind was declared exactly ONCE.
+  private(set) var soleByKind: [String: Match] = [:]
+  /// Kinds a plugin declared more than once, where an id-less row has no
+  /// non-arbitrary answer and is left unmatched rather than guessed at.
+  private(set) var ambiguousKinds: Set<String> = []
+  /// Plugins whose declarations this host could actually report.
+  ///
+  /// The join only governs a plugin listed here. A host too old to send
+  /// `sockets` reports nothing for anyone, so every plugin is absent and every
+  /// published row stands — the pre-manifest-feed behaviour. A host that DID
+  /// read the manifest and found no sockets lists the plugin with nothing
+  /// declared, which is the stronger claim, and its rows drop.
+  private(set) var knownPlugins: Set<String> = []
+
+  /// Declaration key: plugin, SURFACE, socket kind.
+  ///
+  /// The surface term mirrors the host, whose `listContributions` builds this
+  /// join inside a per-surface loop and therefore never compares a Lanes badge
+  /// with a PRs one. Without it, a plugin declaring `row-badge` on both
+  /// surfaces reads as "declared twice" here and every id-less row of that kind
+  /// drops as ambiguous — a plugin that works on desktop and shows nothing on
+  /// the phone, for a manifest that did nothing wrong.
+  private static func kindKey(_ pluginId: String, _ surface: String, _ socket: String) -> String {
+    "\(pluginId)\u{0}\(surface)\u{0}\(socket)"
+  }
+
+  /// Which surface a published row belongs to, so it joins against that
+  /// surface's declarations and no other.
+  ///
+  /// Every entity kind but `.surface` is reached from exactly one surface, so
+  /// the mapping inverts cleanly; a `.surface` row carries the surface's own id
+  /// as its entity id, which is the address a plugin publishes it under.
+  /// Returns nil for a surface this build has no case for — such a row could
+  /// not be drawn anyway, and guessing a surface for it would put it in
+  /// another's join.
+  static func surfaceRaw(entityKind: PluginEntityKind, entityId: String) -> String? {
+    if entityKind == .surface {
+      return PluginSurfaceId(rawValue: entityId)?.rawValue
+    }
+    return PluginSurfaceId.allCases.first { pluginSurfaceEntityKind($0) == entityKind }?.rawValue
+  }
+
+  static let none = PluginSocketDeclarations()
+
+  var isEmpty: Bool { surfaceScoped.isEmpty && wildcardByEntityKind.isEmpty }
+
+  /// Resolve a published row against the declarations, exactly as the host's
+  /// `listContributions` does.
+  ///
+  /// - `.unknown` when this host could not report the plugin's declarations, so
+  ///   there is nothing to join against and the row stands.
+  /// - `.matched` when a declaration claims it, carrying that declaration's own
+  ///   id and toggle.
+  /// - `.unmatched` when the plugin's declarations are known and none claims
+  ///   it: a socket the plugin never declared, one it has stopped declaring, or
+  ///   an id-less row for a kind declared more than once. All three drop.
+  ///
+  /// The last case is the one worth stating: an id-less row against two
+  /// declarations has no non-arbitrary answer, and guessing is what produced
+  /// the bug the host just fixed. It is left unmatched so the two clients agree
+  /// about a case neither can resolve, and the author is the one who can — by
+  /// putting `id` in the payload.
+  enum Resolution: Equatable {
+    case unknown
+    case matched(Match)
+    case unmatched
+  }
+
+  func resolve(pluginId: String, socket: String, payloadId: String?, surface: String?) -> Resolution {
+    guard knownPlugins.contains(pluginId) else { return .unknown }
+    // A row whose surface this build cannot name has no declaration set to be
+    // judged against, so it is left alone rather than dropped on a guess.
+    guard let surface else { return .unknown }
+    let kind = Self.kindKey(pluginId, surface, socket)
+    if let payloadId, !payloadId.isEmpty {
+      // Addressed: it resolves to that declaration or to nothing. A row naming
+      // a socket id the plugin no longer declares is stale, and adopting a
+      // different one would move it to a slot its author never chose.
+      guard let match = declaredByTriple["\(kind)\u{0}\(payloadId)"] else { return .unmatched }
+      return .matched(match)
+    }
+    if ambiguousKinds.contains(kind) { return .unmatched }
+    guard let sole = soleByKind[kind] else { return .unmatched }
+    return .matched(sole)
+  }
+
+  init() {}
+
+  /// Resolve the declarations of every installed, enabled plugin.
+  ///
+  /// Three things drop here rather than downstream, matching
+  /// `contributionsFromSource`: a disabled plugin's declarations, a socket the
+  /// user switched off, and a declaration whose implied payload fails its
+  /// kind's shape check. That last one is why this goes back through
+  /// ``PluginContributionParser`` rather than trusting itself — a manifest that
+  /// parsed but implies a payload with no label is still a contribution that
+  /// must not render.
+  init(records: [PluginInstallRecordEntry]) {
+    for record in records {
+      guard record.enabled, !record.pluginId.isEmpty else { continue }
+      // A plugin whose record carries no `sockets` at all is one this host
+      // could not read a manifest for. It stays out of `knownPlugins`, so its
+      // published rows are never joined against declarations it never reported.
+      guard let wires = record.sockets else { continue }
+      knownPlugins.insert(record.pluginId)
+      let disabled = Set(record.disabledContributions)
+      for wire in wires {
+        let match = Match(socketId: wire.id.isEmpty ? wire.socket : wire.id, enabled: !disabled.contains(wire.id))
+        let kind = Self.kindKey(record.pluginId, wire.surface, wire.socket)
+        declaredByTriple["\(kind)\u{0}\(match.socketId)"] = match
+        if soleByKind[kind] != nil || ambiguousKinds.contains(kind) {
+          soleByKind[kind] = nil
+          ambiguousKinds.insert(kind)
+        } else {
+          soleByKind[kind] = match
+        }
+      }
+      for wire in wires {
+        guard !disabled.contains(wire.id) else { continue }
+        guard let surface = PluginSurfaceId(rawValue: wire.surface) else { continue }
+        let kind = PluginSocketKind(rawValue: wire.socket)
+        guard let payload = Self.payload(for: kind, wire: wire) else { continue }
+        let entityKind = pluginSocketIsSurfaceScoped(kind)
+          ? PluginEntityKind.surface
+          : pluginSurfaceEntityKind(surface)
+        // Addressed at the surface itself when it is surface-scoped, and ALSO
+        // when its surface is one of the subject-less three (cto, app,
+        // settings): "every entity of kind `surface`" is just that surface, and
+        // holding it as a wildcard would leak a CTO declaration into the Lanes
+        // surface lookup, which reads the same entity kind.
+        let isAddressed = pluginSocketIsSurfaceScoped(kind) || entityKind == .surface
+        guard let contribution = PluginContributionParser.parse(
+          entityKind: entityKind,
+          entityId: isAddressed ? surface.rawValue : "*",
+          pluginId: record.pluginId,
+          socket: wire.socket,
+          payloadObject: payload,
+          updatedAt: ""
+        ) else {
+          continue
+        }
+        var resolved = contribution
+        resolved.isDeclaration = true
+        resolved.order = wire.order
+        // The manifest socket id is the declaration's identity — what a
+        // published row names when it fills this declaration in.
+        resolved.socketId = wire.id.isEmpty ? wire.socket : wire.id
+        if isAddressed {
+          surfaceScoped.append(resolved)
+        } else {
+          wildcardByEntityKind[entityKind, default: []].append(resolved)
+        }
+      }
+    }
+    surfaceScoped.sort(by: pluginContributionPrecedes)
+    for key in wildcardByEntityKind.keys {
+      wildcardByEntityKind[key]?.sort(by: pluginContributionPrecedes)
+    }
+  }
+
+  /// The payload a manifest socket implies. Mirrors `payloadFromManifestSocket`.
+  ///
+  /// Only the kinds iOS draws are built. A kind the phone has no host for
+  /// returns nil and its declaration never becomes a contribution — the same
+  /// outcome as a published row for that kind, which keeps the two paths
+  /// agreeing about what this client renders.
+  private static func payload(for kind: PluginSocketKind, wire: PluginManifestSocketWire) -> [String: Any]? {
+    var object: [String: Any] = [:]
+    func put(_ key: String, _ value: String?) {
+      guard let value, !value.isEmpty else { return }
+      object[key] = value
+    }
+    switch kind {
+    case .toolbarAction, .composerAction:
+      put("label", wire.label)
+      put("icon", wire.icon)
+      put("actionId", wire.actionId)
+    case .rowMenuItem:
+      put("label", wire.label)
+      put("icon", wire.icon)
+      put("actionId", wire.actionId)
+    case .rowBadge:
+      // A manifest badge has no value of its own — it is the declaration a
+      // dynamic row later fills in. A neutral label keeps a plugin that never
+      // publishes rows honest rather than invisible.
+      put("text", wire.label)
+      object["tone"] = "neutral"
+      put("icon", wire.icon)
+    case .detailSection:
+      put("panelId", wire.panelId)
+      put("title", wire.label)
+    case .emptyState:
+      put("title", wire.label)
+      put("actionId", wire.actionId)
+      put("actionLabel", wire.label)
+    case .filterChip:
+      put("label", wire.label)
+      // The socket id is the fallback key, so a manifest need not carry one.
+      put("filterKey", (wire.filterKey?.isEmpty == false) ? wire.filterKey : wire.id)
+    case .fileViewer:
+      put("panelId", wire.panelId)
+      object["extensions"] = wire.extensions
+    case .chatCard:
+      // The card is the thing with chronology, so its own title wins; what the
+      // declaration is FOR is naming which panel may be drawn in a transcript.
+      put("panelId", wire.panelId)
+      put("title", wire.label)
+      put("icon", wire.icon)
+    case .activityEntry:
+      // Neutral, like a badge: a static entry cannot know whether the thing it
+      // describes currently needs anyone. `actionLabel` is left off rather than
+      // defaulted to the label, which would print the title twice.
+      put("title", wire.label)
+      object["tone"] = "neutral"
+      put("actionId", wire.actionId)
+    case .unsupported:
+      return nil
+    }
+    return object
   }
 }

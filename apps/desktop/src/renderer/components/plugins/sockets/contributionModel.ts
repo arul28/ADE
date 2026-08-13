@@ -22,6 +22,7 @@ import {
   PLUGIN_CONTRIBUTIONS_PER_SLOT_LIMIT,
   comparePluginContributions,
   parsePluginContributionPayload,
+  readPluginContributionEntityTag,
   type PluginContribution,
   type PluginEntityContribution,
   type PluginEntityKind,
@@ -30,6 +31,7 @@ import {
 } from "../../../../shared/plugins/sockets";
 import {
   pluginContributionKeyForContext,
+  pluginSurfaceContributionKey,
   type PluginSurfaceContext,
 } from "../../../../shared/plugins/context";
 import { manifestOf, type PluginContributionRow, type PluginSocketSource } from "./contributionBridge";
@@ -43,6 +45,16 @@ export type PluginSocketIdentity = {
 };
 
 export type SurfaceContributionSet = {
+  /**
+   * Which surface this set describes.
+   *
+   * Carried on the set rather than threaded through every caller because
+   * {@link selectContributions} needs it to look up the surface's OWN dynamic
+   * rows, and its `context` argument cannot supply it: a toolbar passes no
+   * context at all. Absent only on {@link EMPTY_CONTRIBUTION_SET}, which holds
+   * no rows for it to key.
+   */
+  surface?: PluginSurfaceId;
   /** Manifest-declared contributions for this surface, already validated. */
   staticContributions: readonly PluginContribution[];
   /**
@@ -80,10 +92,6 @@ export function entityCacheKey(entityKind: PluginEntityKind, entityId: string): 
   return `${entityKind}\u0000${entityId}`;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 /**
  * Build the payload a manifest socket implies, then validate it.
  *
@@ -96,8 +104,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown {
   switch (socket.socket) {
+    // Three kinds, one arm, because they are three chromes over one
+    // contribution: a labelled button that invokes an action. The parser folds
+    // them into a single case too (`sockets.ts`), and the two files agreeing on
+    // that is the point — a mapping that split them here would be claiming a
+    // difference the contract does not have.
     case "toolbar-action":
     case "composer-action":
+    case "command-palette-action":
       return { label: socket.label, icon: socket.icon, actionId: socket.actionId };
     case "row-badge":
       // A manifest badge has no value of its own — it is the declaration a
@@ -114,8 +128,70 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
       return { label: socket.label, filterKey: socket.filterKey ?? socket.id };
     case "file-viewer":
       return { panelId: socket.panelId, extensions: socket.extensions };
-    default:
+    // A chat card's manifest `label` is the card's own title only when the
+    // emitted card did not supply one; the card is the thing with chronology,
+    // so its title wins. What the declaration is FOR is naming which panel the
+    // plugin may draw in a transcript at all.
+    case "chat-card":
+      return { panelId: socket.panelId, title: socket.label, icon: socket.icon };
+    // `command` arrives already normalized (one leading slash stripped, trimmed,
+    // lowercased) and is refused at manifest parse when malformed, so it is
+    // passed through rather than re-normalized here — two normalizers would be
+    // two chances to disagree about what `"/Fix"` means.
+    //
+    // `description` falls back to `label` for plugins written before the field
+    // existed, which put their menu line there. This mirrors the host's own
+    // mapping in `main/services/chat/pluginSlashCommands.ts` EXACTLY, on
+    // purpose: the two feed the same command menu from different sides, and a
+    // renderer that resolved the subtitle differently would show one thing in
+    // the composer and another in `getSlashCommands`.
+    case "slash-command":
+      return {
+        command: socket.command,
+        actionId: socket.actionId,
+        description: socket.description ?? socket.label,
+        argumentHint: socket.argumentHint,
+        icon: socket.icon,
+      };
+    // `section` names the settings page that hosts this. Opaque rather than a
+    // union — settings page ids are ADE's own furniture and they move, so a
+    // plugin naming one this build has never heard of lands in the generic
+    // Plugins area instead of failing to parse.
+    case "settings-section":
+      return { panelId: socket.panelId, title: socket.label, section: socket.section };
+    // The rail and the drawer are the same contribution wearing different
+    // chrome — see `PluginPanelHostPayload` — so moving between them is a
+    // one-word manifest edit and nothing here has to change.
+    case "work-rail-pane":
+    case "drawer-tab":
+      return { label: socket.label, panelId: socket.panelId, icon: socket.icon };
+    // Like a row badge, a manifest activity entry is the declaration a dynamic
+    // row fills in: neutral tone, because a static entry cannot know whether
+    // the thing it describes currently needs anyone. `actionLabel` is left off
+    // rather than defaulted to the label, which would print the title twice.
+    case "activity-entry":
+      return { title: socket.label, tone: "neutral", actionId: socket.actionId };
+    // `dialog` rides the payload rather than being implied by the surface:
+    // create-lane and manage-lane are both `lanes`, and a section that could
+    // not tell them apart would be wrong on one of them every time.
+    case "dialog-section":
+      return { dialog: socket.dialog, panelId: socket.panelId, title: socket.label };
+    default: {
+      /**
+       * Exhaustive on purpose.
+       *
+       * A kind with no arm here parses in the manifest, installs clean, passes
+       * every socket test, and contributes NOTHING — with nothing anywhere
+       * telling the plugin author why. That is the exact failure
+       * `PLUGIN_SOCKET_REQUIREMENTS` was written to prevent one layer up, and
+       * it is how eight kinds shipped renderable but undeclarable. The `never`
+       * makes the seventeenth kind a compile error in this file rather than a
+       * silent hole in someone else's surface.
+       */
+      const unhandled: never = socket.socket;
+      void unhandled;
       return null;
+    }
   }
 }
 
@@ -179,19 +255,33 @@ export function contributionsFromRows(
     if (row.surface && row.surface !== surface) continue;
     const payload = parsePluginContributionPayload(row.socket, row.payload);
     if (!payload) continue;
-    const raw = isRecord(row.payload) ? row.payload : {};
+    // The three cross-kind fields in ONE read. They are not part of any kind's
+    // payload shape — they describe the row's placement and identity — so the
+    // per-kind parser above cannot answer for them, and each one this file
+    // probed by hand was a field the writer had silently stripped.
+    const tag = readPluginContributionEntityTag(row.payload);
     // Identity, in order of authority: the manifest socket the row fills, an id
     // the payload carries, then the socket kind — the last only holds one
     // contribution per plugin, which is all an older host could express.
-    const id = row.socketId?.trim()
-      || (typeof raw.id === "string" && raw.id.trim().length > 0 ? raw.id.trim() : row.socket);
+    //
+    // The payload id comes through the shared reader, which re-applies the
+    // writer's 64-char ceiling. The probe this replaced did not, so a row from
+    // a host with a different ceiling could seat an unbounded id here and then
+    // fail to match the bounded one `disabledContributions` and the declaration
+    // join are keyed on.
+    const id = row.socketId?.trim() || tag.id || row.socket;
     if (disabled.has(id)) continue;
     contributions.push({
       pluginId: row.pluginId,
       socket: row.socket,
       surface,
       id,
-      ...(typeof raw.order === "number" && Number.isFinite(raw.order) ? { order: raw.order } : {}),
+      // `order` is placement, not payload. It reached here off the raw record
+      // until the writer started carrying it, which meant every PUBLISHED
+      // contribution had no order and sorted last, while static manifest ones
+      // — which never pass through that parser — ordered correctly. One merged
+      // list, two halves disagreeing about whether ordering worked at all.
+      ...(tag.order !== undefined ? { order: tag.order } : {}),
       payload,
       entityKind: row.entityKind,
       entityId: row.entityId,
@@ -227,8 +317,13 @@ export function buildContributionSet(
   for (const row of rows) {
     if (!knownPluginIds.has(row.pluginId)) continue;
     if (row.surface && row.surface !== surface) continue;
-    const payload = isRecord(row.payload) ? row.payload : null;
-    const filterKey = payload && typeof payload.filterKey === "string" ? payload.filterKey.trim() : "";
+    // Read through the shared helper rather than probing the payload here.
+    // `row.payload` is `unknown` by design — it is plugin-authored JSON off IPC
+    // or sync — so the writer's type never reaches this line and a hand-rolled
+    // `typeof payload.filterKey === "string"` is not something a compiler
+    // checks. Three surfaces each grew their own copy of that probe and all
+    // three were reading a field the writer had stripped.
+    const { filterKey } = readPluginContributionEntityTag(row.payload);
     if (!filterKey) continue;
     const key = entityCacheKey(row.entityKind, row.entityId);
     const existing = filterKeysByEntity.get(key);
@@ -245,11 +340,34 @@ export function buildContributionSet(
   }
 
   return {
+    surface,
     staticContributions,
     dynamicByEntity,
     identities,
     filterKeysByEntity,
   };
+}
+
+/**
+ * The entity kinds a surface must read dynamic rows for.
+ *
+ * Two, not one. A surface carries its own entity kind — `lane` for Lanes, `pr`
+ * for PRs — and that is what the read asked for, so a row published against the
+ * TAB itself (`entityKind: "surface"`, `entityId: <surface>`) was fetched by
+ * nobody. That is not a corner case: a plugin can only reach a client with no
+ * manifest feed by publishing, so the phone receives `toolbar-action`,
+ * `empty-state`, `filter-chip` and `file-viewer` as surface-keyed rows, and the
+ * same plugin lit up on iOS and stayed dark on desktop.
+ *
+ * Deduplicated, because three surfaces (`cto`, `app`, `settings`) have no rows
+ * of their own and already ARE `surface` — asking twice there would fetch the
+ * same rows twice and render every contribution on them doubled.
+ */
+export function surfaceContributionEntityKinds(
+  surface: PluginSurfaceId,
+): readonly PluginEntityKind[] {
+  const own = SURFACE_ENTITY_KIND[surface];
+  return own === "surface" ? [own] : [own, "surface"];
 }
 
 /**
@@ -289,14 +407,30 @@ function capPerPlugin(contributions: readonly PluginContribution[]): PluginContr
  *
  * `context` narrows dynamic rows to the entity in hand; pass a surface-only
  * context (or none) for toolbars, chips and empty states, which have no subject
- * and therefore read static contributions only.
+ * of their own and read the SURFACE's rows instead.
+ *
+ * The two lookups are exclusive on purpose. An entity context reads that
+ * entity's rows and not the surface's, because a row addressed to the tab is
+ * about the tab: folding it in here would print a plugin's toolbar
+ * contribution onto every lane on the list. A subject-less context reads the
+ * surface's rows and nothing else, which is the case this function used to
+ * answer with an empty array.
+ *
+ * The surface key comes from {@link pluginSurfaceContributionKey}, NOT from
+ * {@link pluginContributionKeyForContext}. The two answer different questions
+ * and giving the latter a surface answer breaks a different caller — see the
+ * note on `entityMatchesPluginFilters`.
  */
 export function selectContributions<K extends PluginSocketKind>(
   set: SurfaceContributionSet,
   socket: K,
   context?: PluginSurfaceContext | null,
 ): PluginContribution<K>[] {
-  const key = context ? pluginContributionKeyForContext(context) : null;
+  const entityKey = context ? pluginContributionKeyForContext(context) : null;
+  // A surface-only context names its own surface; a caller that passed none is
+  // asking about the set's surface, which is the same answer.
+  const surfaceId = context?.kind === "surface" ? context.surface : set.surface;
+  const key = entityKey ?? (surfaceId ? pluginSurfaceContributionKey(surfaceId) : null);
   const forEntity = key ? set.dynamicByEntity.get(entityCacheKey(key.entityKind, key.entityId)) : null;
   const dynamic = forEntity ? forEntity.filter((entry) => entry.socket === socket) : [];
   // A dynamic row replaces the manifest socket it fills, matched on
@@ -333,10 +467,11 @@ export function selectContributions<K extends PluginSocketKind>(
  * because that switch had been written three times and the three had drifted
  * into three different answers for a surface-only context.
  *
- * A surface-only context collapses to one key on purpose. It selects no dynamic
- * rows at all — {@link selectContributions} already reads statics only for it —
- * and every caller keys on the surface separately, so the toolbar, chip and
- * empty-state sockets keep rendering exactly what they rendered before.
+ * A surface-only context collapses to one key on purpose. It now DOES select
+ * dynamic rows — the surface's own — but which rows those are is decided by the
+ * set, and the set is already per surface: `derivedSetFor` hands a different
+ * object to each one, so a memo keyed on `set` plus this string cannot serve
+ * Lanes' surface rows to PRs.
  */
 export function pluginContextMemoKey(context: PluginSurfaceContext | null): string {
   if (!context) return "";
@@ -521,5 +656,10 @@ export const SURFACE_ENTITY_KIND: Record<PluginSurfaceId, PluginEntityKind> = {
   files: "file",
   prs: "pr",
   automations: "automation",
+  // The subject-less surfaces: the CTO thread, the window chrome (palette,
+  // activity pane) and a settings section all contribute against the surface
+  // itself, so a dynamic row for one is keyed by `surface` and nothing narrower.
   cto: "surface",
+  app: "surface",
+  settings: "surface",
 };

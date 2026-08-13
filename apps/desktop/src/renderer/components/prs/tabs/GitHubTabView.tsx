@@ -8,7 +8,7 @@ import type {
   PrSummary,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
-import { PluginEmptyStateExtra } from "../../plugins/sockets";
+import { PluginEmptyStateExtra, PluginFilterChips } from "../../plugins/sockets";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import {
   COLORS,
@@ -99,6 +99,11 @@ type GitHubTabViewList = {
   onSelect: (item: GitHubPrListItem) => void;
   onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
   onLoadOlderHistory: () => void;
+  /** Contributed `filter-chip` selections and their toggle. */
+  pluginFilterKeys: readonly string[];
+  onTogglePluginFilterKey: (filterKey: string) => void;
+  /** False while the PRs tab is mounted but not visible. */
+  active: boolean;
 };
 
 type GitHubTabViewDetail = {
@@ -256,6 +261,15 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
                     </button>
                   );
                 })}
+                {/* Contributed chips, after the list's own state control.
+                    Renders nothing when no plugin contributes one. */}
+                <PluginFilterChips
+                  surface="prs"
+                  selected={list.pluginFilterKeys}
+                  onToggle={list.onTogglePluginFilterKey}
+                  active={list.active}
+                  style={{ marginLeft: 8 }}
+                />
                 <div style={{ flex: 1 }} />
                 {list.showLoadingIndicator ? (
                   <span
@@ -283,7 +297,7 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
                       title={list.loading && !list.hasSnapshot ? "Preparing pull requests" : "No pull requests"}
                       description={list.loading && !list.hasSnapshot ? "ADE is syncing GitHub in the background." : "No pull requests match the current filters."}
                     >
-                      <PluginEmptyStateExtra surface="prs" />
+                      <PluginEmptyStateExtra surface="prs" active={list.active} />
                     </EmptyState>
                   </div>
                 ) : list.filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT ? (

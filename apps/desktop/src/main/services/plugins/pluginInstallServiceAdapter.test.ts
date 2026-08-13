@@ -20,6 +20,11 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     settings: [],
     cli: [],
     skills: [],
+    tools: [],
+    automationTriggers: [],
+    automationSteps: [],
+    searchProviders: [],
+    keybindings: [],
     official: false,
     ...overrides,
   };
@@ -273,6 +278,116 @@ describe("record detail for peers", () => {
       displayName: "Graph",
       tokens: { dark: { "--color-accent": "#5b8def" } },
     });
+  });
+
+  it("carries manifest sockets whole, so a peer can render what a plugin adds to core surfaces", async () => {
+    const { service } = stubInstallService({
+      list: () => [installed({
+        manifest: manifest({
+          sockets: [
+            { socket: "row-badge", surface: "lanes", id: "risk", label: "Risk", icon: "warning" },
+            { socket: "file-viewer", surface: "files", id: "proto", panelId: "proto", extensions: [".proto"] },
+          ],
+        }),
+      })],
+    });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    // Whole, not projected to the fields one kind reads: which fields matter is
+    // per kind, so a projection is a list that has to grow with every new kind
+    // and fails by dropping a label rather than by erroring.
+    expect(record.sockets).toEqual([
+      { socket: "row-badge", surface: "lanes", id: "risk", label: "Risk", icon: "warning" },
+      { socket: "file-viewer", surface: "files", id: "proto", panelId: "proto", extensions: [".proto"] },
+    ]);
+    // Absent keys rather than explicit undefined: identical in memory, and not
+    // identical over JSON, where the second spends bytes on every row saying
+    // nothing.
+    expect(Object.keys(record.sockets?.[0] ?? {})).toEqual(["socket", "surface", "id", "label", "icon"]);
+  });
+
+  it("forwards a socket field it has never heard of, so a new kind reaches peers without an edit here", async () => {
+    const { service } = stubInstallService({
+      list: () => [installed({
+        manifest: manifest({
+          sockets: [{
+            socket: "slash-command",
+            surface: "work",
+            id: "fix",
+            command: "fix",
+            // Fields the parser emits that this adapter never named, plus one
+            // that does not exist yet. An enumerated copy dropped all of them
+            // silently — the socket arrived on the phone missing its subtitle
+            // and nothing anywhere errored.
+            description: "Fix the thing",
+            argumentHint: "<file>",
+            section: "Tools",
+            futureField: "reaches peers anyway",
+          } as never],
+        }),
+      })],
+    });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    expect(record.sockets?.[0]).toMatchObject({
+      description: "Fix the thing",
+      argumentHint: "<file>",
+      section: "Tools",
+      futureField: "reaches peers anyway",
+    });
+  });
+
+  it("copies the one array field rather than sharing the manifest's own", async () => {
+    const extensions = [".proto"];
+    const { service } = stubInstallService({
+      list: () => [installed({
+        manifest: manifest({
+          sockets: [{ socket: "file-viewer", surface: "files", id: "proto", panelId: "proto", extensions }],
+        }),
+      })],
+    });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+    (record.sockets?.[0]?.extensions as string[]).push(".thrift");
+
+    // The source belongs to the install service's cached manifest, so a caller
+    // mutating what it was handed would corrupt it for every later reader.
+    expect(extensions).toEqual([".proto"]);
+  });
+
+  it("sends the per-contribution toggles only when some are off", async () => {
+    const withToggle = installed();
+    withToggle.record.disabledContributions = ["risk"];
+    const { service } = stubInstallService({ list: () => [withToggle] });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    // The socket layer filters STATIC contributions on this client-side, so a
+    // peer without it would draw sockets the user already switched off.
+    expect(record.disabledContributions).toEqual(["risk"]);
+
+    // Absent already means "none are disabled" — an empty array would be bytes
+    // spent restating the default on every plugin on every list.
+    const { service: clean } = stubInstallService({ list: () => [installed()] });
+    const [plain] = await createPluginInstallServiceAdapter({ install: clean }).list();
+    expect(plain).not.toHaveProperty("disabledContributions");
+  });
+
+  it("omits sockets entirely when the manifest could not be parsed", async () => {
+    const { service } = stubInstallService({ list: () => [installed({ manifest: null })] });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    // Same rule as tabs: an empty array would claim the plugin declares no
+    // sockets, when the truth is this host could not read whether it does.
+    expect(record).not.toHaveProperty("sockets");
   });
 
   it("says a plugin is definitively not a theme when the manifest declares none", async () => {

@@ -90,6 +90,7 @@ const AUTOMATION_ACTION_TYPE_SET = new Set<string>([
   "run-tests",
   "run-command",
   "ade-action",
+  "plugin",
 ]);
 const OPTIONAL_STRING_SCHEMA = z.string().optional().catch(undefined);
 const OPTIONAL_NUMBER_SCHEMA = z.number().finite().optional().catch(undefined);
@@ -486,6 +487,8 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const changedFields = asStringArray(value.changedFields);
   const secretRef = asString(value.secretRef);
   const repo = asString(value.repo);
+  const pluginId = asString(value.pluginId)?.trim();
+  const pluginTrigger = asString(value.pluginTrigger)?.trim();
   const draftStateRaw = asString(value.draftState)?.trim();
   const activeHours = coerceAutomationActiveHours(value.activeHours);
   if (cron != null) out.cron = cron;
@@ -507,6 +510,12 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (changedFields != null) out.changedFields = changedFields;
   if (secretRef != null) out.secretRef = secretRef;
   if (repo != null) out.repo = repo;
+  // Kept whichever half is present rather than dropped as a pair: a rule
+  // missing one of them must reach validation as the incomplete rule it is, so
+  // the user is told what to fix. Silently dropping both would present a
+  // `plugin` trigger with no identity as if it were what they wrote.
+  if (pluginId) out.pluginId = pluginId;
+  if (pluginTrigger) out.pluginTrigger = pluginTrigger;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
   return out;
@@ -608,6 +617,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
       }
     : undefined;
   const adeAction = coerceRunAdeActionConfig(value.adeAction);
+  const pluginStep = coercePluginStepConfig(value.pluginStep);
   const prompt = asString(value.prompt);
   const sessionTitle = asString(value.sessionTitle);
   const modelConfig = coerceModelConfig(value.modelConfig);
@@ -629,6 +639,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (parentLaneId) out.parentLaneId = parentLaneId;
   if (laneDeleteOptions && Object.keys(laneDeleteOptions).length > 0) out.laneDeleteOptions = laneDeleteOptions;
   if (adeAction != null) out.adeAction = adeAction;
+  if (pluginStep != null) out.pluginStep = pluginStep;
   if (prompt != null) out.prompt = prompt;
   if (sessionTitle != null) out.sessionTitle = sessionTitle;
   if (modelConfig != null) out.modelConfig = modelConfig;
@@ -636,6 +647,19 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (permissionConfig != null) out.permissionConfig = permissionConfig;
 
   return out;
+}
+
+function coercePluginStepConfig(value: unknown): AutomationAction["pluginStep"] | undefined {
+  if (!isRecord(value)) return undefined;
+  const pluginId = asString(value.pluginId)?.trim();
+  const action = asString(value.action)?.trim();
+  if (!pluginId || !action) return undefined;
+  // `args` is a record only — unlike `adeAction.args`, which also accepts a
+  // positional array because it calls arbitrary ADE service methods.
+  // `plugin.invoke` takes exactly one argument bag, so an array here would be
+  // a shape the invoke path cannot use.
+  const args = isRecord(value.args) ? (value.args as Record<string, unknown>) : undefined;
+  return { pluginId, action, ...(args !== undefined ? { args } : {}) };
 }
 
 function coerceRunAdeActionConfig(value: unknown): AutomationAction["adeAction"] | undefined {
@@ -2366,6 +2390,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
         ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
         ...(trigger.repo ? { repo: trigger.repo.trim() } : {}),
+        ...(trigger.pluginId ? { pluginId: trigger.pluginId.trim() } : {}),
+        ...(trigger.pluginTrigger ? { pluginTrigger: trigger.pluginTrigger.trim() } : {}),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
@@ -2401,6 +2427,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
         ...(action.parentLaneId ? { parentLaneId: action.parentLaneId.trim() } : {}),
         ...(action.adeAction ? { adeAction: action.adeAction } : {}),
+        ...(action.pluginStep ? { pluginStep: action.pluginStep } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       })),
@@ -2424,6 +2451,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
             ...(action.parentLaneId ? { parentLaneId: action.parentLaneId.trim() } : {}),
             ...(action.adeAction ? { adeAction: action.adeAction } : {}),
+            ...(action.pluginStep ? { pluginStep: action.pluginStep } : {}),
             ...(action.prompt ? { prompt: action.prompt } : {}),
             ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
           })),
@@ -2831,6 +2859,18 @@ function validateEffectiveConfig(
       if ((trigger.type === "github-webhook" || trigger.type === "webhook") && !(trigger.secretRef ?? "").trim()) {
         issues.push({ path: `${tp}.secretRef`, message: "Webhook triggers require secretRef" });
       }
+      // An error rather than a dropped field. `triggerMatches` fails a
+      // plugin trigger missing either half closed, so saving one would produce
+      // a rule that is enabled, looks armed, and can never fire — the failure a
+      // user cannot diagnose from the rule alone.
+      if (trigger.type === "plugin") {
+        if (!(trigger.pluginId ?? "").trim()) {
+          issues.push({ path: `${tp}.pluginId`, message: "Plugin triggers require pluginId" });
+        }
+        if (!(trigger.pluginTrigger ?? "").trim()) {
+          issues.push({ path: `${tp}.pluginTrigger`, message: "Plugin triggers require pluginTrigger" });
+        }
+      }
     }
 
     if (rule.executor.mode !== "automation-bot") {
@@ -2914,6 +2954,9 @@ function validateEffectiveConfig(
         }
         if (type === "ade-action" && (!(action.adeAction?.domain ?? "").trim() || !(action.adeAction?.action ?? "").trim())) {
           issues.push({ path: `${ap}.adeAction`, message: "ade-action requires domain and action" });
+        }
+        if (type === "plugin" && (!(action.pluginStep?.pluginId ?? "").trim() || !(action.pluginStep?.action ?? "").trim())) {
+          issues.push({ path: `${ap}.pluginStep`, message: "plugin steps require pluginId and action" });
         }
       }
     }

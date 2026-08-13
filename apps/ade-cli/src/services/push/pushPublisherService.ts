@@ -81,6 +81,16 @@ const SHUTDOWN_PUBLISH_TIMEOUT_MS = 2_500;
 const AGENT_RUNS_MAX = 3;
 const PR_LIVE_ACTIVITY_MAX = 2;
 const DETAIL_MAX_CHARS = 160;
+/**
+ * Ceilings for the two plugin-authored strings that reach an APNs title.
+ *
+ * The SDK server already bounds `title` and `body` before a post is accepted;
+ * these are the second copy, applied on the transport that builds the payload,
+ * because `pluginLabel` reaches this function from the MANIFEST rather than
+ * from the call and so is bounded by whatever parsed it, not by the verb.
+ */
+const PLUGIN_PUSH_LABEL_MAX_CHARS = 48;
+const PLUGIN_PUSH_TITLE_MAX_CHARS = 120;
 /** Fixed lock-screen copy for failed runs — never leak error text to the widget. */
 const FAILED_DETAIL = "Run failed";
 
@@ -151,6 +161,25 @@ export type PushSessionAttentionRequest = {
   laneId?: string | null;
 };
 
+/**
+ * A notification a plugin asked for, on its way to the user's phones.
+ *
+ * Separate from {@link PushSessionAttentionRequest} because it is not about a
+ * session: there is no run to put in `waiting_for_input`, no transcript to open
+ * and nothing for the user to answer. Routing it through the attention path
+ * would mint a fake run that shows up in the badge count and the Live Activity
+ * as work awaiting the user, which is a lie about what happened.
+ *
+ * `pluginLabel` is the plugin's `displayName`, resolved host-side by the SDK
+ * server. It is not optional and it is not the plugin's to choose.
+ */
+export type PushPluginNotificationRequest = {
+  pluginId: string;
+  pluginLabel: string;
+  title: string;
+  body?: string;
+};
+
 type PendingAlert = {
   sessionId: string | null;
   dedupeKey: string;
@@ -168,6 +197,14 @@ type PendingAlert = {
   itemId?: string | null;
   /** UNNotificationCategory identifier binding actionable buttons on iOS. */
   category?: string | null;
+  /**
+   * True when `dedupeKey` is minted fresh for this one alert and can never
+   * recur. Its fingerprint is therefore never read back, so recording one only
+   * grows `lastAlertFingerprintByKey` forever — and unlike the session-scoped
+   * keys, which `clearAlertDedupe` retires when the session resolves, nothing
+   * would ever remove it on a daemon that stays up for months.
+   */
+  singleUseDedupeKey?: boolean;
 };
 
 type PushAgentChatService = {
@@ -476,6 +513,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const lastMachineSnapshotItems = new Map<string, AttentionItem>();
   let lastMachineSnapshotAccountOwnerId: string | null | undefined;
   let pendingAlerts: PendingAlert[] = [];
+  /**
+   * Makes each plugin notification's dedupe key unique. In-memory only: its job
+   * is to stop two posts inside one flush window from coalescing, and a restart
+   * has already drained the queue that could have collided.
+   */
+  let pluginNotificationSequence = 0;
   const lastAlertFingerprintByKey = new Map<string, Map<string, string>>();
   const lastPublishedFingerprintById = new Map<string, string>();
   const initialAccountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
@@ -1731,6 +1774,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         const outcome = alertVerdicts?.[index];
         if (
           attempt.alert
+          && !attempt.alert.singleUseDedupeKey
           && attempt.fingerprint
           && (alertVerdicts == null || outcome?.delivered || outcome?.suppressed)
         ) {
@@ -2471,6 +2515,77 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         interruptionLevel: "time-sensitive",
       });
       scheduleFlush(true);
+    },
+
+    /**
+     * Push one plugin's notification to this account's phones.
+     *
+     * Returns whether there was anywhere to send it — a machine with no paired,
+     * alert-capable device answers false so the SDK can tell the plugin nothing
+     * was reached, rather than resolving as if a phone had buzzed. It is not a
+     * delivery receipt: the actual send happens on the next flush, and the
+     * relay's own outcome reporting is what decides retries.
+     */
+    publishPluginNotification(request: PushPluginNotificationRequest): boolean {
+      if (disposed || machineRevoked) return false;
+      // A paired phone is not the same as a phone that will show this. The
+      // flush applies `shouldDeliverAlertForPrefs` per device, so a post made
+      // with notifications switched off or inside quiet hours is enqueued,
+      // dropped, and reported to the plugin as `delivered: ["mobile"]` — the
+      // one claim the SDK makes that the user can directly contradict by
+      // looking at their phone. Evaluating the same predicate here makes the
+      // answer honest at post time.
+      //
+      // Post time, not flush time: state can still change in the seconds
+      // between (quiet hours starting, the user unpairing), and no cheap
+      // mechanism reports that back to a plugin whose call already resolved.
+      // This closes the case that is knowable now, which is every case the
+      // reviewer could reproduce.
+      const nowMs = Date.now();
+      const reachable = deps.store.listDevices().some((device) =>
+        Boolean(device.apnsToken)
+        // `sessionId` is null: a plugin's post is not about one chat, so a
+        // per-session mute cannot apply to it.
+        && shouldDeliverAlertForPrefs(device.prefs, null, nowMs));
+      if (!reachable) return false;
+      pluginNotificationSequence += 1;
+      // ATTRIBUTION IN THE TITLE, not the subtitle. A subtitle renders on iOS
+      // but the title is the one field that is always shown and never elided
+      // from the front, so a prefix is the only placement where the plugin's
+      // name survives a truncated notification on a locked screen.
+      // Clamped HERE as well as on the desktop notification leg. `pluginLabel`
+      // is `manifest.displayName`, a string a third party writes; the desktop
+      // bridge cuts its copy to 48 characters and the mobile fan-out shares the
+      // same value, so leaving this leg unclamped meant one manifest field
+      // could push an APNs payload past the 4 KiB limit and fail the whole
+      // batch — including the session alerts riding with it.
+      const label = request.pluginLabel.slice(0, PLUGIN_PUSH_LABEL_MAX_CHARS);
+      const title = `${label}: ${request.title.slice(0, PLUGIN_PUSH_TITLE_MAX_CHARS)}`;
+      enqueueAlert({
+        sessionId: null,
+        singleUseDedupeKey: true,
+        // Unique per post rather than one key per plugin: a shared key would
+        // make two notifications inside the same flush window coalesce, and the
+        // user would silently lose the first. Posts are already bounded by the
+        // SDK's per-plugin rate limit, so there is nothing left for a dedupe key
+        // to protect against here.
+        dedupeKey: `alert:plugin:${request.pluginId}:${pluginNotificationSequence}`,
+        render: () => ({ title, body: request.body ?? null }),
+        // Tapping it opens the plugin that sent it, which is the only place the
+        // user could act on whatever it said.
+        deepLink: `ade://plugin/${request.pluginId}`,
+        // Grouped per plugin so a chatty package collapses into one thread on
+        // the phone instead of interleaving with ADE's own session alerts.
+        threadId: `plugin:${request.pluginId}`,
+        phase: "terminal",
+        // Deliberately NOT "time-sensitive". That level breaks through Focus
+        // modes, and it is reserved for ADE's own "your agent is blocked on
+        // you" — an installed package does not get to decide that its news
+        // outranks the user's Do Not Disturb.
+        interruptionLevel: "active",
+      });
+      scheduleFlush(true);
+      return true;
     },
 
     handleSessionAttentionResolved(scopeKey: string | null, sessionId: string): void {

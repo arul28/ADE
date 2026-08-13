@@ -157,6 +157,29 @@ export function agentStatusGlyph(kind: AgentStatusKind): string {
 // Status rail glyph (left vertical bar) used in drawer rows + agents pane selected row.
 const RAIL_GLYPH = "▎";
 
+/**
+ * The plugin vocabulary's four semantic tones, as terminal tokens.
+ *
+ * Color discipline is ADE's, never the plugin's: a schema or a socket payload
+ * names a tone and this table picks the token, so a plugin cannot paint the
+ * terminal green — which stays reserved for running and success. It lives here
+ * rather than beside one renderer because a plugin's badge appears in two
+ * places now (a panel row and a drawer row) and they have to agree; the same
+ * warning that is amber inside a panel must not be grey two lines above it.
+ */
+const VOCAB_TONE_COLOR = {
+  neutral: T2,
+  accent: VIOLET,
+  success: DONE,
+  warning: ATTENTION,
+} as const;
+
+export type VocabToneName = keyof typeof VOCAB_TONE_COLOR;
+
+export function vocabToneColor(tone: VocabToneName): string {
+  return VOCAB_TONE_COLOR[tone] ?? T2;
+}
+
 export const theme = {
   color: {
     // Brand
@@ -249,5 +272,6 @@ export const theme = {
   laneStatusColor,
   agentStatusColor,
   agentStatusGlyph,
+  vocabToneColor,
   rail: RAIL_GLYPH,
 } as const;

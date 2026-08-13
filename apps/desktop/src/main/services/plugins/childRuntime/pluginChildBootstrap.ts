@@ -18,6 +18,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+import { isPathInside } from "../../shared/pathCompare";
 import {
   decodePluginFrame,
   encodePluginFrame,
@@ -26,14 +27,16 @@ import {
   PluginSdkError,
   toPluginStructuralError,
   type AdePluginSdk,
+  type PluginAnyEventPayload,
   type PluginAudioClip,
   type PluginChildFrame,
   type PluginCollectionRow,
   type PluginEventName,
-  type PluginEventPayload,
   type PluginHostFrame,
   type PluginLogLevel,
   type PluginModule,
+  type PluginNotificationResult,
+  type PluginSchedule,
   type PluginSdkMethod,
 } from "../../../../shared/plugins/sdk";
 import type { PluginManifest } from "../../../../shared/plugins/manifest";
@@ -121,7 +124,7 @@ function resolveEntryPath(pluginRoot: string, entry: string): string {
   const root = fs.realpathSync(pluginRoot);
   const resolved = path.resolve(root, entry);
   const real = fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
-  if (real !== root && !real.startsWith(`${root}${path.sep}`)) {
+  if (!isPathInside(real, root)) {
     throw new PluginSdkError("not_permitted", `Plugin entry "${entry}" resolves outside the plugin directory.`);
   }
   return real;
@@ -133,7 +136,7 @@ export function runPluginChild(): void {
   if (!pluginId || !pluginRootEnv) fatal(new Error("ADE_PLUGIN_ID and ADE_PLUGIN_ROOT are required."));
 
   const pendingSdk = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-  const listeners = new Map<PluginEventName, Set<(payload: PluginEventPayload) => void>>();
+  const listeners = new Map<PluginEventName, Set<(payload: PluginAnyEventPayload) => void>>();
   let pluginModule: PluginModule | null = null;
   let started = false;
 
@@ -147,6 +150,21 @@ export function runPluginChild(): void {
       pendingSdk.set(requestId, { resolve, reject });
       writeFrame({ type: "sdk", requestId, method, params });
     });
+  };
+
+  /**
+   * Tell the host this child does or does not want an event kind.
+   *
+   * Deliberately not awaited and deliberately swallowed. `ade.events.on` is a
+   * synchronous call that returns an unsubscribe function, so there is nothing
+   * to hand a rejection to — and an unhandled one here would reach the child's
+   * `unhandledRejection` handler, which is fatal. An older host that has never
+   * heard of the method answers `unsupported_method`; the plugin's listener
+   * still works for every event that host broadcasts, which is exactly the
+   * additive-handshake promise.
+   */
+  const tellHostSubscription = (event: PluginEventName, subscribed: boolean): void => {
+    void callHost("events.subscribe", { event, subscribed }).catch(() => {});
   };
 
   let helloSdkVersion = 0;
@@ -191,14 +209,23 @@ export function runPluginChild(): void {
     },
     events: {
       on: (event, listener) => {
+        const wrapped = listener as (payload: PluginAnyEventPayload) => void;
         let set = listeners.get(event);
         if (!set) {
           set = new Set();
           listeners.set(event, set);
         }
-        set.add(listener);
+        const wasEmpty = set.size === 0;
+        set.add(wrapped);
+        // The host delivers a runtime hook only to the children that asked for
+        // it — `tool.before` fires dozens of times a turn, and a plugin that
+        // never listens should not be written to at all. Told on the FIRST
+        // listener for a kind and untold on the last, so a plugin that adds and
+        // drops listeners does not restate the subscription per call.
+        if (wasEmpty) tellHostSubscription(event, true);
         return () => {
-          set?.delete(listener);
+          if (!set?.delete(wrapped)) return;
+          if (set.size === 0) tellHostSubscription(event, false);
         };
       },
     },
@@ -214,6 +241,48 @@ export function runPluginChild(): void {
       captureClip: async (options) => (
         await callHost("audio.captureClip", { options: options ?? {} })
       ) as PluginAudioClip,
+    },
+    notifications: {
+      post: async (input) => (
+        await callHost("notifications.post", { input: input ?? {} })
+      ) as PluginNotificationResult,
+    },
+    schedules: {
+      create: async (input) => (
+        await callHost("schedules.create", { input: input ?? {} })
+      ) as PluginSchedule,
+      list: async () => (await callHost("schedules.list", {})) as PluginSchedule[],
+      delete: async (scheduleId) => {
+        await callHost("schedules.delete", { scheduleId });
+      },
+    },
+    automations: {
+      emitTrigger: async (input) => {
+        await callHost("automations.emitTrigger", { input: input ?? {} });
+      },
+    },
+    clipboard: {
+      read: async () => (await callHost("clipboard.read", {})) as string,
+      write: async (text) => {
+        await callHost("clipboard.write", { text });
+      },
+    },
+    dialogs: {
+      pickFile: async (options) => (
+        await callHost("dialogs.pickFile", { options: options ?? {} })
+      ) as string,
+    },
+    memory: {
+      get: (key) => callHost("memory.get", { key }),
+      set: async (key, value) => {
+        await callHost("memory.set", { key, value });
+      },
+      delete: async (key) => {
+        await callHost("memory.delete", { key });
+      },
+      list: async (options) => (
+        await callHost("memory.list", { options: options ?? {} })
+      ) as PluginCollectionRow[],
     },
     log: emitLog,
   });

@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   hasPluginActionComposerRequest,
+  hasPluginActionDialogRequest,
   isPluginCollectionIfFull,
   PLUGIN_COLLECTION_IF_FULL_MODES,
   PLUGIN_COMPOSER_TEXT_MAX_BYTES,
+  PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES,
   pluginCollectionPutParams,
   readPluginActionComposerEdit,
+  readPluginActionDialogEdit,
 } from "./sdk";
 
 describe("collections.put wire shape", () => {
@@ -76,5 +79,61 @@ describe("composer edits in an action response", () => {
     expect(hasPluginActionComposerRequest({ composer: { insertText: "" } })).toBe(true);
     expect(hasPluginActionComposerRequest({ ok: true })).toBe(false);
     expect(hasPluginActionComposerRequest(null)).toBe(false);
+  });
+});
+
+describe("dialog edits in an action response", () => {
+  it("writes one allowlisted field of the dialog it was read for", () => {
+    expect(readPluginActionDialogEdit({ dialog: { setField: { field: "name", value: "fix-auth" } } }, "create-lane"))
+      .toEqual({ field: "name", value: "fix-auth" });
+    expect(readPluginActionDialogEdit({ dialog: { setField: { field: "body", value: "Closes ISS-14" } } }, "create-pr"))
+      .toEqual({ field: "body", value: "Closes ISS-14" });
+  });
+
+  /**
+   * The allowlist is per dialog, and the only layer that knows which dialog is
+   * open is the one holding it. A create-lane section returning a PR field is
+   * not a partial success to filter downstream — it is an edit for a dialog the
+   * user is not looking at.
+   */
+  it("refuses a field that belongs to a different dialog", () => {
+    const result = { dialog: { setField: { field: "body", value: "..." } } };
+    expect(readPluginActionDialogEdit(result, "create-lane")).toBeNull();
+    expect(readPluginActionDialogEdit(result, "manage-lane")).toBeNull();
+    expect(readPluginActionDialogEdit(result, "create-pr")).toEqual({ field: "body", value: "..." });
+  });
+
+  // Confirmation controls are not fields. A section that could arm the reclaim
+  // phrase would leave the user one keystroke from confirming a delete.
+  it("reaches no confirmation control, whatever the plugin names", () => {
+    for (const field of ["reclaimConfirm", "discardDirtyConfirmed", "activeTab", "__proto__"]) {
+      expect(readPluginActionDialogEdit({ dialog: { setField: { field, value: "yes" } } }, "manage-lane")).toBeNull();
+    }
+  });
+
+  it("reads anything unrecognizable as no edit at all", () => {
+    for (const result of [null, "nope", {}, { dialog: {} }, { dialog: { setField: {} } },
+      { dialog: { setField: { field: "name" } } },
+      { dialog: { setField: { field: "name", value: 7 } } }]) {
+      expect(readPluginActionDialogEdit(result, "create-lane")).toBeNull();
+    }
+  });
+
+  // Same rule as the composer: dropped, never truncated. A half-written branch
+  // name that then gets created is worse than a field that stayed empty.
+  it("drops an over-long value rather than truncating it", () => {
+    const value = "x".repeat(PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES + 1);
+    expect(readPluginActionDialogEdit({ dialog: { setField: { field: "body", value } } }, "create-pr")).toBeNull();
+    const atLimit = "x".repeat(PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES);
+    expect(readPluginActionDialogEdit({ dialog: { setField: { field: "body", value: atLimit } } }, "create-pr"))
+      .toEqual({ field: "body", value: atLimit });
+  });
+
+  // "Said nothing" and "asked for something this dialog refused" are different
+  // events, and only the second is worth telling anyone about.
+  it("separates a refused request from no request at all", () => {
+    expect(hasPluginActionDialogRequest({ dialog: { setField: { field: "body", value: "x" } } })).toBe(true);
+    expect(hasPluginActionDialogRequest({ navigate: { panelId: "main" } })).toBe(false);
+    expect(hasPluginActionDialogRequest({ dialog: {} })).toBe(false);
   });
 });

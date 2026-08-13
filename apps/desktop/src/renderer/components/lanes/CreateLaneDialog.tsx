@@ -13,7 +13,7 @@ import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LaneColorPicker } from "./LaneColorPicker";
-import { colorsInUse, nextAvailableColor } from "./laneColorPalette";
+import { colorsInUse, nextAvailableColor, LANE_COLOR_PALETTE } from "./laneColorPalette";
 import { BranchPickerView } from "./BranchPickerView";
 import { formatRelativeTime } from "./branchPickerSearch";
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
@@ -21,6 +21,8 @@ import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisp
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
+import { PluginDialogSections } from "../plugins/sockets";
+import type { PluginDialogField } from "../../../shared/plugins/sockets";
 import { listNewLaneBaseOptions } from "./newLaneBaseSource";
 import { LaneMachineSelector } from "./LaneMachineSelector";
 import type { LaneMachineOption } from "./laneMachines";
@@ -110,6 +112,7 @@ export function CreateLaneDialog({
   createChildBaseBranch,
   setCreateChildBaseBranch,
   projectRoot,
+  projectKey = null,
   createBranches,
   lanes,
   onSubmit,
@@ -156,6 +159,8 @@ export function CreateLaneDialog({
   setCreateChildBaseBranch: (v: string) => void;
   /** Project scope for shared Linear issue browser cache/filter persistence. */
   projectRoot?: string | null;
+  /** The open project binding's stable key, for a contributed section's context. */
+  projectKey?: string | null;
   createBranches: LaneBranchOption[];
   lanes: LaneSummary[];
   onSubmit: () => void;
@@ -214,7 +219,7 @@ export function CreateLaneDialog({
   }, [lanes]);
 
   // One machine behaves exactly as before: no selector, no extra chrome.
-  const machineOptions = machines ?? [];
+  const machineOptions = React.useMemo(() => machines ?? [], [machines]);
   const showMachineSelector = machineOptions.length > 1 && !!onSelectMachine;
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
@@ -276,6 +281,86 @@ export function CreateLaneDialog({
     }
     importBranchAutoNameRef.current = null;
   }, [createLaneName, selectedLinearIssue, setCreateLaneName]);
+
+  /**
+   * A `{dialog:{setField}}` response from a contributed section.
+   *
+   * Every arm writes the same state the matching control writes, so the value
+   * lands where the user can see and change it before pressing Create — which
+   * is the point: a plugin prefills this form, it never submits it.
+   *
+   * The three arms backed by a closed list (parent lane, template, machine, and
+   * the colour palette) accept only a value that list currently offers. A
+   * `<select>` handed an id it has no option for renders blank, so accepting
+   * one would EMPTY the control the plugin meant to fill. Free text — the name —
+   * is written verbatim; the dialog's own validation is what judges it.
+   */
+  const handlePluginSetField = React.useCallback(
+    (field: PluginDialogField<"create-lane">, value: string): boolean => {
+      // Mid-creation the whole form is disabled; a write here would be a value
+      // the user cannot correct before it is used.
+      if (busy || laneCreated) return false;
+      switch (field) {
+        case "name":
+          handleSetCreateLaneName(value);
+          return true;
+        case "baseBranch": {
+          const option = baseBranchOptions.find((entry) => entry.ref === value);
+          if (!option) return false;
+          setCreateBaseBranch(option.ref);
+          return true;
+        }
+        case "parentLaneId": {
+          const parent = lanes.find((lane) => lane.id === value);
+          if (!parent) return false;
+          // The parent select exists only in child mode, so setting a parent
+          // without the mode would be a write nothing on screen reflects.
+          setCreateMode("child");
+          setCreateChildBaseBranch("");
+          setCreateParentLaneId(parent.id);
+          return true;
+        }
+        case "templateId": {
+          // Empty clears the selection, exactly as picking "None" does.
+          if (value !== "" && !templates.some((template) => template.id === value)) return false;
+          setSelectedTemplateId(value);
+          return true;
+        }
+        case "color": {
+          const entry = LANE_COLOR_PALETTE.find(
+            (candidate) => candidate.hex.toLowerCase() === value.trim().toLowerCase(),
+          );
+          if (!entry) return false;
+          setSelectedColor(entry.hex);
+          return true;
+        }
+        case "machineId": {
+          if (!onSelectMachine) return false;
+          if (!machineOptions.some((machine) => machine.id === value)) return false;
+          onSelectMachine(value);
+          return true;
+        }
+        default:
+          return false;
+      }
+    },
+    [
+      baseBranchOptions,
+      busy,
+      handleSetCreateLaneName,
+      laneCreated,
+      lanes,
+      machineOptions,
+      onSelectMachine,
+      setCreateBaseBranch,
+      setCreateChildBaseBranch,
+      setCreateMode,
+      setCreateParentLaneId,
+      setSelectedColor,
+      setSelectedTemplateId,
+      templates,
+    ],
+  );
 
   const prByBranch = React.useMemo(() => {
     const map = new Map<string, BranchPullRequest>();
@@ -755,6 +840,16 @@ export function CreateLaneDialog({
             </div>
           </div>
         </details>
+
+        {/* Contributed sections, after every field the dialog owns and before
+            the setup progress the submit produces. */}
+        <PluginDialogSections
+          dialog="create-lane"
+          laneName={createLaneName || null}
+          projectKey={projectKey}
+          onSetField={handlePluginSetField}
+          active={open}
+        />
 
         {setupStatus || setupSteps.length > 0 ? (
           <section

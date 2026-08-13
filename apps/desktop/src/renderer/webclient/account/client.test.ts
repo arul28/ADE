@@ -676,8 +676,14 @@ describe("BrowserAccountClient", () => {
       imageUrl: "https://img.clerk.com/profile.png",
     });
     await expect(sessionStore.load()).resolves.toMatchObject({ refreshToken: "refresh-rotated" });
+    // The avatar above is an `https://img.clerk.com` URL the app renders as an
+    // <img>, so the hosted policy has to admit it or every signed-in reader
+    // gets a broken profile picture. Asserted as "the directive admits an https
+    // origin" rather than as one literal host list: the same directive also
+    // carries plugin panel media, which named no host it could be pinned to.
     const hostedHeaders = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
-    expect(hostedHeaders).toContain("img-src 'self' data: blob: https://img.clerk.com");
+    const imgSrc = /img-src ([^;]+);/.exec(hostedHeaders)?.[1] ?? "";
+    expect(imgSrc).toMatch(/(^|\s)(https:|https:\/\/img\.clerk\.com)(\s|$)/);
 
     vi.spyOn(sessionStore, "clear").mockRejectedValueOnce(new Error("IndexedDB unavailable."));
     await expect(restoredClient.signOut()).resolves.toMatchObject({

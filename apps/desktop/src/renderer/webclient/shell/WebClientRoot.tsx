@@ -129,10 +129,17 @@ const APP_ROUTE_ROOTS = [
   "/chats",
   // Machine-level like /chats: the Marketplace reads and installs through the
   // sync adapter, so a reload on it must land in the App rather than the
-  // sign-in shell. `/plugin/:id` deliberately stays off this list — a plugin
-  // tab is gated on a host capability this static allowlist cannot probe, so a
-  // deep link to one would restore a nav entry the rail refuses to offer.
+  // sign-in shell.
   "/marketplace",
+  // A plugin's own tab. It is on the list even though the nav rail offers it
+  // conditionally (`pluginTabsAvailable`), because the two questions are
+  // different: the rail asks "should this be advertised", and this list asks
+  // "is this address the App's to answer". Leaving it off made a reload on a
+  // panel — or a shared link to one — drop the reader at the welcome surface
+  // with nothing said. Landing in the App instead lets `PluginTabPage` give the
+  // real answer it already has for every state: the panel, "Not installed
+  // here", or "Turned off".
+  "/plugin",
 ];
 
 function isAppRoute(pathname: string): boolean {

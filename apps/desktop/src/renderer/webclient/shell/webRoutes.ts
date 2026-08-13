@@ -20,8 +20,13 @@
 import {
   ADE_DEEPLINK_HTTPS_BASE_URL,
   parseDeeplink,
+  parseDeeplinkPluginContext,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
+import {
+  isValidPluginId,
+  isValidPluginManifestIdentifier,
+} from "../../../shared/plugins/manifest";
 
 // A base only used to give relative paths a parseable origin; never emitted.
 const DUMMY_ORIGIN = "https://web-shell.invalid";
@@ -51,15 +56,18 @@ export function parseOpenTarget(searchOrUrl: string): DeeplinkTarget | null {
  * Map a deeplink target to the shared App route that renders it, or null when
  * this client has no route for it.
  *
- * Null is a real answer, not a failure to write a case. A plugin panel is the
- * one target the hosted client may genuinely be unable to draw: `/plugin/:id`
- * is deliberately absent from the shell's `APP_ROUTE_ROOTS` because a plugin tab
- * is gated on a host capability the shell cannot probe before the adapter is up
- * (`pluginTabsAvailable` in `renderer/lib/webClientMode.ts`). Answering with a
- * plausible-looking route would land the reader on the Marketplace or an empty
- * shell and call it success; answering null lets each caller degrade where the
- * user can see it — a boot falls back to its welcome surface, an Activity click
- * navigates in place instead of opening a dead tab.
+ * Every target the grammar has now maps to a route, including `plugin`. That
+ * was not always true: the hosted client served no plugin panels, so a plugin
+ * link had no honest destination and this answered null. It does serve them now
+ * (`webclient/adapter/plugins.ts` reads panels off `plugin_subscribe` and runs
+ * their actions through `plugins.invoke`), and `/plugin/:pluginId` is the same
+ * route the desktop App mounts — so the mapping is a mapping, not a guess.
+ *
+ * What the route does NOT promise is that the panel exists on the connected
+ * machine. That question belongs to the page, which answers it where the reader
+ * can see it: `PluginTabPage` draws "Not installed here" for a plugin this
+ * machine does not have, exactly as desktop does. A null here would instead
+ * strand the link at the welcome surface with nothing said.
  */
 export function targetToWebPath(target: DeeplinkTarget): string | null {
   const params = new URLSearchParams();
@@ -105,7 +113,20 @@ export function targetToWebPath(target: DeeplinkTarget): string | null {
       if (target.branch) params.set("branch", target.branch);
       return withQuery("/work", params);
     case "plugin":
-      return null;
+      // Byte-identical to what `resolvePluginDeeplinkRouting` produces on
+      // desktop, down to the `encodeURIComponent` on the id and letting
+      // `URLSearchParams` do the only escaping. Two spellings of the same
+      // address is how a link works in one client and 404s in the other.
+      params.set("panel", target.panelId);
+      if (target.context) {
+        try {
+          params.set("ctx", JSON.stringify(target.context));
+        } catch {
+          // Unserializable context is dropped, never fatal: the panel is what
+          // the link was for.
+        }
+      }
+      return withQuery(`/plugin/${encodeURIComponent(target.pluginId)}`, params);
   }
 }
 
@@ -200,6 +221,24 @@ export function parseWebPath(pathAndQuery: string): DeeplinkTarget | null {
       return { kind: "linear-issue", issueIdentifier, ...(branch ? { branch } : {}) };
     }
     return null;
+  }
+
+  if (pathname.startsWith("/plugin/")) {
+    // The id is one path segment: `/plugin/<id>` and nothing deeper. A longer
+    // path is not a panel address in any client, so it is refused rather than
+    // truncated to the first segment and opened as something the reader did
+    // not ask for.
+    const segments = pathname.slice("/plugin/".length).split("/");
+    if (segments.length !== 1) return null;
+    const pluginId = decodeURIComponent(segments[0] ?? "");
+    const panelId = params.get("panel");
+    // Both ids come from a URL a reader may have typed. The shared manifest
+    // parser is the authority on what is linkable — the same check the ade://
+    // and https:// parsers make — so an unlinkable pair answers null here
+    // instead of minting a target that would not parse back.
+    if (!isValidPluginId(pluginId) || !panelId || !isValidPluginManifestIdentifier(panelId)) return null;
+    const context = parseDeeplinkPluginContext(params.get("ctx"));
+    return { kind: "plugin", pluginId, panelId, ...(context ? { context } : {}) };
   }
 
   if (pathname === "/prs") {

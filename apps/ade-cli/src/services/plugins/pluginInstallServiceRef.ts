@@ -1,5 +1,9 @@
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import { PLUGIN_SERVICE_UNAVAILABLE_CODE } from "../../../../desktop/src/shared/plugins/sdk";
+// Type-only: the wire shape below is checked against the manifest's own socket
+// type at compile time, and a `import type` adds no runtime edge from the sync
+// layer to the manifest parser.
+import type { PluginManifestSocket } from "../../../../desktop/src/shared/plugins/manifest";
 
 /**
  * Late-bound handle to the plugin install service.
@@ -64,6 +68,91 @@ export type SyncPluginRecordTab = {
   icon?: string | null;
 };
 
+/**
+ * One socket declaration from a plugin's manifest, carried WHOLE.
+ *
+ * Every field of `PluginManifestSocket`, with the closed unions widened to
+ * plain `string`. The widening is the only intentional difference and it is the
+ * same rule {@link SyncPluginRecordTab} follows: this file is the WIRE shape,
+ * and a peer that predates a socket kind must be able to RECEIVE the row and
+ * drop it, not fail to parse the record that carries it. Readers validate
+ * against their own lists on arrival — `parsePluginContributionPayload` answers
+ * null for a kind it has never heard of, which is the intended degradation.
+ *
+ * Kept honest in two directions, because one is not enough:
+ *
+ *  - At RUNTIME the producer spreads the parsed declaration whole
+ *    (`toRecordSockets`), so nothing is filtered on the way out.
+ *  - At COMPILE TIME {@link UnaccountedManifestSocketField} below fails the
+ *    build if `PluginManifestSocket` grows a field this type does not name.
+ *
+ * The second exists because the first is invisible. This type was written as a
+ * hand-kept list and drifted within a single day — it carried `command` and
+ * `dialog` but not `description`, `argumentHint` or `section`, so a wire-
+ * resolved slash command lost its subtitle and a settings section forgot its
+ * page, with nothing erroring anywhere. A list that must be maintained by
+ * memory will be, eventually, wrong.
+ */
+export type SyncPluginRecordSocket = {
+  socket: string;
+  surface: string;
+  id: string;
+  /**
+   * NOT guaranteed to be an integer — the manifest parser accepts any finite
+   * number. A decoder that reads it as an integer type (Swift `Int`) will fail
+   * on a manifest that declares `order: 1.5`, taking the whole record with it,
+   * so read it as a floating-point number and sort on that.
+   */
+  order?: number;
+  label?: string;
+  icon?: string;
+  panelId?: string;
+  actionId?: string;
+  extensions?: string[];
+  filterKey?: string;
+  command?: string;
+  dialog?: string;
+  description?: string;
+  argumentHint?: string;
+  section?: string;
+};
+
+/**
+ * Manifest socket fields deliberately kept OFF the wire.
+ *
+ * `never` today: every field a plugin declares is something some client renders,
+ * so there has been no reason to withhold one. It exists so that withholding is
+ * a decision someone writes down — adding a name here is a two-second edit that
+ * leaves a record, where quietly omitting it from the type above is the drift
+ * this whole block exists to prevent.
+ */
+type OmittedManifestSocketField = never;
+
+/** Manifest socket fields this wire type neither carries nor declines. */
+type UnaccountedManifestSocketField = Exclude<
+  keyof PluginManifestSocket,
+  keyof SyncPluginRecordSocket | OmittedManifestSocketField
+>;
+
+/**
+ * The guard. A new `PluginManifestSocket` field fails the build here, naming
+ * itself, until it is either added to {@link SyncPluginRecordSocket} or listed
+ * in {@link OmittedManifestSocketField}.
+ *
+ * Deliberately NOT an index signature on the type above, which was the first
+ * attempt and is worse than nothing: `[key: string]: unknown` makes `keyof`
+ * resolve to `string`, so `Exclude` is always `never` and this check silently
+ * passes forever while the type it guards falls further behind.
+ */
+type ManifestSocketFieldsAccountedFor = [UnaccountedManifestSocketField] extends [never]
+  ? true
+  : {
+    error: "SyncPluginRecordSocket is missing a PluginManifestSocket field";
+    add_to_the_wire_type_or_to_OmittedManifestSocketField: UnaccountedManifestSocketField;
+  };
+const _manifestSocketFieldsAccountedFor: ManifestSocketFieldsAccountedFor = true;
+void _manifestSocketFieldsAccountedFor;
+
 export type SyncPluginInstallRecord = {
   pluginId: string;
   version: string;
@@ -82,7 +171,7 @@ export type SyncPluginInstallRecord = {
    * a theme, or whether it is actually running. The web client is the case that
    * forces it: plugin tabs simply do not appear there otherwise.
    *
-   * All three are OPTIONAL, and that is the contract, not laziness. A host that
+   * Every one is OPTIONAL, and that is the contract, not laziness. A host that
    * does not populate them must leave them absent so the reader can fall back to
    * "unknown" — `status: "none"`, no tabs, no theme. Filling them in with a
    * guess (`enabled ? "running" : "stopped"`) would put a green dot next to a
@@ -92,6 +181,32 @@ export type SyncPluginInstallRecord = {
   tabs?: SyncPluginRecordTab[];
   /** Present only for theme plugins. `tokens` stays opaque on this path. */
   theme?: { displayName: string; tokens: Record<string, unknown> } | null;
+  /**
+   * What this plugin adds to core surfaces — badges, menu items, toolbar
+   * buttons and the rest.
+   *
+   * The static half of the socket taxonomy, and the half a peer cannot derive:
+   * sockets live in the manifest on disk, which a browser has no access to. Its
+   * absence is why the hosted web client rendered NO sockets at all — the
+   * renderer's `manifestOf(source)` came back null and every static contribution
+   * was dropped before it could be parsed.
+   *
+   * Absent means "this host cannot see the manifest", the same as `tabs`. An
+   * empty array is the different, stronger claim that the manifest was read and
+   * declares none.
+   */
+  sockets?: SyncPluginRecordSocket[];
+  /**
+   * Manifest socket ids the user switched OFF.
+   *
+   * A list of what is off rather than what is on, because contributions are on
+   * by default: an absent field must read as "none are disabled", and a list of
+   * enabled ids could not express that without also being a claim about which
+   * sockets exist. Carried beside `sockets` because a reader that has the
+   * declarations but not the toggles would draw contributions the user has
+   * already dismissed.
+   */
+  disabledContributions?: string[];
 };
 
 export type SyncPluginInstallService = {

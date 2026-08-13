@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ArrowSquareOut,
   CaretRight,
   Cube,
   GitMerge,
+  PuzzlePiece,
   Warning,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
@@ -28,11 +29,13 @@ import {
 } from "./chatCardPrimitives";
 import { PluginInstallChatCard } from "./PluginInstallChatCard";
 import {
+  adeCardAuthorLabel,
   adeCardDeeplink,
   adeCardFallbackText,
   adeCardProgressTotal,
   isKnownAdeCardVariant,
   normalizeAdeCardTone,
+  readAdeCardAuthor,
   readAdeCardPluginInstall,
   type AdeCardIcon,
   type AdeCardPayload,
@@ -137,15 +140,57 @@ function trackedSpanText(card: AdeCardPayload): string | null {
   return text ? `tracked ${text}` : null;
 }
 
+/**
+ * "via <plugin>", for a card a plugin emitted.
+ *
+ * Quiet by design — it is a byline, not a badge. What it must never be is
+ * absent: a card in the transcript otherwise reads as something ADE observed,
+ * and installed code writing rows under ADE's own voice is the failure this
+ * whole field exists to prevent. The value is host-stamped
+ * (`main/services/chat/adeCardProvenance.ts`), so it names the package whose
+ * code ran and not whatever the payload claimed.
+ */
+function AdeCardAttribution({ label }: { label: string }) {
+  return (
+    <div
+      data-testid="ade-card-attribution"
+      className={cn("mt-1.5 flex items-center gap-1 text-fg/35", CHAT_CARD_MICRO_TEXT)}
+    >
+      <PuzzlePiece size={10} weight="bold" aria-hidden />
+      <span className="truncate">via {label}</span>
+    </div>
+  );
+}
+
 export function AdeCard({
   card,
   onAction,
+  panel,
+  pendingActionId = null,
 }: {
   card: AdeCardPayload;
   /** Host-specific dispatcher. The reserved `open` action is handled locally. */
   onAction?: (actionId: string) => void;
+  /**
+   * The action currently running, if the host tracks that.
+   *
+   * Per-action rather than one card-wide flag, and the difference is what a
+   * user reads: a card whose buttons all grey out on one press looks broken,
+   * while the pressed button saying "working" is the feedback they wanted. The
+   * host owns the state because only the host knows when the action settles.
+   */
+  pendingActionId?: string | null;
+  /**
+   * A plugin's panel, drawn inside the frame between the head row and the
+   * actions — the `chat-card` socket. Passed in rather than resolved here so
+   * this component stays free of plugin host calls and of hooks; the decision
+   * about whether the plugin may draw it belongs to
+   * `plugins/sockets/PluginChatCard.tsx`.
+   */
+  panel?: React.ReactNode;
 }) {
   const isLive = card.state === "live";
+  const author = readAdeCardAuthor(card);
 
   // Elapsed ticks only while live; the interval is torn down the moment the card
   // goes terminal (mirrors SubagentSpawnCard).
@@ -164,7 +209,13 @@ export function AdeCard({
   };
 
   // Unknown variant → fallbackText + deeplink. Never an empty row.
-  if (!known) {
+  //
+  // A hosted panel is the exception, and it has to be: `variant` is the
+  // PLUGIN's vocabulary on a plugin card, so a lint plugin's `"lint"` is
+  // unknown to this build by definition, and degrading a card whose content is
+  // right here to a one-line summary of itself would make the socket useless
+  // on the client that implements it.
+  if (!known && !panel) {
     const text = adeCardFallbackText(card);
     return (
       <div className={cn(CHAT_TRANSCRIPT_GLASS_CARD_CLASS, CHAT_CARD_WIDTH_CLASS, "px-3.5 py-2.5")}>
@@ -182,6 +233,7 @@ export function AdeCard({
             {deeplink ?? "Open"}
           </button>
         ) : null}
+        {author ? <AdeCardAttribution label={adeCardAuthorLabel(author)} /> : null}
       </div>
     );
   }
@@ -193,7 +245,18 @@ export function AdeCard({
   // something it cannot name.
   const pluginInstall = card.variant === "plugin_install" ? readAdeCardPluginInstall(card) : null;
   if (pluginInstall) {
-    return <PluginInstallChatCard install={pluginInstall} subtitle={card.subtitle} />;
+    const installCard = <PluginInstallChatCard install={pluginInstall} subtitle={card.subtitle} />;
+    // `card.plugin` is emitter-supplied, so an installed plugin can offer a
+    // SECOND plugin here. That is the one card in the set where an unattributed
+    // row does real damage — a consent surface reads as ADE vouching for what it
+    // is about to run — so the byline is not optional on this path either.
+    if (!author) return installCard;
+    return (
+      <div className={CHAT_CARD_WIDTH_CLASS}>
+        {installCard}
+        <AdeCardAttribution label={adeCardAuthorLabel(author)} />
+      </div>
+    );
   }
 
   const metrics = card.metrics ?? [];
@@ -219,7 +282,9 @@ export function AdeCard({
   // result collapses to a single hairline row.
   const detailRows = hasWarning ? warnRows : rows;
   const showDetail = detailRows.length > 0 && (hasWarning || isLive || card.variant === "proof_artifact");
-  const skin = hasWarning ? "rail" : showDetail || isLive || degradedReason ? "inset" : "line";
+  // A hosted panel always earns a box: a hairline row with a rendered panel
+  // hanging off it has no frame to say where the plugin's content ends.
+  const skin = hasWarning ? "rail" : showDetail || isLive || degradedReason || panel ? "inset" : "line";
 
   const metaParts = [
     hasWarning && progress ? `${progress.passed} passed` : null,
@@ -233,6 +298,17 @@ export function AdeCard({
     (action.id === "open" && navigable) || onAction != null
   ));
 
+  /**
+   * A card that hosts a panel is not itself a link.
+   *
+   * The panel has its own buttons, inputs and rows, and every one of them sits
+   * inside the click target the whole-card navigation would install — so a
+   * press on a plugin's own control would also navigate away from it. The
+   * `navTarget` stays reachable through an `open` action, which is a button the
+   * reader can see rather than a whole surface that turns out to be one.
+   */
+  const cardClickable = navigable && !panel;
+
   const inner = (
     <>
       <ChatCardRow
@@ -240,7 +316,7 @@ export function AdeCard({
         icon={variantIcon(card.variant)}
         align={card.subtitle || degradedReason ? "top" : "center"}
         meta={diff ? <ChatCardDiffStat additions={diff.additions} deletions={diff.deletions} /> : metaParts.join(" · ")}
-        action={navigable && !actions.length ? (
+        action={cardClickable && !actions.length ? (
           // A span, not a button: the whole card already navigates, and nesting
           // a second button here would make the card ambiguous to assistive
           // tech (and to `getByRole("button")`).
@@ -295,12 +371,16 @@ export function AdeCard({
         </ChatCardDetail>
       ) : null}
 
+      {/* The plugin's own panel, inside ADE's frame rather than instead of it. */}
+      {panel ? <div className="ml-[26px] mt-2">{panel}</div> : null}
+
       {actions.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/[0.06] pt-2">
           {actions.map((action) => (
             <ChatCardButton
               key={action.id}
               primary={action.kind === "primary"}
+              busy={pendingActionId === action.id}
               onClick={() => {
                 if (action.id === "open" && card.navTarget) {
                   openCard();
@@ -314,10 +394,12 @@ export function AdeCard({
           ))}
         </div>
       ) : null}
+
+      {author ? <AdeCardAttribution label={adeCardAuthorLabel(author)} /> : null}
     </>
   );
 
-  if (navigable) {
+  if (cardClickable) {
     // `div role="button"` rather than a real `<button>`: the actions row nests
     // buttons, and a button inside a button is invalid markup that React and
     // the browser both mishandle.

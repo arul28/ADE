@@ -167,4 +167,87 @@ describe("AdeCard", () => {
     expect(markup).not.toMatch(/\b(?:text|bg|border)-(?:red|rose)-/);
     expect(markup).toMatch(/amber/);
   });
+  describe("plugin attribution", () => {
+    it("bylines a plugin-emitted card, so a transcript row never wears ADE's voice by default", () => {
+      render(<AdeCard card={card({ authoredBy: { pluginId: "lint", displayName: "Lint" } })} />);
+      expect(screen.getByTestId("ade-card-attribution").textContent).toContain("via Lint");
+    });
+
+    it("falls back to the plugin id when the stamp carried no display name", () => {
+      render(<AdeCard card={card({ authoredBy: { pluginId: "lint" } })} />);
+      expect(screen.getByTestId("ade-card-attribution").textContent).toContain("via lint");
+    });
+
+    it("bylines the degraded row too — an unknown variant is where attribution matters most", () => {
+      render(
+        <AdeCard
+          card={card({ variant: "lint_report", authoredBy: { pluginId: "lint", displayName: "Lint" } })}
+        />,
+      );
+      expect(screen.getByText("3 cloud artifacts pulled into the lane")).toBeTruthy();
+      expect(screen.getByTestId("ade-card-attribution").textContent).toContain("via Lint");
+    });
+
+    it("says nothing at all about authorship on a card ADE emitted", () => {
+      render(<AdeCard card={card()} />);
+      expect(screen.queryByTestId("ade-card-attribution")).toBeNull();
+    });
+
+    it("bylines an install card a plugin offered — a consent surface must not read as ADE's", () => {
+      // `card.plugin` is emitter-supplied, so an installed plugin can offer a
+      // second one here. Unattributed, that reads as ADE vouching for the code
+      // the press is about to run.
+      render(
+        <AdeCard
+          card={card({
+            variant: "plugin_install",
+            plugin: { pluginId: "jira", displayName: "Jira", source: "npm:ade-plugin-jira" },
+            authoredBy: { pluginId: "lint", displayName: "Lint" },
+          })}
+        />,
+      );
+
+      expect(screen.getByText("Jira")).toBeTruthy();
+      expect(screen.getByTestId("ade-card-attribution").textContent).toContain("via Lint");
+    });
+
+    it("leaves ADE's own install card unattributed", () => {
+      render(
+        <AdeCard
+          card={card({
+            variant: "plugin_install",
+            plugin: { pluginId: "jira", displayName: "Jira", source: "npm:ade-plugin-jira" },
+          })}
+        />,
+      );
+
+      expect(screen.getByText("Jira")).toBeTruthy();
+      expect(screen.queryByTestId("ade-card-attribution")).toBeNull();
+    });
+  });
+
+  describe("hosted panel", () => {
+    it("renders the panel inside the frame and keeps the rest of the card", () => {
+      render(<AdeCard card={card()} panel={<div>panel body</div>} />);
+      expect(screen.getByText("panel body")).toBeTruthy();
+      expect(screen.getByText("Cloud artifacts pulled")).toBeTruthy();
+    });
+
+    it("draws a panel under a variant this build does not know, instead of degrading it away", () => {
+      render(<AdeCard card={card({ variant: "lint_report" })} panel={<div>panel body</div>} />);
+      expect(screen.getByText("panel body")).toBeTruthy();
+      expect(screen.queryByText("3 cloud artifacts pulled into the lane")).toBeNull();
+    });
+
+    it("does not turn the whole card into a link, which would swallow the panel's own controls", () => {
+      const { container } = render(
+        <AdeCard
+          card={card({ navTarget: { kind: "lane", laneId: "lane-1" } })}
+          panel={<button type="button">panel button</button>}
+        />,
+      );
+      expect(container.querySelector('[role="button"]')).toBeNull();
+      expect(screen.getByText("panel button")).toBeTruthy();
+    });
+  });
 });

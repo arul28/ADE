@@ -10,7 +10,10 @@ import {
   pluginMarketplaceCapabilities,
   setPluginEnabled,
   installPlugin,
+  invokePluginAction,
   listInstalledPlugins,
+  readPluginContributionRows,
+  readPluginManifest,
   readPluginCollection,
   readPluginPanel,
   readPluginPresence,
@@ -24,6 +27,8 @@ const project: ProjectInfo = { rootPath: "/repo", displayName: "Repo", baseRef: 
 
 const ALL_PLUGIN_ACTIONS = [
   "plugins.list",
+  "plugins.invoke",
+  "plugins.contributions",
   "plugins.install",
   "plugins.uninstall",
   "plugins.enable",
@@ -219,6 +224,160 @@ describe("web plugin namespace", () => {
     expect(fake.commandCalls[0]).toEqual({
       action: "plugins.enable",
       args: { pluginId: "graph", machineKey: "machine-b" },
+    });
+  });
+
+  it("runs a panel action over the remote command, argument names and all", async () => {
+    fake.commandResults.set("plugins.invoke", { ok: true, result: { saved: true } });
+    mounted = mountAdapter(fake);
+
+    const result = await invokePluginAction("graph", "refresh", { scope: "all" }, { timeoutMs: 5_000 });
+
+    // `actionId` and `payload`, not `action` and `args`. The desktop preload's
+    // spelling is not a transport error here — it reaches the handler with an
+    // empty argument object, so every form would submit blank.
+    expect(fake.commandCalls[0]).toEqual({
+      action: "plugins.invoke",
+      args: { pluginId: "graph", actionId: "refresh", payload: { scope: "all" } },
+    });
+    // The envelope is undone, so the panel reads the handler's own keys — which
+    // is what `readPluginActionNavigation` and `readPluginActionComposerEdit`
+    // look for. Left wrapped, every `{navigate:{…}}` would be one key too deep.
+    expect(result).toEqual({ saved: true });
+  });
+
+  it("keeps the envelope when a handler answered nothing but the host had a message", async () => {
+    fake.commandResults.set("plugins.invoke", { ok: true, message: "Nothing to do.", result: null });
+    mounted = mountAdapter(fake);
+
+    // Unwrapping to a bare null here would throw away the only thing the call
+    // produced; the caller can still show the message.
+    expect(await invokePluginAction("graph", "refresh"))
+      .toEqual({ ok: true, message: "Nothing to do.", result: null });
+
+    fake.commandResults.set("plugins.invoke", { ok: true, result: null });
+    expect(await invokePluginAction("graph", "refresh")).toBeNull();
+  });
+
+  it("refuses a panel action on a host that cannot run one, rather than resolving quietly", async () => {
+    fake.descriptors = descriptors(["plugins.list"]);
+    mounted = mountAdapter(fake);
+
+    // A mutation, so it must never degrade to a fallback: a button that
+    // resolves without running is the failure this contract exists to prevent.
+    await expect(invokePluginAction("graph", "refresh")).rejects.toThrow();
+    expect(fake.commandCalls).toEqual([]);
+  });
+
+  it("does not count invoke as a settings capability", () => {
+    mounted = mountAdapter(fake);
+
+    // `invoke`'s action names a handler the PLUGIN registered, so `config.set`
+    // sent through it reaches the plugin's own process rather than the store
+    // the settings form edits. Counting it would offer a form whose writes land
+    // somewhere else entirely.
+    expect(pluginMarketplaceCapabilities().config).toBe(false);
+  });
+
+  describe("socket data path", () => {
+    const listed = (overrides: Record<string, unknown> = {}) => ({
+      plugins: [{
+        pluginId: "graph",
+        version: "1.0.0",
+        enabled: true,
+        displayName: "Graph",
+        icon: "",
+        accent: "",
+        source: "registry",
+        installedAt: "2026-08-11T00:00:00.000Z",
+        sockets: [{ socket: "row-badge", surface: "lanes", id: "risk", label: "Risk" }],
+        ...overrides,
+      }],
+    });
+
+    it("answers the socket layer's manifest read from the install list", async () => {
+      fake.commandResults.set("plugins.list", listed());
+      mounted = mountAdapter(fake);
+
+      // The sockets ride the record `plugins.list` already returns, so the
+      // static half costs no second command.
+      expect(await readPluginManifest("graph")).toEqual({
+        sockets: [{ socket: "row-badge", surface: "lanes", id: "risk", label: "Risk" }],
+      });
+    });
+
+    it("shares one list read across a burst of manifest reads", async () => {
+      fake.commandResults.set("plugins.list", listed());
+      mounted = mountAdapter(fake);
+
+      // The socket layer fans out over every installed plugin the moment a
+      // surface first reveals; without the shared read that is one round trip
+      // each for the same answer.
+      await Promise.all([readPluginManifest("graph"), readPluginManifest("graph"), readPluginManifest("graph")]);
+      expect(fake.commandCalls.filter((call) => call.action === "plugins.list")).toHaveLength(1);
+    });
+
+    it("says nothing rather than 'declares none' when the host could not read the manifest", async () => {
+      fake.commandResults.set("plugins.list", listed({ sockets: undefined }));
+      mounted = mountAdapter(fake);
+
+      // Null leaves the socket layer with no source. `{sockets: []}` would be
+      // this transport asserting the plugin contributes nothing.
+      expect(await readPluginManifest("graph")).toBeNull();
+      expect(await readPluginManifest("absent")).toBeNull();
+    });
+
+    it("is not a whole manifest, and the Marketplace's parser must keep rejecting it", async () => {
+      fake.commandResults.set("plugins.list", listed());
+      mounted = mountAdapter(fake);
+      const { parsePluginManifest } = await import("../../../../shared/plugins/manifest");
+
+      // Load-bearing, and stated here rather than left to luck: settings,
+      // readme and runtime actions are genuinely unreadable over sync, so the
+      // detail page has to keep showing nothing. A future edit that "completes"
+      // this object would turn those surfaces on with fabricated content.
+      expect(parsePluginManifest(await readPluginManifest("graph"))?.manifest ?? null).toBeNull();
+    });
+
+    it("reads dynamic contributions for one surface", async () => {
+      fake.commandResults.set("plugins.contributions", {
+        contributions: [{
+          entityKind: "lane",
+          entityId: "lane-1",
+          pluginId: "graph",
+          socket: "row-badge",
+          surface: "lanes",
+          socketId: "risk",
+          payload: { text: "3 risks", tone: "warning" },
+          updatedAt: "2026-08-13T00:00:00.000Z",
+        }],
+      });
+      mounted = mountAdapter(fake);
+
+      const rows = await readPluginContributionRows({ surface: "lanes", entityKind: "lane" });
+      expect(rows).toHaveLength(1);
+      expect(fake.commandCalls[0]).toEqual({
+        action: "plugins.contributions",
+        args: { surface: "lanes", entityKind: "lane" },
+      });
+    });
+
+    it("degrades to a quieter surface on a host that serves no contributions", async () => {
+      fake.descriptors = descriptors(["plugins.list"]);
+      mounted = mountAdapter(fake);
+
+      // A read, so an older host means "nothing dynamic to add" rather than a
+      // broken Lanes tab. The static half still arrives through the list.
+      expect(await readPluginContributionRows({ surface: "lanes" })).toEqual([]);
+      expect(fake.commandCalls).toEqual([]);
+    });
+
+    it("carries the per-contribution toggles so web filters static sockets as desktop does", async () => {
+      fake.commandResults.set("plugins.list", listed({ disabledContributions: ["risk"] }));
+      mounted = mountAdapter(fake);
+
+      const [plugin] = await listInstalledPlugins();
+      expect(plugin.disabledContributions).toEqual(["risk"]);
     });
   });
 

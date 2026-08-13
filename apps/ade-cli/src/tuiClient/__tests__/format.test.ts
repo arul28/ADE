@@ -1390,6 +1390,81 @@ describe("ade_card (TUI)", () => {
     expect(body).not.toContain("┌");
   });
 
+  it("attributes a plugin-emitted card with a quiet byline below the frame", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          authoredBy: { pluginId: "ade-graph", displayName: "Graph" },
+          rows: [{ icon: "pass", text: "no cycles", detail: "ok" }],
+        })),
+      ],
+    });
+
+    const rendered = lines.at(-1)!.body.split("\n");
+    expect(rendered.at(-1)).toBe("  via Graph");
+    // Outside the frame, not one of the card's rows: a plugin naming itself on
+    // a row inside the walls would read as the card's own content.
+    expect(rendered.at(-1)!.startsWith("│")).toBe(false);
+    expect(rendered.find((line) => line.startsWith("└"))).toBeDefined();
+  });
+
+  it("falls back to the plugin id when the author carries no display name", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [env("2026-07-27T12:00:00.000Z", 1, card({ authoredBy: { pluginId: "ade-graph" } }))],
+    });
+
+    expect(lines.at(-1)!.body.split("\n").at(-1)).toBe("  via ade-graph");
+  });
+
+  it("attributes an unknown-variant card too, where there is no frame to speak for it", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          variant: "lint_run",
+          fallbackText: "4 lint findings",
+          authoredBy: { pluginId: "ade-lint", displayName: "Lint" },
+        })),
+      ],
+    });
+
+    const body = lines.at(-1)!.body;
+    expect(body).toContain("4 lint findings");
+    expect(body.split("\n").at(-1)).toBe("  via Lint");
+    expect(body).not.toContain("┌");
+  });
+
+  it("leaves a card ADE emitted for itself byte-identical", () => {
+    const render = (over: Record<string, unknown>) => renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [env("2026-07-27T12:00:00.000Z", 1, card({ metrics: [{ label: "files", value: "3" }], ...over }))],
+    }).at(-1)!.body;
+
+    const plain = render({});
+    expect(render({ authoredBy: null })).toBe(plain);
+    expect(plain).not.toContain("via");
+  });
+
+  it("draws no byline for an authoredBy this build cannot read", () => {
+    const render = (authoredBy: unknown) => renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [env("2026-07-27T12:00:00.000Z", 1, card({ authoredBy }))],
+    }).at(-1)!.body;
+
+    // A blank id is a label claiming provenance it cannot support; the rest are
+    // shapes a future or corrupted host could send. None may crash the render.
+    for (const shape of [{ pluginId: "   " }, {}, { pluginId: 42 }, "ade-graph", [], true]) {
+      expect(render(shape)).not.toContain("via");
+    }
+  });
+
   it("shows only the executable open hint, not inert numbered actions", () => {
     const lines = renderChatLines({
       activeSession: null,

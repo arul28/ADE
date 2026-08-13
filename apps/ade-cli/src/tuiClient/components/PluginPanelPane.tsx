@@ -14,16 +14,18 @@ import type { RightPaneContent } from "../types";
  * in `pluginPane.ts`, so this only maps rows to designKit primitives. Selection
  * lives in app.tsx (`rightSelectionIndex`) like every other pane.
  *
- * Color discipline is the designKit's, not the plugin's. A schema names a
- * semantic tone and this module picks the token — a plugin cannot paint the
- * terminal green, which is reserved for running and success.
+ * Color discipline is the theme's, not the plugin's. A schema names a semantic
+ * tone and `theme.vocabToneColor` picks the token — a plugin cannot paint the
+ * terminal green, which is reserved for running and success. The drawer's
+ * plugin row badges read the same table, so one tone means one color wherever a
+ * plugin puts it.
  */
 
 const TONE_COLOR = {
-  neutral: theme.color.t2,
-  accent: theme.color.violet,
-  success: theme.color.done,
-  warning: theme.color.attention,
+  neutral: theme.vocabToneColor("neutral"),
+  accent: theme.vocabToneColor("accent"),
+  success: theme.vocabToneColor("success"),
+  warning: theme.vocabToneColor("warning"),
 } as const;
 
 /** Rows visible at once. Matches the density of the activity and details panes. */

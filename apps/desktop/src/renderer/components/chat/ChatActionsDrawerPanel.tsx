@@ -1,8 +1,28 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { ArrowBendUpRight, Cube, LinkSimple, Rocket, TreeStructure, X } from "@phosphor-icons/react";
 import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
+import {
+  isPluginPanelSlotId,
+  PluginSlotPanel,
+  pluginSessionContext,
+  usePluginPanelSlots,
+} from "../plugins/sockets";
 
-export type ChatActionsTab = "sources" | "agents" | "proof" | "handoff" | "missions";
+/**
+ * The drawer's tabs, plus whatever plugins contribute.
+ *
+ * The template literal is the whole `drawer-tab` socket on this side: a plugin
+ * tab is a `plugin:<pluginId>:<panelId>` id, so the strip, the fallback and the
+ * persisted selection all keep working on strings without a parallel "is this
+ * one of ours" flag riding alongside every one of them.
+ */
+export type ChatActionsTab =
+  | "sources"
+  | "agents"
+  | "proof"
+  | "handoff"
+  | "missions"
+  | `plugin:${string}`;
 
 // The drawer tabs use GlowMenu's `neutral` mode, which renders every tab with
 // the same muted-grey-→-bright-fg treatment plus one shared violet indicator.
@@ -46,6 +66,11 @@ export function ChatActionsDrawerPanel({
   handoffContent,
   sourcesContent,
   missionsContent,
+  sessionId = null,
+  sessionTitle = null,
+  sessionProvider = null,
+  sessionStatus = null,
+  active = true,
 }: {
   tab: ChatActionsTab;
   onTabChange: (tab: ChatActionsTab) => void;
@@ -55,26 +80,76 @@ export function ChatActionsDrawerPanel({
   handoffContent: ReactNode;
   sourcesContent?: ReactNode;
   missionsContent?: ReactNode;
+  /**
+   * The chat this drawer belongs to, for contributed tabs.
+   *
+   * Four primitives rather than a session object, the way `PluginChatCard`
+   * takes them: the parent rebuilds its session record on every transcript
+   * event, so an object prop would hand the panel a new context identity
+   * several times a second while the fields it actually reads never changed.
+   *
+   * Optional because the drawer predates the socket and the built-in tabs
+   * receive their content already rendered. Without a session id a plugin
+   * panel still draws — it simply receives no session context, the same
+   * degradation a composer action gets before its chat exists.
+   */
+  sessionId?: string | null;
+  sessionTitle?: string | null;
+  sessionProvider?: string | null;
+  sessionStatus?: string | null;
+  /** False while the chat pane is mounted but the drawer is not showing. */
+  active?: boolean;
 }) {
+  const sessionContext = useMemo(
+    () => (sessionId
+      ? pluginSessionContext({
+        id: sessionId,
+        title: sessionTitle ?? "",
+        provider: sessionProvider ?? null,
+        status: sessionStatus ?? null,
+      })
+      : null),
+    [sessionId, sessionProvider, sessionStatus, sessionTitle],
+  );
+  const pluginSlots = usePluginPanelSlots("work", "drawer-tab", {
+    active,
+    context: sessionContext,
+  });
   const tabs = [
     ...(sourcesContent ? [SOURCES_TAB] : []),
     ...(missionsContent ? [MISSIONS_TAB] : []),
     ...CHAT_ACTIONS_TABS,
+    // Always last: placement is host-controlled and a contribution never
+    // reorders the product's own tabs.
+    ...pluginSlots.map((slot): GlowMenuItem<ChatActionsTab> => ({
+      id: slot.id as ChatActionsTab,
+      label: slot.label,
+      icon: slot.icon,
+      ...NEUTRAL_INDICATOR,
+    })),
   ];
-  // Fall back off tabs that aren't currently available.
+  const selectedSlot = pluginSlots.find((slot) => slot.id === tab) ?? null;
+  // Fall back off tabs that aren't currently available — which now includes a
+  // plugin tab whose plugin was disabled or uninstalled while the drawer sat
+  // open on it, and a persisted selection from a plugin that is no longer here.
   const activeTab: ChatActionsTab =
     (tab === "missions" && !missionsContent)
     || (tab === "sources" && !sourcesContent)
+    || (isPluginPanelSlotId(tab) && !selectedSlot)
       ? "agents"
       : tab;
-  const bodyByTab: Record<ChatActionsTab, ReactNode> = {
+  const bodyByTab: Record<Exclude<ChatActionsTab, `plugin:${string}`>, ReactNode> = {
     missions: missionsContent,
     sources: sourcesContent,
     agents: agentsContent,
     proof: proofContent,
     handoff: handoffContent,
   };
-  const body = bodyByTab[activeTab];
+  const body = selectedSlot && activeTab === selectedSlot.id ? (
+    <div className="h-full min-h-0 overflow-auto px-3 py-3">
+      <PluginSlotPanel slot={selectedSlot} active={active} context={sessionContext} />
+    </div>
+  ) : bodyByTab[activeTab as Exclude<ChatActionsTab, `plugin:${string}`>];
 
   return (
     // Transparent wrapper — the floating pane's own neutral background shows

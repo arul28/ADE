@@ -8,6 +8,7 @@ import { inputCls, labelCls, selectCls } from "../designTokens";
 import { stepDef } from "../actionCatalog";
 import type { WorkflowStep } from "./draftBridge";
 import { AgentStepEditor } from "./AgentStepEditor";
+import { PluginStepEditor } from "./PluginStepEditor";
 
 function ToggleRow({
   id,
@@ -184,6 +185,13 @@ export function StepCard({
           <AdeActionEditor
             value={step.adeAction ?? { domain: "", action: "" }}
             onChange={(adeAction) => onChange({ ...step, adeAction })}
+          />
+        ) : null}
+
+        {step.kind === "plugin" ? (
+          <PluginStepEditor
+            value={step.pluginStep ?? { pluginId: "", action: "" }}
+            onChange={(pluginStep) => onChange({ ...step, pluginStep })}
           />
         ) : null}
 

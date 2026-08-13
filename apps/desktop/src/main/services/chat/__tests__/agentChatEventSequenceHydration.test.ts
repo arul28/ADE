@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ADE_CARD_FINGERPRINT_CACHE_MAX,
   createAgentChatService,
   resolveRehydratedEventSequence,
 } from "../agentChatService";
@@ -288,6 +289,73 @@ describe("rehydrated chat event sequences", () => {
 
     expect(cardSequences(second.events)).toEqual([4]);
     second.service.forceDisposeAll();
+  });
+});
+
+/**
+ * The other thing a restart takes with it: `emitAdeCard`'s in-memory
+ * fingerprint cache. With the cache cold the durable transcript is the only
+ * record of what a card already said, so the scan that consults it decides
+ * whether a live card's next tick is a duplicate row or a real update.
+ */
+describe("cold ade_card dedupe", () => {
+  const terminalCard = (cardId: string) => ({
+    ...card(cardId),
+    state: "terminal" as const,
+    title: "finished",
+  });
+
+  it("compares against the NEWEST copy of the card in the transcript", async () => {
+    const rows = new Map<string, any>();
+    const first = startHost(rows);
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    // Two durable copies of one card: the live one, then the terminal one.
+    await first.service.emitAdeCard({ sessionId: session.id, card: card("a") });
+    await first.service.emitAdeCard({ sessionId: session.id, card: terminalCard("a") });
+    expect(cardSequences(first.events)).toEqual([1, 2]);
+    first.service.forceDisposeAll();
+
+    const second = startHost(rows);
+    // Byte-identical to the LAST copy. A scan that stopped on the FIRST copy
+    // would compare against the "live" version, call this a change, and write
+    // a third row for a card that did not move.
+    await second.service.emitAdeCard({ sessionId: session.id, card: terminalCard("a") });
+    expect(cardSequences(second.events)).toEqual([]);
+
+    // A card that really did change is still written.
+    await second.service.emitAdeCard({
+      sessionId: session.id,
+      card: { ...terminalCard("a"), title: "finished, 2 failed" },
+    });
+    expect(cardSequences(second.events)).toHaveLength(1);
+    second.service.forceDisposeAll();
+  });
+
+  it("still dedupes a card whose fingerprint was evicted from the bounded cache", async () => {
+    const rows = new Map<string, any>();
+    const host = startHost(rows);
+    const session = await host.service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await host.service.emitAdeCard({ sessionId: session.id, card: card("a") });
+    // The cache is bounded, so a session that emits enough distinct cards drops
+    // the oldest fingerprints. Correctness must not depend on holding them:
+    // the evicted card falls back to the transcript scan above.
+    for (let index = 0; index <= ADE_CARD_FINGERPRINT_CACHE_MAX; index += 1) {
+      await host.service.emitAdeCard({ sessionId: session.id, card: card(`filler-${index}`) });
+    }
+    const beforeReemit = cardSequences(host.events).length;
+
+    await host.service.emitAdeCard({ sessionId: session.id, card: card("a") });
+
+    expect(cardSequences(host.events)).toHaveLength(beforeReemit);
+    host.service.forceDisposeAll();
   });
 });
 

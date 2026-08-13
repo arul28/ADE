@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { listPluginAgentSkillRoots } from "../plugins/pluginInstallService";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
+import { joinAdeAgentSkillRoots, splitAdeAgentSkillRoots } from "../../../shared/agentSkillRoots";
 import { terminateChildProcessTree } from "../shared/utils";
 import type {
   CursorSdkCloudArtifactDescriptor,
@@ -321,6 +323,7 @@ function applyPackagedCursorSdkNodePath(env: NodeJS.ProcessEnv): void {
 function applyCurrentAdeCliEnv(
   env: NodeJS.ProcessEnv,
   sourceEnv: NodeJS.ProcessEnv = env,
+  logger?: Pick<Logger, "warn"> | null,
 ): void {
   const envCliEntry = existingFilePath(sourceEnv.ADE_CLI_ENTRY_PATH ?? env.ADE_CLI_ENTRY_PATH);
   const argvCliEntry = existingFilePath(typeof process.argv[1] === "string" ? process.argv[1] : null);
@@ -344,6 +347,18 @@ function applyCurrentAdeCliEnv(
       ? path.resolve(path.dirname(cliEntry), "..", "agent-skills")
       : null;
   env.ADE_AGENT_SKILLS_DIRS = prependPathList(env.ADE_AGENT_SKILLS_DIRS, bundledSkillsRoot);
+  // Plugin skill roots go LAST, the same order `appendPluginAgentSkillRoots`
+  // uses for every other runtime: first-root-wins, so a plugin adds skills but
+  // never shadows one ADE ships. Cursor is the only runtime that took the
+  // bundled root and stopped here, which meant an installed plugin's skills
+  // were present on Claude and Codex and silently absent on Cursor.
+  const pluginSkillRoots = listPluginAgentSkillRoots({ env: sourceEnv, ...(logger ? { logger } : {}) });
+  if (pluginSkillRoots.length) {
+    env.ADE_AGENT_SKILLS_DIRS = joinAdeAgentSkillRoots([
+      ...splitAdeAgentSkillRoots(env.ADE_AGENT_SKILLS_DIRS),
+      ...pluginSkillRoots,
+    ]);
+  }
 }
 
 function ensurePrivateDirectory(dir: string): void {
@@ -409,6 +424,7 @@ export function buildCursorSdkWorkerEnv(args: {
   socketPath: string;
   workspacePath: string;
   sessionId: string;
+  logger?: Pick<Logger, "warn"> | null;
 }): NodeJS.ProcessEnv {
   const baseEnv = args.baseEnv ?? process.env;
   const env: NodeJS.ProcessEnv = {
@@ -421,7 +437,7 @@ export function buildCursorSdkWorkerEnv(args: {
     ADE_CURSOR_SDK_SESSION_ID: args.sessionId,
     ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
   };
-  applyCurrentAdeCliEnv(env, baseEnv);
+  applyCurrentAdeCliEnv(env, baseEnv, args.logger ?? null);
   delete env.ADE_CLI_ENTRY_PATH;
   return env;
 }
@@ -503,6 +519,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       socketPath: paths.socketPath,
       workspacePath: args.workspacePath,
       sessionId: args.sessionId,
+      logger: args.logger ?? null,
     }),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],

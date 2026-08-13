@@ -16,6 +16,7 @@ import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced
 import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
 import type { DraftLaunchJob } from "../lib/draftLaunchJobs";
 import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
+import { isPluginPanelSlotId } from "../components/plugins/sockets/panelSlotId";
 import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
 import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import {
@@ -133,7 +134,22 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
   return "default";
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
-export type WorkSidebarTab = "terminal" | "git" | "files" | "ios" | "app-control" | "browser";
+/**
+ * A Work tools-rail pane.
+ *
+ * The template literal is the `work-rail-pane` socket: a contributed pane is a
+ * `plugin:<pluginId>:<panelId>` id (see `plugins/sockets/PluginPanelSlots`), so
+ * the rail's six built-ins stop being the whole vocabulary without every
+ * consumer of this type learning a second one.
+ */
+export type WorkSidebarTab =
+  | "terminal"
+  | "git"
+  | "files"
+  | "ios"
+  | "app-control"
+  | "browser"
+  | `plugin:${string}`;
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -304,6 +320,11 @@ function normalizeWorkSidebarTab(value: unknown): WorkSidebarTab {
     || value === "app-control"
     || value === "browser"
   ) return value;
+  // A contributed pane persists by its slot id. Restoring one whose plugin is
+  // gone is safe — `isAvailableWorkSidebarTab` sends the rail back to Git when
+  // nothing answers to the id — and refusing it here would drop the pane across
+  // a restart for every plugin that is still installed.
+  if (typeof value === "string" && isPluginPanelSlotId(value)) return value as WorkSidebarTab;
   return "git";
 }
 

@@ -1,5 +1,22 @@
+# The `img-src`/`media-src` https: allowance is for plugin panels, not for the
+# app's own chrome — every image ADE ships is same-origin or a data: URI.
+#
+# A plugin panel's `image` and `video` nodes carry a `src` the plugin authored,
+# and the renderer already decides which of those it will load: `MEDIA_SCHEMES`
+# in `components/plugins/vocabularyComponents.tsx` admits exactly `https:` and
+# `data:` and refuses everything else, with the identical rule enforced on iOS
+# in `PluginVocabularyMediaViews.swift`. Without the allowance here, the ONE
+# client whose platform has a second opinion is the browser: the node passes the
+# renderer's check, the fetch is then blocked by policy, and the reader gets a
+# broken image on web and a working one everywhere else, with the reason visible
+# only in a console. Naming the schemes here makes the policy match the decision
+# the renderer already made rather than quietly overriding it for one client.
+#
+# `media-src` is spelled out rather than left to `default-src`: video and audio
+# do not fall back to `img-src`, so a `video` node was refused even where the
+# equivalent `image` node loaded.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://img.clerk.com https://images.clerk.dev https://storage.googleapis.com/images.clerk.dev/; font-src 'self' data:; connect-src 'self' wss: https:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss: https:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY

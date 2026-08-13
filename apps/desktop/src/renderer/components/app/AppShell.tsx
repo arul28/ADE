@@ -44,6 +44,11 @@ import {
   eventMatchesBinding,
   getEffectiveBinding,
 } from "../../lib/keybindings";
+import { runPluginSocketAction } from "../plugins/sockets/pluginActionDispatch";
+import {
+  dispatchPluginKeybindingEvent,
+  usePluginKeybindings,
+} from "../plugins/sockets/usePluginKeybindings";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
@@ -1120,6 +1125,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [commandPaletteBinding]);
+
+  /**
+   * Plugin-declared shortcuts, from the one collision matrix both clients use.
+   *
+   * A second global listener rather than a branch inside the one above, because
+   * the two answer different questions and fail differently: the palette's chord
+   * is a fixed core binding, and these are whatever survived arbitration against
+   * core and against each other. Refused bindings never reach here — the hook
+   * has already logged why, once, in the matrix's own words.
+   *
+   * The typing guard is the load-bearing line. The shared grammar makes a plugin
+   * carry a modifier, which stops it eating plain letters, but `Mod+B` in a
+   * composer is still a keystroke the person meant for the text they are in the
+   * middle of writing.
+   */
+  const pluginKeybindings = usePluginKeybindings();
+  useEffect(() => {
+    if (pluginKeybindings.bindings.length === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      dispatchPluginKeybindingEvent(event, pluginKeybindings.bindings, (pluginId, actionId) => {
+        // The same dispatch every other socket uses, so `composer`, `dialog`
+        // and `navigate` response verbs behave identically to a button press.
+        void runPluginSocketAction(pluginId, actionId, { kind: "surface", surface: "app" });
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pluginKeybindings]);
 
   useEffect(() => {
     const newId = (): string =>

@@ -20,6 +20,12 @@ import { actionToDraftAction } from "./builder/draftBridge";
 import { RuleList } from "./list/RuleList";
 import { RuleBuilder } from "./builder/RuleBuilder";
 import { RuleHistory } from "./history/RuleHistory";
+import {
+  entityMatchesPluginFilters,
+  pluginAutomationContext,
+  usePluginSurfaceContributions,
+  useSurfaceContributions,
+} from "../plugins/sockets";
 
 const DEFAULT_MODEL_ID =
   getDefaultModelDescriptor("opencode")?.id
@@ -114,6 +120,10 @@ export function AutomationsWorkspace({
   const [requiredConfirmations, setRequiredConfirmations] = useState<AutomationDraftConfirmationRequirement[]>([]);
   const [acceptedConfirmations, setAcceptedConfirmations] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  // Contributed filter keys are local state, never persisted: a key from a
+  // plugin that has since been uninstalled would come back after a restart
+  // and hide rules with no chip left on screen to undo it.
+  const [pluginFilterKeys, setPluginFilterKeys] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [simulating, setSimulating] = useState(false);
@@ -226,11 +236,31 @@ export function AutomationsWorkspace({
     setAcceptedConfirmations(new Set());
   }, [rules, selectedRuleId]);
 
+  const pluginContributionSet = usePluginSurfaceContributions("automations", active);
+  const pluginFilterChips = useSurfaceContributions("automations", "filter-chip", { active });
+  const togglePluginFilterKey = useCallback((filterKey: string) => {
+    setPluginFilterKeys((current) => (
+      current.includes(filterKey)
+        ? current.filter((entry) => entry !== filterKey)
+        : [...current, filterKey]
+    ));
+  }, []);
+
   const filteredRules = useMemo(() => {
     const query = search.trim().toLowerCase();
-    if (!query) return rules;
-    return rules.filter((rule) => ruleMatchesSearch(rule, query));
-  }, [rules, search]);
+    // A selection outlives the chip that made it — disable the plugin and the
+    // chip vanishes while the filter keeps hiding rules, with nothing left on
+    // screen to undo it. Only keys a visible chip still offers may filter.
+    const offered = new Set(pluginFilterChips.map((chip) => chip.payload.filterKey));
+    const applied = pluginFilterKeys.filter((key) => offered.has(key));
+    // Both axes idle returns the same array by reference, which several
+    // downstream memos and the trust banner rely on.
+    if (!query && applied.length === 0) return rules;
+    return rules.filter((rule) => (
+      (!query || ruleMatchesSearch(rule, query))
+      && entityMatchesPluginFilters(pluginContributionSet, pluginAutomationContext(rule), applied)
+    ));
+  }, [pluginContributionSet, pluginFilterChips, pluginFilterKeys, rules, search]);
 
   const validateDraft = useCallback(
     async (nextDraft: AutomationRuleDraft) => {
@@ -372,6 +402,9 @@ export function AutomationsWorkspace({
         configTrustRequired={sharedTrustBlocked}
         ingressStatus={ingressStatus}
         delivery={delivery}
+        pluginFilterKeys={pluginFilterKeys}
+        onTogglePluginFilterKey={togglePluginFilterKey}
+        active={active}
         onSearch={setSearch}
         onSelect={(id) => {
           if (id !== selectedRuleId && !confirmDiscardIfDirty()) return;
@@ -431,6 +464,7 @@ export function AutomationsWorkspace({
             <RuleHistory automationId={selectedRule.id} ruleName={selectedRule.name} />
           ) : draft ? (
             <RuleBuilder
+              active={active}
               draft={draft}
               setDraft={setDraft}
               lanes={lanes.map((l) => ({ id: l.id, name: l.name }))}

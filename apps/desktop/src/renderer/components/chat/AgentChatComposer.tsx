@@ -104,8 +104,10 @@ import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appSt
 import {
   PluginComposerActions,
   registerPluginComposerTarget,
+  runPluginSocketAction,
   type PluginComposerTarget,
 } from "../plugins/sockets";
+import type { PluginComposerContext } from "../../../shared/plugins/context";
 import {
   ComposerPromptStash,
   type ComposerPromptStashHandle,
@@ -326,7 +328,14 @@ type SlashCommandEntry = {
   label: string;
   description: string;
   argumentHint?: string;
-  source: "sdk" | "local";
+  source: "sdk" | "local" | "plugin";
+  /**
+   * Present exactly when `source` is `"plugin"`. Dispatch identity, carried
+   * rather than parsed back out of `command`: the host namespaces a plugin
+   * command whose word core already owns, so the visible name is not a
+   * reliable route to the plugin that owns it.
+   */
+  plugin?: { pluginId: string; displayName: string; actionId: string };
 };
 
 type CommandMenuAnchor = { top: number; left: number; bottom: number };
@@ -533,6 +542,10 @@ function buildSlashCommands(
       description: cmd.description || `Run ${name}`,
       argumentHint: cmd.argumentHint,
       source: cmd.source,
+      // Only a `plugin` command carries this, and a command claiming the
+      // source without it would be a dead row: `handleSlashSelect` has nothing
+      // to invoke, so it is dropped back to the ordinary draft path.
+      ...(cmd.source === "plugin" && cmd.plugin ? { plugin: cmd.plugin } : {}),
     });
   }
 
@@ -3191,6 +3204,37 @@ export function AgentChatComposer({
     cursor: useRichComposer ? getRichCursorTextOffset() : lastPlainSelectionRef.current,
   }), [getRichCursorTextOffset, useRichComposer]);
 
+  /**
+   * Which composer this is, for a plugin context. ONE spelling.
+   *
+   * Both entry points that hand a plugin a composer context — the contributed
+   * button row and a plugin slash command — build it from here, so the two
+   * cannot drift into disagreeing about which lane or project a chat belongs
+   * to. The draft is deliberately not part of it: identity changes when the
+   * chat does, the draft changes on every keystroke.
+   */
+  const composerPluginIdentity = useMemo(() => ({
+    sessionId: sessionId ?? null,
+    projectKey: composerMachineBinding?.key ?? null,
+    projectRoot: composerMachineBinding?.rootPath ?? null,
+    laneId: composerLaneId,
+  }), [composerLaneId, composerMachineBinding?.key, composerMachineBinding?.rootPath, sessionId]);
+
+  /**
+   * The whole typed context, read at the moment a plugin is invoked.
+   *
+   * For any caller that invokes a plugin action FROM this composer without
+   * going through the contributed button row — a plugin slash command, say.
+   * Pass the result as the invoke's `context` and a `{composer: {…}}` response
+   * lands exactly as it does from a button, because the routing keys on the
+   * session this names.
+   */
+  const readComposerPluginContext = useCallback((): PluginComposerContext => ({
+    kind: "composer",
+    ...composerPluginIdentity,
+    ...readComposerDraft(),
+  }), [composerPluginIdentity, readComposerDraft]);
+
   const insertNodeAtTextOffset = useCallback((editor: HTMLElement, node: Node, offset: number) => {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
     let current = walker.nextNode();
@@ -3512,6 +3556,55 @@ export function AgentChatComposer({
     if (useRichComposer) setRichEditorText(next);
     onDraftChange(next);
   }, [onClearEvents, onDraftChange, setRichEditorText, useRichComposer]);
+
+  /**
+   * Run a plugin's slash command. Nothing here reaches the model.
+   *
+   * The command word is CONSUMED rather than left in the draft: the user typed
+   * `/fix` to invoke something, not to send those four characters, and leaving
+   * them behind would put them one Enter away from being sent as a message.
+   * What survives is the rest of the draft — `hello /fix` leaves `hello ` — and
+   * that remainder is what the plugin receives as `context.draft`, so a command
+   * can act on what the user had already written.
+   *
+   * The remainder is computed, not read back: `onDraftChange` has not round
+   * tripped through props by the time the invoke needs a context, and a plugin
+   * receiving the pre-consumption draft would see its own trigger word.
+   */
+  const runPluginSlashCommand = useCallback((
+    plugin: { pluginId: string; actionId: string },
+    trigger: ComposerTrigger,
+  ) => {
+    const spansWholeDraft = composerTriggerSpansWholeDraft(draft, trigger);
+    const remainder = spansWholeDraft
+      ? { text: "", caret: 0 }
+      : replaceComposerTriggerSpan(draft, trigger, "");
+    if (useRichComposer) {
+      // A whole-draft command has no context chips to preserve, so the blunt
+      // rewrite is safe and exact. Anything else excises just the trigger span
+      // in place, because rewriting the editor from plain text would drop the
+      // file and mention chips sitting either side of it.
+      if (spansWholeDraft) setRichEditorText("");
+      else if (!replaceRichTriggerWith({ text: "" })) setRichEditorText(remainder.text);
+    } else {
+      onDraftChange(remainder.text);
+      restoreTextareaCaret(remainder.caret);
+    }
+    void runPluginSocketAction(
+      plugin.pluginId,
+      plugin.actionId,
+      { ...readComposerPluginContext(), draft: remainder.text, cursor: remainder.caret },
+      { socket: "slash-command" },
+    );
+  }, [
+    draft,
+    onDraftChange,
+    readComposerPluginContext,
+    replaceRichTriggerWith,
+    restoreTextareaCaret,
+    setRichEditorText,
+    useRichComposer,
+  ]);
 
   const nativeControlsDisabled = permissionModeLocked;
   const slot = parallelControlSlot;
@@ -4341,6 +4434,15 @@ export function AgentChatComposer({
       }
     } else if (item.type === "command" && commandMenuTrigger) {
       const selected = effectiveSlashCommands.find((cmd) => cmd.command.replace(/^\//, "") === item.name);
+      // A plugin command is invoked, never written into the draft, and that is
+      // true wherever in the draft it was typed and in both composer modes —
+      // so it is decided before the whole-draft/rich-mode reasoning below,
+      // which is entirely about text a runtime is going to receive.
+      if (selected?.source === "plugin" && selected.plugin) {
+        runPluginSlashCommand(selected.plugin, commandMenuTrigger);
+        setCommandMenuTrigger(null);
+        return;
+      }
       const wholeDraft = composerTriggerSpansWholeDraft(draft, commandMenuTrigger);
       // A lone command keeps the legacy path (local /clear intercept +
       // argument-hint scaffold). Rich mode only takes it for the local /clear
@@ -4361,7 +4463,7 @@ export function AgentChatComposer({
       }
     }
     setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, runPluginSlashCommand, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
@@ -4391,11 +4493,56 @@ export function AgentChatComposer({
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
 
+  /**
+   * The plugin command the user TYPED, if the draft starts with one.
+   *
+   * The command menu is one way to reach a plugin command and typing it is the
+   * other — and the second is the one people who know the command actually use.
+   * Without this, `/fix` + Enter went to the model as four literal characters:
+   * the plugin never ran, and the transcript grew a message the user meant as a
+   * button press.
+   *
+   * Only the FIRST token counts, and only when it names a plugin command. A
+   * core or runtime command is left exactly as it was — those are the runtime's
+   * to interpret (`/compact`, `/model`), and a `/typo` still goes to the model,
+   * which is where an unrecognized command has always gone.
+   */
+  const typedPluginSlashCommand = useCallback((): {
+    plugin: { pluginId: string; actionId: string };
+    trigger: ComposerTrigger;
+  } | null => {
+    // Same token grammar as `detectComposerTrigger`'s slash rule: no spaces and
+    // no second `/`, so a path or a fraction is never a command.
+    const match = /^(\s*)(\/[^\s/]+)(?=\s|$)/.exec(draft);
+    if (!match) return null;
+    const name = match[2]!.slice(1);
+    const key = name.toLowerCase();
+    const entry = effectiveSlashCommands.find((cmd) =>
+      cmd.source === "plugin"
+      && cmd.plugin
+      && cmd.command.replace(/^\//, "").toLowerCase() === key);
+    if (!entry?.plugin) return null;
+    return {
+      plugin: entry.plugin,
+      // Shaped exactly like the trigger the menu path hands over, so the
+      // command word is consumed and the remainder reaches the plugin as
+      // `context.draft` through the one piece of machinery that does both.
+      trigger: { type: "slash", query: name, start: match[1]!.length },
+    };
+  }, [draft, effectiveSlashCommands]);
+
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking) {
       return;
     }
     if (pendingImageAttachments.length > 0) {
+      return;
+    }
+    // Before every send path below, because none of them should ever carry a
+    // plugin command: it is an invoke, not a message.
+    const typedPlugin = typedPluginSlashCommand();
+    if (typedPlugin) {
+      runPluginSlashCommand(typedPlugin.plugin, typedPlugin.trigger);
       return;
     }
     if (parallelChatMode) {
@@ -4438,7 +4585,7 @@ export function AgentChatComposer({
       return;
     }
     onSubmit();
-  }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, runPluginSlashCommand, singleModelBlockedMessage, singleModelReady, typedPluginSlashCommand]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5474,10 +5621,7 @@ export function AgentChatComposer({
                 memory. Renders nothing when no plugin contributes. */}
             {!parallelChatMode ? (
               <PluginComposerActions
-                sessionId={sessionId ?? null}
-                projectKey={composerMachineBinding?.key ?? null}
-                projectRoot={composerMachineBinding?.rootPath ?? null}
-                laneId={composerLaneId}
+                {...composerPluginIdentity}
                 readDraft={readComposerDraft}
                 active={isActive}
               />
@@ -5679,6 +5823,11 @@ export function AgentChatComposer({
               description: c.description,
               argumentHint: c.argumentHint,
               source: c.source,
+              // The menu attributes a contributed command to the plugin that
+              // owns it. Which plugin is not derivable from the name — a
+              // command whose word core already owns arrives namespaced, one
+              // that does not arrives bare — so it travels with the row.
+              ...(c.plugin ? { pluginName: c.plugin.displayName } : {}),
             }))}
             onFileSearch={onSearchAttachments}
             onMentionSearch={onSearchMentions}

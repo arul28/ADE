@@ -1012,6 +1012,253 @@ describe("AgentChatComposer", () => {
     expect(props.onDraftChange).toHaveBeenLastCalledWith("fix bug then run /status ");
   });
 
+  describe("plugin slash commands", () => {
+    const FIX_COMMAND = {
+      name: "fix",
+      description: "Fix the build",
+      source: "plugin" as const,
+      plugin: { pluginId: "acme", displayName: "Acme", actionId: "runFix" },
+    };
+
+    /**
+     * The real dispatch chain, stubbed only at the host boundary: the composer
+     * goes through `runPluginSocketAction`, the plugin bridge and the composer
+     * edit target exactly as a contributed button does. Stubbing higher would
+     * stop proving that a `{composer:{…}}` response reaches the draft.
+     */
+    function installPluginBridge(result: unknown) {
+      const invoke = vi.fn().mockResolvedValue(result);
+      (window as any).ade = { ...((window as any).ade ?? {}), plugins: { invoke } };
+      return invoke;
+    }
+
+    it("attributes a contributed command to its plugin in the menu", async () => {
+      renderComposer({ turnActive: false, draft: "", sdkSlashCommands: [FIX_COMMAND] });
+
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "/", selectionStart: 1 } });
+
+      const row = (await screen.findByText("/fix")).closest("[data-index], div");
+      expect(row?.textContent).toContain("Acme");
+      expect(row?.textContent).toContain("Fix the build");
+    });
+
+    it("invokes the plugin instead of writing the command into the draft", async () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "",
+        isActive: true,
+        sessionId: "session-7",
+        sdkSlashCommands: [FIX_COMMAND],
+      });
+      const view = render(<AgentChatComposer {...props} />);
+
+      // A prefix, not the whole word: the plain composer renders confirmed
+      // command tokens in a backdrop overlay, so a draft of "/fix" would put a
+      // second "/fix" on screen and the query below would match both.
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "/fi", selectionStart: 3 } });
+      view.rerender(<AgentChatComposer {...props} draft="/fi" />);
+      fireEvent.click(await screen.findByText("/fix"));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      expect(invoke.mock.calls[0]![0]).toEqual(expect.objectContaining({
+        pluginId: "acme",
+        action: "runFix",
+        args: { context: expect.objectContaining({ kind: "composer", sessionId: "session-7", draft: "" }) },
+      }));
+      // The command word is consumed. Left in place it would be one Enter away
+      // from being sent to the model as an ordinary message.
+      expect(props.onDraftChange).toHaveBeenLastCalledWith("");
+      expect(props.onDraftChange).not.toHaveBeenCalledWith("/fix ");
+    });
+
+    it("hands the plugin the rest of the draft and consumes only the trigger span", async () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "",
+        isActive: true,
+        sdkSlashCommands: [FIX_COMMAND],
+      });
+      const view = render(<AgentChatComposer {...props} />);
+
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "tidy the imports /fi", selectionStart: 20 },
+      });
+      view.rerender(<AgentChatComposer {...props} draft="tidy the imports /fi" />);
+      fireEvent.click(await screen.findByText("/fix"));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      const context = (invoke.mock.calls[0]![0] as any).args.context;
+      expect(context.draft).toBe("tidy the imports ");
+      expect(props.onDraftChange).toHaveBeenLastCalledWith("tidy the imports ");
+    });
+
+    it("writes a plugin's composer response back into the draft", async () => {
+      installPluginBridge({ composer: { replaceText: "fix: restore the failing import" } });
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "",
+        isActive: true,
+        sessionId: "session-7",
+        sdkSlashCommands: [FIX_COMMAND],
+      });
+      const view = render(<AgentChatComposer {...props} />);
+
+      // A prefix, not the whole word: the plain composer renders confirmed
+      // command tokens in a backdrop overlay, so a draft of "/fix" would put a
+      // second "/fix" on screen and the query below would match both.
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "/fi", selectionStart: 3 } });
+      view.rerender(<AgentChatComposer {...props} draft="/fi" />);
+      fireEvent.click(await screen.findByText("/fix"));
+
+      await waitFor(() => {
+        expect(props.onDraftChange).toHaveBeenLastCalledWith("fix: restore the failing import");
+      });
+    });
+
+    it("still writes an ordinary command into the draft", async () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "",
+        isActive: true,
+        sdkSlashCommands: [{ name: "status", description: "Summarize current state", source: "sdk" as const }],
+      });
+      const view = render(<AgentChatComposer {...props} />);
+
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "/stat", selectionStart: 5 } });
+      view.rerender(<AgentChatComposer {...props} draft="/stat" />);
+      fireEvent.click(await screen.findByText("/status"));
+
+      expect(props.onDraftChange).toHaveBeenLastCalledWith("/status ");
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The typed path. The menu is one way in; typing the command you already
+     * know is the other, and it is the one a returning user takes. Sent as text
+     * it never ran — the plugin stayed silent and the transcript grew a message
+     * the user meant as a button press.
+     */
+    it("invokes the plugin when the command is typed and submitted", async () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "/fix",
+        isActive: true,
+        sessionId: "session-7",
+        sdkSlashCommands: [FIX_COMMAND],
+      });
+      render(<AgentChatComposer {...props} />);
+
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      expect(invoke.mock.calls[0]![0]).toEqual(expect.objectContaining({
+        pluginId: "acme",
+        action: "runFix",
+        args: { context: expect.objectContaining({ kind: "composer", sessionId: "session-7", draft: "" }) },
+      }));
+      // Nothing reached the model, and the command word did not survive to be
+      // sent by the next Enter.
+      expect(props.onSubmit).not.toHaveBeenCalled();
+      expect(props.onDraftChange).toHaveBeenLastCalledWith("");
+    });
+
+    it("passes what the user typed after the command to the plugin", async () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "/fix the failing import",
+        isActive: true,
+        sdkSlashCommands: [FIX_COMMAND],
+      });
+      render(<AgentChatComposer {...props} />);
+
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      const context = (invoke.mock.calls[0]![0] as any).args.context;
+      expect(context.draft).toBe(" the failing import");
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("sends an unrecognized command to the model, as it always has", () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "/unknown",
+        isActive: true,
+        sdkSlashCommands: [FIX_COMMAND],
+      });
+      render(<AgentChatComposer {...props} />);
+
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a runtime command alone — the runtime interprets its own", () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "/status now",
+        isActive: true,
+        sdkSlashCommands: [
+          FIX_COMMAND,
+          { name: "status", description: "Summarize current state", source: "sdk" as const },
+        ],
+      });
+      render(<AgentChatComposer {...props} />);
+
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not treat a plugin command mentioned mid-sentence as an invoke", () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "should I run /fix here?",
+        isActive: true,
+        sdkSlashCommands: [FIX_COMMAND],
+      });
+      render(<AgentChatComposer {...props} />);
+
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not invoke a command that claims the plugin source but carries no plugin", async () => {
+      const invoke = installPluginBridge(null);
+      const props = buildComposerProps({
+        turnActive: false,
+        draft: "",
+        isActive: true,
+        // A host too old to send `plugin`, or a malformed row. It must degrade
+        // to ordinary draft text rather than becoming an unclickable row.
+        sdkSlashCommands: [{ name: "fix", description: "Fix the build", source: "plugin" as const }],
+      });
+      const view = render(<AgentChatComposer {...props} />);
+
+      // A prefix, not the whole word: the plain composer renders confirmed
+      // command tokens in a backdrop overlay, so a draft of "/fix" would put a
+      // second "/fix" on screen and the query below would match both.
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "/fi", selectionStart: 3 } });
+      view.rerender(<AgentChatComposer {...props} draft="/fi" />);
+      fireEvent.click(await screen.findByText("/fix"));
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(props.onDraftChange).toHaveBeenLastCalledWith("/fix ");
+    });
+  });
+
   it("falls through to send when Enter hits an unmatched mid-sentence slash token", async () => {
     const props = buildComposerProps({
       turnActive: false,

@@ -80,8 +80,18 @@ import {
   isUnsupportedRecoveryActionError,
   LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
 } from "../chatRecovery";
-import type { PluginSummary } from "../../../desktop/src/shared/plugins/sdk";
+import type { PluginContributionRecord, PluginSummary } from "../../../desktop/src/shared/plugins/sdk";
+import type { PluginEntityKind, PluginSurfaceId } from "../../../desktop/src/shared/plugins/sockets";
 import type { PluginPaneCollectionRow, PluginPanelFetch, PluginPanelRecord } from "./pluginPane";
+import {
+  buildPluginTuiContributions,
+  pluginContributionRows,
+  pluginSocketSources,
+  EMPTY_PLUGIN_TUI_CONTRIBUTIONS,
+  PLUGIN_TUI_SURFACES,
+  type PluginTuiContributions,
+} from "./pluginSockets";
+import type { PluginContributionRow } from "../../../desktop/src/renderer/components/plugins/sockets/contributionBridge";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 export { buildPtyContinuationLaunchFields };
@@ -1433,6 +1443,51 @@ export async function readPluginCollection(
   }
 }
 
+/**
+ * One plugin's parsed manifest, or null when this host cannot answer.
+ *
+ * Opaque here: the socket layer parses it, this only carries it. Manifests are
+ * what a plugin DECLARES it contributes — the badge slot it reserves on a lane,
+ * the menu item it always offers — so without them a client sees only the rows
+ * a plugin has published and every static contribution silently disappears.
+ */
+export async function readPluginManifest(
+  connection: AdeCodeConnection,
+  pluginId: string,
+): Promise<unknown | null> {
+  try {
+    return await connection.action<unknown>("plugin", "getManifest", { pluginId });
+  } catch {
+    // A manifest that will not load costs that plugin its static contributions
+    // and nothing else. Failing the whole surface over one would hide every
+    // other plugin's badges too.
+    return null;
+  }
+}
+
+/**
+ * Dynamic per-entity contributions for a surface.
+ *
+ * Degrades to an empty list, never an error: a host with no plugin support and
+ * a host with no published rows are the same picture on a drawer row — nothing
+ * extra drawn — and the drawer must not learn to render an error state for it.
+ */
+export async function readPluginContributionRecords(
+  connection: AdeCodeConnection,
+  args: { surface: PluginSurfaceId; entityKind?: PluginEntityKind; entityIds?: string[] },
+): Promise<PluginContributionRecord[]> {
+  try {
+    const records = await connection.action<PluginContributionRecord[]>("plugin", "listContributions", {
+      surface: args.surface,
+      ...(args.entityKind ? { entityKind: args.entityKind } : {}),
+      ...(args.entityIds ? { entityIds: args.entityIds } : {}),
+    });
+    return Array.isArray(records) ? records : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function invokePluginAction(
   connection: AdeCodeConnection,
   pluginId: string,
@@ -1444,6 +1499,74 @@ export async function invokePluginAction(
   // MUTATING (D19): a plugin handler may write anything, so this one is allowed
   // to reject and the caller surfaces the rejection.
   return await connection.action<unknown>("plugin", "invoke", { pluginId, action, args });
+}
+
+/**
+ * Manifests, kept until the plugin that owns one changes version.
+ *
+ * The contributions poll runs on the drawer's cadence and a manifest changes
+ * only across an install, an upgrade or an `ade plugin reload`. Keying on
+ * `pluginId@version` means an upgrade invalidates itself without this module
+ * having to subscribe to anything, and an uninstall drops out when the roster
+ * stops naming it.
+ */
+const pluginManifestCache = new Map<string, unknown>();
+
+/** Drop cached manifests. Exists for tests and for `ade plugin reload`. */
+export function clearPluginManifestCache(): void {
+  pluginManifestCache.clear();
+}
+
+/**
+ * Everything the drawer needs to draw plugin sockets, in one pass.
+ *
+ * Returns the empty set — not an error — for a host without plugin support, a
+ * host that refused, or a machine with nothing installed. Every one of those is
+ * the same drawer: core rows and nothing added to them.
+ */
+export async function loadPluginTuiContributions(
+  connection: AdeCodeConnection,
+): Promise<PluginTuiContributions> {
+  const roster = await listPlugins(connection, { includeDisabled: true });
+  if (roster.state !== "ok") return EMPTY_PLUGIN_TUI_CONTRIBUTIONS;
+  const enabled = roster.plugins.filter((plugin) => plugin.enabled);
+  if (enabled.length === 0) return EMPTY_PLUGIN_TUI_CONTRIBUTIONS;
+
+  const live = new Set(roster.plugins.map((plugin) => `${plugin.pluginId}@${plugin.version}`));
+  for (const key of [...pluginManifestCache.keys()]) {
+    if (!live.has(key)) pluginManifestCache.delete(key);
+  }
+
+  const manifests = new Map<string, unknown>();
+  for (const plugin of enabled) {
+    const key = `${plugin.pluginId}@${plugin.version}`;
+    if (!pluginManifestCache.has(key)) {
+      const manifest = await readPluginManifest(connection, plugin.pluginId);
+      // A FAILED read is never cached. `readPluginManifest` answers null both
+      // for "this host has no manifests" and for "that one RPC lost the race
+      // with a reconnect", and caching the second would cost that plugin every
+      // static contribution it declares for the rest of the session — the poll
+      // would keep finding the null and never ask again. Re-asking a host that
+      // genuinely has none costs one cheap refusal per poll.
+      if (manifest != null) pluginManifestCache.set(key, manifest);
+      manifests.set(plugin.pluginId, manifest);
+      continue;
+    }
+    manifests.set(plugin.pluginId, pluginManifestCache.get(key) ?? null);
+  }
+
+  // The surface→entity pairing is `pluginSockets`', not this function's: asking
+  // the `work` surface for `lane` rows would return nothing and look like a
+  // machine with no contributions rather than a wrong argument.
+  const records = await Promise.all(
+    PLUGIN_TUI_SURFACES.map((target) => readPluginContributionRecords(connection, target)),
+  );
+  const rowsBySurface = { lanes: [], work: [] } as { lanes: PluginContributionRow[]; work: PluginContributionRow[] };
+  PLUGIN_TUI_SURFACES.forEach((target, index) => {
+    rowsBySurface[target.surface] = pluginContributionRows(records[index] ?? []);
+  });
+
+  return buildPluginTuiContributions(pluginSocketSources(roster.plugins, manifests), rowsBySurface);
 }
 
 /**

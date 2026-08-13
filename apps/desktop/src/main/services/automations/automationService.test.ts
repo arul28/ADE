@@ -3383,3 +3383,232 @@ describe("ade-action failure reporting", () => {
     }
   });
 });
+
+/**
+ * Plugin triggers and plugin steps.
+ *
+ * `plugin` is ONE trigger type shared by every plugin — the closed
+ * `AUTOMATION_TRIGGER_TYPES` set could not hold one member per installed
+ * plugin — so the identity rides in the trigger bag and `triggerMatches` is the
+ * only thing standing between "my plugin fired" and "every plugin's rule ran".
+ * That makes the negative cases here the load-bearing ones.
+ */
+describe("plugin triggers and steps", () => {
+  const buildPluginTriggerRule = (
+    id: string,
+    trigger: { pluginId?: string; pluginTrigger?: string },
+    onRun: Record<string, unknown>,
+  ) => {
+    const ruleTrigger = { type: "plugin" as const, ...trigger };
+    return {
+      id,
+      name: id,
+      enabled: true,
+      mode: "review" as const,
+      reviewProfile: "quick" as const,
+      trigger: ruleTrigger,
+      triggers: [ruleTrigger],
+      executor: { mode: "automation-bot" as const },
+      toolPalette: ["repo"] as const,
+      contextSources: [],
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: `auto:${id}`,
+      execution: { kind: "built-in" as const, builtIn: { actions: [onRun] } },
+      actions: [],
+    };
+  };
+
+  const createPluginHarness = (
+    rules: Record<string, unknown>[],
+    options: {
+      registry?: AutomationAdeActionRegistry;
+      pluginAvailability?: { unavailableReason(pluginId: string): string | null };
+    } = {},
+  ) => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService: {
+        list: async () => [],
+        getLaneWorktreePath: () => "/tmp",
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: "/tmp" }),
+      } as any,
+      projectConfigService: {
+        get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: rules, providerMode: "guest" } }),
+      } as any,
+      ...(options.registry ? { adeActionRegistry: options.registry } : {}),
+      ...(options.pluginAvailability ? { pluginAvailability: options.pluginAvailability } : {}),
+    });
+    return { service, raw };
+  };
+
+  it("fires only the rule pointing at that plugin and that trigger id", async () => {
+    const calls: string[] = [];
+    const rules = [
+      buildPluginTriggerRule("match", { pluginId: "ade-linear", pluginTrigger: "issueMoved" }, {
+        type: "ade-action",
+        adeAction: { domain: "lane", action: "list", args: { tag: "match" } },
+      }),
+      buildPluginTriggerRule("other-plugin", { pluginId: "ade-graph", pluginTrigger: "issueMoved" }, {
+        type: "ade-action",
+        adeAction: { domain: "lane", action: "list", args: { tag: "other-plugin" } },
+      }),
+      buildPluginTriggerRule("other-trigger", { pluginId: "ade-linear", pluginTrigger: "issueClosed" }, {
+        type: "ade-action",
+        adeAction: { domain: "lane", action: "list", args: { tag: "other-trigger" } },
+      }),
+    ];
+    const { service } = createPluginHarness(rules, {
+      registry: {
+        isAllowed: () => true,
+        getService: () => ({ list: async (args: { tag: string }) => { calls.push(args.tag); return []; } }),
+        listDomains: () => ["lane"],
+        listActions: () => ["list"],
+      },
+    });
+
+    try {
+      await service.dispatchPluginTrigger({ pluginId: "ade-linear", triggerId: "issueMoved" });
+      expect(calls).toEqual(["match"]);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("matches nothing when the rule trigger omits pluginId or pluginTrigger", async () => {
+    const calls: string[] = [];
+    const rules = [
+      buildPluginTriggerRule("no-plugin-id", { pluginTrigger: "issueMoved" }, {
+        type: "ade-action",
+        adeAction: { domain: "lane", action: "list", args: { tag: "no-plugin-id" } },
+      }),
+      buildPluginTriggerRule("no-trigger-id", { pluginId: "ade-linear" }, {
+        type: "ade-action",
+        adeAction: { domain: "lane", action: "list", args: { tag: "no-trigger-id" } },
+      }),
+      buildPluginTriggerRule("neither", {}, {
+        type: "ade-action",
+        adeAction: { domain: "lane", action: "list", args: { tag: "neither" } },
+      }),
+    ];
+    const { service } = createPluginHarness(rules, {
+      registry: {
+        isAllowed: () => true,
+        getService: () => ({ list: async (args: { tag: string }) => { calls.push(args.tag); return []; } }),
+        listDomains: () => ["lane"],
+        listActions: () => ["list"],
+      },
+    });
+
+    try {
+      // Fail CLOSED. A half-written rule that matched everything would fire on
+      // every plugin's every event, and nothing in the rule would explain why.
+      const event = await service.dispatchPluginTrigger({ pluginId: "ade-linear", triggerId: "issueMoved" });
+      expect(calls).toEqual([]);
+      expect(event?.status).toBe("ignored");
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("runs a plugin STEP through the plugin.invoke domain, resolving {{trigger.*}} in its args", async () => {
+    const invoked: unknown[] = [];
+    const rules = [
+      buildPluginTriggerRule("step-rule", { pluginId: "ade-linear", pluginTrigger: "issueMoved" }, {
+        type: "plugin",
+        pluginStep: {
+          pluginId: "ade-linear",
+          action: "comment",
+          args: { issueId: "{{trigger.plugin.payload.issueId}}", body: "Moved by {{trigger.plugin.pluginId}}" },
+        },
+      }),
+    ];
+    const { service } = createPluginHarness(rules, {
+      registry: {
+        isAllowed: (domain, action) => domain === "plugin" && action === "invoke",
+        getService: (domain) => (domain === "plugin"
+          ? { invoke: async (args: unknown) => { invoked.push(args); return { ok: true }; } }
+          : null),
+        listDomains: () => ["plugin"],
+        listActions: () => ["invoke"],
+      },
+      pluginAvailability: { unavailableReason: () => null },
+    });
+
+    try {
+      await service.dispatchPluginTrigger({
+        pluginId: "ade-linear",
+        triggerId: "issueMoved",
+        payload: { issueId: "ADE-7" },
+      });
+
+      // One invoke, shaped exactly like a hand-written `ade-action` step's —
+      // the step is dispatched through that same path rather than a second one.
+      expect(invoked).toEqual([
+        {
+          pluginId: "ade-linear",
+          action: "comment",
+          args: { issueId: "ADE-7", body: "Moved by ade-linear" },
+        },
+      ]);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("carries the uninstalled-plugin sentence verbatim onto the run and action rows", async () => {
+    // Same contract the gated-domain regression above asserts: the sentence
+    // naming the fix is the whole value of the refusal, so it has to survive
+    // onto `run.errorMessage`, the action row's `errorMessage` AND its
+    // `output` — which is what the history UI renders.
+    const MISSING_PLUGIN_MESSAGE =
+      "This machine doesn't have Linear. It's provided by the ade-linear plugin — available in the Marketplace.";
+    const invoke = vi.fn(async () => ({ ok: true }));
+    const rules = [
+      buildPluginTriggerRule("gone", { pluginId: "ade-linear", pluginTrigger: "issueMoved" }, {
+        type: "plugin",
+        pluginStep: { pluginId: "ade-linear", action: "comment" },
+      }),
+    ];
+    const { service, raw } = createPluginHarness(rules, {
+      registry: {
+        isAllowed: () => true,
+        getService: () => ({ invoke }),
+        listDomains: () => ["plugin"],
+        listActions: () => ["invoke"],
+      },
+      // Asked BEFORE the registry, so the run records the actionable sentence
+      // rather than an allowlist message about `plugin.invoke`.
+      pluginAvailability: { unavailableReason: () => MISSING_PLUGIN_MESSAGE },
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "gone" });
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(run.status).toBe("failed");
+      expect(run.errorMessage).toBe(MISSING_PLUGIN_MESSAGE);
+
+      const detail = await service.getRunDetail({ runId: run.id });
+      expect(detail?.run.errorMessage).toBe(MISSING_PLUGIN_MESSAGE);
+      expect(detail?.actions).toHaveLength(1);
+      expect(detail?.actions[0]).toMatchObject({
+        actionType: "plugin",
+        status: "failed",
+        errorMessage: MISSING_PLUGIN_MESSAGE,
+        output: MISSING_PLUGIN_MESSAGE,
+      });
+
+      expect(mapExecRows(raw.exec("select status, error_message, output from automation_action_results"))).toEqual([
+        { status: "failed", error_message: MISSING_PLUGIN_MESSAGE, output: MISSING_PLUGIN_MESSAGE },
+      ]);
+    } finally {
+      service.dispose();
+    }
+  });
+});

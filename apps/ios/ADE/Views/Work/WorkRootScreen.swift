@@ -172,6 +172,9 @@ struct WorkRootScreen: View {
   /// Plugin contributions for the sessions on screen, rebuilt only when plugin
   /// rows change. Read by value per row — see `PluginContributionIndex`.
   @State private var pluginContributions = PluginContributionIndex()
+  /// Contributions addressed to the Work surface itself: its toolbar and its
+  /// empty state.
+  @State private var pluginSurfaceContributions = PluginContributionIndex()
   /// Project scope currently represented by the local @State projections.
   /// This prevents an in-place project remap from briefly mixing old rows with
   /// the new project's live roster while the database reload catches up.
@@ -623,6 +626,11 @@ struct WorkRootScreen: View {
               .buttonStyle(.glassProminent)
               .tint(ADEColor.accent)
               .disabled(!isLive)
+
+              PluginEmptyStateExtras(
+                contributions: pluginSurfaceContributions.emptyStates(.work),
+                surface: .work
+              )
             }
             .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 16, trailing: 16))
             .listRowBackground(Color.clear)
@@ -668,6 +676,13 @@ struct WorkRootScreen: View {
             // the attached machine having the Linear plugin — not on the
             // account's Linear connection, which the pane itself resolves.
             LinearPaneToolbarButton()
+            // Contributed toolbar actions, before the plugin-pane slot: these
+            // are verbs a plugin put on THIS surface, and the puzzle-piece
+            // button is the generic way into every plugin's panels.
+            PluginToolbarActions(
+              contributions: pluginSurfaceContributions.toolbarActions(.work),
+              surface: .work
+            )
             // One slot for every plugin with a panel, and nothing at all when
             // there are none. Opens the pane directly for a single plugin, a
             // menu for several — the slot is ~38pt and cannot grow per install.
@@ -775,9 +790,8 @@ struct WorkRootScreen: View {
         onFiltersOpened: restoreWorkViewStateAfterDeeplink,
         persist: persistWorkViewState
       ))
-      .task(id: syncService.pluginsProjectionRevision) {
-        pluginContributions = syncService.pluginContributionIndex(entityKind: .session)
-      }
+      .loadPluginContributions(.session, into: $pluginContributions)
+      .loadPluginContributions(.surface, into: $pluginSurfaceContributions)
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
         guard lastWorkProjectionReloadRevision != revision || sessions.isEmpty else { return }

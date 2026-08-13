@@ -106,11 +106,26 @@ describe("copy ADE deeplink keybinding", () => {
     ).toBe("ade://plugin/ade-graph/overview?ctx=%7B%22issue%22%3A%22ISS-14%22%7D");
   });
 
-  it("has no hosted web link for a plugin panel", () => {
-    // Plugin tabs are a desktop surface; a web link would land on the welcome
-    // screen, so the row deliberately mints only the ade:// form.
+  it("builds the hosted web link for a plugin panel", () => {
+    // The hosted client mounts the same `/plugin/:pluginId` route the desktop
+    // App does and reads panels over sync, so the row has a real web answer.
     const row: DeeplinkRow = { kind: "plugin", pluginId: "ade-graph", panelId: "overview" };
-    expect(buildWebClientUrlForRow(row)).toBeNull();
+    expect(buildWebClientUrlForRow(row))
+      .toBe("https://app.ade-app.dev/open?type=plugin&plugin=ade-graph&panel=overview");
+    expect(buildWebClientUrlForRow({ ...row, context: { issue: "ISS-14" } }))
+      .toBe(
+        "https://app.ade-app.dev/open?type=plugin&plugin=ade-graph&panel=overview"
+        + "&ctx=%7B%22issue%22%3A%22ISS-14%22%7D",
+      );
+  });
+
+  it("has no hosted web link for plugin ids the grammar will not carry", () => {
+    // Same gate as the ade:// form: an id the shared manifest parser rejects
+    // yields no target, so neither link is minted.
+    expect(buildWebClientUrlForRow({ kind: "plugin", pluginId: "Ade Graph", panelId: "overview" }))
+      .toBeNull();
+    expect(buildWebClientUrlForRow({ kind: "plugin", pluginId: "ade-graph", panelId: "" }))
+      .toBeNull();
   });
 
   it("returns null for plugin or panel ids the grammar will not carry", () => {

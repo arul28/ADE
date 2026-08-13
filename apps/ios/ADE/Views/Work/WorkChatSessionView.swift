@@ -310,6 +310,9 @@ struct WorkChatSessionView: View {
   @State var olderHistoryTriggerArmed = true
   @State var olderHistoryAutomaticContinuationPending = false
   @State var olderHistoryLoadTask: Task<Void, Never>?
+  /// `chat-card` declarations for this chat, rebuilt only when plugin rows
+  /// change and read by value per card — a transcript row must never query.
+  @State var pluginContributions = PluginContributionIndex()
   let isLive: Bool
   let hostUnreachable: Bool
   let canComposeMessages: Bool
@@ -322,6 +325,14 @@ struct WorkChatSessionView: View {
   let composerDraftRestore: WorkChatComposerDraftRestore?
   var inputLockMessage: String? = nil
   let transitionNamespace: Namespace.ID?
+  /// The sync service, as a plain reference rather than an `@EnvironmentObject`.
+  ///
+  /// Deliberate: this view is the transcript, and observing the service here
+  /// would re-render every row on every unrelated publish. A `chat-card` panel
+  /// needs the service only to build its store at `init`, and the contributions
+  /// it gates on arrive through `.loadPluginContributions`, whose modifier does
+  /// the observing on its own.
+  var pluginSyncService: SyncService? = nil
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
@@ -1144,6 +1155,7 @@ struct WorkChatSessionView: View {
           fallbackContextWindow: chatSummaryContext.contextWindowFallback
         ),
         laneId: session.laneId,
+        sessionId: session.id,
         dictationTargetId: "work-chat:\(session.id)",
         awaitingInputGate: hasPendingInputGate,
         composerPlaceholder: composerPlaceholderText,
@@ -1433,6 +1445,7 @@ struct WorkChatSessionView: View {
         .task(id: timelineInputRecoveryKey) {
           recoverEmptyTimelineSnapshotIfNeeded()
         }
+        .loadPluginContributions(.session, into: $pluginContributions)
         .onDisappear {
           olderHistoryLoadTask?.cancel()
           olderHistoryLoadTask = nil
@@ -2194,6 +2207,9 @@ private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
   let laneId: String
+  /// The chat this composer sends to. Carried so a contributed composer button
+  /// can name it, and so an edit the button answers with reaches this draft.
+  let sessionId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
   let composerPlaceholder: String
@@ -2226,6 +2242,7 @@ private struct WorkChatComposerCard: View {
       chatSummary: chatSummary,
       usageViewModel: usageViewModel,
       laneId: laneId,
+      sessionId: sessionId,
       dictationTargetId: dictationTargetId,
       awaitingInputGate: awaitingInputGate,
       composerPlaceholder: composerPlaceholder,
@@ -2268,6 +2285,7 @@ private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
   let laneId: String
+  let sessionId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
   let composerPlaceholder: String
@@ -2299,6 +2317,10 @@ private struct WorkChatComposerDraftInput: View {
   @State private var contextUsagePresented = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
+  /// Composer-action contributions for THIS chat, read once per plugin-row
+  /// change. Keyed on the session because that is the entity a plugin publishes
+  /// a composer button against.
+  @State private var pluginContributions = PluginContributionIndex()
   @State private var inputAttachments: [WorkChatInputAttachment] = []
   @State private var attachmentPickerPresented = false
   @State private var stopMode: AgentChatStopMode = .stopAndClear
@@ -2397,6 +2419,8 @@ private struct WorkChatComposerDraftInput: View {
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
 
+          pluginComposerActions
+
           Spacer(minLength: 0)
 
           if let usageViewModel {
@@ -2459,6 +2483,7 @@ private struct WorkChatComposerDraftInput: View {
     .task(id: composerDraftRestore?.id) {
       draftState.applyRestore(composerDraftRestore)
     }
+    .loadPluginContributions(.session, into: $pluginContributions)
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
@@ -2481,6 +2506,44 @@ private struct WorkChatComposerDraftInput: View {
         if canCompose { draftState.isFocused = true }
       }
     )
+  }
+
+  /// Contributed buttons in the accessory row, after the composer's own
+  /// controls and before the spacer that pushes the meter to the trailing edge.
+  ///
+  /// Compact mode draws none: that layout is one text field and a mic on a
+  /// single line, and there is no room for a control that is not the product's.
+  @ViewBuilder
+  private var pluginComposerActions: some View {
+    PluginComposerActions(
+      contributions: pluginContributions.composerActions(sessionId: sessionId),
+      sessionId: sessionId,
+      // Read at press time, so the plugin acts on the words on screen at that
+      // moment rather than the ones that were there when the row last drew.
+      draft: { draftState.text },
+      onEdit: applyPluginComposerEdit,
+      enabled: canCompose && !settingsMutationInFlight
+    )
+  }
+
+  /// Apply what a composer action answered with.
+  ///
+  /// Insert appends, because this composer publishes no caret offset — which is
+  /// exactly the case desktop's own contract calls "insert by appending", so
+  /// the two clients agree about where the text lands rather than one of them
+  /// guessing a position.
+  ///
+  /// Focus follows the write. A plugin that filled the draft has handed the
+  /// turn back to the user, and the next thing they do is read it and press
+  /// send; leaving the keyboard down would make them tap the field first.
+  private func applyPluginComposerEdit(_ edit: PluginInvokeComposerEdit) {
+    switch edit {
+    case let .insert(text):
+      draftState.text += text
+    case let .replace(text):
+      draftState.text = text
+    }
+    draftState.isFocused = true
   }
 
   @ViewBuilder

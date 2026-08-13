@@ -614,6 +614,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteSession",
     "dispatchSteer",
     "editSteer",
+    "emitAdeCard",
     "ensureCtoSession",
     "getAvailableModels",
     "getClaudeSessionInfo",
@@ -1161,6 +1162,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Page older raw chat events before an event-history byte offset.",
       input: "object { sessionId: string, beforeOffset: number, maxBytes?: number } or argsList [sessionId, options]",
       example: "ade actions run chat.getChatEventHistoryPage --input-json '{\"sessionId\":\"chat-123\",\"beforeOffset\":4096,\"maxBytes\":65536}' --json",
+    },
+    emitAdeCard: {
+      description: "Emit (or update) a structured card row in a chat transcript. Re-emitting the same cardId merges into the row that is already there. A card emitted by a plugin is attributed to it automatically; `authoredBy` is host-stamped and ignored on input.",
+      input: "object { sessionId: string, card: { cardId: string, variant: string, state: \"live\" | \"terminal\", title: string, fallbackText: string, subtitle?, metrics?, rows?, progress?, actions?, navTarget? } }",
+      example: "ade actions run chat.emitAdeCard --input-json '{\"sessionId\":\"chat-123\",\"card\":{\"cardId\":\"lint-run\",\"variant\":\"lint\",\"state\":\"terminal\",\"title\":\"Lint clean\",\"fallbackText\":\"Lint clean — 0 problems\"}}'",
     },
     sendMessage: {
       description: "Send a user message to a chat session; provider dispatch continues asynchronously.",

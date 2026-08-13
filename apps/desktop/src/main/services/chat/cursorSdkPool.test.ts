@@ -371,6 +371,82 @@ describe("Cursor SDK pool paths", () => {
     expect(env.PATH?.split(path.delimiter)[0]).toBe(betaBinDir);
   });
 
+  /**
+   * Cursor took the bundled skills root and stopped there, so an installed
+   * plugin's skills reached Claude and Codex and were silently missing on
+   * Cursor. These pin both halves: the roots are present, and they are LAST so
+   * a plugin can add a skill but never shadow one ADE ships.
+   */
+  it("appends installed plugins' skill roots after the bundled catalog", () => {
+    const adeHome = makeTempDir("ade-home-");
+    const pluginsRoot = path.join(adeHome, "plugins");
+    const pluginRoot = path.join(pluginsRoot, "notes");
+    const pluginSkills = path.join(pluginRoot, "skills");
+    fs.mkdirSync(path.join(pluginSkills, "note"), { recursive: true });
+    fs.writeFileSync(path.join(pluginSkills, "note", "SKILL.md"), "# note", "utf8");
+    fs.writeFileSync(
+      path.join(pluginRoot, "plugin.json"),
+      JSON.stringify({ name: "notes", version: "1.0.0", displayName: "Notes", skills: ["skills"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(pluginsRoot, "state.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          notes: {
+            version: "1.0.0",
+            enabled: true,
+            source: { kind: "local", path: pluginRoot },
+            installedAt: new Date().toISOString(),
+          },
+        },
+      }),
+      "utf8",
+    );
+    const ownRoot = makeTempDir("ade-own-skills-");
+    const cliBinDir = path.join(ownRoot, "ade-cli", "bin");
+    const bundledSkillsRoot = path.join(ownRoot, "agent-skills");
+    fs.mkdirSync(cliBinDir, { recursive: true });
+    fs.mkdirSync(bundledSkillsRoot, { recursive: true });
+    fs.writeFileSync(path.join(cliBinDir, process.platform === "win32" ? "ade.cmd" : "ade"), "");
+
+    const env = buildCursorSdkWorkerEnv({
+      baseEnv: { PATH: "/usr/bin", ADE_HOME: adeHome, ADE_CLI_BIN_DIR: cliBinDir },
+      userHomeDir: "/Users/admin",
+      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
+      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
+      workspacePath: "/repo/.ade/worktrees/lane",
+      sessionId: "session-1",
+    });
+
+    expect(env.ADE_AGENT_SKILLS_DIRS?.split(path.delimiter)).toEqual([
+      bundledSkillsRoot,
+      pluginSkills,
+    ]);
+  });
+
+  it("leaves the skills roots alone when no plugin is installed", () => {
+    const adeHome = makeTempDir("ade-home-empty-");
+    const ownRoot = makeTempDir("ade-own-skills-empty-");
+    const cliBinDir = path.join(ownRoot, "ade-cli", "bin");
+    const bundledSkillsRoot = path.join(ownRoot, "agent-skills");
+    fs.mkdirSync(cliBinDir, { recursive: true });
+    fs.mkdirSync(bundledSkillsRoot, { recursive: true });
+    fs.writeFileSync(path.join(cliBinDir, process.platform === "win32" ? "ade.cmd" : "ade"), "");
+
+    const env = buildCursorSdkWorkerEnv({
+      baseEnv: { PATH: "/usr/bin", ADE_HOME: adeHome, ADE_CLI_BIN_DIR: cliBinDir },
+      userHomeDir: "/Users/admin",
+      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
+      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
+      workspacePath: "/repo/.ade/worktrees/lane",
+      sessionId: "session-1",
+    });
+
+    expect(env.ADE_AGENT_SKILLS_DIRS?.split(path.delimiter)).toEqual([bundledSkillsRoot]);
+  });
+
   it("prefers HOME on POSIX and USERPROFILE on Windows when resolving the Cursor user home", () => {
     const resolved = resolveCursorSdkUserHome({
       HOME: "/posix-home",

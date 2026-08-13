@@ -43,6 +43,9 @@ struct LaneDetailScreen: View {
   @State private var copiedLinkNotice: String?
   @State private var showRescueSheet = false
   @State private var rescueLaneName = ""
+  /// Contributions for this lane, read once per plugin-row change rather than
+  /// per section — see `PluginContributionIndex`.
+  @State private var pluginContributions = PluginContributionIndex()
 
   init(
     laneId: String,
@@ -110,6 +113,7 @@ struct LaneDetailScreen: View {
       laneDetailTopBar
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
+    .loadPluginContributions(.lane, into: $pluginContributions)
     .task {
       syncService.announceLaneOpen(laneId: laneId)
       await loadDetail(refreshRemote: canRunLiveActions)
@@ -382,7 +386,8 @@ struct LaneDetailScreen: View {
       onCreateLaneFromChanges: {
         rescueLaneName = suggestedRescueLaneName
         showRescueSheet = true
-      }
+      },
+      pluginDetailSections: pluginContributions.detailSections(.lane, laneId)
     )
     .padding(.horizontal, 16)
   }

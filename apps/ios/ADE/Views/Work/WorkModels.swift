@@ -560,6 +560,12 @@ struct WorkAdeCardModel: Identifiable, Equatable {
   /// bottom on every progress emit. Stamped by `buildWorkAdeCards` from the
   /// envelope, so the decoders that have no envelope context can leave it.
   var timestamp: String = ""
+  /// The plugin that emitted this card, when one did. Host-stamped upstream.
+  var author: WorkAdeCardAuthor? = nil
+  /// The panel this card asks to draw inside its frame — the `chat-card`
+  /// socket. Whether it MAY be drawn is a second question, answered against the
+  /// plugin's declared contributions; see `PluginContributionIndex`.
+  var panel: WorkAdeCardPanel? = nil
 
   var isKnownVariant: Bool {
     Self.knownVariants.contains(variant.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -602,9 +608,56 @@ struct WorkAdeCardModel: Identifiable, Equatable {
       rowsTruncated: incoming.rowsTruncated ?? rowsTruncated,
       fallbackText: incoming.fallbackText.isEmpty ? fallbackText : incoming.fallbackText,
       turnId: incoming.turnId ?? turnId,
-      timestamp: timestamp
+      timestamp: timestamp,
+      // Attribution and the panel follow the same later-wins-if-present rule as
+      // every other optional here. A progress ping that omits them must not
+      // strip a card of whose it is or of the panel already on screen.
+      author: incoming.author ?? author,
+      panel: incoming.panel ?? panel
     )
   }
+}
+
+/// Who emitted an `ade_card`. Mirrors `AdeCardAuthor` in `shared/adeCard.ts`.
+struct WorkAdeCardAuthor: Equatable {
+  let pluginId: String
+  /// Carried on the wire so a transcript row can attribute itself without the
+  /// install registry. Falls back to the id, which is never blank.
+  let displayName: String?
+
+  var label: String {
+    let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return name.isEmpty ? pluginId : name
+  }
+}
+
+/// The panel an `ade_card` asks to draw inside its frame.
+struct WorkAdeCardPanel: Equatable {
+  let panelId: String
+  /// The panel's `$context` binding, as the emitter sent it.
+  let context: [String: RemoteJSONValue]
+}
+
+/// The card's attribution, or nil when ADE emitted it.
+///
+/// Validated rather than trusted, the same way the rest of this payload is: an
+/// attribution with a blank id is a label claiming provenance it cannot
+/// support, and rendering "via" followed by nothing says less than nothing.
+func workAdeCardAuthor(pluginId: String?, displayName: String?) -> WorkAdeCardAuthor? {
+  let id = pluginId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !id.isEmpty else { return nil }
+  return WorkAdeCardAuthor(pluginId: id, displayName: displayName)
+}
+
+/// The panel a card names, or nil.
+///
+/// A card naming no panel — or naming one with a blank id — is an ordinary
+/// card, which is the honest degradation: the title, rows and metrics it also
+/// carries still render.
+func workAdeCardPanel(panelId: String?, context: [String: RemoteJSONValue]?) -> WorkAdeCardPanel? {
+  let id = panelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !id.isEmpty else { return nil }
+  return WorkAdeCardPanel(panelId: id, context: context ?? [:])
 }
 
 enum WorkTimelinePayload: Equatable {

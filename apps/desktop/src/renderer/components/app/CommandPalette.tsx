@@ -57,6 +57,12 @@ import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import { pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
+import {
+  PLUGIN_PALETTE_GROUP,
+  PLUGIN_SEARCH_GROUP,
+  usePluginPaletteCommands,
+  usePluginSearchResults,
+} from "../plugins/sockets";
 import { useBuiltinSurfaceVisible, useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
 import {
   selectActiveProjectStateKey,
@@ -306,6 +312,9 @@ export function CommandPalette({
   // pane, so when either is missing the rows must not be offered at all.
   const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const historyVisible = builtinTabVisible("/history");
+  // Contributed palette entries. Gated on `open` because the palette is mounted
+  // for the whole life of the app: a closed one must read nothing.
+  const pluginCommands = usePluginPaletteCommands(open);
   const hiddenSearchKinds = useMemo(() => {
     const hidden = new Set<SearchDocKind>();
     if (!linearSurfaceVisible) hidden.add("linear");
@@ -371,6 +380,11 @@ export function CommandPalette({
   const [actionOutcome, setActionOutcome] =
     useState<ProjectActionOutcome | null>(null);
   const [q, setQ] = useState("");
+  // Contributed search results. Gated on the default mode as well as `open`
+  // because in the other modes `q` is a path or a name being typed, not a
+  // query — firing providers against it would spend the latency budget asking
+  // plugins about half-typed filenames.
+  const pluginSearchRows = usePluginSearchResults(q, open && mode === "default");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [browseInput, setBrowseInput] = useState(
     defaultBrowseInput(project?.rootPath),
@@ -869,6 +883,27 @@ export function CommandPalette({
           }, 30);
         },
       },
+      // Contributed actions, in their own group after the product's own. The
+      // palette is the one placement a plugin can rely on — every other seam
+      // needs the user to be looking at the right tab — so this is where a
+      // plugin's verbs become reachable from anywhere in ADE.
+      ...pluginCommands.map((command) => ({
+        id: command.id,
+        title: command.title,
+        hint: command.hint,
+        keywords: command.keywords,
+        // Only a binding the collision matrix actually granted gets a chip. A
+        // refused chord shown here would be a lie the user can only discover by
+        // pressing it.
+        ...(command.shortcut ? { shortcut: command.shortcut } : {}),
+        group: PLUGIN_PALETTE_GROUP,
+        run: command.run,
+      })),
+      // Live provider results, after the contributed verbs: a plugin's answer to
+      // what you typed is more specific than its standing list of commands, but
+      // it arrives a debounce later, and a group that reordered itself as
+      // results landed would move the row under the user's cursor.
+      ...pluginSearchRows.map((row) => ({ ...row, group: PLUGIN_SEARCH_GROUP })),
       {
         id: "ping",
         title: "Ping preload bridge",
@@ -899,6 +934,8 @@ export function CommandPalette({
     installedPlugins,
     lanes,
     navigate,
+    pluginCommands,
+    pluginSearchRows,
     project?.rootPath,
     selectLane,
     selectedLaneId,

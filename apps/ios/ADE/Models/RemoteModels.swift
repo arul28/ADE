@@ -2399,6 +2399,15 @@ struct AgentChatAdeCardPayload: Decodable, Equatable {
   var degradedReason: String? = nil
   var stale: Bool? = nil
   var rowsTruncated: Int? = nil
+  /// The plugin that emitted this card. Host-stamped, never self-declared —
+  /// a card that could name its own author would let any caller of
+  /// `chat.emitAdeCard` put a well-known plugin's name on a row it wrote.
+  /// Absent on every card ADE emits for itself.
+  var authoredBy: AgentChatAdeCardAuthor? = nil
+  /// A plugin panel to draw inside the card frame — the `chat-card` socket.
+  /// Meaningless without `authoredBy`, since the panel belongs to the emitting
+  /// plugin, and drawn only when that plugin also DECLARED the card.
+  var panel: AgentChatAdeCardPanel? = nil
 
   /// Last-resort body for a payload that could not be decoded at all.
   static let empty = AgentChatAdeCardPayload()
@@ -2407,6 +2416,7 @@ struct AgentChatAdeCardPayload: Decodable, Equatable {
     case cardId, variant, state, title, subtitle
     case metrics, rows, progress, navTarget, actions, fallbackText, turnId
     case durationMs, degradedReason, stale, rowsTruncated
+    case authoredBy, panel
   }
 
   init() {}
@@ -2429,7 +2439,26 @@ struct AgentChatAdeCardPayload: Decodable, Equatable {
     degradedReason = try? container.decodeIfPresent(String.self, forKey: .degradedReason)
     stale = try? container.decodeIfPresent(Bool.self, forKey: .stale)
     rowsTruncated = try? container.decodeIfPresent(Int.self, forKey: .rowsTruncated)
+    authoredBy = (try? container.decodeIfPresent(AgentChatAdeCardAuthor.self, forKey: .authoredBy)) ?? nil
+    panel = (try? container.decodeIfPresent(AgentChatAdeCardPanel.self, forKey: .panel)) ?? nil
   }
+}
+
+/// Mirrors `AdeCardAuthor` in `apps/desktop/src/shared/adeCard.ts`.
+///
+/// `displayName` rides on the wire rather than being resolved per client: iOS
+/// and the TUI render this row from the transcript alone, and neither has the
+/// install registry open at that moment.
+struct AgentChatAdeCardAuthor: Decodable, Equatable {
+  var pluginId: String?
+  var displayName: String?
+}
+
+/// Mirrors `AdeCardPanel`. `context` is the panel's `$context` binding — the
+/// same object a `plugin` deeplink's `?ctx=` supplies.
+struct AgentChatAdeCardPanel: Decodable, Equatable {
+  var panelId: String?
+  var context: RemoteJSONValue?
 }
 
 struct AgentChatAdeCardMetric: Decodable, Equatable {

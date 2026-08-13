@@ -70,7 +70,7 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import { PluginEmptyStateExtra } from "../plugins/sockets";
+import { PluginEmptyStateExtra, PluginFilterChips, useSurfaceContributions } from "../plugins/sockets";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -83,6 +83,8 @@ const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
   manual: "Manual",
 };
 const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
+const EMPTY_PLUGIN_FILTER_KEYS: readonly string[] = [];
+
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 /**
@@ -857,6 +859,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   activeItemId = null,
   handoffJobs = [],
   crossMachineSyncActive = true,
+  pluginFilterKeys = EMPTY_PLUGIN_FILTER_KEYS,
+  onTogglePluginFilterKey,
+  onClearPluginFilterKeys,
+  active = true,
 }: {
   lanes: LaneSummary[];
   runningFiltered: TerminalSessionSummary[];
@@ -934,6 +940,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   setWorkSessionFilters?: (
     next: WorkSessionFilters | ((prev: WorkSessionFilters) => WorkSessionFilters),
   ) => void;
+  /** Contributed `filter-chip` selections. Owned by `useWorkSessions`. */
+  pluginFilterKeys?: readonly string[];
+  onTogglePluginFilterKey?: (filterKey: string) => void;
+  /** Clears the contributed chips too, so "Clear filters" means all of them. */
+  onClearPluginFilterKeys?: () => void;
+  /** False while the Work tab is mounted but not visible. */
+  active?: boolean;
   /** Lanes pinned to the top of the Work sidebar (not the Lanes tab's pins). */
   workPinnedLaneIds?: string[];
   toggleWorkLanePinned?: (laneId: string) => void;
@@ -1028,7 +1041,24 @@ export const SessionListPane = React.memo(function SessionListPane({
   const isByTime = sessionListOrganization === "by-time";
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
-  const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
+  const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters)
+    || pluginFilterKeys.length > 0;
+  // The chips themselves are drawn by `PluginFilterChips`; this read is for the
+  // two things markup around them needs — whether to draw a "Plugins" axis label
+  // above nothing, and what to CALL a selected chip in the empty state, which
+  // holds only a filter key otherwise. Reads the same memoized per-surface store
+  // `useWorkSessions` does.
+  const pluginChips = useSurfaceContributions("work", "filter-chip", { active });
+  const pluginChipCount = pluginChips.length;
+  const activeFilterLabels = useMemo(
+    () => [
+      ...activeWorkSessionFilterLabels(workSessionFilters),
+      ...pluginChips
+        .filter((chip) => pluginFilterKeys.includes(chip.payload.filterKey))
+        .map((chip) => chip.payload.label),
+    ],
+    [pluginChips, pluginFilterKeys, workSessionFilters],
+  );
   const [filterOpen, setFilterOpen] = useState(false);
 
   /** Toggle one value inside an OR-ed chip axis. */
@@ -2980,6 +3010,24 @@ export const SessionListPane = React.memo(function SessionListPane({
                 />
               </div>
             </div>
+            {/* Contributed chips, as a final axis after the list's own four.
+                The row disappears entirely when no plugin contributes one —
+                `:empty` rather than a count, so this stays markup. */}
+            {onTogglePluginFilterKey && pluginChipCount > 0 ? (
+              <div className="flex items-start gap-1">
+                <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">
+                  Plugins
+                </span>
+                <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                  <PluginFilterChips
+                    surface="work"
+                    selected={pluginFilterKeys}
+                    onToggle={onTogglePluginFilterKey}
+                    active={active}
+                  />
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -3070,12 +3118,18 @@ export const SessionListPane = React.memo(function SessionListPane({
             <Funnel size={16} weight="regular" className="mb-2 text-muted-fg/25" />
             <div className="text-[11px] font-medium text-fg/70">No sessions match</div>
             <div className="mt-1 max-w-[190px] text-[10px] leading-relaxed text-muted-fg/45">
-              {activeWorkSessionFilterLabels(workSessionFilters).join(" · ")}
+              {activeFilterLabels.join(" · ")}
             </div>
             <button
               type="button"
               className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg"
-              onClick={() => setWorkSessionFilters?.(EMPTY_WORK_SESSION_FILTERS)}
+              onClick={() => {
+                setWorkSessionFilters?.(EMPTY_WORK_SESSION_FILTERS);
+                // A contributed chip can be the only reason the list is empty,
+                // and it lives outside `workSessionFilters` — a "Clear filters"
+                // that left it set would be a button that visibly does nothing.
+                onClearPluginFilterKeys?.();
+              }}
             >
               Clear filters
             </button>
@@ -3087,7 +3141,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             <div className="mt-1 text-[10px] text-muted-fg/40 leading-relaxed max-w-[180px]">
               Start a new session above.
             </div>
-            <PluginEmptyStateExtra surface="work" />
+            <PluginEmptyStateExtra surface="work" active={active} />
           </div>
         ) : !isByLane && hasForeignSessions && !hasAnySessions ? (
           <div className="flex h-full flex-col items-center justify-center px-3 py-10 text-center">

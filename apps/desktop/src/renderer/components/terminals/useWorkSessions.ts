@@ -48,6 +48,12 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { useInstalledBuiltinSurfaces } from "../plugins/useBuiltinTabs";
+import {
+  entityMatchesPluginFilters,
+  pluginSessionContext,
+  usePluginSurfaceContributions,
+  useSurfaceContributions,
+} from "../plugins/sockets";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
 import {
@@ -1563,8 +1569,33 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    * With no chips set this returns `filtered` BY REFERENCE, so every downstream
    * memo stays referentially stable and the feature costs nothing when unused.
    */
+  // Contributed filter keys are local state, never persisted into
+  // `projectViewState` beside `workSessionFilters`: a key from a plugin that has
+  // since been uninstalled would come back after a restart and hide sessions
+  // with no chip left on screen to undo it.
+  const [pluginFilterKeys, setPluginFilterKeys] = useState<string[]>([]);
+  const pluginContributionSet = usePluginSurfaceContributions("work", active);
+  const pluginFilterChips = useSurfaceContributions("work", "filter-chip", { active });
+  const togglePluginFilterKey = useCallback((filterKey: string) => {
+    setPluginFilterKeys((current) => (
+      current.includes(filterKey)
+        ? current.filter((entry) => entry !== filterKey)
+        : [...current, filterKey]
+    ));
+  }, []);
+  const clearPluginFilterKeys = useCallback(() => {
+    setPluginFilterKeys((current) => (current.length === 0 ? current : []));
+  }, []);
+  // Only keys a visible chip still offers may filter — see the note above.
+  const appliedPluginFilterKeys = useMemo(() => {
+    const offered = new Set(pluginFilterChips.map((chip) => chip.payload.filterKey));
+    return pluginFilterKeys.filter((key) => offered.has(key));
+  }, [pluginFilterChips, pluginFilterKeys]);
+
   const chipFiltered = useMemo(() => {
-    if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
+    if (isWorkSessionFilterEmpty(workSessionFilters) && appliedPluginFilterKeys.length === 0) {
+      return filtered;
+    }
     const ctx = {
       nowMs: Date.now(),
       // Union answer on purpose: the chip asks "does this lane have a PR at
@@ -1573,11 +1604,33 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       laneHasPr: (laneId: string) => laneHasAnyPr(prsByLaneId, laneId),
       laneIsDirty: (laneId: string) => laneStatusById.get(laneId)?.status.dirty === true,
     };
-    return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, ctx));
+    return filtered.filter((session) => (
+      matchesWorkSessionFilters(session, workSessionFilters, ctx)
+      && entityMatchesPluginFilters(
+        pluginContributionSet,
+        // The same projection `SessionCard` badges with, so a chip and a badge
+        // on one row are talking about the same session.
+        pluginSessionContext({
+          id: session.id,
+          title: session.goal ?? session.title,
+          provider: session.toolType,
+          status: session.runtimeState,
+        }),
+        appliedPluginFilterKeys,
+      )
+    ));
     // `snoozeEpoch` matters here too: a lapsing snooze changes a row's filing
     // bucket, which is what the status chips match on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, workSessionFilters, prsByLaneId, laneStatusById, snoozeEpoch]);
+  }, [
+    filtered,
+    workSessionFilters,
+    prsByLaneId,
+    laneStatusById,
+    snoozeEpoch,
+    appliedPluginFilterKeys,
+    pluginContributionSet,
+  ]);
 
   const {
     runningFiltered,
@@ -2070,6 +2123,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
     workSessionFilters,
     setWorkSessionFilters,
+    // The APPLIED set, not the raw one. A key whose chip is gone filters
+    // nothing, so surfacing it would light the "filters are on" indicator with
+    // no chip left on screen to explain or undo it.
+    pluginFilterKeys: appliedPluginFilterKeys,
+    togglePluginFilterKey,
+    clearPluginFilterKeys,
     workPinnedLaneIds,
     toggleWorkLanePinned,
     workLaneSortMode,

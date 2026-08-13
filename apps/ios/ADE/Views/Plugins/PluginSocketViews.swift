@@ -1,5 +1,114 @@
 import SwiftUI
 
+/// What a socket invocation tells the plugin about where it was pressed.
+///
+/// Two shapes ride in the payload, on purpose:
+///
+/// - `entityKind` / `entityId` at the top level, which is what this app has
+///   always sent for a row menu item, and what a plugin written against the
+///   phone reads.
+/// - `context`, the typed object desktop sends
+///   (`apps/desktop/src/shared/plugins/context.ts`), so a plugin written once
+///   against the documented contract branches on `context.kind` and works on
+///   both clients.
+///
+/// The phone builds the SHAPE of a desktop context but not always its every
+/// field: a lane row here knows its id, not its dirty flag. Absent-tolerant by
+/// construction is the contract for these objects, so a thinner context is a
+/// smaller projection rather than a wrong one — the alternative, inventing
+/// `dirty: false`, would be a lie a plugin could act on.
+enum PluginSocketContext: Equatable {
+  case surface(PluginSurfaceId)
+  case lane(id: String)
+  case pr(number: Int)
+  case session(id: String)
+  case file(path: String)
+  case automation(id: String)
+  /// The live composer, with the draft read at PRESS time — never at render
+  /// time. The button acts on the words on screen at the moment it is tapped.
+  case composer(sessionId: String?, draft: String)
+  /// The activity pane. `entryId` is the plugin's own id for the row that was
+  /// pressed — an activity list is the one surface where a plugin routinely
+  /// publishes several rows sharing one action, and "which row" is the only
+  /// thing the handler cannot work out for itself.
+  case activity(entryId: String, projectKey: String?)
+
+  /// The row address a dynamic contribution for this context is filed under.
+  /// Nil for a composer with no chat yet: there is no entity to key on, which
+  /// is also why a fresh composer shows no contributed buttons.
+  var entity: (kind: PluginEntityKind, id: String)? {
+    switch self {
+    case let .surface(surface): return (.surface, surface.rawValue)
+    case let .lane(id): return (.lane, id)
+    case let .pr(number): return (.pr, String(number))
+    case let .session(id): return (.session, id)
+    case let .file(path): return (.file, path)
+    case let .automation(id): return (.automation, id)
+    case let .composer(sessionId, _): return sessionId.map { (.session, $0) }
+    // An activity row is published against the `app` surface, not against the
+    // row: the entry IS the contribution, so there is no narrower entity to key
+    // a second contribution on.
+    case .activity: return (.surface, PluginSurfaceId.app.rawValue)
+    }
+  }
+
+  private var contextObject: [String: Any] {
+    switch self {
+    case let .surface(surface):
+      return ["kind": "surface", "surface": surface.rawValue]
+    case let .lane(id):
+      return ["kind": "lane", "id": id]
+    case let .pr(number):
+      return ["kind": "pr", "number": number]
+    case let .session(id):
+      return ["kind": "session", "id": id]
+    case let .file(path):
+      var object: [String: Any] = ["kind": "file", "path": path]
+      if let ext = pluginFileExtension(path) { object["extension"] = ext }
+      return object
+    case let .automation(id):
+      return ["kind": "automation", "id": id]
+    case let .composer(sessionId, draft):
+      // `cursor` is null rather than absent, and truthfully so: this composer
+      // publishes no caret offset, and desktop's own contract says a null
+      // cursor means "insert by appending". Sending a made-up 0 would tell a
+      // plugin to insert at the START of the user's sentence.
+      return [
+        "kind": "composer",
+        "sessionId": sessionId as Any? ?? NSNull(),
+        "draft": draft,
+        "cursor": NSNull(),
+      ]
+    case let .activity(entryId, projectKey):
+      // `laneId` is null and truthfully so: the phone's Activity drawer is
+      // account-wide — every agent on every signed-in machine — so there is no
+      // lane in view to name. Sending the last lane the user happened to open
+      // would tell a plugin its row was about work it has nothing to do with.
+      return [
+        "kind": "activity",
+        "entryId": entryId,
+        "projectKey": projectKey as Any? ?? NSNull(),
+        "laneId": NSNull(),
+      ]
+    }
+  }
+
+  var invokePayload: [String: Any] {
+    var payload: [String: Any] = ["context": contextObject]
+    if let entity {
+      payload["entityKind"] = entity.kind.rawValue
+      payload["entityId"] = entity.id
+    }
+    return payload
+  }
+}
+
+/// Visible plugin buttons in one cluster before the rest fold into an overflow
+/// menu. Two is what a phone toolbar or composer row carries without pushing
+/// the surface's own controls off — the same restraint, and the same number, as
+/// `PLUGIN_ROW_BADGE_VISIBLE_LIMIT`.
+let pluginActionVisibleLimit = 2
+
 /// The row-badge socket: plugin badges appended to a row's existing trailing
 /// cluster.
 ///
@@ -107,23 +216,864 @@ extension SyncService {
   /// the pane on the panel the plugin sent them to.
   func invokeRowContribution(_ contribution: PluginContribution) {
     guard let item = contribution.menuItem else { return }
+    // The row already knows which entity it is: `plugin_contributions` keys on
+    // it, so the context is rebuilt from the row rather than threaded down from
+    // whichever surface drew the menu.
+    let context: PluginSocketContext = switch contribution.entityKind {
+    case .lane: .lane(id: contribution.entityId)
+    // A PR row's entity id IS its number — that is what
+    // `pluginContributionKeyForContext` writes and what the host stores. A row
+    // that is not numeric came from something that did not follow the contract,
+    // and the untouched `entityId` still rides in the payload beside this.
+    case .pr: .pr(number: Int(contribution.entityId) ?? 0)
+    case .session: .session(id: contribution.entityId)
+    case .file: .file(path: contribution.entityId)
+    case .automation: .automation(id: contribution.entityId)
+    case .surface: .surface(PluginSurfaceId(rawValue: contribution.entityId) ?? .work)
+    }
     ADEHaptics.light()
     Task { [weak self] in
       guard let self else { return }
-      let result = try? await self.invokePluginAction(
-        pluginId: contribution.pluginId,
+      await self.invokeSocketContribution(
+        contribution,
         actionId: item.actionId,
-        payload: [
-          "entityKind": contribution.entityKind.rawValue,
-          "entityId": contribution.entityId,
-        ]
+        context: context
       )
-      guard let navigation = result?.navigate else { return }
-      self.presentedPluginPane = PluginPaneRequest(
+    }
+  }
+
+  /// Dispatch one socket contribution and honour the response verbs this client
+  /// can honour.
+  ///
+  /// `navigate` opens the plugin's pane, because it is not a report on what
+  /// happened — it is the rest of the interaction the user started. The result
+  /// comes back so a caller that HAS a composer can apply a `composer` edit;
+  /// callers without one drop it, which is the same degradation a client with
+  /// no pane gives `navigate`.
+  ///
+  /// Never throws. A socket press has nowhere to show a failure on a phone —
+  /// the menu has dismissed, the toolbar button has no error slot — so a
+  /// failure resolves to nil and the surface stays as it was.
+  @discardableResult
+  func invokeSocketContribution(
+    _ contribution: PluginContribution,
+    actionId: String,
+    context: PluginSocketContext
+  ) async -> PluginInvokeResult? {
+    let result = try? await invokePluginAction(
+      pluginId: contribution.pluginId,
+      actionId: actionId,
+      payload: context.invokePayload
+    )
+    if let navigation = result?.navigate {
+      presentedPluginPane = PluginPaneRequest(
         pluginId: contribution.pluginId,
         panelId: navigation.panelId,
-        title: self.pluginPresenceCatalog().label(for: contribution.pluginId),
+        title: pluginPresenceCatalog().label(for: contribution.pluginId),
         context: navigation.context ?? [:]
+      )
+    }
+    return result
+  }
+}
+
+// MARK: - Loading contributions into a surface
+
+/// Keeps a surface's contribution index current without making any row fetch.
+///
+/// Two things move the answer and both are folded into one trigger: the plugin
+/// tables changing (`pluginsProjectionRevision`) and the phone attaching to a
+/// different machine (`pluginPresenceTrigger`).
+///
+/// Both remote reads resolve BEFORE the index is built, and each for its own
+/// reason. Presence, because the index filters on it — building first and
+/// filtering later would show every machine's contributions for one frame. And
+/// the manifest declarations, because they are half of what the index contains:
+/// a surface built from published rows alone would draw, then visibly grow the
+/// plugin's declared buttons a moment later.
+///
+/// Both collapse across surfaces revealing together, so this costs one pair of
+/// round trips per scope rather than one pair per tab.
+private struct PluginContributionLoader: ViewModifier {
+  let entityKind: PluginEntityKind
+  let active: Bool
+  @Binding var index: PluginContributionIndex
+
+  @EnvironmentObject private var syncService: SyncService
+
+  func body(content: Content) -> some View {
+    content.task(id: reloadKey) {
+      guard active else { return }
+      await syncService.pluginPresenceGate.ensureAnswer()
+      guard !Task.isCancelled else { return }
+      let declarations = await syncService.pluginSocketDeclarations()
+      guard !Task.isCancelled else { return }
+      index = syncService.pluginContributionIndex(
+        entityKind: entityKind,
+        declarations: declarations
+      )
+    }
+  }
+
+  private var reloadKey: String? {
+    guard active else { return nil }
+    return "\(syncService.pluginsProjectionRevision)|\(syncService.pluginPresenceTrigger)"
+  }
+}
+
+extension View {
+  /// Load and keep fresh the plugin contributions for one entity kind.
+  ///
+  /// Named for the verb rather than the noun so it cannot be confused with the
+  /// `pluginContributions` state each surface holds — the two would read
+  /// identically at the call site and mean opposite things.
+  func loadPluginContributions(
+    _ entityKind: PluginEntityKind,
+    into index: Binding<PluginContributionIndex>,
+    active: Bool = true
+  ) -> some View {
+    modifier(PluginContributionLoader(entityKind: entityKind, active: active, index: index))
+  }
+}
+
+// MARK: - toolbar-action
+
+/// Contributed buttons on a surface's top bar, grouped after the surface's own.
+///
+/// Two visible and the rest in an overflow menu, matching desktop. A toolbar is
+/// the surface's primary verbs; a plugin joins that row rather than taking it
+/// over, and on a phone the row is about four controls wide before the title
+/// starts truncating.
+struct PluginToolbarActions: View {
+  let contributions: [PluginContribution]
+  let surface: PluginSurfaceId
+
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    if !contributions.isEmpty {
+      let visible = contributions.prefix(pluginActionVisibleLimit)
+      let hidden = contributions.dropFirst(pluginActionVisibleLimit)
+      HStack(spacing: 4) {
+        ForEach(Array(visible)) { contribution in
+          if let action = contribution.toolbarAction {
+            Button {
+              invoke(contribution, action)
+            } label: {
+              Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(ADEColor.textSecondary)
+                .frame(width: 38, height: 34)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(action.disabled || !syncService.canInvokePluginActions)
+            .accessibilityLabel(attributedLabel(action.label, contribution))
+          }
+        }
+        if !hidden.isEmpty {
+          Menu {
+            ForEach(Array(hidden)) { contribution in
+              if let action = contribution.toolbarAction {
+                Button {
+                  invoke(contribution, action)
+                } label: {
+                  Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+                }
+                .disabled(action.disabled || !syncService.canInvokePluginActions)
+              }
+            }
+          } label: {
+            Image(systemName: "ellipsis")
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 30, height: 34)
+              .contentShape(Rectangle())
+          }
+          .accessibilityLabel("\(hidden.count) more plugin actions")
+        }
+      }
+    }
+  }
+
+  /// The button shows an icon only — the top bar has no room for a label — so
+  /// the plugin's name has to travel in the accessibility label, which is the
+  /// one place attribution is guaranteed to survive.
+  private func attributedLabel(_ label: String, _ contribution: PluginContribution) -> String {
+    "\(label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))"
+  }
+
+  private func invoke(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) {
+    ADEHaptics.light()
+    Task { @MainActor in
+      await syncService.invokeSocketContribution(
+        contribution,
+        actionId: action.actionId,
+        context: .surface(surface)
+      )
+    }
+  }
+}
+
+// MARK: - empty-state
+
+/// What plugins add to an empty surface, UNDER the product's own explanation of
+/// why it is empty — never instead of it. An empty Lanes tab still means "you
+/// have no lanes"; a plugin may offer a way to get some.
+///
+/// Written to sit inside ``ADEEmptyStateView``'s `actions` slot, which is why it
+/// carries its own spacing and no card of its own.
+struct PluginEmptyStateExtras: View {
+  let contributions: [PluginContribution]
+  let surface: PluginSurfaceId
+
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    if !contributions.isEmpty {
+      VStack(spacing: 10) {
+        ForEach(contributions) { contribution in
+          if let empty = contribution.emptyState {
+            VStack(spacing: 6) {
+              Text(empty.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .multilineTextAlignment(.center)
+              if let body = empty.body {
+                Text(body)
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .multilineTextAlignment(.center)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              if let actionId = empty.actionId {
+                ADEGlassActionButton(
+                  title: empty.actionLabel ?? empty.title,
+                  symbol: "puzzlepiece.extension",
+                  tint: ADEColor.accent
+                ) {
+                  ADEHaptics.light()
+                  Task { @MainActor in
+                    await syncService.invokeSocketContribution(
+                      contribution,
+                      actionId: actionId,
+                      context: .surface(surface)
+                    )
+                  }
+                }
+                .disabled(!syncService.canInvokePluginActions)
+              }
+              PluginAttributionLine(pluginId: contribution.pluginId)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(12)
+            .background(
+              ADEColor.surfaceBackground.opacity(0.5),
+              in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+          }
+        }
+      }
+      .padding(.top, 4)
+    }
+  }
+}
+
+/// Who contributed the thing above this line.
+///
+/// Drawn wherever a contribution occupies enough of the screen to be mistaken
+/// for the product's own content — an empty-state card, a detail section, the
+/// file-viewer offer. A badge or a toolbar icon carries no attribution because
+/// there is nowhere to put one; those get it in the accessibility label.
+struct PluginAttributionLine: View {
+  let pluginId: String
+
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    let name = syncService.pluginPresenceCatalog().label(for: pluginId)
+    HStack(spacing: 4) {
+      Image(systemName: "puzzlepiece.extension")
+        .font(.system(size: 9, weight: .semibold))
+      Text(name)
+        .font(.caption2)
+    }
+    .foregroundStyle(ADEColor.textMuted)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Contributed by \(name)")
+  }
+}
+
+// MARK: - filter-chip
+
+/// Contributed filter chips, appended after a list's own filter controls.
+///
+/// Multi-select, matching the desktop rule: a row survives when it carries ANY
+/// selected key, and an empty selection filters nothing at all. The selection
+/// lives with the LIST rather than here — it is list state, it has to outlive
+/// this view's redraws, and the list is what applies it.
+struct PluginFilterChips: View {
+  let contributions: [PluginContribution]
+  @Binding var selectedKeys: Set<String>
+
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    if !contributions.isEmpty {
+      ForEach(contributions) { contribution in
+        if let chip = contribution.filterChip {
+          let isSelected = selectedKeys.contains(chip.filterKey)
+          Button {
+            ADEHaptics.light()
+            if isSelected {
+              selectedKeys.remove(chip.filterKey)
+            } else {
+              selectedKeys.insert(chip.filterKey)
+            }
+          } label: {
+            HStack(spacing: 5) {
+              Image(systemName: "puzzlepiece.extension")
+                .font(.system(size: 9, weight: .semibold))
+              Text(chip.label)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+              if let count = chip.count {
+                Text("\(count)")
+                  .font(.caption2.weight(.semibold))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+            }
+            .foregroundStyle(isSelected ? ADEColor.accent : ADEColor.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+              isSelected ? ADEColor.accent.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5),
+              in: Capsule(style: .continuous)
+            )
+            .overlay(
+              Capsule(style: .continuous)
+                .stroke(isSelected ? ADEColor.accent.opacity(0.4) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
+            )
+            .glassEffect()
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("\(chip.label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))")
+          .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        }
+      }
+    }
+  }
+}
+
+// MARK: - detail-section
+
+/// Contributed sections in a detail screen, after the product's own.
+///
+/// Each is the plugin's vocabulary panel rendered in place — the same renderer
+/// the full pane uses, which is what makes a detail section portable: a plugin
+/// writes one panel and it draws on desktop, on the phone, and in the pane.
+struct PluginDetailSections: View {
+  let contributions: [PluginContribution]
+  let context: PluginSocketContext
+  /// Passed rather than read from the environment because each section builds a
+  /// ``PluginPaneStore`` in its `init`, where `@EnvironmentObject` is not yet
+  /// populated. Same reason, and the same shape, as ``PluginPaneSheet``.
+  let syncService: SyncService
+
+  var body: some View {
+    if !contributions.isEmpty {
+      VStack(alignment: .leading, spacing: 16) {
+        ForEach(contributions) { contribution in
+          if let section = contribution.detailSection {
+            PluginDetailSection(
+              contribution: contribution,
+              section: section,
+              context: context,
+              syncService: syncService
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+/// One contributed section.
+///
+/// A view of its own because it owns a ``PluginPaneStore``: the store resolves
+/// the panel's data bindings once and the render then touches no database, the
+/// same discipline the pane sheet follows. A `@StateObject` cannot live inside
+/// a `ForEach` body without a view to hold it.
+private struct PluginDetailSection: View {
+  let contribution: PluginContribution
+  let section: PluginDetailSectionPayload
+
+  @EnvironmentObject private var syncService: SyncService
+  @StateObject private var store: PluginPaneStore
+
+  init(
+    contribution: PluginContribution,
+    section: PluginDetailSectionPayload,
+    context: PluginSocketContext,
+    syncService: SyncService
+  ) {
+    self.contribution = contribution
+    self.section = section
+    // The section's panel is fixed by the contribution, so the store is created
+    // pointing at it. Its render context is the entity the detail screen is
+    // about, which is what a `$context` binding inside the panel reads and what
+    // rides on every action the panel dispatches.
+    _store = StateObject(wrappedValue: PluginPaneStore(
+      pluginId: contribution.pluginId,
+      panelId: section.panelId,
+      context: PluginSocketContextValues.remoteJSON(context),
+      sync: syncService
+    ))
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if let title = section.title {
+        Text(title.uppercased())
+          .font(.caption2.weight(.bold))
+          .kerning(0.6)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      sectionBody
+      PluginAttributionLine(pluginId: contribution.pluginId)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .task(id: syncService.pluginsProjectionRevision) {
+      store.load()
+    }
+  }
+
+  /// The degradation ladder, trimmed for a section rather than a page.
+  ///
+  /// A section is a guest on someone else's screen, so a panel that cannot be
+  /// read says so in one line instead of taking over with a full empty state —
+  /// and a section with no panel row at all draws NOTHING. On the pane, "no
+  /// panels yet" is the answer to a question the user asked; inside a PR detail
+  /// it would be a mystery card about a plugin they were not thinking about.
+  @ViewBuilder
+  private var sectionBody: some View {
+    switch store.presentation {
+    case let .panel(schema):
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(Array(schema.body.enumerated()), id: \.offset) { _, node in
+          PluginVocabularyNodeView(node: node, store: store)
+        }
+      }
+    case let .updateRequired(fallback):
+      PluginSectionNotice(
+        symbol: "arrow.up.circle",
+        text: fallback?.text ?? "This section needs a newer version of ADE."
+      )
+    case let .damaged(fallback):
+      PluginSectionNotice(
+        symbol: "exclamationmark.triangle",
+        text: fallback?.text ?? "\(store.displayName) sent a section ADE could not read."
+      )
+    case .missing:
+      EmptyView()
+    }
+  }
+}
+
+private struct PluginSectionNotice: View {
+  let symbol: String
+  let text: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: symbol)
+        .font(.system(size: 11, weight: .semibold))
+      Text(text)
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .foregroundStyle(ADEColor.textSecondary)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(10)
+    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+  }
+}
+
+/// A socket context as the `[String: RemoteJSONValue]` a pane renders with.
+///
+/// A detail section's panel is opened with the entity it sits on, so the same
+/// values a socket press sends have to be readable by a `$context` binding
+/// inside the panel. Only scalars cross: the pane's context type is the app's
+/// loose-JSON value, and a panel binding renders a fact rather than walking a
+/// tree.
+enum PluginSocketContextValues {
+  static func remoteJSON(_ context: PluginSocketContext) -> [String: RemoteJSONValue] {
+    switch context {
+    case let .surface(surface):
+      return ["kind": .string("surface"), "surface": .string(surface.rawValue)]
+    case let .lane(id):
+      return ["kind": .string("lane"), "id": .string(id)]
+    case let .pr(number):
+      return ["kind": .string("pr"), "number": .number(Double(number))]
+    case let .session(id):
+      return ["kind": .string("session"), "id": .string(id)]
+    case let .file(path):
+      var values: [String: RemoteJSONValue] = ["kind": .string("file"), "path": .string(path)]
+      if let ext = pluginFileExtension(path) { values["extension"] = .string(ext) }
+      return values
+    case let .automation(id):
+      return ["kind": .string("automation"), "id": .string(id)]
+    case let .composer(sessionId, draft):
+      var values: [String: RemoteJSONValue] = ["kind": .string("composer"), "draft": .string(draft)]
+      if let sessionId { values["sessionId"] = .string(sessionId) }
+      return values
+    case let .activity(entryId, projectKey):
+      var values: [String: RemoteJSONValue] = ["kind": .string("activity"), "entryId": .string(entryId)]
+      if let projectKey { values["projectKey"] = .string(projectKey) }
+      return values
+    }
+  }
+}
+
+// MARK: - composer-action
+
+/// Contributed buttons in the chat composer's accessory row.
+///
+/// The one socket whose press carries the user's own unsent words, and the one
+/// whose response can write them back. Both directions are the point: a button
+/// that rewrites, translates or expands a prompt cannot do its job from a
+/// session id, and one that could read the draft but not answer with a better
+/// one would be a dead end.
+///
+/// The busy state is why this socket gets minutes where a row button gets
+/// seconds (`PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS`): it stays visibly
+/// active, refuses a second press, and sits under a caret the user is watching.
+/// The phone shows the same spinner for the same reason — its canonical uses
+/// (record until I stop, transcribe this, draft that) are open-ended by nature.
+struct PluginComposerActions: View {
+  let contributions: [PluginContribution]
+  let sessionId: String?
+  /// Read at press time, never captured at render time.
+  let draft: () -> String
+  let onEdit: (PluginInvokeComposerEdit) -> Void
+  var enabled = true
+
+  @EnvironmentObject private var syncService: SyncService
+  @State private var inFlight: Set<String> = []
+
+  var body: some View {
+    if !contributions.isEmpty {
+      let visible = contributions.prefix(pluginActionVisibleLimit)
+      let hidden = contributions.dropFirst(pluginActionVisibleLimit)
+      ForEach(Array(visible)) { contribution in
+        if let action = contribution.composerAction {
+          button(contribution, action)
+        }
+      }
+      if !hidden.isEmpty {
+        Menu {
+          ForEach(Array(hidden)) { contribution in
+            if let action = contribution.composerAction {
+              Button {
+                invoke(contribution, action)
+              } label: {
+                Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+              }
+              .disabled(isDisabled(contribution, action))
+            }
+          }
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("\(hidden.count) more plugin actions")
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func button(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) -> some View {
+    let busy = inFlight.contains(contribution.id)
+    Button {
+      invoke(contribution, action)
+    } label: {
+      Group {
+        if busy {
+          ProgressView().controlSize(.mini)
+        } else {
+          Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+            .font(.system(size: 12, weight: .semibold))
+        }
+      }
+      .foregroundStyle(ADEColor.textSecondary)
+      .frame(width: 28, height: 28)
+      .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(isDisabled(contribution, action))
+    .accessibilityLabel("\(action.label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))")
+    .accessibilityValue(busy ? "Working" : "")
+  }
+
+  private func isDisabled(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) -> Bool {
+    action.disabled || !enabled || !syncService.canInvokePluginActions || inFlight.contains(contribution.id)
+  }
+
+  private func invoke(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) {
+    guard !inFlight.contains(contribution.id) else { return }
+    inFlight.insert(contribution.id)
+    ADEHaptics.light()
+    let context = PluginSocketContext.composer(sessionId: sessionId, draft: draft())
+    Task { @MainActor in
+      // The flag clears on every exit — success, failure, cancellation — or a
+      // dropped socket mid-call would strand the button in its spinner with no
+      // way back short of leaving the chat.
+      defer { inFlight.remove(contribution.id) }
+      let result = await syncService.invokeSocketContribution(
+        contribution,
+        actionId: action.actionId,
+        context: context
+      )
+      if let edit = result?.composer { onEdit(edit) }
+    }
+  }
+}
+
+// MARK: - file-viewer
+
+/// A plugin offering to open the file on screen in one of its own panels.
+///
+/// Desktop slots a plugin viewer into its viewer registry, between the built-in
+/// viewers and the binary fallback, so the file simply opens in it. The phone
+/// does not have that seam — `FilesEditorMode` is a compiled two-case enum and
+/// a plugin cannot join it — so the offer is explicit: the file still opens the
+/// way it always did, and the plugin's view is one tap away above it. That is
+/// the honest shape for a viewer that may not be able to render the file at
+/// all, and it never takes a file hostage behind a plugin that is misbehaving.
+struct PluginFileViewerOffer: View {
+  let contribution: PluginContribution
+  let relativePath: String
+
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    if let viewer = contribution.fileViewer {
+      Button {
+        ADEHaptics.light()
+        syncService.presentedPluginPane = PluginPaneRequest(
+          pluginId: contribution.pluginId,
+          panelId: viewer.panelId,
+          title: syncService.pluginPresenceCatalog().label(for: contribution.pluginId),
+          context: PluginSocketContextValues.remoteJSON(.file(path: relativePath))
+        )
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "puzzlepiece.extension")
+            .font(.system(size: 10, weight: .semibold))
+          Text("Open in \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))")
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+          Image(systemName: "chevron.right")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        .foregroundStyle(ADEColor.accent)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.accent.opacity(0.1), in: Capsule(style: .continuous))
+        .glassEffect()
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+    }
+  }
+}
+
+// MARK: - chat-card
+
+/// A plugin's panel, drawn inside a transcript card's frame.
+///
+/// The card is an ordinary `ade_card` and stays one: this view is only the
+/// panel that hangs under it. The split is the whole design — the card supplies
+/// chronology, which a `plugin_contributions` row has no way to express, and
+/// the contribution supplies permission, which an emitted card has no way to
+/// earn. A card whose plugin never declared the panel renders without this
+/// view and loses nothing else it carried.
+///
+/// A view of its own for the same reason ``PluginDetailSection`` is: it owns a
+/// ``PluginPaneStore``, and a `@StateObject` needs a view to live in.
+struct PluginChatCardPanel: View {
+  @EnvironmentObject private var syncService: SyncService
+  @StateObject private var store: PluginPaneStore
+
+  /// - Parameter context: the card's own `$context`, merged over the chat it
+  ///   sits in.
+  init(
+    pluginId: String,
+    panelId: String,
+    context: [String: RemoteJSONValue],
+    sessionId: String,
+    syncService: SyncService
+  ) {
+    // Desktop hands the panel host two contexts — the card's `$context` binding
+    // and the session the card sits in — and this store holds one. Merging with
+    // the card's own keys winning is the closest single value: the panel can
+    // read both, actions carry both, and a plugin that named a key of its own
+    // is not overruled by the session's.
+    var merged = PluginSocketContextValues.remoteJSON(.session(id: sessionId))
+    for (key, value) in context { merged[key] = value }
+    _store = StateObject(wrappedValue: PluginPaneStore(
+      pluginId: pluginId,
+      panelId: panelId,
+      context: merged,
+      sync: syncService
+    ))
+  }
+
+  var body: some View {
+    Group {
+      switch store.presentation {
+      case let .panel(schema):
+        VStack(alignment: .leading, spacing: 10) {
+          ForEach(Array(schema.body.enumerated()), id: \.offset) { _, node in
+            PluginVocabularyNodeView(node: node, store: store)
+          }
+        }
+      case let .updateRequired(fallback):
+        PluginSectionNotice(
+          symbol: "arrow.up.circle",
+          text: fallback?.text ?? "This card needs a newer version of ADE."
+        )
+      case let .damaged(fallback):
+        PluginSectionNotice(
+          symbol: "exclamationmark.triangle",
+          text: fallback?.text ?? "\(store.displayName) sent a card ADE could not read."
+        )
+      // The card above already said what happened; a missing panel row adds an
+      // empty frame and no information.
+      case .missing:
+        EmptyView()
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    // Live updates come from re-reading the panel and its bound collections
+    // whenever plugin data changes — exactly as a panel behaves in a pane or a
+    // detail section. Nothing is re-fetched by re-emitting the card.
+    .task(id: syncService.pluginsProjectionRevision) {
+      store.load()
+    }
+  }
+}
+
+// MARK: - activity-entry
+
+/// Contributed rows in the Activity drawer, after the pane's own.
+///
+/// The one place a plugin can say "this needs you" without inventing a
+/// notification: a cost guard that has tripped, a linter with findings, a
+/// deploy waiting on approval. Before this the only routes were badging a row
+/// the user might never scroll to, or borrowing `session.requestSessionAttention`
+/// to push an unattributed message to every paired device.
+///
+/// Deliberately no per-row dismiss. Dismissing ADE's own activity acknowledges
+/// a fact the host owns; a plugin's row is the plugin's own state, and a
+/// dismiss that its next publish undid would read as the button not working.
+/// A plugin retracts its row by deleting the contribution.
+struct PluginActivityEntries: View {
+  let contributions: [PluginContribution]
+  /// The open project, for the context a press carries. Null on a projectless
+  /// phone, which is a real state rather than a missing value.
+  let projectKey: String?
+
+  @EnvironmentObject private var syncService: SyncService
+  @State private var inFlight: Set<String> = []
+
+  /// Emitted as sibling `List` rows rather than one nested column: the drawer
+  /// is a `List`, and the row chrome has to land on each row individually or a
+  /// section of plugin entries draws as one undivided slab.
+  var body: some View {
+    ForEach(contributions) { contribution in
+      if let entry = contribution.activityEntry {
+        row(contribution, entry)
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+          .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 6, trailing: 16))
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func row(_ contribution: PluginContribution, _ entry: PluginActivityEntryPayload) -> some View {
+    let name = syncService.pluginPresenceCatalog().label(for: contribution.pluginId)
+    let busy = inFlight.contains(contribution.id)
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .top, spacing: 9) {
+        Image(systemName: "puzzlepiece.extension")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(entry.tone.color)
+          .frame(width: 18, height: 18)
+          .padding(.top, 1)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(entry.title)
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+          // The plugin's name is always on the row. These sit among rows about
+          // the user's own agents and pull requests, and one that did not say
+          // whose it was would read as ADE's own claim about their work.
+          Text(entry.body.map { "\($0) · \(name)" } ?? name)
+            .font(.system(.caption, design: .rounded))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 0)
+      }
+      if let actionId = entry.actionId {
+        HStack(spacing: 8) {
+          Spacer(minLength: 0)
+          Button {
+            invoke(contribution, actionId: actionId)
+          } label: {
+            HStack(spacing: 5) {
+              if busy { ProgressView().controlSize(.mini) }
+              Text(entry.actionLabel ?? "Open")
+                .font(.system(.caption, design: .rounded).weight(.semibold))
+            }
+            .foregroundStyle(ADEColor.accent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(ADEColor.accent.opacity(0.1), in: Capsule(style: .continuous))
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .disabled(busy || !syncService.canInvokePluginActions)
+        }
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(entry.title). \(entry.body ?? "") Contributed by \(name)")
+  }
+
+  private func invoke(_ contribution: PluginContribution, actionId: String) {
+    guard !inFlight.contains(contribution.id) else { return }
+    inFlight.insert(contribution.id)
+    ADEHaptics.light()
+    Task { @MainActor in
+      // Clears on every exit — success, failure, cancellation — so a dropped
+      // socket mid-call cannot strand the row in its spinner.
+      defer { inFlight.remove(contribution.id) }
+      await syncService.invokeSocketContribution(
+        contribution,
+        actionId: actionId,
+        context: .activity(entryId: contribution.socketId, projectKey: projectKey)
       )
     }
   }

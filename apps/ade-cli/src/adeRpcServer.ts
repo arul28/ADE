@@ -2741,6 +2741,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "getChatEventHistory",
   "getChatEventHistoryPage",
   "sendMessage",
+  // Writes a durable row into a transcript, so it is scoped like `sendMessage`:
+  // a session-bound agent may decorate its OWN conversation and no other.
+  "emitAdeCard",
   "createScheduledWork",
   "listScheduledWork",
   "getScheduledWorkState",

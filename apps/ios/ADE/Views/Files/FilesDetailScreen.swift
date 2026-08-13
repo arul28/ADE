@@ -26,6 +26,10 @@ struct FilesDetailScreen: View {
   @State var codeLayoutMode: FilesCodeLayoutMode = .wrap
   @State var lastHandledFilesProjectionRevision: Int?
   @State var lastFilesDetailReload = Date.distantPast
+  /// Per-file contributions, and the Files-surface registrations a viewer is
+  /// matched against by extension.
+  @State var pluginContributions = PluginContributionIndex()
+  @State var pluginSurfaceContributions = PluginContributionIndex()
 
   var language: FilesLanguage {
     FilesLanguage.detect(languageId: blob?.languageId, filePath: relativePath)
@@ -135,6 +139,13 @@ struct FilesDetailScreen: View {
           )
         }
 
+        // A plugin claiming this file type, offered after the product's own
+        // viewer controls. The file still opens the way it always did.
+        if let viewer = pluginFileViewer {
+          PluginFileViewerOffer(contribution: viewer, relativePath: relativePath)
+            .padding(.horizontal, 16)
+        }
+
         if let errorMessage {
           FilesCompactBanner(
             symbol: "exclamationmark.triangle.fill",
@@ -167,6 +178,8 @@ struct FilesDetailScreen: View {
       .presentationDragIndicator(.visible)
       .environmentObject(syncService)
     }
+    .loadPluginContributions(.file, into: $pluginContributions)
+    .loadPluginContributions(.surface, into: $pluginSurfaceContributions)
     .task(id: syncService.filesProjectionRevision) {
       await refreshForFilesProjectionRevision(syncService.filesProjectionRevision)
     }
@@ -180,6 +193,16 @@ struct FilesDetailScreen: View {
         await loadDiff()
       }
     }
+  }
+
+  /// The plugin panel offering to view this file, if one claims it.
+  ///
+  /// Two indexes because the two addresses live under different entity kinds: a
+  /// row published against this file, and a registration published against the
+  /// Files surface that matches by extension. The per-file row wins.
+  private var pluginFileViewer: PluginContribution? {
+    pluginContributions.fileViewer(relativePath: relativePath, fullPath: fullPath)
+      ?? pluginSurfaceContributions.fileViewer(relativePath: relativePath, fullPath: fullPath)
   }
 
   private func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {

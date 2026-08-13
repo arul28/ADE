@@ -7,8 +7,15 @@ import {
   createHeadlessAdeCliAgentEnv,
   emitRuntimePrCardsForChanges,
   inferAgentSkillsRootForCliEntry,
+  pluginActionRefusalMessage,
   withoutPluginAuthoredProvenance,
+  withPluginCallerProvenance,
 } from "./bootstrap";
+import { readTrustedAdeCardAuthor } from "../../desktop/src/main/services/chat/adeCardProvenance";
+import {
+  ADE_ACTION_ALLOWLIST,
+  isAutomationAllowedAdeAction,
+} from "../../desktop/src/main/services/adeActions/registry";
 import { createPrEventFanout } from "./prEventFanout";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import type { PrCardChange } from "../../desktop/src/main/services/prs/prChatCards";
@@ -521,5 +528,114 @@ describe("plugin action bridge provenance", () => {
     const args = { metadata: { spawnDispatch: { parentSessionId: "session-1" } } };
     expect(withoutPluginAuthoredProvenance("lane", args)).toBe(args);
     expect(withoutPluginAuthoredProvenance("chat", { text: "hi" })).toEqual({ text: "hi" });
+  });
+
+  it("stamps a card's author from the CALLER, not from the call", () => {
+    const stamped = withPluginCallerProvenance(
+      "chat",
+      "emitAdeCard",
+      { sessionId: "chat-1", card: { cardId: "c1", authoredBy: { pluginId: "ade-linear" } } },
+      { pluginId: "ade-lint", displayName: "Lint" },
+    );
+
+    expect(readTrustedAdeCardAuthor(stamped)).toEqual({ pluginId: "ade-lint", displayName: "Lint" });
+  });
+
+  it("stamps nothing on any other action", () => {
+    const args = { sessionId: "chat-1", text: "hi" };
+    expect(withPluginCallerProvenance("chat", "sendMessage", args, { pluginId: "ade-lint" })).toBe(args);
+    expect(withPluginCallerProvenance("lane", "emitAdeCard", args, { pluginId: "ade-lint" })).toBe(args);
+    expect(readTrustedAdeCardAuthor(args)).toBeNull();
+  });
+});
+
+/**
+ * The per-verb half of the plugin action gate. Each of these refusals closes a
+ * path by which a plugin could act as the user rather than as itself; the
+ * automations ones close the widest, because a rule's steps run with the user's
+ * authority and can call the verbs refused above.
+ */
+describe("plugin action bridge refusals", () => {
+  it("refuses the whole account domain, which the bridge cannot redact", () => {
+    expect(pluginActionRefusalMessage("account", "status")).toMatch(/not available to plugins/);
+    expect(pluginActionRefusalMessage("account", "signOut")).toMatch(/not available to plugins/);
+  });
+
+  it("refuses session.requestSessionAttention in favour of the attributed verb", () => {
+    expect(pluginActionRefusalMessage("session", "requestSessionAttention")).toMatch(
+      /ade\.notifications\.post/,
+    );
+  });
+
+  it("refuses every chat scheduler verb, reads included", () => {
+    for (const action of [
+      "createScheduledWork",
+      "cancelScheduledWork",
+      "listScheduledWork",
+      "getScheduledWorkState",
+      "setScheduledWorkPaused",
+    ]) {
+      expect(pluginActionRefusalMessage("chat", action), action).toMatch(/ade\.schedules\.\*/);
+    }
+  });
+
+  it("refuses automations.saveRule so a plugin cannot author or overwrite a rule", () => {
+    expect(pluginActionRefusalMessage("automations", "saveRule")).toMatch(
+      /only the user can create, change, or run a rule/,
+    );
+  });
+
+  it("refuses automations.triggerManually so a plugin cannot RUN a rule's steps as the user", () => {
+    expect(pluginActionRefusalMessage("automations", "triggerManually")).toMatch(
+      /contributes\.automationTriggers/,
+    );
+  });
+
+  it("refuses automations.deleteRule and toggleRule, the other rule mutators", () => {
+    expect(pluginActionRefusalMessage("automations", "deleteRule")).not.toBeNull();
+    expect(pluginActionRefusalMessage("automations", "toggleRule")).not.toBeNull();
+  });
+
+  it("still allows the automations read verbs a plugin needs to inspect its own contributions", () => {
+    for (const action of ["list", "get", "getHistory", "listRuns", "getRunDetail"]) {
+      expect(pluginActionRefusalMessage("automations", action), action).toBeNull();
+    }
+  });
+
+  it("leaves ordinary domains alone", () => {
+    expect(pluginActionRefusalMessage("chat", "sendMessage")).toBeNull();
+    expect(pluginActionRefusalMessage("lane", "list")).toBeNull();
+    expect(pluginActionRefusalMessage("session", "list")).toBeNull();
+  });
+
+  /**
+   * Drift guard: a new automations verb added to the allowlist has to be
+   * classified deliberately. If this fails, decide whether the new verb writes
+   * or runs a rule (add it to the refused set) or only reads (add it here).
+   */
+  it("classifies every plugin-reachable automations verb as refused or read-only", () => {
+    const reachable = (ADE_ACTION_ALLOWLIST.automations ?? []).filter((action) =>
+      isAutomationAllowedAdeAction("automations", action),
+    );
+    const refused = reachable.filter((action) => pluginActionRefusalMessage("automations", action));
+    const allowed = reachable.filter((action) => !pluginActionRefusalMessage("automations", action));
+
+    expect(refused.sort()).toEqual(["deleteRule", "saveRule", "toggleRule", "triggerManually"]);
+    expect(allowed.sort()).toEqual(
+      [
+        "get",
+        "getHistory",
+        "getIngressStatus",
+        "getRunDetail",
+        "linearIngressGetStatus",
+        "linearIngressPollNow",
+        "list",
+        "listIngressEvents",
+        "listRuns",
+        "listScheduledCleanups",
+        "refreshWebhookGatewayStatus",
+        "startIngress",
+      ].sort(),
+    );
   });
 });

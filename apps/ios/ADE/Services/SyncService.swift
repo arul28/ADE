@@ -4183,6 +4183,25 @@ final class SyncService: ObservableObject {
   /// should not allocate an extra `ObservableObject`.
   private var pluginPresenceGateStorage: PluginPresenceGate?
 
+  /// Memoized display metadata, and the scope it was read for.
+  ///
+  /// Every contributed control names its plugin — a toolbar button in its
+  /// accessibility label, an empty-state card and a detail section on screen —
+  /// so this is now read from view BODIES rather than once per pane load.
+  /// Without the memo each of those would be a synchronous SQLite read per
+  /// render, which is exactly the per-cell query the contribution index exists
+  /// to avoid. Keyed on `pluginPresenceTrigger` so an install, an uninstall or
+  /// a machine switch all retire it.
+  private var pluginPresenceCatalogCache: (scope: String, catalog: PluginPresenceCatalog)?
+
+  /// Manifest socket declarations from the attached machine, and the scope they
+  /// were read for. Keyed on `pluginPresenceTrigger`, so an install, an
+  /// uninstall, a per-contribution toggle or a machine switch all retire them.
+  private var pluginSocketDeclarationsCache: (scope: String, declarations: PluginSocketDeclarations)?
+  /// In-flight read, keyed by the scope it is resolving, so several surfaces
+  /// revealing at once share one round trip.
+  private var pluginSocketDeclarationsInFlight: (scope: String, task: Task<PluginSocketDeclarations, Never>)?
+
   /// Drawer surface injected into the root view via `.environmentObject`.
   /// Rebuilt from the App Group `WorkspaceSnapshot` each time the host
   /// state changes — no independent transport.
@@ -9040,7 +9059,11 @@ final class SyncService: ObservableObject {
   /// ``PluginPresenceCatalog`` for why folding is safe for labels and colours
   /// and wrong for availability.
   func pluginPresenceCatalog() -> PluginPresenceCatalog {
-    PluginPresenceCatalog(records: database.fetchPluginPresence())
+    let scope = pluginPresenceTrigger
+    if let cached = pluginPresenceCatalogCache, cached.scope == scope { return cached.catalog }
+    let catalog = PluginPresenceCatalog(records: database.fetchPluginPresence())
+    pluginPresenceCatalogCache = (scope, catalog)
+    return catalog
   }
 
   /// Panels this phone should show, which is not every panel in the mirror.
@@ -9066,11 +9089,85 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// This machine's install records, manifest sockets and all.
+  ///
+  /// A second read beside `plugins.presenceList`, not a replacement for it. The
+  /// presence reply answers availability and carries the frozen six-column
+  /// presence row; this one carries the plugin's static socket DECLARATIONS,
+  /// which live in a manifest on disk that no phone can read.
+  func fetchAttachedMachinePluginInstalls() async throws -> PluginInstallListResult {
+    try await sendDecodableCommand(
+      action: "plugins.list",
+      as: PluginInstallListResult.self
+    )
+  }
+
+  /// Whether the attached machine can report manifest sockets at all. False on
+  /// every host that predates the field, which is what makes the phone fall
+  /// back to published-rows-only rather than showing nothing.
+  var supportsPluginSocketDeclarations: Bool {
+    supportsRemoteAction("plugins.list")
+  }
+
+  /// Declarations for the current scope, resolving once and reusing after.
+  ///
+  /// A failed or unsupported read answers "none", which is exactly the
+  /// pre-`sockets` behaviour: published rows remain the whole story. It is NOT
+  /// cached as an answer, so the next surface reveal retries instead of
+  /// treating a dropped socket as "this plugin declares nothing".
+  func pluginSocketDeclarations() async -> PluginSocketDeclarations {
+    let scope = pluginPresenceTrigger
+    if let cached = pluginSocketDeclarationsCache, cached.scope == scope { return cached.declarations }
+    if let pending = pluginSocketDeclarationsInFlight, pending.scope == scope {
+      return await pending.task.value
+    }
+    guard supportsPluginSocketDeclarations else { return .none }
+    let task = Task { @MainActor [weak self] () -> PluginSocketDeclarations in
+      guard let self else { return .none }
+      guard let reply = try? await self.fetchAttachedMachinePluginInstalls() else { return .none }
+      let resolved = PluginSocketDeclarations(records: reply.plugins)
+      // Only a real answer is cached. Dropping the socket mid-read must not
+      // latch "no declarations" for the rest of the scope.
+      if self.pluginPresenceTrigger == scope {
+        self.pluginSocketDeclarationsCache = (scope, resolved)
+      }
+      return resolved
+    }
+    pluginSocketDeclarationsInFlight = (scope, task)
+    let resolved = await task.value
+    if pluginSocketDeclarationsInFlight?.scope == scope {
+      pluginSocketDeclarationsInFlight = nil
+    }
+    return resolved
+  }
+
   /// Contributions for one entity kind, indexed for row lookup. Built by the
   /// surface that owns the rows and passed down by value — a row must never
   /// subscribe to this service to find out whether it has a badge.
-  func pluginContributionIndex(entityKind: PluginEntityKind) -> PluginContributionIndex {
-    PluginContributionIndex(contributions: database.fetchPluginContributions(entityKind: entityKind))
+  ///
+  /// Scoped to what the ATTACHED machine has installed, once that answer
+  /// exists. `plugin_contributions` replicates across the whole account, so it
+  /// carries rows from plugins installed on some other computer — and from ones
+  /// uninstalled since. Rendering those would put a badge on a row whose action
+  /// nothing on this machine can run. Before the first presence answer the
+  /// filter is absent rather than empty; see ``PluginContributionIndex/init``.
+  func pluginContributionIndex(
+    entityKind: PluginEntityKind,
+    declarations: PluginSocketDeclarations = .none
+  ) -> PluginContributionIndex {
+    PluginContributionIndex(
+      contributions: database.fetchPluginContributions(entityKind: entityKind),
+      declarations: declarations,
+      installedPluginIds: installedPluginIdsForContributions()
+    )
+  }
+
+  /// Installed-and-enabled plugin ids on the attached machine, or nil while the
+  /// gate has no answer for the current machine.
+  private func installedPluginIdsForContributions() -> Set<String>? {
+    let gate = pluginPresenceGate
+    guard gate.hasAnswer else { return nil }
+    return Set(gate.installedPlugins.map(\.pluginId))
   }
 
   // MARK: - Linear credential mutations (mobile connect / manage)

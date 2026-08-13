@@ -1,6 +1,7 @@
 import type {
   SyncPluginInstallRecord,
   SyncPluginRecordRuntimeStatus,
+  SyncPluginRecordSocket,
   SyncPluginRecordTab,
   SyncPluginInstallService,
   SyncPluginInstallSource,
@@ -67,6 +68,30 @@ function toRecordTabs(installed: PluginInstalledPlugin): SyncPluginRecordTab[] {
     }));
 }
 
+/**
+ * Manifest socket declarations, forwarded WHOLE rather than field by field.
+ *
+ * A spread, not an enumeration, and that is the entire point. An enumerated
+ * copy silently drops any field added to `PluginManifestSocket` later — this
+ * function was written enumerated and was already dropping `description`,
+ * `argumentHint` and `section` within the same day, with no error anywhere:
+ * the socket simply arrived on the phone and the web client missing its
+ * subtitle. The parser is the validation boundary and emits only known-good
+ * scalars and string arrays, each key present only when the manifest declared
+ * it (`...(x ? {x} : {})`), so there is nothing here to filter and no
+ * `undefined`-valued key to spend JSON bytes on.
+ *
+ * The array field is copied rather than shared: the source object belongs to
+ * the install service's cached manifest, and a caller that mutated what it was
+ * handed would corrupt the manifest for every later reader on this machine.
+ */
+function toRecordSockets(installed: PluginInstalledPlugin): SyncPluginRecordSocket[] {
+  return (installed.manifest?.sockets ?? []).map((socket) => ({
+    ...socket,
+    ...(socket.extensions ? { extensions: [...socket.extensions] } : {}),
+  }));
+}
+
 function toSyncRecord(
   installed: PluginInstalledPlugin,
   runtimeStatus?: (pluginId: string) => PluginRuntimeStatus | null,
@@ -93,7 +118,19 @@ function toSyncRecord(
       ? {
         tabs: toRecordTabs(installed),
         theme: manifest.theme ? { displayName: manifest.displayName, tokens: manifest.theme.tokens } : null,
+        // Guarded by the same `manifest` check as `tabs`, and for the same
+        // reason: with an unreadable manifest an empty array would claim the
+        // plugin declares no sockets, when the truth is that this host could
+        // not read whether it does.
+        sockets: toRecordSockets(installed),
       }
+      : {}),
+    // NOT guarded by `manifest` — the toggles live in the install registry, not
+    // in the manifest, so they are readable even when the manifest is not. Sent
+    // only when non-empty: absent already means "none are disabled", so an
+    // empty array is bytes spent restating the default on every plugin.
+    ...(installed.record.disabledContributions?.length
+      ? { disabledContributions: [...installed.record.disabledContributions] }
       : {}),
   };
 }

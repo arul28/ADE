@@ -17,6 +17,12 @@ import {
   type GitHubFilter,
   type GitHubFilterCounts,
 } from "./githubTabModel";
+import {
+  entityMatchesPluginFilters,
+  pluginPrContext,
+  usePluginSurfaceContributions,
+  useSurfaceContributions,
+} from "../../plugins/sockets";
 
 export function useGitHubTabListModel({
   snapshot,
@@ -27,6 +33,8 @@ export function useGitHubTabListModel({
   renderedHydrationItems,
   lastSeenRowByCoordRef,
   currentHistoryPageLimit,
+  pluginFilterKeys,
+  active = true,
 }: {
   snapshot: GitHubPrSnapshot | null;
   searchQuery: string;
@@ -36,6 +44,10 @@ export function useGitHubTabListModel({
   renderedHydrationItems: GitHubPrListItem[];
   lastSeenRowByCoordRef: React.MutableRefObject<Map<string, GitHubPrListItem>>;
   currentHistoryPageLimit: () => number;
+  /** Contributed `filter-chip` selections. Owned by the tab. */
+  pluginFilterKeys: readonly string[];
+  /** False while the PRs tab is mounted but not visible. */
+  active?: boolean;
 }) {
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
     if (!searchQuery.trim()) return true;
@@ -76,13 +88,39 @@ export function useGitHubTabListModel({
     () => (overlayItems.length === 0 ? reconciledItems : [...reconciledItems, ...overlayItems]),
     [reconciledItems, overlayItems],
   );
+  const pluginContributionSet = usePluginSurfaceContributions("prs", active);
+  const pluginFilterChips = useSurfaceContributions("prs", "filter-chip", { active });
+  // A selection outlives the chip that made it — disable the plugin and the
+  // chip vanishes while the filter keeps hiding pull requests, with nothing on
+  // screen to undo it. Only keys a visible chip still offers may filter.
+  const appliedPluginFilterKeys = React.useMemo(() => {
+    const offered = new Set(pluginFilterChips.map((chip) => chip.payload.filterKey));
+    return pluginFilterKeys.filter((key) => offered.has(key));
+  }, [pluginFilterChips, pluginFilterKeys]);
+
   const filteredItems = React.useMemo(
     () => displayedItems
-      .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
+      .filter((item) => matchesFilter(item, filter)
+        && matchesSearch(item)
+        && entityMatchesPluginFilters(
+          pluginContributionSet,
+          // The same projection `GitHubTabPrRow` badges with. A list row
+          // carries no checks state, so `ciStatus` takes its `"unknown"`
+          // default here exactly as it does there — only the detail pane has
+          // the real answer.
+          pluginPrContext({
+            number: item.githubPrNumber,
+            title: item.title,
+            branch: item.headBranch,
+            state: item.state,
+            isDraft: item.isDraft,
+          }),
+          appliedPluginFilterKeys,
+        ))
       .sort((a, b) =>
         new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
       ),
-    [displayedItems, filter, matchesSearch],
+    [appliedPluginFilterKeys, displayedItems, filter, matchesSearch, pluginContributionSet],
   );
   const hydrationItems = filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT
     ? renderedHydrationItems

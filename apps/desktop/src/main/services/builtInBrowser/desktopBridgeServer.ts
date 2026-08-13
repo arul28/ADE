@@ -24,8 +24,26 @@ import {
   type DesktopAudioCaptureResponse,
 } from "../../../../../ade-cli/src/services/audio/desktopAudioBridge";
 import {
+  encodeDesktopHostError,
+  isDesktopHostBridgeMethod,
+  DESKTOP_CLIPBOARD_READ_METHOD,
+  DESKTOP_CLIPBOARD_WRITE_METHOD,
+  DESKTOP_NOTIFY_METHOD,
+  DESKTOP_NOTIFY_REQUESTER_LABEL_MAX_CHARS,
+  DESKTOP_PICK_FILE_METHOD,
+  type DesktopHostBridgeMethod,
+  type DesktopNotifyResponse,
+  type DesktopPickFileResponse,
+} from "../../../../../ade-cli/src/services/desktopHost/desktopHostBridge";
+import {
   isPluginAudioCaptureErrorCode,
+  PLUGIN_CLIPBOARD_TEXT_MAX_BYTES,
+  PLUGIN_FILE_PICKER_EXTENSIONS_MAX,
+  PLUGIN_FILE_PICKER_FILTERS_MAX,
+  PLUGIN_NOTIFICATION_BODY_MAX_CHARS,
+  PLUGIN_NOTIFICATION_TITLE_MAX_CHARS,
   type PluginAudioCaptureErrorCode,
+  type PluginHostCapabilityErrorCode,
 } from "../../../shared/plugins/sdk";
 import type { Logger } from "../logging/logger";
 import { resolveBuiltInBrowserActorCapability } from "./builtInBrowserActorCapabilities";
@@ -61,6 +79,28 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * calling plugin can act on rather than a socket that never answers.
    */
   captureAudioClip?: (input: DesktopAudioCaptureRequest) => Promise<DesktopAudioCaptureResponse>;
+  /**
+   * The Electron-only plugin SDK verbs, if this desktop can serve them.
+   *
+   * Optional for the same reason `captureAudioClip` is: a bridge started
+   * without them answers `desktop_unavailable`, which is a refusal the calling
+   * plugin can act on, rather than a socket that accepts a method it cannot
+   * perform. They arrive as one bag because they share a lifetime — a desktop
+   * either has an Electron main process or it does not.
+   */
+  hostCapabilities?: {
+    readClipboard: () => string;
+    writeClipboard: (text: string) => void;
+    /** Resolves null when the user dismissed the picker. */
+    pickFile: (input: {
+      title?: string;
+      defaultPath?: string;
+      directory?: boolean;
+      filters?: { name: string; extensions: string[] }[];
+    }) => Promise<string | null>;
+    /** Resolves false when this OS has no notification centre to show it in. */
+    notify: (input: { title: string; body?: string; requesterLabel?: string }) => boolean;
+  };
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -196,6 +236,86 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
   }
 
+  /**
+   * Serve one Electron-only SDK verb for the daemon's plugin host.
+   *
+   * No actor capability here, matching `handleAudioCapture`: a plugin child has
+   * no chat session one could be issued from, and the bridge token is the whole
+   * gate. What consent each verb rests on differs, and is worth naming:
+   * `dialogs.pickFile` puts a native dialog in front of the user, so the dialog
+   * IS the consent and a dismissal is a refusal; `notifications.post` is
+   * attributed in the notification itself and rate-limited before it reaches
+   * this socket; `clipboard.*` rests on install-time trust alone, which is the
+   * same trust that already lets the plugin's un-sandboxed child read any file
+   * the user can.
+   *
+   * Every ceiling is re-applied here rather than trusted from the daemon. The
+   * caller is a separate process, and a bound that only exists on the far side
+   * of an IPC hop is a bound on well-behaved callers.
+   */
+  async function handleHostCapability(
+    method: DesktopHostBridgeMethod,
+    rawParams: Record<string, unknown>,
+  ): Promise<unknown> {
+    const capabilities = args.hostCapabilities;
+    if (!capabilities) {
+      throw hostCapabilityRefusal(
+        "desktop_unavailable",
+        "This copy of ADE cannot serve desktop capabilities.",
+      );
+    }
+    switch (method) {
+      case DESKTOP_CLIPBOARD_READ_METHOD: {
+        const text = capabilities.readClipboard();
+        // Truncated rather than refused: the user's clipboard is not the
+        // plugin's doing, and failing a read because somebody copied a large
+        // file would be a mystery to both of them.
+        return { text: clampUtf8(text ?? "", PLUGIN_CLIPBOARD_TEXT_MAX_BYTES) };
+      }
+      case DESKTOP_CLIPBOARD_WRITE_METHOD: {
+        const text = typeof rawParams.text === "string" ? rawParams.text : "";
+        if (Buffer.byteLength(text, "utf8") > PLUGIN_CLIPBOARD_TEXT_MAX_BYTES) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            `Clipboard text is larger than ${PLUGIN_CLIPBOARD_TEXT_MAX_BYTES} bytes.`,
+          );
+        }
+        capabilities.writeClipboard(text);
+        return { ok: true };
+      }
+      case DESKTOP_PICK_FILE_METHOD: {
+        const filePath = await capabilities.pickFile({
+          ...(normalizedString(rawParams.title) ? { title: normalizedString(rawParams.title)! } : {}),
+          ...(normalizedString(rawParams.defaultPath)
+            ? { defaultPath: normalizedString(rawParams.defaultPath)! }
+            : {}),
+          ...(rawParams.directory === true ? { directory: true } : {}),
+          ...(readPickerFilters(rawParams.filters) ? { filters: readPickerFilters(rawParams.filters)! } : {}),
+        });
+        if (!filePath) {
+          throw hostCapabilityRefusal("dialog_cancelled", "The picker was dismissed.");
+        }
+        return { filePath } satisfies DesktopPickFileResponse;
+      }
+      case DESKTOP_NOTIFY_METHOD: {
+        const title = normalizedString(rawParams.title);
+        if (!title) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "A notification needs a title.");
+        }
+        const body = normalizedString(rawParams.body);
+        const requesterLabel = normalizedString(rawParams.requesterLabel)
+          ?.slice(0, DESKTOP_NOTIFY_REQUESTER_LABEL_MAX_CHARS)
+          .trim();
+        const shown = capabilities.notify({
+          title: title.slice(0, PLUGIN_NOTIFICATION_TITLE_MAX_CHARS),
+          ...(body ? { body: body.slice(0, PLUGIN_NOTIFICATION_BODY_MAX_CHARS) } : {}),
+          ...(requesterLabel ? { requesterLabel } : {}),
+        });
+        return { shown } satisfies DesktopNotifyResponse;
+      }
+    }
+  }
+
   async function handleRequest(request: JsonRpcRequest): Promise<unknown> {
     const method = request.method ?? "";
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
@@ -210,10 +330,13 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
     delete rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM];
     if (method === DESKTOP_AUDIO_BRIDGE_METHOD) return await handleAudioCapture(rawParams);
+    // Below the auth check on purpose: every non-browser method the bridge
+    // serves is still a method only an authenticated daemon may reach.
+    if (isDesktopHostBridgeMethod(method)) return await handleHostCapability(method, rawParams);
     if (!method.startsWith("built_in_browser.")) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.* and ${DESKTOP_AUDIO_BRIDGE_METHOD}`,
+        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*, ${DESKTOP_AUDIO_BRIDGE_METHOD} and the desktop host capabilities.`,
       );
     }
     const name = method.slice("built_in_browser.".length);
@@ -325,6 +448,62 @@ function audioCaptureRefusal(code: PluginAudioCaptureErrorCode, message: string)
     JsonRpcErrorCode.internalError,
     encodeDesktopAudioCaptureError(code, message),
   );
+}
+
+/**
+ * A refused host capability, addressed to the plugin rather than to the bridge.
+ *
+ * Same encoding as `audioCaptureRefusal` and for the same reason: the code
+ * rides in the message because that is the only part of a JSON-RPC error that
+ * survives `JsonRpcClient`, which rebuilds a rejection from `error.message`
+ * alone.
+ */
+function hostCapabilityRefusal(code: PluginHostCapabilityErrorCode, message: string): JsonRpcError {
+  return new JsonRpcError(JsonRpcErrorCode.internalError, encodeDesktopHostError(code, message));
+}
+
+/**
+ * Cut a string to a BYTE ceiling without splitting a character in half.
+ *
+ * `slice` counts UTF-16 units, so a limit applied that way lets a string of
+ * emoji through at up to four times the intended size. Cutting the encoded
+ * buffer instead can land mid-sequence, which `toString` turns into a
+ * replacement character — harmless, and better than a wrong ceiling.
+ */
+function clampUtf8(value: string, maxBytes: number): string {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return value;
+  return buffer.subarray(0, maxBytes).toString("utf8");
+}
+
+/**
+ * Read a file picker's filter list, or nothing.
+ *
+ * Bounded in both dimensions: the list is rendered as a dropdown in an OS
+ * dialog, and a plugin that sent a thousand filters would produce a menu the
+ * user cannot use. Malformed entries are dropped rather than refused — a filter
+ * is a convenience on a dialog the user is about to see either way.
+ */
+function readPickerFilters(value: unknown): { name: string; extensions: string[] }[] | null {
+  if (!Array.isArray(value)) return null;
+  const filters = value
+    .slice(0, PLUGIN_FILE_PICKER_FILTERS_MAX)
+    .flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      const name = normalizedString(entry.name);
+      if (!name || !Array.isArray(entry.extensions)) return [];
+      // Electron wants extensions WITHOUT a leading dot, but the manifest's
+      // `file-viewer` contribution uses the identically-named field WITH one.
+      // An author who copies the dotted spelling here would get `*..mp4` in the
+      // Windows dialog — a filter matching nothing, with no way out of it.
+      const extensions = entry.extensions
+        .filter((extension): extension is string => typeof extension === "string" && extension.length > 0)
+        .map((extension) => extension.replace(/^\.+/, ""))
+        .filter((extension) => extension.length > 0)
+        .slice(0, PLUGIN_FILE_PICKER_EXTENSIONS_MAX);
+      return extensions.length > 0 ? [{ name, extensions }] : [];
+    });
+  return filters.length > 0 ? filters : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

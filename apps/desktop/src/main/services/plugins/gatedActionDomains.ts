@@ -153,6 +153,52 @@ export function pluginNotInstalledMessage(
 }
 
 /**
+ * The same refusal for a plugin named DIRECTLY rather than through a domain —
+ * an automation step that points at `{ pluginId, action }`.
+ *
+ * Always a sentence, never null, and that is the difference from
+ * `pluginNotInstalledMessage`. The domain path can afford silence because it
+ * has its own generic unknown-domain error to fall back to; an automation step
+ * has none — the sentence IS the run's `errorMessage`, and an empty one would
+ * leave a failed run with nothing on it. So a cold catalog degrades the copy
+ * instead of withholding it, exactly as `buildMissingSurfaceDenial` does: name
+ * the plugin id, which is a registered fact, and stop short of pointing anyone
+ * at a Marketplace listing for a package ADE cannot describe.
+ */
+export function pluginStepUnavailableMessage(
+  pluginId: string,
+  lookupDisplayName: PluginDisplayNameLookup = defaultLookup,
+): string {
+  return pluginNotInstalledMessage(pluginId, lookupDisplayName)
+    ?? `This machine doesn't have the ${pluginId} plugin.`;
+}
+
+/**
+ * Why an automation's plugin step cannot run right now, or null when it can.
+ *
+ * The whole `pluginAvailability` dependency `automationService` takes, in one
+ * function. It lives here rather than in the automation service because the
+ * decision is the same decision the gated-domain path makes — is this plugin on
+ * this machine? — and the copy has to be the same sentence either way.
+ *
+ * Reads the install registry file directly rather than asking a plugin service,
+ * for the same reason the rest of this module does: the host is a daemon-side
+ * singleton that the Electron main process never builds, and both processes
+ * construct automation services.
+ */
+export function pluginStepUnavailableReason(
+  pluginId: string,
+  options: { pluginsRoot?: string; lookupDisplayName?: PluginDisplayNameLookup } = {},
+): string | null {
+  const record = readPluginInstallRecords(options.pluginsRoot ?? resolvePluginsRoot()).get(pluginId);
+  // Disabled counts as unavailable: a disabled plugin's child does not start,
+  // so the invoke would fail anyway — with the host's internal wording rather
+  // than a sentence naming what to switch back on.
+  if (record?.enabled) return null;
+  return pluginStepUnavailableMessage(pluginId, options.lookupDisplayName ?? defaultLookup);
+}
+
+/**
  * The refusal for a gated domain, or null when there is nothing honest to say.
  *
  * Null has two causes and the caller treats them the same way — fall through to

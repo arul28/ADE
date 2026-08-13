@@ -101,7 +101,17 @@ extension WorkChatSessionView {
     case .adeCard(let card):
       // `WorkAdeCardView` handles the reserved `open` action through navTarget;
       // host-specific action ids stay hidden until iOS has a dispatcher.
-      WorkAdeCardView(card: card)
+      //
+      // The contributions and the service are for the `chat-card` socket: a
+      // card a plugin emitted may host that plugin's panel, but only when the
+      // plugin also DECLARED a card naming it. Passed by value per row — the
+      // index is rebuilt once per plugin-row change, never per card.
+      WorkAdeCardView(
+        card: card,
+        sessionId: session.id,
+        pluginContributions: pluginContributions,
+        pluginSyncService: pluginSyncService
+      )
     case .usageSummary(let summary):
       WorkTurnUsageSummaryBanner(
         summary: summary,

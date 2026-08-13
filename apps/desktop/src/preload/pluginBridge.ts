@@ -120,6 +120,34 @@ export function toInstalledPlugin(summary: PluginSummary): PluginClientInstalled
     // here left every switched-off contribution rendering: the socket layer got
     // an absent list, which correctly means "nothing is off".
     disabledContributions: summary.disabledContributions ?? [],
+    // Search providers ride the list because the palette queries every one of
+    // them on a debounced keystroke: it needs the whole set in hand before the
+    // first character, and asking each plugin for its manifest at that moment
+    // would be an N-call fan-out inside a 300ms budget. Omitted when the plugin
+    // declares none, so the renderer's `?? []` and "absent means none" agree.
+    ...(summary.searchProviders && summary.searchProviders.length > 0
+      ? { searchProviders: summary.searchProviders }
+      : {}),
+    // Same reasoning for the automations rule builder: it draws ONE trigger
+    // picker and ONE step picker over every installed plugin's declarations, so
+    // it needs them all before it can render either — and it must be able to
+    // name a plugin whose child is not running, which is most of them.
+    ...(summary.automationTriggers && summary.automationTriggers.length > 0
+      ? { automationTriggers: summary.automationTriggers }
+      : {}),
+    ...(summary.automationSteps && summary.automationSteps.length > 0
+      ? { automationSteps: summary.automationSteps }
+      : {}),
+    // Keyboard shortcuts ride the list for a reason the two above only imply:
+    // the collision matrix is a decision ACROSS plugins, so a per-plugin read
+    // would let the same manifest win or lose depending on which reads had
+    // landed. `installedAt` travels with them because it is the tie-break —
+    // first installed keeps the chord — and it is the one field on the summary
+    // the renderer has no other way to learn.
+    ...(summary.keybindings && summary.keybindings.length > 0
+      ? { keybindings: summary.keybindings }
+      : {}),
+    installedAt: summary.installedAt,
   };
 }
 

@@ -139,8 +139,26 @@ extension LanesTabView {
     laneListPresentation.lanePrTagsByLaneId
   }
 
+  /// The selected chip keys a chip on screen still offers.
+  ///
+  /// A selection outlives the chip that made it: turn the plugin off, uninstall
+  /// it, or let it stop publishing the key, and the chip disappears while the
+  /// filter keeps hiding every lane — leaving "No lanes for these filters" with
+  /// no control on screen to undo it. Intersecting at APPLY time (the same
+  /// place desktop's `LanesPage` does it) keeps the user's choice if the plugin
+  /// comes back, which clearing the state would not.
+  var appliedPluginFilterKeys: Set<String> {
+    guard !selectedPluginFilterKeys.isEmpty else { return [] }
+    let offered = Set(pluginSurfaceContributions.filterChips(.lanes).compactMap { $0.filterChip?.filterKey })
+    return selectedPluginFilterKeys.intersection(offered)
+  }
+
   @MainActor
   func refreshLaneListPresentation() {
+    // Plugin chips narrow what the tab's own filters already chose — never the
+    // other way round. A contribution comes after core content here too: it can
+    // hide a lane the product would have shown, and cannot reveal one the
+    // product's own scope excluded.
     let filtered = laneListFilteredSnapshots(
       visibleLaneSnapshots,
       scope: scope,
@@ -148,6 +166,9 @@ extension LanesTabView {
       searchText: searchText,
       pinnedLaneIds: pinnedLaneIds
     )
+    .filter {
+      pluginContributions.matchesFilterKeys(.lane, $0.lane.id, selected: appliedPluginFilterKeys)
+    }
     let next = LaneListPresentation(
       filteredSnapshots: filtered,
       stackOrderedSnapshots: laneStackGraphOrder(filtered),
@@ -161,6 +182,15 @@ extension LanesTabView {
     laneListPresentation = next
   }
 
+  /// What plugins add under the tab's own explanation of why it is empty.
+  @ViewBuilder
+  var pluginEmptyStateExtras: some View {
+    PluginEmptyStateExtras(
+      contributions: pluginSurfaceContributions.emptyStates(.lanes),
+      surface: .lanes
+    )
+  }
+
   @ViewBuilder
   var laneList: some View {
     if laneSnapshots.isEmpty {
@@ -172,15 +202,23 @@ extension LanesTabView {
           symbol: "plus.circle.dashed",
           title: "No lanes yet",
           message: "Tap + to create your first lane."
-        )
+        ) {
+          pluginEmptyStateExtras
+        }
         .padding(.top, 40)
       }
     } else if filteredSnapshots.isEmpty {
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
         title: laneListEmptyStateTitle(scope: scope),
-        message: laneListEmptyStateMessage(scope: scope, searchText: searchText, hasFilters: scope != .active || runtimeFilter != .all)
-      )
+        message: laneListEmptyStateMessage(
+          scope: scope,
+          searchText: searchText,
+          hasFilters: scope != .active || runtimeFilter != .all || !appliedPluginFilterKeys.isEmpty
+        )
+      ) {
+        pluginEmptyStateExtras
+      }
       .padding(.top, 40)
     } else {
       if normalVisibleSnapshots.isEmpty {

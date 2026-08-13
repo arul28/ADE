@@ -21,6 +21,7 @@ import { getTerminalRuntimeSnapshot } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { PluginDetailSections, pluginSessionContext } from "../plugins/sockets";
 
 /**
  * The raw PROCESS column, not a session status. This is a different axis from
@@ -327,6 +328,19 @@ export function SessionInfoPopover({
             ),
           })
           : null}
+
+        {/* Contributed sections, after the sheet's own and above its actions.
+            A plugin joins the description of this session; it does not get to
+            sit among the buttons that stop and delete it. */}
+        <PluginDetailSections
+          surface="work"
+          context={pluginSessionContext({
+            id: session.id,
+            title: session.goal ?? session.title,
+            provider: session.toolType,
+            status: session.runtimeState,
+          })}
+        />
 
         <div className="flex flex-wrap gap-1.5 border-t border-white/[0.06] pt-2.5">
           {session.status === "running" && session.ptyId && !isChat ? (

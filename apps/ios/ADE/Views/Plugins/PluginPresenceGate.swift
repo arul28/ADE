@@ -116,10 +116,21 @@ final class PluginPresenceGate: ObservableObject {
   /// work or not depending on how fast the socket came up after a cold launch.
   /// Waits for the first real answer, then decides.
   func awaitInstalled(_ pluginId: String) async -> Bool {
-    if !hasAnswer || resolvedTrigger != sync.pluginPresenceTrigger {
-      await refresh()
-    }
+    await ensureAnswer()
     return isInstalled(pluginId)
+  }
+
+  /// Resolve once per scope, and no more.
+  ///
+  /// The difference from ``refresh()`` is who pays: `refresh` always re-asks,
+  /// which is what a user-visible entry point wants after an install. A caller
+  /// that only needs *an* answer — filtering contribution rows down to plugins
+  /// this machine actually has — would otherwise spend a round trip every time
+  /// a list reappeared, on four surfaces, for an answer that cannot have
+  /// changed without moving `pluginPresenceTrigger`.
+  func ensureAnswer() async {
+    guard !hasAnswer || resolvedTrigger != sync.pluginPresenceTrigger else { return }
+    await refresh()
   }
 
   func awaitOwner(of surface: PluginBuiltinSurface) async -> Bool {

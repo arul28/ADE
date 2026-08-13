@@ -289,7 +289,11 @@ export type RightPaneContent =
         // pane state in app.tsx.
         // "plugin-view" rows are installed plugins; the ids are plugin ids and
         // activating one opens its panel in this same pane.
-        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret" | "snooze-duration" | "plugin-view";
+        // "plugin-row-action" rows are contributed `row-menu-item` /
+        // `toolbar-action` sockets for the focused drawer row; the ids are
+        // contribution keys resolved against the pane's own entry map in
+        // app.tsx, and heading rows carry an empty id.
+        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret" | "snooze-duration" | "plugin-view" | "plugin-row-action";
         ids: string[];
       };
     }

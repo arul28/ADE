@@ -19,6 +19,8 @@ import {
   ensureLinearPrReference,
 } from "../../../shared/linearMagicWords";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { PluginDialogSections } from "../plugins/sockets";
+import type { PluginDialogField } from "../../../shared/plugins/sockets";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
@@ -503,6 +505,8 @@ export function CreatePrModal({
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
+  /** For a contributed section's context; null before a project is bound. */
+  const projectBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
   const [mode, setMode] = React.useState<CreateMode>("normal");
@@ -697,6 +701,41 @@ export function CreatePrModal({
     [lanes, normalLaneId],
   );
   const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? null;
+
+  /**
+   * A `{dialog:{setField}}` response from a contributed section.
+   *
+   * Routed to whichever mode is on screen, because the two hold their own
+   * title, body and target branch and the user only ever sees one pair. All
+   * three are free text here — the target branch is an input with a datalist,
+   * not a closed select — so the value is written verbatim and Create stays the
+   * user's press.
+   */
+  const handlePluginSetField = React.useCallback(
+    (field: PluginDialogField<"create-pr">, value: string): boolean => {
+      // Mid-create the form is spoken for; a write would land on a PR that is
+      // already being opened.
+      if (busy) return false;
+      const integration = mode === "integration";
+      switch (field) {
+        case "title":
+          if (integration) setIntegrationTitle(value);
+          else setNormalTitle(value);
+          return true;
+        case "body":
+          if (integration) setIntegrationBody(value);
+          else setNormalBody(value);
+          return true;
+        case "baseBranch":
+          if (integration) setIntegrationBaseBranch(value);
+          else setNormalBaseBranch(value);
+          return true;
+        default:
+          return false;
+      }
+    },
+    [busy, mode],
+  );
   const normalTargetLabel = React.useMemo(() => {
     const targetBranch = branchNameFromRef(normalBaseBranch.trim() || primaryLane?.branchRef || "main");
     const targetLane = lanes.find((lane) => branchNameFromRef(lane.branchRef) === targetBranch);
@@ -1875,6 +1914,19 @@ export function CreatePrModal({
                     {integrationProgress}
                   </div>
                 )}
+
+                {/* Contributed sections, after the details this step collects
+                    and only on this step: title, description and target branch
+                    are the fields a section may prefill, and they are here. */}
+                <PluginDialogSections
+                  dialog="create-pr"
+                  laneId={selectedNormalLane?.id ?? null}
+                  laneName={selectedNormalLane?.name ?? null}
+                  branch={selectedNormalLane?.branchRef ?? null}
+                  projectKey={projectBindingKey}
+                  onSetField={handlePluginSetField}
+                  active={open}
+                />
               </div>
             )}
 

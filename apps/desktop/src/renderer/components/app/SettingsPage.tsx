@@ -34,6 +34,7 @@ import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { WebSettingsSection } from "../settings/WebScopeBanner";
+import { PluginSettingsSections } from "../plugins/sockets";
 import {
   SETTINGS_ENTRIES,
   availableSettingsTabs,
@@ -648,6 +649,10 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
           <TabContent tab={section} />
+          {/* Contributed sections, after the page's own. Renders nothing when
+              no plugin targets this page, so the settings shell is unchanged on
+              an install with no plugins. */}
+          <PluginSettingsSections tab={section} active={active} />
         </div>
       </div>
     </div>

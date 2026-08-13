@@ -27,6 +27,9 @@ struct FilesRootScreen: View {
   @State var lastHandledFilesProjectionRevision: Int?
   @State var lastHandledProofArtifactsReloadKey: FilesProofArtifactsReloadKey?
   @State var suppressNextWorkspaceNavigationReset = false
+  /// Contributions addressed to the Files surface itself: its toolbar, its
+  /// empty state, and the file-viewer registrations detail screens match on.
+  @State var pluginSurfaceContributions = PluginContributionIndex()
 
   var filesProjectionReloadKey: Int? {
     isTabActive ? syncService.filesProjectionRevision : nil
@@ -100,6 +103,11 @@ struct FilesRootScreen: View {
               }
               .buttonStyle(.glassProminent)
               .tint(ADEColor.accent)
+
+              PluginEmptyStateExtras(
+                contributions: pluginSurfaceContributions.emptyStates(.files),
+                surface: .files
+              )
             }
           }
 
@@ -224,8 +232,14 @@ struct FilesRootScreen: View {
           }
           .accessibilityLabel("Refresh files")
           .disabled(syncService.activeHostProfile == nil && workspaces.isEmpty)
+
+          PluginToolbarActions(
+            contributions: pluginSurfaceContributions.toolbarActions(.files),
+            surface: .files
+          )
         }
       }
+      .loadPluginContributions(.surface, into: $pluginSurfaceContributions)
       .refreshable {
         await refreshFromPullGesture()
       }

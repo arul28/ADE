@@ -26,6 +26,11 @@ function manifestFor(pluginId: string): PluginManifest {
     settings: [],
     cli: [],
     skills: [],
+    tools: [],
+    automationTriggers: [],
+    automationSteps: [],
+    searchProviders: [],
+    keybindings: [],
     official: false,
   };
 }

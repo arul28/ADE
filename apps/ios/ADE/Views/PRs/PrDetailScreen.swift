@@ -82,6 +82,9 @@ struct PrDetailView: View {
   // Thread reply state (was owned by the removed PrUnifiedOverviewThread).
   @State private var focusedThreadId: String?
   @State private var replyDraft: [String: String] = [:]
+  /// Contributions for this PR. Read once per plugin-row change — a detail
+  /// screen must not query the database per section.
+  @State private var pluginContributions = PluginContributionIndex()
 
   /// How long a warm detail cache entry is considered fresh. Within this window
   /// a PR projection bump renders from cache without re-firing the cold sidecar
@@ -667,6 +670,7 @@ struct PrDetailView: View {
     .refreshable {
       await reload(refreshRemote: true)
     }
+    .loadPluginContributions(.pr, into: $pluginContributions)
     .task(id: "\(syncService.prsProjectionRevision):\(syncService.prsRemoteRevision)") {
       // Seed from the warm cache first so an instant render is shown and, when
       // the cached entry is fresh, `hasLoadedLiveSidecars` is set BEFORE the
@@ -1187,6 +1191,19 @@ struct PrDetailView: View {
       .prListRow()
     }
 
+    // Contributed sections, at the foot of the thread and after every card the
+    // product owns — a contribution follows core content, never interleaves.
+    // Guarded at the call site rather than inside: an empty view still costs a
+    // List row, which reads as an unexplained gap under the last card.
+    let pluginSections = pluginContributions.detailSections(.pr, String(currentPr.githubPrNumber))
+    if !pluginSections.isEmpty {
+      PluginDetailSections(
+        contributions: pluginSections,
+        context: .pr(number: currentPr.githubPrNumber),
+        syncService: syncService
+      )
+      .prListRow()
+    }
   }
 
   private func timelineAnchorId(for item: PrTimelineDisplayItem) -> String {

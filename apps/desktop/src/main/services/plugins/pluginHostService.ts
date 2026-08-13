@@ -27,17 +27,25 @@ import {
 } from "../../../shared/plugins/manifest";
 import { writeTextAtomic } from "../shared/utils";
 import { isRecord } from "../../../shared/plugins/parse";
+import { pluginActionIsFullyDisabled } from "../../../shared/plugins/disabledContributions";
 import {
   assertPluginCollectionKey,
   assertPluginCollectionName,
+  isPluginEventName,
+  isPluginRuntimeHookName,
   PluginSdkError,
   type PluginAudioClip,
+  type PluginRuntimeHookName,
+  type PluginRuntimeHookPayload,
   type PluginCollectionRow,
   type PluginContributionRecord,
   type PluginDetail,
   type PluginDomainService,
+  type PluginFilePickerOptions,
   type PluginLogEntry,
   type PluginMarketplaceIndex,
+  type PluginNotificationResult,
+  type PluginNotificationTargetRequest,
   type PluginPanelRecord,
   type PluginPresenceMachineRow,
   type PluginRuntimeStatus,
@@ -54,9 +62,18 @@ import {
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { createPluginChildSupervisor, type PluginChildSupervisor } from "./pluginChildSupervisor";
 import { subscribeToPluginChanges } from "./pluginEvents";
+import { subscribeToPluginRuntimeHooks, type PluginRuntimeHookEmission } from "./pluginRuntimeHooks";
 import { createPluginInstallService, type PluginInstalledPlugin, type PluginInstallService } from "./pluginInstallService";
 import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./pluginInstallServiceAdapter";
-import { createPluginSdkServer, pluginAudioCaptureUnavailable } from "./pluginSdkServer";
+import {
+  createPluginSdkServer,
+  pluginAudioCaptureUnavailable,
+  pluginAutomationsUnavailable,
+  pluginDesktopUnavailable,
+  pluginNotificationUnavailable,
+} from "./pluginSdkServer";
+import { createPluginNotificationLimiter } from "./pluginNotificationLimiter";
+import { createPluginScheduleService } from "./pluginScheduleService";
 import { createPluginSecretStore, type PluginSecretStore } from "./pluginSecretStore";
 
 /**
@@ -70,11 +87,34 @@ import { createPluginSecretStore, type PluginSecretStore } from "./pluginSecretS
  */
 const PLUGIN_CONFIG_FILE = "config.json";
 
+/**
+ * Per-plugin notification counters, beside the install registry for the same
+ * reason {@link PLUGIN_CONFIG_FILE} is: the ceiling is per plugin per machine,
+ * and a file inside a plugin's own directory would be erased by the upgrade
+ * that replaces that directory — handing a plugin a fresh allowance for the
+ * cost of publishing a patch release.
+ */
+const PLUGIN_NOTIFICATION_USAGE_FILE = "notification-usage.json";
+
+/** Plugin-owned schedules. Machine-scoped, and survives a plugin upgrade. */
+const PLUGIN_SCHEDULES_FILE = "schedules.json";
+
 export type PluginProjectBinding = {
   projectId: string;
   projectRoot: string;
   db: AdeDb;
-  invokeAdeAction: (domain: string, action: string, args: Record<string, unknown>) => Promise<unknown>;
+  invokeAdeAction: (
+    domain: string,
+    action: string,
+    args: Record<string, unknown>,
+    /**
+     * Which plugin is calling, as the HOST knows it — resolved from the
+     * supervisor that owns the child socket, never from the call's arguments.
+     * The bridge uses it for anything that must be attributed rather than
+     * merely permitted (`chat.emitAdeCard` stamps it onto the card).
+     */
+    caller: { pluginId: string; displayName?: string | null },
+  ) => Promise<unknown>;
   /**
    * Per-plugin wire accounting for this project's sync host. Optional: a scope
    * with no sync host reports storage usage and zero wire bytes, which is the
@@ -83,6 +123,19 @@ export type PluginProjectBinding = {
   syncMeter?: PluginSyncMeter | null;
   /** Pushes plugin panels to subscribed peers now instead of on the next poll. */
   onPluginDataChanged?: () => void;
+  /**
+   * Hand a plugin's fired trigger to THIS project's automation engine.
+   *
+   * Per-project rather than machine-scoped because a rule is per-project: it is
+   * authored in this project's `ade.yaml` and its steps run against this
+   * project's lanes. Optional, so a bootstrap with automations disabled binds
+   * as it always did and the SDK verb refuses instead of silently succeeding.
+   */
+  emitAutomationTrigger?: (args: {
+    pluginId: string;
+    triggerId: string;
+    payload?: Record<string, unknown>;
+  }) => Promise<void>;
 };
 
 export type PluginHostServiceArgs = {
@@ -138,6 +191,33 @@ export type PluginMachineContext = {
     label: string;
     maxDurationMs?: number;
   }) => Promise<PluginAudioClip>;
+  /**
+   * Show a notification for `ade.notifications.post`.
+   *
+   * Supplied late like the rest of this bag because the two things that can
+   * show one — the push publisher and an attached desktop — are both built well
+   * after the host. The RATE LIMIT is not the supplier's job: it is applied
+   * here, before this is called, so every route into notifications counts
+   * against one ceiling rather than each supplier keeping its own.
+   */
+  postNotification?: (args: {
+    pluginId: string;
+    label: string;
+    title: string;
+    body?: string;
+    target: PluginNotificationTargetRequest;
+  }) => Promise<PluginNotificationResult>;
+  /**
+   * The Electron-only SDK verbs, when a desktop is attached to lend them.
+   *
+   * Absent reads as `desktop_unavailable`, which is a refusal a plugin can act
+   * on: unlike a missing scheduler, a missing desktop can appear later.
+   */
+  desktopHost?: {
+    readClipboard: () => Promise<string>;
+    writeClipboard: (text: string) => Promise<void>;
+    pickFile: (options: PluginFilePickerOptions) => Promise<string>;
+  };
 };
 
 export type PluginHostService = {
@@ -337,6 +417,12 @@ function toSummary(
     theme: manifest?.theme ? { displayName: manifest.displayName, tokens: manifest.theme.tokens } : null,
     disabledContributions: installed.record.disabledContributions ?? [],
     cli: manifest?.cli ?? [],
+    // Engine registrations ride the summary so the rule builder, the search
+    // palette and the keybinding matrix can each see every plugin at once.
+    automationTriggers: manifest?.automationTriggers ?? [],
+    automationSteps: manifest?.automationSteps ?? [],
+    searchProviders: manifest?.searchProviders ?? [],
+    keybindings: manifest?.keybindings ?? [],
     restartCount: runtime.restartCount,
     lastCrashAt: runtime.lastCrashAt,
   };
@@ -426,6 +512,31 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   });
   const secrets: PluginSecretStore = createPluginSecretStore();
   /**
+   * The two per-plugin ledgers that live beside the install registry.
+   *
+   * Both are machine-scoped and both outlive any project, which is why they sit
+   * next to `config.json` rather than in a project database: a notification
+   * budget that reset when the user switched projects would not be a budget,
+   * and a schedule is a claim on THIS machine's clock regardless of what is
+   * open.
+   */
+  const notificationLimiter = createPluginNotificationLimiter({
+    filePath: path.join(installs.root, PLUGIN_NOTIFICATION_USAGE_FILE),
+    logger,
+  });
+  const schedules = createPluginScheduleService({
+    filePath: path.join(installs.root, PLUGIN_SCHEDULES_FILE),
+    logger,
+    // Routed through the domain service rather than straight at a supervisor so
+    // a schedule firing is indistinguishable from any other invoke: it starts a
+    // stopped child, refuses a disabled plugin, and is bounded by the same
+    // timeout.
+    invoke: async ({ pluginId, action, args: invokeArgs }) => (
+      await domainService(null).invoke({ pluginId, action, args: invokeArgs })
+    ),
+  });
+  schedules.start();
+  /**
    * Republish this machine's presence rows after a local install-state change.
    *
    * Fire-and-forget with a caught rejection on purpose: presence is a
@@ -460,6 +571,34 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         });
       }
     }
+    // The automation ingress log this plugin's firings wrote. Same reasoning
+    // as `plugin_collections` above — rows keyed by a plugin nothing else
+    // collects — and the key is the event key's `<pluginId>:` prefix, which is
+    // how `dispatchIngressTrigger` stamps ownership onto a row whose `source`
+    // column says only "plugin".
+    //
+    // What is deliberately NOT swept here: the user's automation RULES. A rule
+    // is authored content that lives in `ade.yaml`, not host state — deleting
+    // one on uninstall would destroy work the user can no longer see to
+    // recover, and a reinstall would not bring it back. The rule survives; its
+    // step refuses with the catalog sentence naming the missing plugin, and the
+    // builder renders it attributed and unavailable.
+    for (const attached of projects.values()) {
+      try {
+        // No LIKE escaping: a plugin id is `[a-z][a-z0-9-]*` by manifest
+        // pattern, so it can hold none of `%`, `_` or `\`.
+        attached.binding.db.run(
+          `delete from automation_ingress_events where source = 'plugin' and event_key like ?`,
+          [`${pluginId}:%`],
+        );
+      } catch (error) {
+        logger.warn("plugin.ingress_cleanup_failed", {
+          pluginId,
+          projectId: attached.binding.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     // Secrets are machine-scoped, so no project cleanup would ever reach
     // them: an uninstalled plugin's tokens would sit in the credential
     // store with nothing left that knows their names.
@@ -467,6 +606,33 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       await secrets.removeAll(pluginId);
     } catch (error) {
       logger.warn("plugin.secret_cleanup_failed", {
+        pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Schedules, which are the one thing here that keeps ACTING after the
+    // plugin is gone. Rows and secrets left behind are inert clutter; a
+    // surviving schedule wakes a plugin that is no longer installed, on a
+    // timer the user has no surface left to cancel it from. This is why plugin
+    // schedules are owned rather than borrowed — a chat cron a plugin created
+    // through `actions.invoke` carries no owner and could not be found here.
+    try {
+      const removed = schedules.removeAllForPlugin(pluginId);
+      if (removed > 0) logger.info("plugin.schedules_removed_on_uninstall", { pluginId, removed });
+    } catch (error) {
+      logger.warn("plugin.schedule_cleanup_failed", {
+        pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // The notification counters, so a reinstall starts with a clean allowance
+    // rather than inheriting a day the previous install spent. Not a security
+    // boundary — a plugin that could uninstall itself could already do worse —
+    // just correctness: the ledger should not name plugins that are not here.
+    try {
+      notificationLimiter.forget(pluginId);
+    } catch (error) {
+      logger.warn("plugin.notification_usage_cleanup_failed", {
         pluginId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -608,7 +774,10 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       data: routingDataStore(pluginId),
       secrets,
       invokeAdeAction: (domain, action, actionArgs) =>
-        requireProject(pluginId).binding.invokeAdeAction(domain, action, actionArgs),
+        requireProject(pluginId).binding.invokeAdeAction(domain, action, actionArgs, {
+          pluginId,
+          displayName: manifest.displayName ?? null,
+        }),
       readConfig: () => configFor(pluginId, manifest),
       // Read through `machine` at call time rather than captured here: a
       // supervisor outlives the desktop that lends it a microphone, and a
@@ -619,6 +788,55 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         if (!capture) return Promise.reject(pluginAudioCaptureUnavailable());
         return capture(captureArgs);
       },
+      // The rate limit sits HERE rather than inside whatever ends up showing
+      // the notification: `machine.postNotification` fans out to a phone push
+      // and a desktop notification, and a ceiling applied on the far side of
+      // that fan-out would count one post twice or not at all. Reserving first
+      // also means a plugin over its budget never reaches the relay.
+      postNotification: async (notifyArgs) => {
+        const post = machine.postNotification;
+        if (!post) throw pluginNotificationUnavailable();
+        notificationLimiter.reserve(notifyArgs.pluginId);
+        try {
+          return await post(notifyArgs);
+        } catch (error) {
+          // Refunded, so a machine with nowhere to deliver does not spend the
+          // plugin's daily budget on failures and then report the wrong reason
+          // for the sixth one.
+          notificationLimiter.release(notifyArgs.pluginId);
+          throw error;
+        }
+      },
+      schedules,
+      // Resolved at call time through `requireProject`, never captured: which
+      // project a plugin's calls belong to changes as projects attach and
+      // detach, and a captured binding would keep firing triggers into a
+      // project the user has closed.
+      emitAutomationTrigger: async (emitArgs) => {
+        const emit = requireProject(emitArgs.pluginId).binding.emitAutomationTrigger;
+        if (!emit) throw pluginAutomationsUnavailable();
+        await emit(emitArgs);
+      },
+      // Read through `machine` at call time, not captured: a supervisor
+      // outlives the desktop that lends it these, and a captured `undefined`
+      // would keep refusing long after one attached.
+      desktopHost: {
+        readClipboard: () => {
+          const host = machine.desktopHost;
+          if (!host) return Promise.reject(pluginDesktopUnavailable());
+          return host.readClipboard();
+        },
+        writeClipboard: (text) => {
+          const host = machine.desktopHost;
+          if (!host) return Promise.reject(pluginDesktopUnavailable());
+          return host.writeClipboard(text);
+        },
+        pickFile: (options) => {
+          const host = machine.desktopHost;
+          if (!host) return Promise.reject(pluginDesktopUnavailable());
+          return host.pickFile(options);
+        },
+      },
     });
     const supervisor = buildSupervisor({
       pluginId,
@@ -626,7 +844,17 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       manifest,
       logger,
       config: configFor(pluginId, manifest),
-      onSdkCall: (method, params) => sdkServer.handle(method, params),
+      // `events.subscribe` is answered here rather than by the SDK server: it
+      // writes fan-out state, which lives with the queue that reads it. See
+      // `applyEventSubscription`.
+      // `async` so a refusal becomes a rejection the supervisor can answer with
+      // a `sdkResult` error frame; a synchronous throw here would escape the
+      // frame handler and leave the child's request unanswered forever.
+      onSdkCall: async (method, params) => (
+        method === "events.subscribe"
+          ? applyEventSubscription(pluginId, params)
+          : sdkServer.handle(method, params)
+      ),
     });
     supervisors.set(pluginId, supervisor);
     return supervisor;
@@ -644,6 +872,11 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     const supervisor = supervisors.get(pluginId);
     if (!supervisor) return;
     supervisors.delete(pluginId);
+    // The child's listeners die with it, and the next one re-registers from
+    // `activate`. Anything still queued for it is telemetry for a process that
+    // no longer exists.
+    hookSubscriptions.delete(pluginId);
+    hookQueues.delete(pluginId);
     await supervisor.dispose();
   };
 
@@ -868,6 +1101,22 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         if (!installed.manifest || !pluginHasRuntimeEntry(installed.manifest)) {
           throw new PluginSdkError("plugin_no_entry", `Plugin "${pluginId}" ships no runtime entry.`);
         }
+        // The per-contribution toggle has to hold HERE, not only where the
+        // contribution is drawn. A menu that hides a disabled item stops one
+        // route to the action; every other client, the phone, the CLI and a
+        // stale renderer all reach this method directly, so a toggle enforced
+        // only in the menu is a suggestion. See `pluginActionIsFullyDisabled`
+        // for why a single disabled contribution is not enough to refuse.
+        if (pluginActionIsFullyDisabled(
+          installed.manifest,
+          installed.record.disabledContributions,
+          action,
+        )) {
+          throw new PluginSdkError(
+            "not_permitted",
+            `"${action}" is turned off for ${installed.manifest.displayName || pluginId} in its plugin settings.`,
+          );
+        }
         if (projectId) activeProjectByPlugin.set(pluginId, projectId);
         const supervisor = ensureSupervisor(installed);
         // Clamped again rather than trusted from the caller: this service is
@@ -963,31 +1212,89 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         // Built once per call rather than per row — a Lanes list asks for this
         // on every render, and a plugin declares a handful of sockets.
         //
-        // The key joins plugin id to socket kind on a NUL, which neither can
-        // contain, so no pair of ids can ever collide into one entry. Written
-        // as the ESCAPE, never as a literal NUL byte: a source file holding one
-        // is binary to git, which stops diffing it and hides every later change
-        // to this function.
+        // The key joins plugin id, socket kind and SOCKET ID on NULs, which none
+        // of them can contain, so no triple can ever collide into one entry.
+        // Written as the ESCAPE, never as a literal NUL byte: a source file
+        // holding one is binary to git, which stops diffing it and hides every
+        // later change to this function.
+        //
+        // Keying on the socket id is what makes two declarations of one kind
+        // independent. Keyed on `pluginId + kind` alone, a plugin declaring two
+        // badges on Lanes collapsed to whichever it declared LAST, and every
+        // published badge row was then stamped with that arbitrary winner's
+        // `socketId` and its `enabled` flag — so the per-contribution toggle for
+        // one badge could hide the other's rows, and the phone (which resolves
+        // per declaration) disagreed with this machine about what was on screen.
         const declared = new Map<string, { socketId: string; enabled: boolean }>();
+        // The unambiguous case, kept apart: a row naming no socket id can only
+        // be resolved when its kind was declared exactly ONCE. Set to null the
+        // moment a second declaration of that kind lands, which is what lets the
+        // row loop tell "ambiguous" apart from "never declared".
+        const soleByKind = new Map<string, { socketId: string; enabled: boolean } | null>();
         for (const installed of installs.list()) {
           if (!installed.record.enabled || !installed.manifest) continue;
           const off = new Set(installed.record.disabledContributions ?? []);
           for (const socket of installed.manifest.sockets) {
             if (socket.surface !== surface) continue;
-            declared.set(`${installed.record.pluginId}\u0000${socket.socket}`, {
-              socketId: socket.id,
-              enabled: !off.has(socket.id),
-            });
+            const declaration = { socketId: socket.id, enabled: !off.has(socket.id) };
+            declared.set(
+              `${installed.record.pluginId}\u0000${socket.socket}\u0000${socket.id}`,
+              declaration,
+            );
+            const kindKey = `${installed.record.pluginId}\u0000${socket.socket}`;
+            soleByKind.set(kindKey, soleByKind.has(kindKey) ? null : declaration);
           }
         }
         if (declared.size === 0) return [];
+        // Warned once per (plugin, kind), not once per row: a surface asks for
+        // this on every render and a plugin may publish hundreds of rows, so an
+        // un-deduped warning would be the loudest thing in the log.
+        const warnedAmbiguous = new Set<string>();
         const rows = readPluginContributions(attached.binding.db, {
           entityKind: contributionArgs.entityKind ?? null,
           entityIds: contributionArgs.entityIds ?? null,
         });
         const results: PluginContributionRecord[] = [];
         for (const row of rows) {
-          const match = declared.get(`${row.pluginId}\u0000${row.socket}`);
+          // Parsed BEFORE the declaration join, because the payload is what
+          // names the declaration: a row carrying `id` is addressed to one
+          // specific socket the plugin declared, and joining on the kind alone
+          // would throw that away before reading it.
+          let payload: unknown = null;
+          try {
+            payload = JSON.parse(row.payloadJson) as unknown;
+          } catch {
+            payload = null;
+          }
+          const declaredId = isRecord(payload) && typeof payload.id === "string"
+            ? payload.id.trim()
+            : "";
+          const kindKey = `${row.pluginId}\u0000${row.socket}`;
+          let match: { socketId: string; enabled: boolean } | undefined;
+          if (declaredId) {
+            // Addressed: it resolves to that declaration or to nothing. A row
+            // naming a socket id the plugin no longer declares is stale, and
+            // adopting a different one would move it to a slot its author never
+            // chose.
+            match = declared.get(`${kindKey}\u0000${declaredId}`);
+          } else {
+            const sole = soleByKind.get(kindKey);
+            // `null` means the plugin declared this kind more than once, so
+            // there is no non-arbitrary answer. Left unmatched deliberately —
+            // guessing is what produced the bug this branch fixes — and the
+            // author is told, because only they can add the id.
+            if (sole === null && !warnedAmbiguous.has(kindKey)) {
+              warnedAmbiguous.add(kindKey);
+              logger.warn("plugin.contribution_id_ambiguous", {
+                pluginId: row.pluginId,
+                socket: row.socket,
+                surface,
+                entityKind: row.entityKind,
+                reason: "published_row_has_no_id_and_kind_is_declared_more_than_once",
+              });
+            }
+            match = sole ?? undefined;
+          }
           // Disabled plugins, switched-off sockets and rows left behind by a
           // plugin that stopped declaring a socket all drop out here, so no
           // caller has to re-derive any of it.
@@ -1001,12 +1308,6 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           // dropped rather than handed to a renderer as a value it has no
           // case for.
           if (!isPluginEntityKind(row.entityKind) || !isPluginSocketKind(row.socket)) continue;
-          let payload: unknown = null;
-          try {
-            payload = JSON.parse(row.payloadJson) as unknown;
-          } catch {
-            payload = null;
-          }
           results.push({
             entityKind: row.entityKind,
             entityId: row.entityId,
@@ -1232,11 +1533,184 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   };
 
   const unsubscribePluginChanges = subscribeToPluginChanges((event) => {
-    if (disposed || event.kind !== "installs") return;
+    if (disposed) return;
+    // A child that just (re)started has forgotten every listener it registered
+    // and will register them again from `activate`. Dropping the host's copy
+    // here is what keeps a crash-restart loop from leaving a plugin subscribed
+    // to hooks its new process has no listener for — deliveries nobody reads,
+    // charged to every turn on the machine.
+    if (event.kind === "status" && event.pluginId && event.status !== "running") {
+      hookSubscriptions.delete(event.pluginId);
+      hookQueues.delete(event.pluginId);
+      return;
+    }
+    if (event.kind !== "installs") return;
     if (event.pluginId) pendingInstallIds.add(event.pluginId);
     if (installEventTimer) return;
     installEventTimer = setTimeout(flushInstallEvent, PLUGIN_EVENT_COALESCE_MS);
     installEventTimer.unref?.();
+  });
+
+  /**
+   * Runtime hooks (`turn.start`, `turn.end`, `tool.before`), delivered to the
+   * children that asked for them.
+   *
+   * Three properties, and every one of them is a requirement rather than a
+   * tuning choice:
+   *
+   * 1. **Only to subscribers.** `tool.before` fires dozens of times in a single
+   *    turn, and a machine can run several turns at once. Broadcasting them the
+   *    way install events are broadcast would charge every running plugin one
+   *    NDJSON line per tool call in every chat, to feed listeners that mostly
+   *    do not exist. `events.subscribe` is what the child sends when
+   *    `ade.events.on` registers the first listener for a kind, and a plugin
+   *    that never asks is never written to.
+   * 2. **Off the emitter's stack.** The bus is called from inside the chat
+   *    service's commit path. Queueing here and writing on a later tick means
+   *    the turn loop never pays for a `stdin.write`, however many children are
+   *    running.
+   * 3. **Drops, never backpressures.** A child that has stopped reading its
+   *    stdin — wedged in a synchronous loop, stopped at a debugger — would
+   *    otherwise grow the pipe's buffer without limit, because `write` keeps
+   *    accepting data long after the far end stopped taking it. Past
+   *    {@link PLUGIN_RUNTIME_HOOK_QUEUE_MAX} queued frames, or on the first
+   *    `write` that reports the buffer full, this plugin's queue is discarded
+   *    and the count logged. Losing a plugin's telemetry is the correct trade
+   *    against holding the user's turns hostage to it, and observe-only is
+   *    exactly the tier where that trade is safe to make.
+   */
+  const PLUGIN_RUNTIME_HOOK_QUEUE_MAX = 256;
+  /** Per plugin: which hook kinds its current child registered a listener for. */
+  const hookSubscriptions = new Map<string, Set<PluginRuntimeHookName>>();
+  const hookQueues = new Map<string, { frames: PluginRuntimeHookPayload[]; dropped: number }>();
+  let hookFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Record what a child listens for.
+   *
+   * Handled in the host rather than in `pluginSdkServer` because the answer is
+   * fan-out state — it belongs beside the queue that reads it, not beside the
+   * collections and secrets the SDK server owns. An unknown event name is
+   * refused rather than ignored: a plugin that typo'd a kind would otherwise
+   * subscribe successfully and wait forever for an event that does not exist.
+   */
+  const applyEventSubscription = (pluginId: string, params: Record<string, unknown>): null => {
+    const event = params.event;
+    if (!isPluginEventName(event)) {
+      throw new PluginSdkError("invalid_args", `Unknown event name: ${String(event)}`);
+    }
+    // The change events are broadcast to every running child and always have
+    // been; recording them costs nothing and keeps the child's `events.on` free
+    // of a per-kind special case, but only the hooks are filtered on the way
+    // out. Narrowing the change events to subscribers would be a behaviour
+    // change for shipped plugins, and it is not this one.
+    if (!isPluginRuntimeHookName(event)) return null;
+    const subscribed = params.subscribed !== false;
+    const existing = hookSubscriptions.get(pluginId);
+    if (subscribed) {
+      if (existing) existing.add(event);
+      else hookSubscriptions.set(pluginId, new Set<PluginRuntimeHookName>([event]));
+      return null;
+    }
+    if (!existing) return null;
+    existing.delete(event);
+    if (!existing.size) hookSubscriptions.delete(pluginId);
+    return null;
+  };
+
+  const flushRuntimeHooks = (): void => {
+    hookFlushTimer = null;
+    for (const [pluginId, queue] of [...hookQueues]) {
+      hookQueues.delete(pluginId);
+      const supervisor = supervisors.get(pluginId);
+      // No child to tell. Not a drop worth logging: the plugin was not running,
+      // so nothing it asked for was lost — it never saw the turn at all.
+      if (!supervisor || supervisor.status() !== "running") continue;
+      for (let index = 0; index < queue.frames.length; index += 1) {
+        if (supervisor.send({ type: "event", payload: queue.frames[index]! })) continue;
+        // `write` returned false: the child is not draining. Stop here rather
+        // than queueing more into a buffer nobody is emptying. THIS frame was
+        // accepted into that buffer and will arrive if the child ever reads
+        // again, so the drop count starts after it — an over-reported count in
+        // this log would send whoever reads it looking for a bug that is not
+        // there.
+        queue.dropped += queue.frames.length - index - 1;
+        break;
+      }
+      if (queue.dropped > 0) {
+        logger.warn("plugin.runtime_hooks_dropped", { pluginId, dropped: queue.dropped });
+      }
+    }
+  };
+
+  const queueRuntimeHook = (pluginId: string, payload: PluginRuntimeHookPayload): void => {
+    let queue = hookQueues.get(pluginId);
+    if (!queue) {
+      queue = { frames: [], dropped: 0 };
+      hookQueues.set(pluginId, queue);
+    }
+    if (queue.frames.length >= PLUGIN_RUNTIME_HOOK_QUEUE_MAX) {
+      queue.dropped += 1;
+      return;
+    }
+    queue.frames.push(payload);
+    if (hookFlushTimer) return;
+    hookFlushTimer = setTimeout(flushRuntimeHooks, 0);
+    hookFlushTimer.unref?.();
+  };
+
+  /**
+   * The turn's project, as the plugin surface spells it.
+   *
+   * Resolved from the checkout the chat service reported against this host's
+   * own bindings, because those are the two ends of the same fact and only the
+   * host holds both. A turn in a project nothing is bound to answers null
+   * rather than borrowing whichever project the plugin happens to be scoped to
+   * — a hook that named the wrong project would be worse than one that named
+   * none.
+   */
+  const projectIdForRoot = (projectRoot: string | null): string | null => {
+    if (!projectRoot) return null;
+    for (const attached of projects.values()) {
+      if (attached.binding.projectRoot === projectRoot) return attached.binding.projectId;
+    }
+    return null;
+  };
+
+  const toRuntimeHookPayload = (
+    emission: PluginRuntimeHookEmission,
+    projectId: string | null,
+  ): PluginRuntimeHookPayload | null => {
+    const base = { sessionId: emission.sessionId, projectId, runtime: emission.runtime };
+    switch (emission.event) {
+      case "turn.start":
+        return { ...base, event: "turn.start", ...(emission.model ? { model: emission.model } : {}) };
+      case "turn.end":
+        return {
+          ...base,
+          event: "turn.end",
+          outcome: emission.outcome ?? "completed",
+          ...(emission.durationMs != null ? { durationMs: emission.durationMs } : {}),
+        };
+      case "tool.before":
+        return emission.toolName
+          ? { ...base, event: "tool.before", toolName: emission.toolName }
+          : null;
+    }
+  };
+
+  const unsubscribeRuntimeHooks = subscribeToPluginRuntimeHooks((emission) => {
+    if (disposed || !hookSubscriptions.size) return;
+    let payload: PluginRuntimeHookPayload | null = null;
+    for (const [pluginId, kinds] of hookSubscriptions) {
+      if (!kinds.has(emission.event)) continue;
+      // Built once, on the first interested plugin, and never at all when none
+      // is — the common case for `tool.before` on a machine whose plugins only
+      // watch turn boundaries.
+      payload ??= toRuntimeHookPayload(emission, projectIdForRoot(emission.projectRoot));
+      if (!payload) return;
+      queueRuntimeHook(pluginId, payload);
+    }
   });
 
   const storeFor = (binding: PluginProjectBinding): PluginDataStore => createPluginDataStore({
@@ -1314,12 +1788,23 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       if (disposed) return;
       disposed = true;
       unsubscribePluginChanges();
+      unsubscribeRuntimeHooks();
       if (installEventTimer) {
         clearTimeout(installEventTimer);
         installEventTimer = null;
       }
+      if (hookFlushTimer) {
+        clearTimeout(hookFlushTimer);
+        hookFlushTimer = null;
+      }
+      hookSubscriptions.clear();
+      hookQueues.clear();
       setPluginInstallService(null);
       setPluginActionInvoker(null);
+      // Before the children go: a timer that fired during teardown would call
+      // `invoke` on a supervisor map that is about to be cleared, and start a
+      // child the host has no way left to stop.
+      schedules.dispose();
       const running = [...supervisors.values()];
       supervisors.clear();
       projects.clear();

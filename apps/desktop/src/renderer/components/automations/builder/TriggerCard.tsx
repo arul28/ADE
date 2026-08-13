@@ -21,6 +21,7 @@ import {
   TRIGGER_SOURCES,
   type TriggerSource,
 } from "../triggerCatalog";
+import { usePluginAutomationTriggers, type PluginAutomationOption } from "../../plugins/usePluginRegistry";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
@@ -178,10 +179,95 @@ function TriggerFilters({
       </div>
     );
   }
+  if (source === "plugin") return <PluginTriggerPicker trigger={trigger} onPatch={onPatch} />;
   if (source === "session") {
     return <p className="text-[11px] text-muted-fg/70">Runs after any agent session ends.</p>;
   }
   return <p className="text-[11px] text-muted-fg/70">Runs only when you press Run now.</p>;
+}
+
+
+/**
+ * The pair as one select value. `::` is an unambiguous separator: a plugin id
+ * is `[a-z][a-z0-9-]*` and a trigger id is a JS identifier, so neither can
+ * contain a colon.
+ */
+function optionKey(pluginId: string, value: string): string {
+  return `${pluginId}::${value}`;
+}
+
+/**
+ * Which plugin event fires this rule.
+ *
+ * Every enabled plugin's declared triggers in one list, each attributed with
+ * the plugin's display name — the same trigger label ("Issue moved") can come
+ * from two plugins, and the name is the only thing that tells them apart.
+ *
+ * A rule pointing at a plugin that is no longer installed keeps a synthetic
+ * option of its own rather than snapping to the first available one: an
+ * uninstalled plugin is a temporary condition (reinstall it and the rule works
+ * again), and silently rewriting a saved rule to point somewhere else would
+ * lose what the user authored.
+ */
+function PluginTriggerPicker({
+  trigger,
+  onPatch,
+}: {
+  trigger: AutomationTrigger;
+  onPatch: (patch: Partial<AutomationTrigger>) => void;
+}) {
+  const options = usePluginAutomationTriggers();
+  const selectedPlugin = (trigger.pluginId ?? "").trim();
+  const selectedTrigger = (trigger.pluginTrigger ?? "").trim();
+  const known = options.some(
+    (option) => option.pluginId === selectedPlugin && option.value === selectedTrigger,
+  );
+  const orphan: PluginAutomationOption | null = !known && selectedPlugin && selectedTrigger
+    ? {
+        pluginId: selectedPlugin,
+        pluginName: selectedPlugin,
+        value: selectedTrigger,
+        label: `${selectedTrigger} — not installed`,
+      }
+    : null;
+  const rendered = orphan ? [orphan, ...options] : options;
+
+  if (!rendered.length) {
+    return (
+      <p className="text-[11px] leading-relaxed text-muted-fg/70">
+        No installed plugin declares an automation trigger yet. Install one from the Marketplace,
+        then pick its event here.
+      </p>
+    );
+  }
+
+  return (
+    <label className="block space-y-1">
+      <span className={labelCls}>Plugin event</span>
+      <select
+        className={selectCls}
+        value={known || orphan ? optionKey(selectedPlugin, selectedTrigger) : ""}
+        onChange={(e) => {
+          const [pluginId = "", pluginTrigger = ""] = e.target.value.split("::");
+          onPatch({ pluginId, pluginTrigger });
+        }}
+      >
+        <option value="" disabled>
+          Select a plugin event
+        </option>
+        {rendered.map((option) => (
+          <option key={optionKey(option.pluginId, option.value)} value={optionKey(option.pluginId, option.value)}>
+            {option.pluginName} — {option.label}
+          </option>
+        ))}
+      </select>
+      {orphan ? (
+        <span className="block text-[10.5px] text-amber-200/80">
+          The {orphan.pluginId} plugin isn't installed on this machine, so this rule can't fire.
+        </span>
+      ) : null}
+    </label>
+  );
 }
 
 export function TriggerCard({

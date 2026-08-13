@@ -46,6 +46,15 @@ export function triggerClause(trigger: AutomationTrigger): string {
   if (type === "github-webhook" || type === "webhook") {
     return trigger.event ? `A webhook fires for ${trigger.event}` : "A webhook fires";
   }
+  if (type === "plugin") {
+    // The ids, not a display name. This function is pure and synchronous over
+    // the rule alone — it has no plugin list to resolve a name from, and the
+    // ids are what the user picked in the builder.
+    const pluginId = (trigger.pluginId ?? "").trim();
+    const pluginTrigger = (trigger.pluginTrigger ?? "").trim();
+    if (!pluginId || !pluginTrigger) return "A plugin event fires (not configured)";
+    return `${pluginId} fires ${pluginTrigger}`;
+  }
 
   if (type.startsWith("github.")) {
     const base = githubClause(type, trigger);
@@ -125,6 +134,11 @@ function stepClause(action: AutomationAction): string | null {
       return "create a lane";
     case "ade-action":
       return adeActionPhrase(action);
+    case "plugin": {
+      const pluginId = action.pluginStep?.pluginId ?? "";
+      const name = action.pluginStep?.action ?? "";
+      return pluginId && name ? `run ${pluginId}.${name}` : "run a plugin action";
+    }
     case "lane-setup":
       return null;
     default:

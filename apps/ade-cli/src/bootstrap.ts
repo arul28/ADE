@@ -101,10 +101,20 @@ import {
   resolvePluginsRoot,
 } from "../../desktop/src/main/services/plugins/pluginInstallService";
 import { readPluginRegistryFile } from "../../desktop/src/main/services/plugins/pluginRegistryFile";
-import { buildGatedDomainDenial } from "../../desktop/src/main/services/plugins/gatedActionDomains";
+import {
+  allGatedActionDomains,
+  buildGatedDomainDenial,
+  pluginStepUnavailableReason,
+} from "../../desktop/src/main/services/plugins/gatedActionDomains";
 import { builtinSurfaceOwner } from "../../desktop/src/shared/plugins/builtinSurfaces";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
-import { PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
+import { withTrustedAdeCardAuthor } from "../../desktop/src/main/services/chat/adeCardProvenance";
+import {
+  PluginSdkError,
+  type PluginFilePickerOptions,
+  type PluginNotificationTarget,
+} from "../../desktop/src/shared/plugins/sdk";
+import { pluginNotificationUnavailable } from "../../desktop/src/main/services/plugins/pluginSdkServer";
 import {
   createPluginPresenceService,
   getPluginPresenceService,
@@ -152,6 +162,7 @@ import {
 } from "./services/builtInBrowser/desktopBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import { createDesktopAudioCaptureBridge } from "./services/audio/desktopAudioBridgeClient";
+import { createDesktopHostBridge } from "./services/desktopHost/desktopHostBridgeClient";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
@@ -501,6 +512,129 @@ export function withoutPluginAuthoredProvenance(
   const copy = { ...(metadata as Record<string, unknown>) };
   stripHostAuthoredMessageProvenance(copy);
   return { ...args, metadata: copy };
+}
+
+/**
+ * Stamp the calling plugin's identity onto the actions that must be ATTRIBUTED
+ * rather than merely permitted.
+ *
+ * The inverse of {@link withoutPluginAuthoredProvenance}: that one drops
+ * provenance a plugin has no standing to claim, this one adds provenance only
+ * the host can establish. `caller` comes from the supervisor that owns the
+ * child socket, so it names the package whose code is running and not whatever
+ * the call said about itself.
+ *
+ * The stamp rides on a module-private symbol (see `adeCardProvenance.ts`), so
+ * the same argument object arriving from an agent or an automation — both of
+ * which cross a JSON boundary — cannot carry one.
+ */
+export function withPluginCallerProvenance(
+  domain: AdeActionDomain,
+  action: string,
+  args: Record<string, unknown>,
+  caller: { pluginId: string; displayName?: string | null },
+): Record<string, unknown> {
+  if (domain !== "chat" || action !== "emitAdeCard") return args;
+  return withTrustedAdeCardAuthor(args, {
+    pluginId: caller.pluginId,
+    ...(caller.displayName ? { displayName: caller.displayName } : {}),
+  });
+}
+
+/**
+ * Automations verbs that WRITE or RUN a rule, refused to plugins.
+ *
+ * Read verbs (`list`, `get`, `getHistory`, `listRuns`, …) stay: a plugin
+ * inspecting the automations it contributed to is the point. These four are the
+ * ones that change what runs. `toggleRule` is the setEnabled-class verb — it
+ * decides whether a rule fires at all, so it belongs with the writers.
+ * The remaining rule-adjacent verbs in `ADE_ACTION_ALLOWLIST.automations`
+ * (`setWebhookGatewayPublicUrl`, `linearIngressSetup`, `linearIngressTeardown`,
+ * `cancelScheduledCleanup`) are already CTO-only and never reach this bridge.
+ */
+const PLUGIN_REFUSED_AUTOMATION_ACTIONS = new Set([
+  "saveRule",
+  "deleteRule",
+  "toggleRule",
+  "triggerManually",
+]);
+
+/**
+ * The static half of the plugin action gate: refusals that depend only on the
+ * verb being called, not on which plugins happen to be installed.
+ *
+ * Returns the refusal sentence, or null when this domain/action pair has no
+ * static objection. The caller still applies the allowlist and the gated-domain
+ * check, both of which need runtime state.
+ */
+export function pluginActionRefusalMessage(
+  domain: AdeActionDomain,
+  action: string,
+): string | null {
+  // The account domain answers the RPC edge through
+  // `scopeAccountStatusForRole`, which strips the signed-in identity for
+  // anything below operator. This bridge is not that edge — it calls the
+  // service directly — so a plugin asking for `account.status` would read
+  // back the user's email and user id in full. Plugins have no account
+  // identity of their own, so the whole domain is refused here rather
+  // than a redaction being maintained in a second place.
+  if (domain === "account") {
+    return `Action '${domain}.${action}' is not available to plugins.`;
+  }
+  // `session.requestSessionAttention` pushes an arbitrary message to
+  // every paired phone, unlabelled and unlimited, and it does it by
+  // putting a real chat session into "waiting for input" — so a plugin
+  // borrowing it also lies about what the user's agent is doing.
+  // `ade.notifications.post` is the supported path: same reach, but the
+  // plugin's name is stamped on the payload by the host and the post is
+  // counted against a per-plugin daily and burst ceiling. This stays
+  // refused rather than becoming an alias, because the attribution and
+  // the rate limit are properties of the SDK verb, and an action a plugin
+  // can call directly has neither.
+  if (domain === "session" && action === "requestSessionAttention") {
+    return "Plugins notify through ade.notifications.post, which attributes and rate-limits the message.";
+  }
+  // Same shape of problem, different scheduler. `chat.createScheduledWork`
+  // creates a cron against a chat session with no record of who asked for
+  // it: nothing lists it as the plugin's, and uninstalling the plugin
+  // leaves it injecting prompts into the user's conversation forever.
+  // `ade.schedules.*` is the supported path — plugin-owned, quota'd,
+  // listed under the plugin, and deleted with it.
+  //
+  // The read and cancel verbs go with the write: a plugin has no
+  // schedules in the chat scheduler (create is refused above this line
+  // in history, now alongside), so listing would only expose the
+  // user's own crons and cancel would let a plugin silently kill them.
+  // `getScheduledWorkState` and `setScheduledWorkPaused` are the same
+  // two verbs under different names — the first reads the user's
+  // schedules for a session, the second stops every one of them from
+  // firing — so refusing three of the five would have left the hole
+  // open under the other two.
+  if (
+    domain === "chat"
+    && (action === "createScheduledWork"
+      || action === "cancelScheduledWork"
+      || action === "listScheduledWork"
+      || action === "getScheduledWorkState"
+      || action === "setScheduledWorkPaused")
+  ) {
+    return "Plugins schedule through ade.schedules.*, which is owned by the plugin and removed when it is uninstalled.";
+  }
+  // The third scheduler, and the one that reaches furthest. A plugin that
+  // can save an ENABLED rule and then trigger it has borrowed every other
+  // refusal on this list: the rule's steps run as the user, so a rule whose
+  // step is `chat.createScheduledWork` or `session.requestSessionAttention`
+  // is exactly the injection those two lines above refuse, laundered through
+  // the automations engine. `saveRule` also takes an existing rule id, so a
+  // plugin could silently rewrite a rule the user wrote and never told it
+  // about. The division is the same one the rest of the platform draws:
+  // plugins PROVIDE the triggers and steps they declare in their manifest
+  // (`contributes.automationTriggers` / `contributes.automationSteps`), and
+  // the USER authors the rules that use them.
+  if (domain === "automations" && PLUGIN_REFUSED_AUTOMATION_ACTIONS.has(action)) {
+    return "Plugins provide automation triggers and steps through their manifest (contributes.automationTriggers / contributes.automationSteps); only the user can create, change, or run a rule.";
+  }
+  return null;
 }
 
 function trustedAgentSkillsRootForCliEntry(
@@ -1241,6 +1375,17 @@ export async function createAdeRuntime(args: {
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
+  // And the rest of the SDK's Electron-only verbs — the clipboard, the native
+  // file picker, the notification centre — over the same socket and the same
+  // credential, for the same reason: this process is plain Node, and all three
+  // are Electron main-process APIs.
+  const desktopHostBridge = chatOnlyRuntime
+    ? null
+    : createDesktopHostBridge({
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
+        logger,
+      });
 
   const headlessLinearServices = createHeadlessLinearServices({
     projectRoot,
@@ -1396,6 +1541,11 @@ export async function createAdeRuntime(args: {
         conflictService,
         testService,
         agentChatService: agentChatService ?? undefined,
+        // Reads the machine install registry file, not the plugin host handle:
+        // the answer must be the same in the Electron main process, which never
+        // builds a host, so the sentence a failed run records cannot depend on
+        // which process ran the rule.
+        pluginAvailability: { unavailableReason: (pluginId) => pluginStepUnavailableReason(pluginId) },
         onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
       })
     : null;
@@ -1647,6 +1797,69 @@ export async function createAdeRuntime(args: {
             }),
         }
       : {}),
+    // The Electron-only SDK verbs, same socket and same "no desktop means a
+    // typed refusal" contract as the microphone above.
+    ...(desktopHostBridge
+      ? {
+          desktopHost: {
+            readClipboard: () => desktopHostBridge.readClipboard(),
+            writeClipboard: (text: string) => desktopHostBridge.writeClipboard(text),
+            pickFile: (options: PluginFilePickerOptions) => desktopHostBridge.pickFile(options),
+          },
+        }
+      : {}),
+    /**
+     * `ade.notifications.post`, fanned out to whatever this machine has.
+     *
+     * This is the sanctioned replacement for a plugin borrowing
+     * `session.requestSessionAttention` (refused below). The difference is not
+     * the transport — it is that the plugin's name rides on the payload, the
+     * post is counted against a per-plugin ceiling before it reaches here, and
+     * a post that reached nobody says so instead of quietly succeeding.
+     *
+     * Partial delivery is a success. A user with no phone paired should not see
+     * their plugins reporting errors for a notification that appeared on their
+     * desktop exactly as intended, so `delivered` carries what landed and only
+     * an empty result is a refusal.
+     */
+    postNotification: async ({ pluginId, label, title, body, target }) => {
+      const delivered: PluginNotificationTarget[] = [];
+      if (target !== "mobile") {
+        try {
+          const shown = await desktopHostBridge?.notify({
+            title,
+            ...(body ? { body } : {}),
+            requesterLabel: label,
+          });
+          if (shown) delivered.push("desktop");
+        } catch (error) {
+          // A missing desktop is the ordinary case on a headless machine, and
+          // it must not sink a post the phone can still take.
+          logger.debug("plugin.notification_desktop_failed", {
+            pluginId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (target !== "desktop") {
+        try {
+          const queued = pushPublisherService?.publishPluginNotification({
+            pluginId,
+            pluginLabel: label,
+            title,
+            ...(body ? { body } : {}),
+          });
+          if (queued) delivered.push("mobile");
+        } catch (error) {
+          logger.debug("plugin.notification_mobile_failed", {
+            pluginId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (delivered.length === 0) throw pluginNotificationUnavailable();
+      return { delivered };
+    },
   });
   const syncDeviceIdPath = path.join(
     resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
@@ -2175,7 +2388,26 @@ export async function createAdeRuntime(args: {
       onPluginDataChanged: () => {
         syncService?.getHostService()?.notifyPluginDataChanged();
       },
-      invokeAdeAction: async (domain, action, args) => {
+      // `ade.automations.emitTrigger` lands here. Not routed through
+      // `invokeAdeAction` above and so not subject to its allowlist: this is an
+      // SDK verb, not an ADE action, and the ceiling it needs is a different
+      // one — the manifest must have DECLARED the trigger, which the SDK server
+      // checks before this is ever called.
+      //
+      // Absent when the automations feature is off, which the SDK server turns
+      // into `unsupported_method` rather than a silent success.
+      ...(automationService
+        ? {
+            emitAutomationTrigger: async (emitArgs: {
+              pluginId: string;
+              triggerId: string;
+              payload?: Record<string, unknown>;
+            }) => {
+              await automationService.dispatchPluginTrigger(emitArgs);
+            },
+          }
+        : {}),
+      invokeAdeAction: async (domain, action, args, caller) => {
         const actionDomain = domain as AdeActionDomain;
         if (!isAutomationAllowedAdeAction(actionDomain, action)) {
           throw new PluginSdkError(
@@ -2183,36 +2415,33 @@ export async function createAdeRuntime(args: {
             `Action '${domain}.${action}' is not available to plugins.`,
           );
         }
-        // The account domain answers the RPC edge through
-        // `scopeAccountStatusForRole`, which strips the signed-in identity for
-        // anything below operator. This bridge is not that edge — it calls the
-        // service directly — so a plugin asking for `account.status` would read
-        // back the user's email and user id in full. Plugins have no account
-        // identity of their own, so the whole domain is refused here rather
-        // than a redaction being maintained in a second place.
-        if (actionDomain === "account") {
-          throw new PluginSdkError(
-            "not_permitted",
-            `Action '${domain}.${action}' is not available to plugins.`,
-          );
-        }
-        // `session.requestSessionAttention` pushes an arbitrary message to
-        // every paired phone. Until plugins get an attributed, rate-limited
-        // notifications capability, an installed package cannot borrow it: its
-        // push would arrive unlabelled, unlimited, and indistinguishable from
-        // ADE's own.
-        if (actionDomain === "session" && action === "requestSessionAttention") {
-          throw new PluginSdkError(
-            "not_permitted",
-            "Plugins can't send phone notifications yet.",
-          );
+        // Per-verb refusals that need no runtime state, kept in one testable
+        // place (`pluginActionRefusalMessage`): the account domain, the two
+        // schedulers, and the automations rule writers.
+        const staticRefusal = pluginActionRefusalMessage(actionDomain, action);
+        if (staticRefusal) {
+          throw new PluginSdkError("not_permitted", staticRefusal);
         }
         // A plugin asking for another plugin's domain gets the same refusal a
         // user's agent gets. Named, so a plugin author reading its own error log
         // learns which package it actually depends on.
-        const gated = buildGatedDomainDenial(actionDomain);
-        if (gated) {
-          throw new PluginSdkError("not_permitted", gated.message);
+        //
+        // The GATE is `allGatedActionDomains`, not the message builder.
+        // `buildGatedDomainDenial` returns null for two different reasons — the
+        // domain is not gated, or it is gated but no catalog can name its owner
+        // — and every gated domain here (`linear_credentials`, `ios_simulator`,
+        // `app_control`, …) is also in `ADE_ACTION_ALLOWLIST`, so there is no
+        // generic unknown-domain error below to land in. Treating the second
+        // null as a pass would mean a machine with an unreadable bundled root
+        // or a cold registry cache hands those domains straight to any plugin.
+        // The catalog decides how much advice the sentence carries, never
+        // whether the call is allowed.
+        if (allGatedActionDomains().has(actionDomain)) {
+          const gated = buildGatedDomainDenial(actionDomain);
+          throw new PluginSdkError(
+            "not_permitted",
+            gated?.message ?? `Action domain '${domain}' belongs to another plugin.`,
+          );
         }
         const service = getAdeActionDomainServices(runtime)[actionDomain];
         const callable = service?.[action];
@@ -2224,7 +2453,12 @@ export async function createAdeRuntime(args: {
         }
         return await (callable as (input?: Record<string, unknown>) => Promise<unknown>).call(
           service,
-          withoutPluginAuthoredProvenance(actionDomain, args),
+          withPluginCallerProvenance(
+            actionDomain,
+            action,
+            withoutPluginAuthoredProvenance(actionDomain, args),
+            caller,
+          ),
         );
       },
     });

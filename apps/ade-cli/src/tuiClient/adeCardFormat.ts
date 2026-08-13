@@ -1,9 +1,11 @@
 import {
+  adeCardAuthorLabel,
   adeCardDeeplink,
   adeCardFallbackText,
   adeCardProgressTotal,
   isKnownAdeCardVariant,
   normalizeAdeCardTone,
+  readAdeCardAuthor,
   type AdeCardIcon,
   type AdeCardPayload,
 } from "../../../desktop/src/shared/adeCard";
@@ -74,14 +76,41 @@ function formatCardDuration(durationMs: number | null | undefined): string | nul
 }
 
 /**
+ * The plugin byline, or null when ADE emitted the card itself.
+ *
+ * Attribution, not decoration. Every other line this module draws is ADE
+ * speaking, and a card a plugin emitted reads in exactly that voice without
+ * this — which is the problem: the reader cannot tell whose claim they are
+ * looking at. `readAdeCardAuthor` is the shared validator, so an `authoredBy`
+ * of the wrong shape, or one carrying a blank id, yields no byline rather than
+ * "via " followed by nothing.
+ *
+ * Quiet by TYPOGRAPHY rather than by color: the whole card body is emitted as
+ * one `notice`-toned line (`format.ts`), so there is no per-line dimming to
+ * reach for. It hangs outside the frame at the frame's own indent, which is
+ * what keeps it from reading as one of the card's rows — those live inside the
+ * `│ … │` walls.
+ */
+function adeCardBylineLine(card: AdeCardPayload): string | null {
+  const author = readAdeCardAuthor(card);
+  if (!author) return null;
+  return `  ${singleLine(`via ${adeCardAuthorLabel(author)}`, ADE_CARD_INNER_WIDTH)}`;
+}
+
+/**
  * Box-drawn `ade_card`, the TUI's ambient equivalent of the desktop card:
  * a row in the transcript, not a new pane.
  */
 export function renderAdeCardBody(card: AdeCardPayload): string {
   const deeplink = adeCardDeeplink(card.navTarget);
+  const byline = adeCardBylineLine(card);
   if (!isKnownAdeCardVariant(card.variant)) {
+    // The byline matters MORE here than on a framed card: this path is bare
+    // text with no chrome at all, so an unattributed plugin sentence is
+    // indistinguishable from one ADE wrote.
     const fallback = singleLine(adeCardFallbackText(card), 160);
-    return deeplink && !fallback.includes(deeplink) ? `${fallback}\n${deeplink}` : fallback;
+    const head = deeplink && !fallback.includes(deeplink) ? `${fallback}\n${deeplink}` : fallback;
+    return byline ? `${head}\n${byline}` : head;
   }
 
   const failing = (card.progress?.failed ?? 0) > 0
@@ -138,5 +167,9 @@ export function renderAdeCardBody(card: AdeCardPayload): string {
 
   lines.push(`└${"─".repeat(ADE_CARD_INNER_WIDTH)}┘`);
   if (deeplink) lines.push(deeplink);
+  // Last, matching the desktop card, where attribution sits below the frame
+  // rather than inside it: the card is the plugin's content, and the byline is
+  // ADE saying whose content it is.
+  if (byline) lines.push(byline);
   return lines.join("\n");
 }

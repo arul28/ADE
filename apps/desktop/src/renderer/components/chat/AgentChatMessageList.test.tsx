@@ -4525,6 +4525,45 @@ describe("AgentChatMessageList ade_card dispatch", () => {
     }
   });
 
+  /**
+   * A plugin's card carries the plugin's buttons, including one it happened to
+   * label "Retry". The host's retry shortcut — which navigates to the card's
+   * own surface — must not swallow it: the plugin would never run and the
+   * button would look broken while ADE jumped somewhere else.
+   */
+  it("sends a plugin card's retry to the plugin, not to the host's navigate shortcut", async () => {
+    const invoke = vi.fn().mockResolvedValue({});
+    globalThis.window.ade = {
+      ...(globalThis.window.ade ?? {}),
+      plugins: {
+        ...((globalThis.window.ade as any)?.plugins ?? {}),
+        list: async () => [],
+        listContributions: async () => [],
+        getManifest: async () => null,
+        invoke,
+      },
+    } as any;
+    const navListener = vi.fn();
+    window.addEventListener(ADE_NAVIGATE_TARGET_EVENT, navListener);
+    try {
+      renderMessageList([
+        cardEnvelope({
+          authoredBy: { pluginId: "acme", displayName: "Acme" },
+          navTarget: { kind: "pr", repoOwner: "arul28", repoName: "ADE", prNumber: 916 },
+          actions: [{ id: "retry", label: "Retry", kind: "primary" }],
+        }),
+      ]);
+
+      fireEvent.click(screen.getByText("Retry"));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      expect(invoke.mock.calls[0]![0]).toMatchObject({ pluginId: "acme", action: "retry" });
+      expect(navListener).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, navListener);
+    }
+  });
+
   it("says the detail is unavailable instead of showing a content-free green card", () => {
     renderMessageList([
       cardEnvelope({

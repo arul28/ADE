@@ -7,6 +7,7 @@
 import {
   Code,
   Lightning,
+  PuzzlePiece,
   TerminalWindow,
   TestTube,
   Trash,
@@ -21,6 +22,7 @@ export type StepKind =
   | "run-tests"
   | "run-command"
   | "predict-conflicts"
+  | "plugin"
   | "delete-lane";
 
 export type StepDef = {
@@ -60,6 +62,13 @@ export const STEP_DEFS: Record<StepKind, StepDef> = {
     accent: "#7EC9A3",
     description: "Execute a shell command in the lane workspace.",
   },
+  plugin: {
+    kind: "plugin",
+    label: "Plugin step",
+    icon: PuzzlePiece,
+    accent: "#C58AF9",
+    description: "Run an action an installed plugin offers.",
+  },
   "predict-conflicts": {
     kind: "predict-conflicts",
     label: "Predict conflicts",
@@ -80,6 +89,7 @@ export const STEP_DEFS: Record<StepKind, StepDef> = {
 export const ADD_STEP_ORDER: readonly StepKind[] = [
   "agent-session",
   "ade-action",
+  "plugin",
   "run-tests",
   "run-command",
   "predict-conflicts",

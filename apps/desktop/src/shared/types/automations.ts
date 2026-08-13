@@ -153,7 +153,13 @@ export type AutomationIngressSource =
   | "github-relay"
   | "github-polling"
   | "linear-relay"
-  | "local-webhook";
+  | "local-webhook"
+  /**
+   * A plugin fired one of its declared triggers. One source for every plugin —
+   * which one is in the event key's `<pluginId>:` prefix, which is what the
+   * uninstall sweep matches on.
+   */
+  | "plugin";
 
 export type AutomationWebhookGatewayStatus = {
   enabled: boolean;
@@ -332,7 +338,11 @@ export type AutomationDraftAction =
       codexFastMode?: boolean;
       permissionConfig?: AiPermissionSettings;
     })
-  | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig });
+  | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig })
+  | (AutomationDraftActionBase & {
+      type: "plugin";
+      pluginStep: NonNullable<AutomationAction["pluginStep"]>;
+    });
 
 export type AutomationRuleDraft = {
   id?: string | null;

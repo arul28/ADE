@@ -273,7 +273,13 @@ function buildPlannerSchema(): Record<string, unknown> {
           team: { type: "string" },
           assignee: { type: "string" },
           stateTransition: { type: "string" },
-          changedFields: { type: "array", items: { type: "string" } }
+          changedFields: { type: "array", items: { type: "string" } },
+          // `plugin` triggers only. Not conditionally required in the schema —
+          // `oneOf` per trigger type would rebuild this whole object for one
+          // case — so the pairing is enforced in `normalizeDraft`, where it is
+          // an ERROR rather than a dropped field.
+          pluginId: { type: "string" },
+          pluginTrigger: { type: "string" }
         },
         required: ["type"]
       },
@@ -697,6 +703,27 @@ function normalizeDraft(args: {
     if (bodyRegex) trigger.bodyRegex = bodyRegex;
     const repo = safeTrim(raw?.repo);
     if (repo) trigger.repo = repo;
+    // A plugin trigger is identified by the PAIR. Missing either half is an
+    // error, not a dropped field: `triggerMatches` fails such a trigger closed,
+    // so saving it would produce an enabled rule that can never fire.
+    if (triggerType === "plugin") {
+      const pluginId = safeTrim(raw?.pluginId);
+      const pluginTrigger = safeTrim(raw?.pluginTrigger);
+      if (!pluginId) {
+        issues.push({ level: "error", path: `triggers[${index}].pluginId`, message: "Plugin trigger requires pluginId." });
+      } else {
+        trigger.pluginId = pluginId;
+      }
+      if (!pluginTrigger) {
+        issues.push({
+          level: "error",
+          path: `triggers[${index}].pluginTrigger`,
+          message: "Plugin trigger requires pluginTrigger.",
+        });
+      } else {
+        trigger.pluginTrigger = pluginTrigger;
+      }
+    }
     const namePattern = safeTrim(raw?.namePattern);
     if (namePattern) trigger.namePattern = namePattern;
     const project = safeTrim(raw?.project);
@@ -782,6 +809,7 @@ function normalizeDraft(args: {
       type !== "run-command" &&
       type !== "delete-lane" &&
       type !== "ade-action" &&
+      type !== "plugin" &&
       type !== "agent-session"
     ) {
       issues.push({ level: "error", path: `actions[${idx}].type`, message: `Unknown action type '${safeTrim(action?.type)}'.` });
@@ -835,6 +863,33 @@ function normalizeDraft(args: {
           action: actionName,
           ...(adeAction?.args !== undefined ? { args: adeAction.args } : {}),
           ...(adeAction?.resolvers && typeof adeAction.resolvers === "object" ? { resolvers: adeAction.resolvers } : {}),
+        },
+      });
+      continue;
+    }
+
+    if (type === "plugin") {
+      const pluginStep = action?.pluginStep;
+      const pluginId = safeTrim(pluginStep?.pluginId);
+      const pluginActionName = safeTrim(pluginStep?.action);
+      if (!pluginId || !pluginActionName) {
+        issues.push({
+          level: "error",
+          path: `actions[${idx}].pluginStep`,
+          message: "plugin steps require pluginId and action."
+        });
+        continue;
+      }
+      normalizedActions.push({
+        ...(base as AutomationAction),
+        pluginStep: {
+          pluginId,
+          action: pluginActionName,
+          // Not an array, unlike `adeAction.args`: `plugin.invoke` takes one
+          // argument bag, so a positional list would be a shape it cannot use.
+          ...(pluginStep?.args && typeof pluginStep.args === "object" && !Array.isArray(pluginStep.args)
+            ? { args: pluginStep.args as Record<string, unknown> }
+            : {}),
         },
       });
       continue;

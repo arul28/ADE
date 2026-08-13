@@ -7,14 +7,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
 import {
   PluginSdkError,
+  type PluginEventPayload,
   type PluginHostFrame,
+  type PluginRuntimeHookPayload,
   type PluginRuntimeStatus,
+  type PluginSdkMethod,
 } from "../../../shared/plugins/sdk";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { requirePluginInstallService } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
+import { publishPluginContribution } from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
 import type { createPluginChildSupervisor, PluginChildSupervisor } from "./pluginChildSupervisor";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { emitPluginChange } from "./pluginEvents";
+import {
+  emitPluginRuntimeHook,
+  resetPluginRuntimeHookListenersForTests,
+} from "./pluginRuntimeHooks";
 import { disposeSharedPluginHostService, getSharedPluginHostService } from "./pluginHostService";
 
 /**
@@ -51,6 +59,10 @@ type RecordedSupervisor = PluginChildSupervisor & {
   starts: number;
   disposals: number;
   sent: PluginHostFrame[];
+  /** What `send` reports back — false once a child stops draining its stdin. */
+  acceptsWrites: boolean;
+  /** Make an SDK call the way the real child would, over its own supervisor. */
+  sdk: (method: PluginSdkMethod, params: Record<string, unknown>) => Promise<unknown>;
 };
 
 function recordingSupervisors() {
@@ -73,13 +85,19 @@ function recordingSupervisors() {
       invoke: async () => null,
       send: (frame) => {
         supervisor.sent.push(frame);
-        return true;
+        // A real supervisor returns what `stdin.write` returned: false once the
+        // child has stopped draining. Tests flip this to prove the host drops
+        // rather than keeps queueing into a buffer nobody empties.
+        return supervisor.acceptsWrites;
       },
       logs: () => [],
       dispose: async () => {
         supervisor.disposals += 1;
         status = "stopped";
       },
+      acceptsWrites: true,
+      /** Stand in for the child's `ade.events.on` / its unsubscribe. */
+      sdk: (method, params) => supervisorArgs.onSdkCall(method, params),
     };
     built.push(supervisor);
     return supervisor;
@@ -92,18 +110,53 @@ function recordingSupervisors() {
   };
 }
 
-async function hostWithFixture(options: { source?: string; attachProject?: boolean } = {}) {
+/**
+ * The fixture plugin, with its `sockets[]` replaced.
+ *
+ * Copied to a scratch directory rather than edited in place: the checked-in
+ * fixture declares exactly one socket and several tests above depend on that.
+ */
+function fixtureWithSockets(sockets: unknown[]): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-fixture-"));
+  scratchDirs.push(dir);
+  fs.cpSync(fixtureRoot, dir, { recursive: true });
+  const manifestPath = path.join(dir, "plugin.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+  manifest.sockets = sockets;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return dir;
+}
+
+/** A logger that keeps its warnings, for the cases whose output IS the contract. */
+function recordingLogger() {
+  const warnings: { event: string; detail: Record<string, unknown> }[] = [];
+  const logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (event: string, detail?: Record<string, unknown>) => {
+      warnings.push({ event, detail: detail ?? {} });
+    },
+    error: () => {},
+  } as unknown as Logger;
+  return { logger, warnings };
+}
+
+async function hostWithFixture(
+  options: { source?: string; attachProject?: boolean; logger?: Logger } = {},
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-host-"));
   scratchDirs.push(dir);
   const pluginsRoot = path.join(dir, "plugins");
   const supervisors = recordingSupervisors();
   const host = getSharedPluginHostService({
-    logger: testLogger(),
+    logger: options.logger ?? testLogger(),
     pluginsRoot,
     createSupervisor: supervisors.create,
   });
   const plugins = host.domainService(null);
   let store: PluginDataStore | null = null;
+  let projectDb: AdeDb | null = null;
+  let attachedRoot: string | null = null;
   if (options.attachProject !== false) {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-project-"));
     scratchDirs.push(projectRoot);
@@ -111,9 +164,11 @@ async function hostWithFixture(options: { source?: string; attachProject?: boole
     openDatabases.push(db);
     host.attachProject({ projectId: "project-1", projectRoot, db, invokeAdeAction: async () => null });
     store = createPluginDataStore({ db });
+    projectDb = db;
+    attachedRoot = projectRoot;
   }
   await plugins.install({ source: options.source ?? fixtureRoot });
-  return { plugins, pluginsRoot, host, supervisors, store };
+  return { plugins, pluginsRoot, host, supervisors, store, db: projectDb, projectRoot: attachedRoot };
 }
 
 /** Databases every describe block below closes in its own `afterEach`. */
@@ -494,7 +549,7 @@ describe("plugin start and panel materialization", () => {
       vi.runOnlyPendingTimers();
 
       const frame = running.sent.find(
-        (entry): entry is Extract<PluginHostFrame, { type: "event" }> =>
+        (entry): entry is { type: "event"; payload: PluginEventPayload } =>
           entry.type === "event" && entry.payload.event === "install.changed",
       );
       expect(frame?.payload.ids).toHaveLength(50);
@@ -502,6 +557,244 @@ describe("plugin start and panel materialization", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * Observe-only runtime hooks, at the host's end.
+ *
+ * The chat runtime's half is pinned in `chat/pluginRuntimeHookObserver.test.ts`.
+ * What this side owes is the delivery contract, and all four of these are
+ * requirements rather than implementation details: a hook reaches only the
+ * children that asked for it, it never touches the emitter's stack, a child
+ * that stopped reading loses its hooks instead of holding the turn, and a
+ * restarted child does not inherit the subscriptions of the process it
+ * replaced.
+ */
+describe("runtime hook fan-out", () => {
+  afterEach(async () => {
+    resetPluginRuntimeHookListenersForTests();
+    await closeScratch();
+  });
+
+  const turnStart = (): void => {
+    emitPluginRuntimeHook({
+      event: "turn.start",
+      sessionId: "session-1",
+      projectRoot: null,
+      runtime: "claude",
+    });
+  };
+
+  const hookFrames = (supervisor: RecordedSupervisor): PluginRuntimeHookPayload[] => supervisor.sent
+    .filter((entry): entry is { type: "event"; payload: PluginRuntimeHookPayload } =>
+      entry.type === "event" && entry.payload.event !== "install.changed")
+    .map((entry) => entry.payload);
+
+  it("delivers a hook only to the children that subscribed to that kind", async () => {
+    vi.useFakeTimers();
+    try {
+      const { supervisors } = await hostWithFixture();
+      const child = supervisors.latest("hello-plugin")!;
+      child.sent.length = 0;
+
+      // Nobody has called `ade.events.on("turn.start")` yet. `tool.before`
+      // fires dozens of times a turn, so a plugin that never asked must not be
+      // written to at all — not written to and ignored, not written to at all.
+      turnStart();
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toEqual([]);
+
+      // A different kind is not this kind: subscribing to tool.before must not
+      // start turn.start deliveries.
+      await child.sdk("events.subscribe", { event: "tool.before", subscribed: true });
+      turnStart();
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toEqual([]);
+
+      await child.sdk("events.subscribe", { event: "turn.start", subscribed: true });
+      turnStart();
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toEqual([
+        { event: "turn.start", sessionId: "session-1", projectId: null, runtime: "claude" },
+      ]);
+
+      // And the unsubscribe half: dropping the last listener stops the writes
+      // rather than merely making the child ignore them.
+      child.sent.length = 0;
+      await child.sdk("events.subscribe", { event: "turn.start", subscribed: false });
+      turnStart();
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves the turn's project from the host's own bindings", async () => {
+    vi.useFakeTimers();
+    try {
+      const { supervisors, projectRoot } = await hostWithFixture();
+      const child = supervisors.latest("hello-plugin")!;
+      await child.sdk("events.subscribe", { event: "turn.end", subscribed: true });
+      child.sent.length = 0;
+
+      emitPluginRuntimeHook({
+        event: "turn.end",
+        sessionId: "session-1",
+        projectRoot,
+        runtime: "codex",
+        outcome: "error",
+        durationMs: 1_200,
+      });
+      // A checkout no host has a binding for answers null rather than
+      // borrowing whichever project the plugin happens to be scoped to.
+      emitPluginRuntimeHook({
+        event: "turn.end",
+        sessionId: "session-2",
+        projectRoot: "/somewhere/else",
+        runtime: "codex",
+        outcome: "completed",
+      });
+      vi.runOnlyPendingTimers();
+
+      expect(hookFrames(child)).toEqual([
+        {
+          event: "turn.end",
+          sessionId: "session-1",
+          projectId: "project-1",
+          runtime: "codex",
+          outcome: "error",
+          durationMs: 1_200,
+        },
+        {
+          event: "turn.end",
+          sessionId: "session-2",
+          projectId: null,
+          runtime: "codex",
+          outcome: "completed",
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never writes to a child on the emitter's own stack", async () => {
+    vi.useFakeTimers();
+    try {
+      const { supervisors } = await hostWithFixture();
+      const child = supervisors.latest("hello-plugin")!;
+      await child.sdk("events.subscribe", { event: "tool.before", subscribed: true });
+      child.sent.length = 0;
+
+      // This is the decoupling that makes the tier safe. `emitPluginRuntimeHook`
+      // is called from inside the commit path that writes the user's
+      // transcript; if a write to a child happened here, the cost of every
+      // plugin on the machine would land on the turn loop.
+      for (let index = 0; index < 5; index += 1) {
+        emitPluginRuntimeHook({
+          event: "tool.before",
+          sessionId: "session-1",
+          projectRoot: null,
+          runtime: "claude",
+          toolName: "Bash",
+        });
+      }
+      expect(child.sent).toEqual([]);
+
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops and counts rather than queueing into a child that stopped reading", async () => {
+    vi.useFakeTimers();
+    const logger = testLogger();
+    try {
+      const { supervisors } = await hostWithFixture({ logger });
+      const child = supervisors.latest("hello-plugin")!;
+      await child.sdk("events.subscribe", { event: "tool.before", subscribed: true });
+      child.sent.length = 0;
+
+      // 300 tool calls in one tick — past the 256-frame queue cap. A wedged
+      // child (one stopped at a debugger, one looping synchronously) keeps
+      // accepting writes into a buffer it never drains, so the ceiling has to
+      // be the host's, not the pipe's.
+      child.acceptsWrites = false;
+      for (let index = 0; index < 300; index += 1) {
+        emitPluginRuntimeHook({
+          event: "tool.before",
+          sessionId: "session-1",
+          projectRoot: null,
+          runtime: "claude",
+          toolName: `tool-${index}`,
+        });
+      }
+      vi.runOnlyPendingTimers();
+
+      // One write attempted; it reported the buffer full, so the rest of the
+      // queue went nowhere. 44 were refused entry at the cap, 255 more were
+      // abandoned behind the failed write.
+      expect(hookFrames(child)).toHaveLength(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "plugin.runtime_hooks_dropped",
+        expect.objectContaining({ pluginId: "hello-plugin", dropped: 299 }),
+      );
+
+      // And it recovers: a child that starts draining again is written to on
+      // the next tick, with no restart and no resubscribe.
+      child.acceptsWrites = true;
+      child.sent.length = 0;
+      emitPluginRuntimeHook({
+        event: "tool.before",
+        sessionId: "session-1",
+        projectRoot: null,
+        runtime: "claude",
+        toolName: "Read",
+      });
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("forgets a child's subscriptions when its process goes away", async () => {
+    vi.useFakeTimers();
+    try {
+      const { supervisors } = await hostWithFixture();
+      const child = supervisors.latest("hello-plugin")!;
+      await child.sdk("events.subscribe", { event: "turn.start", subscribed: true });
+      child.sent.length = 0;
+
+      // A crashed child has forgotten every listener it registered and will
+      // register them again from `activate`. Holding the host's copy across
+      // that would leave a plugin subscribed to hooks its new process has no
+      // listener for — deliveries nobody reads, charged to every turn.
+      emitPluginChange({ kind: "status", pluginId: "hello-plugin", status: "crashed" });
+      turnStart();
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toEqual([]);
+
+      await child.sdk("events.subscribe", { event: "turn.start", subscribed: true });
+      turnStart();
+      vi.runOnlyPendingTimers();
+      expect(hookFrames(child)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses an event name it does not know instead of subscribing to nothing", async () => {
+    const { supervisors } = await hostWithFixture();
+    const child = supervisors.latest("hello-plugin")!;
+    // A plugin that typo'd a kind would otherwise subscribe successfully and
+    // wait forever for an event that does not exist.
+    await expect(child.sdk("events.subscribe", { event: "turn.starrt", subscribed: true }))
+      .rejects.toMatchObject({ code: "invalid_args" });
   });
 });
 
@@ -685,9 +978,9 @@ describe("install failure and race handling (R5, R6)", () => {
 describe("plugin.listContributions", () => {
   afterEach(closeScratch);
 
-  async function hostWithProject() {
-    const { plugins, pluginsRoot, store } = await hostWithFixture();
-    return { plugins, pluginsRoot, store: store! };
+  async function hostWithProject(options: { source?: string; logger?: Logger } = {}) {
+    const { plugins, pluginsRoot, store, db } = await hostWithFixture(options);
+    return { plugins, pluginsRoot, store: store!, db: db! };
   }
 
   it("returns only the sockets the manifest declares for the surface asked for", async () => {
@@ -740,6 +1033,129 @@ describe("plugin.listContributions", () => {
     expect(await plugins.listContributions({ surface: "lanes" })).toHaveLength(1);
   });
 
+  /**
+   * Two declarations of one kind, on one surface.
+   *
+   * The join used to key on `pluginId + socket KIND`, so the second
+   * declaration overwrote the first and every published badge row was stamped
+   * with whichever the manifest happened to list LAST. That made the two
+   * per-contribution toggles the same switch, and it made this machine
+   * disagree with the phone, which resolves per declaration.
+   */
+  describe("two declarations of one socket kind", () => {
+    const twoBadges = () => fixtureWithSockets([
+      { socket: "row-badge", surface: "lanes", id: "risk", label: "Risk" },
+      { socket: "row-badge", surface: "lanes", id: "size", label: "Size" },
+    ]);
+
+    /**
+     * Written straight to the table, because that is the ONLY way such a row
+     * exists.
+     *
+     * `contributions.publish` takes no socket id, and the data store re-encodes
+     * the payload through `parsePluginContributionPayload`, whose per-kind
+     * whitelist drops `id`. So a desktop plugin cannot address a declaration
+     * through the SDK at all. What CAN carry one is a row written by a client
+     * that did not go through this host's publish path — the phone writes
+     * `plugin_contributions` through cr-sqlite directly, and those rows sync
+     * here. That is the case these cover, and it is why the renderer's
+     * `contributionsFromRows` has always read `raw.id`.
+     *
+     * What `id` does NOT buy is capacity. `plugin_contributions` is keyed
+     * `(entity_kind, entity_id, plugin_id, socket)`, so one entity holds ONE
+     * published value per socket kind and a second publish replaces the first
+     * — from any client, synced or local. So `id` selects WHICH of the two
+     * declarations the surviving row fills; it never lets both hold a value
+     * for one lane. That is why the cases below put their two rows on two
+     * different lanes. Lifting the limit is a CRR migration, deferred to
+     * PLUGINABILITY.md Wave 5.
+     */
+    function writeSyncedRow(db: AdeDb, entityId: string, payload: Record<string, unknown>): void {
+      publishPluginContribution(db as unknown as Parameters<typeof publishPluginContribution>[0], {
+        entityKind: "lane",
+        entityId,
+        pluginId: "hello-plugin",
+        socket: "row-badge",
+        payloadJson: JSON.stringify(payload),
+        nowIso: "2026-08-13T00:00:00.000Z",
+      });
+    }
+
+    it("resolves each row to the declaration its payload names", async () => {
+      const { plugins, db } = await hostWithProject({ source: twoBadges() });
+
+      writeSyncedRow(db, "lane-1", { id: "risk", text: "High", tone: "warning" });
+      writeSyncedRow(db, "lane-2", { id: "size", text: "XL", tone: "neutral" });
+
+      const lanes = await plugins.listContributions({ surface: "lanes" });
+      expect(lanes).toHaveLength(2);
+      expect(lanes.map((row) => [row.entityId, row.socketId]).sort()).toEqual([
+        ["lane-1", "risk"],
+        ["lane-2", "size"],
+      ]);
+    });
+
+    it("gives the two contributions independent toggles", async () => {
+      const { plugins, db } = await hostWithProject({ source: twoBadges() });
+      writeSyncedRow(db, "lane-1", { id: "risk", text: "High", tone: "warning" });
+      writeSyncedRow(db, "lane-2", { id: "size", text: "XL", tone: "neutral" });
+
+      await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "risk", enabled: false });
+
+      // Switching off Risk must not take Size with it. Before the fix both rows
+      // resolved to whichever declaration the manifest listed last, so one
+      // switch governed both and the other switch did nothing.
+      const lanes = await plugins.listContributions({ surface: "lanes" });
+      expect(lanes.map((row) => row.socketId)).toEqual(["size"]);
+    });
+
+    it("drops a row naming a socket id the plugin no longer declares", async () => {
+      const { plugins, db } = await hostWithProject({ source: twoBadges() });
+      // Rows outlive a manifest edit and sync between machines. Adopting a
+      // different declaration would move the row to a slot its author never
+      // chose, which is the same guessing the ambiguous case refuses.
+      writeSyncedRow(db, "lane-1", { id: "removed", text: "?", tone: "neutral" });
+
+      expect(await plugins.listContributions({ surface: "lanes" })).toEqual([]);
+    });
+
+    it("refuses to guess for an id-less row, and tells the author once", async () => {
+      const { logger, warnings } = recordingLogger();
+      const { plugins, store } = await hostWithProject({ source: twoBadges(), logger });
+
+      store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "High", tone: "warning" });
+      store.publishContribution("hello-plugin", "lane", "lane-2", "row-badge", { text: "XL", tone: "neutral" });
+
+      // No non-arbitrary answer exists, so the rows are left unmatched rather
+      // than adopted by whichever declaration sorted last.
+      expect(await plugins.listContributions({ surface: "lanes" })).toEqual([]);
+
+      // Once per (plugin, kind), not once per row — a surface asks for this on
+      // every render.
+      const ambiguous = warnings.filter((entry) => entry.event === "plugin.contribution_id_ambiguous");
+      expect(ambiguous).toHaveLength(1);
+      expect(ambiguous[0]?.detail).toMatchObject({
+        pluginId: "hello-plugin",
+        socket: "row-badge",
+        surface: "lanes",
+      });
+    });
+  });
+
+  it("keeps resolving an id-less row when its kind is declared exactly once", async () => {
+    const { logger, warnings } = recordingLogger();
+    const { plugins, store } = await hostWithProject({ logger });
+    // The checked-in fixture declares one `row-badge`. An id-less row is
+    // unambiguous there, so it resolves exactly as it always has — this is the
+    // path every shipped plugin is on, and it must not have changed.
+    store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "3 refs", tone: "accent" });
+
+    const lanes = await plugins.listContributions({ surface: "lanes" });
+    expect(lanes).toHaveLength(1);
+    expect(lanes[0]).toMatchObject({ socketId: "greeting", entityId: "lane-1" });
+    expect(warnings.filter((entry) => entry.event === "plugin.contribution_id_ambiguous")).toEqual([]);
+  });
+
   it("drops rows from a disabled plugin and narrows by entity kind", async () => {
     const { plugins, store } = await hostWithProject();
     store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "ok", tone: "success" });
@@ -751,5 +1167,133 @@ describe("plugin.listContributions", () => {
     // A disabled plugin contributes nothing, without anything having to delete
     // its rows — they come back untouched when it is enabled again.
     expect(await plugins.listContributions({ surface: "lanes" })).toEqual([]);
+  });
+});
+
+/**
+ * Uninstall has to reach the one piece of plugin state that keeps ACTING.
+ *
+ * Rows and secrets left behind are inert clutter; a surviving schedule wakes a
+ * plugin that is no longer installed, on a timer the user has no surface left
+ * to cancel it from. This is the concrete reason plugin schedules are owned
+ * rather than borrowed — a chat cron a plugin created through
+ * `chat.createScheduledWork` carries no owner and could not be found here.
+ */
+/**
+ * The per-contribution toggle, enforced where the action RUNS.
+ *
+ * The rail's switch used to reach only the surfaces that draw the contribution.
+ * Everything else that can call `plugin.invoke` — the phone, the CLI, a
+ * renderer holding a stale menu — went straight past it, so a user who turned
+ * a contribution off could still be one deeplink away from running it.
+ */
+describe("plugin.invoke honours disabledContributions", () => {
+  afterEach(closeScratch);
+
+  /** Two contributions, one shared action, plus an action nothing declares. */
+  const sharedActionFixture = () => fixtureWithSockets([
+    { socket: "row-badge", surface: "lanes", id: "risk", label: "Risk", actionId: "openIssue" },
+    { socket: "row-menu-item", surface: "lanes", id: "menu", label: "Open", actionId: "openIssue" },
+  ]);
+
+  it("refuses the action once EVERY contribution offering it is switched off", async () => {
+    const { plugins } = await hostWithFixture({ source: sharedActionFixture() });
+
+    // One off: the other contribution still offers the action, so a toggle on
+    // the badge must not disable the menu item's button.
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "risk", enabled: false });
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" })).resolves.toBeNull();
+
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "menu", enabled: false });
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" }))
+      .rejects.toMatchObject({ code: "not_permitted" });
+  });
+
+  it("leaves an action no contribution declares alone", async () => {
+    const { plugins } = await hostWithFixture({ source: sharedActionFixture() });
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "risk", enabled: false });
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "menu", enabled: false });
+
+    // A handler reached from a schedule or a CLI word has no toggle to obey.
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "syncNow" })).resolves.toBeNull();
+  });
+
+  it("re-enabling a contribution restores the action", async () => {
+    const { plugins } = await hostWithFixture({ source: sharedActionFixture() });
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "risk", enabled: false });
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "menu", enabled: false });
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" })).rejects.toThrow();
+
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "menu", enabled: true });
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" })).resolves.toBeNull();
+  });
+});
+
+describe("uninstall sweeps a plugin's schedules", () => {
+  afterEach(closeScratch);
+
+  const readSchedules = (pluginsRoot: string): { pluginId: string }[] => {
+    const file = path.join(pluginsRoot, "schedules.json");
+    if (!fs.existsSync(file)) return [];
+    return (JSON.parse(fs.readFileSync(file, "utf8")).schedules ?? []) as { pluginId: string }[];
+  };
+
+  /**
+   * Seeds the ledger BEFORE the host exists. The schedule service reads its
+   * file lazily on first use, and the host's own catch-up pass would otherwise
+   * cache an empty list before the test could write one.
+   */
+  async function hostWithSeededSchedules() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-host-sched-"));
+    scratchDirs.push(dir);
+    const pluginsRoot = path.join(dir, "plugins");
+    fs.mkdirSync(pluginsRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginsRoot, "schedules.json"),
+      JSON.stringify({
+        version: 1,
+        schedules: [
+          {
+            id: "plugin:hello-plugin:a",
+            pluginId: "hello-plugin",
+            action: "sync",
+            kind: "cron",
+            cron: "0 9 * * *",
+            args: {},
+            createdAt: "2026-08-13T00:00:00.000Z",
+            // Far enough out that the host's catch-up pass never fires it.
+            fireAt: Date.now() + 60 * 60 * 1000,
+          },
+          {
+            id: "plugin:other-plugin:b",
+            pluginId: "other-plugin",
+            action: "sync",
+            kind: "cron",
+            cron: "0 9 * * *",
+            args: {},
+            createdAt: "2026-08-13T00:00:00.000Z",
+            fireAt: Date.now() + 60 * 60 * 1000,
+          },
+        ],
+      }),
+      "utf8",
+    );
+    const host = getSharedPluginHostService({
+      logger: testLogger(),
+      pluginsRoot,
+      createSupervisor: recordingSupervisors().create,
+    });
+    const plugins = host.domainService(null);
+    await plugins.install({ source: fixtureRoot });
+    return { plugins, pluginsRoot };
+  }
+
+  it("removes the uninstalled plugin's schedules and leaves every other plugin's alone", async () => {
+    const { plugins, pluginsRoot } = await hostWithSeededSchedules();
+    expect(readSchedules(pluginsRoot)).toHaveLength(2);
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(readSchedules(pluginsRoot).map((row) => row.pluginId)).toEqual(["other-plugin"]);
   });
 });

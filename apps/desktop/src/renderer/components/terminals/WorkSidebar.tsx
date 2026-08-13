@@ -47,6 +47,12 @@ import { cn } from "../ui/cn";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
 import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
+import {
+  isPluginPanelSlotId,
+  PluginSlotPanel,
+  pluginSessionContext,
+  usePluginPanelSlots,
+} from "../plugins/sockets";
 import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
 /**
@@ -125,8 +131,15 @@ export function isAvailableWorkSidebarTab(
     isRemoteProject: boolean;
     supportsIosSimulator: boolean;
     builtinSurfaceVisible: (id: PluginBuiltinSurfaceId) => boolean;
+    /** Slot ids currently contributed to the rail. Absent means none. */
+    pluginPaneIds?: ReadonlySet<string>;
   },
 ): boolean {
+  // A contributed pane is available exactly while its contribution is, and it
+  // is asked FIRST: the remote and macOS gates below describe host capabilities
+  // the six built-ins need, and a plugin panel is a vocabulary schema read from
+  // the local plugin host — none of which a remote checkout changes.
+  if (isPluginPanelSlotId(tab)) return options.pluginPaneIds?.has(tab) === true;
   if (tab === "ios" && !options.builtinSurfaceVisible("ios")) return false;
   if (tab === "app-control" && !options.builtinSurfaceVisible("app-control")) return false;
   if (options.isRemoteProject) return isRemoteWorkSidebarTab(tab);
@@ -286,15 +299,53 @@ export function WorkSidebar({
     (id: PluginBuiltinSurfaceId) => isBuiltinSurfaceVisible(id, builtinGateInput),
     [builtinGateInput],
   );
+  // The session the rail sits beside, as a plugin sees it. Also what selects a
+  // plugin's per-session `work-rail-pane` rows, so one chat can be offered a
+  // different pane than another.
+  const railSessionContext = useMemo(
+    () => (activeSession
+      ? pluginSessionContext({
+        id: activeSession.id,
+        title: activeSession.goal ?? activeSession.title,
+        provider: activeSession.toolType,
+        status: activeSession.runtimeState,
+      })
+      : null),
+    [activeSession],
+  );
+  const pluginPanes = usePluginPanelSlots("work", "work-rail-pane", {
+    active,
+    context: railSessionContext,
+  });
+  const pluginPaneIds = useMemo(
+    () => new Set(pluginPanes.map((pane) => pane.id)),
+    [pluginPanes],
+  );
   const tabAvailability = useMemo(
-    () => ({ isRemoteProject, supportsIosSimulator, builtinSurfaceVisible }),
-    [builtinSurfaceVisible, isRemoteProject, supportsIosSimulator],
+    () => ({ isRemoteProject, supportsIosSimulator, builtinSurfaceVisible, pluginPaneIds }),
+    [builtinSurfaceVisible, isRemoteProject, pluginPaneIds, supportsIosSimulator],
   );
   const sidebarTabs = useMemo(
-    () => WORK_SIDEBAR_TABS.filter((item) => isAvailableWorkSidebarTab(item.id, tabAvailability)),
-    [tabAvailability],
+    () => [
+      ...WORK_SIDEBAR_TABS.filter((item) => isAvailableWorkSidebarTab(item.id, tabAvailability)),
+      // Always after ADE's own six. Contributed panes carry no rail colour of
+      // their own: the `--work-rail-*` tokens name the product's tools, and a
+      // plugin borrowing one would claim to be a tool it is not.
+      ...pluginPanes.map((pane): GlowMenuItem<WorkSidebarTab> => ({
+        id: pane.id as WorkSidebarTab,
+        label: pane.label,
+        icon: pane.icon,
+        gradient: railGlow("--work-rail-plugin", 34),
+        color: "var(--work-rail-plugin)",
+      })),
+    ],
+    [pluginPanes, tabAvailability],
   );
   const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(tab, tabAvailability) ? tab : "git";
+  const selectedPluginPane = useMemo(
+    () => pluginPanes.find((pane) => pane.id === effectiveTab) ?? null,
+    [effectiveTab, pluginPanes],
+  );
 
   const activeLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -311,7 +362,17 @@ export function WorkSidebar({
   // Also the uninstall path: the pane the user is sitting in can lose its
   // plugin mid-session, and `tabAvailability` changing is what moves them off
   // it instead of leaving a rail with no matching tab.
+  //
+  // A contributed pane is deliberately exempt from the WRITE. Contributions
+  // load a tick after the rail mounts, so a persisted plugin pane is
+  // unavailable on the first render of every launch — and writing "git" there
+  // would erase the user's selected pane before the plugin that owns it had a
+  // chance to arrive. `effectiveTab` already falls back for the render, so the
+  // pane shows Git until the contribution lands and then restores itself; a
+  // plugin that is genuinely gone simply never restores, and the stale id is
+  // overwritten the next time a tab is picked.
   useEffect(() => {
+    if (isPluginPanelSlotId(tab)) return;
     if (!isAvailableWorkSidebarTab(tab, tabAvailability)) {
       onTabChange("git");
     }
@@ -552,6 +613,16 @@ export function WorkSidebar({
 
   const content = useMemo(() => {
     if (!active) return null;
+    // Before the lane guard below: a plugin pane's subject is its own data and
+    // the chat beside it, so it works in a window with no lane selected — which
+    // is exactly the case a "no lane" placeholder would wrongly claim it needs.
+    if (selectedPluginPane) {
+      return (
+        <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+          <PluginSlotPanel slot={selectedPluginPane} active={active} context={railSessionContext} />
+        </div>
+      );
+    }
     if (effectiveTab === "terminal") {
       if (!laneId) {
         return <TerminalPanelEmpty message="Select a lane or open a Work session to attach terminals." />;
@@ -698,6 +769,8 @@ export function WorkSidebar({
     activeSession,
     onClose,
     terminalOwnerSessionId,
+    railSessionContext,
+    selectedPluginPane,
   ]);
 
   return (

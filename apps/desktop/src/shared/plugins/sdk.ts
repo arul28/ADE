@@ -31,9 +31,24 @@
 
 import { isRecord } from "./parse";
 import { isValidPluginManifestIdentifier } from "./manifest";
-import type { PluginManifest, PluginManifestSetting, PluginSurfaceKind } from "./manifest";
+import type {
+  PluginManifest,
+  PluginManifestAutomationStep,
+  PluginManifestAutomationTrigger,
+  PluginManifestKeybinding,
+  PluginManifestSearchProvider,
+  PluginManifestSetting,
+  PluginSurfaceKind,
+} from "./manifest";
 import type { PluginRegistryEntry } from "./registryIndex";
-import type { PluginEntityKind, PluginSocketKind, PluginSurfaceId } from "./sockets";
+import { isPluginDialogField } from "./sockets";
+import type {
+  PluginDialogField,
+  PluginDialogKind,
+  PluginEntityKind,
+  PluginSocketKind,
+  PluginSurfaceId,
+} from "./sockets";
 
 /** SDK surface version announced to the child in `hello`. */
 export const PLUGIN_SDK_VERSION = 0;
@@ -125,7 +140,14 @@ export type PluginSdkErrorCode =
    * and a plugin has to tell "the user dismissed the pill" from "the recording
    * failed" — one is a quiet no-op, the other is worth a sentence.
    */
-  | PluginAudioCaptureErrorCode;
+  | PluginAudioCaptureErrorCode
+  /**
+   * Refusals from the capabilities the host performs on a plugin's behalf, for
+   * the same reason the audio codes are here: `code` is the only field that
+   * survives the child boundary, and every one of these is an outcome a plugin
+   * should handle rather than report as a failure.
+   */
+  | PluginHostCapabilityErrorCode;
 
 /**
  * How an error crosses the child boundary. Structural, never a stack string:
@@ -275,10 +297,59 @@ export function pluginCollectionPutParams(
   };
 }
 
-export type PluginEventName = "lane.changed" | "pr.changed" | "session.changed" | "install.changed";
+/** "Something in this entity family moved; re-read it." */
+export type PluginChangeEventName = "lane.changed" | "pr.changed" | "session.changed" | "install.changed";
+
+/**
+ * Runtime hooks — the coding agent's turn lifecycle, as it happens.
+ *
+ * **These are OBSERVE-ONLY and that is the whole design, not a first
+ * iteration's shortcut.** A hook delivery is one fire-and-forget line on the
+ * child's stdin. The host never waits for a listener, never reads a return
+ * value, and never lets a slow, wedged or crashed plugin delay a turn by a
+ * millisecond — a plugin that stops reading its input has its hook deliveries
+ * DROPPED (counted in the host log), because the alternative is a plugin able
+ * to stall the user's agent. Nothing a listener does can veto a turn, change a
+ * tool call, or alter what the agent sees.
+ *
+ * Vetoing a tool call is a permission question rather than an API one: the
+ * user's yes/no over what an agent may do is core (`sockets.ts`'s invariant on
+ * approvals), and a hook that could answer it would move that decision into
+ * code the user installed on an agent's advice. If a veto tier ever ships it
+ * will be a different, explicitly-granted capability, not a return value from
+ * these.
+ *
+ * **Payloads are metadata only — never content.** No message text, no tool
+ * arguments, no tool results, no file paths, no prompts. This is deliberate:
+ * the observe tier answers "what is happening, and how often", which is enough
+ * to build a cost guard, a turn timer, a tool-usage dashboard or a lint
+ * trigger, and it does so without every installed plugin becoming a reader of
+ * everything the user types. Exposing content is a separate permission
+ * decision, and it belongs to whatever grants it, not to this event.
+ *
+ * A plugin that needs the transcript already has a supported door with its own
+ * gate: `ade.actions.invoke("chat", "readTranscript", …)`.
+ */
+export const PLUGIN_RUNTIME_HOOK_EVENTS = ["turn.start", "turn.end", "tool.before"] as const;
+
+export type PluginRuntimeHookName = (typeof PLUGIN_RUNTIME_HOOK_EVENTS)[number];
+
+export function isPluginRuntimeHookName(value: unknown): value is PluginRuntimeHookName {
+  return PLUGIN_RUNTIME_HOOK_EVENTS.some((name) => name === value);
+}
+
+export type PluginEventName = PluginChangeEventName | PluginRuntimeHookName;
+
+export function isPluginEventName(value: unknown): value is PluginEventName {
+  return value === "lane.changed"
+    || value === "pr.changed"
+    || value === "session.changed"
+    || value === "install.changed"
+    || isPluginRuntimeHookName(value);
+}
 
 export type PluginEventPayload = {
-  event: PluginEventName;
+  event: PluginChangeEventName;
   /** Entity ids that changed since the last delivery, capped and deduped. */
   ids: string[];
   projectId: string | null;
@@ -294,6 +365,62 @@ export type PluginEventPayload = {
    */
   overflow?: true;
 };
+
+/**
+ * How a turn stopped.
+ *
+ * Three outcomes rather than the transcript's own vocabulary, because a plugin
+ * counting failures should not have to track which runtime spells an interrupt
+ * which way: `cancelled` is the user stopping the agent (never an error to
+ * report), `error` is the turn failing, `completed` is everything else.
+ */
+export type PluginTurnOutcome = "completed" | "error" | "cancelled";
+
+type PluginRuntimeHookBase = {
+  /** The chat session the turn ran in. */
+  sessionId: string;
+  /**
+   * Which project, spelled exactly as {@link PluginEventPayload.projectId} is
+   * — one identifier for "which project" across the whole event surface. Null
+   * when the turn ran in a project this host has no binding for.
+   */
+  projectId: string | null;
+  /** The coding agent: `claude`, `codex`, `cursor`, `droid`, `pi`, `opencode`. */
+  runtime: string;
+};
+
+export type PluginRuntimeHookPayload =
+  | (PluginRuntimeHookBase & {
+    event: "turn.start";
+    /** The model the session is set to, when it names one. */
+    model?: string;
+  })
+  | (PluginRuntimeHookBase & {
+    event: "turn.end";
+    outcome: PluginTurnOutcome;
+    /**
+     * Wall time from this turn's `turn.start` to here. Absent when the host
+     * never saw the matching start — a turn already running when the plugin
+     * subscribed, or one whose runtime opened it without a turn id.
+     */
+    durationMs?: number;
+  })
+  | (PluginRuntimeHookBase & {
+    event: "tool.before";
+    /**
+     * The tool the agent is about to run, by name only. `before` names the
+     * ORDER, not a veto: the call is already on its way and this delivery does
+     * not gate it.
+     */
+    toolName: string;
+  });
+
+/** Everything an `event` frame can carry. */
+export type PluginAnyEventPayload = PluginEventPayload | PluginRuntimeHookPayload;
+
+/** The payload shape one event name delivers. */
+export type PluginEventPayloadFor<E extends PluginEventName> =
+  E extends PluginRuntimeHookName ? Extract<PluginRuntimeHookPayload, { event: E }> : PluginEventPayload;
 
 /**
  * The `ade` global inside a plugin child process.
@@ -342,6 +469,40 @@ export type AdePluginSdk = {
   };
 
   contributions: {
+    /**
+     * Publish the value of one contribution for one entity.
+     *
+     * **Put an `id` in the payload if you declare more than one socket of the
+     * same kind on the same surface.** A published row names its plugin, its
+     * entity and its socket KIND — it has no field for which of your
+     * declarations it fills, so `id` is the only thing that says so, and the
+     * readers' identity ladder is `id`, then the socket kind as a coarse
+     * fallback that replaces every declaration you made of that kind.
+     *
+     * Omitting it where you declared two of a kind is genuinely ambiguous
+     * rather than merely unlabelled, and the platform refuses to guess: the row
+     * resolves to a declaration only when the kind was declared ONCE, and
+     * otherwise does not render at all. The host logs
+     * `plugin.contribution_id_ambiguous` once per plugin and kind, because you
+     * are the only one who can fix it. One declaration of a kind needs nothing.
+     *
+     * An `id` naming a socket you no longer declare is stale and the row drops,
+     * rather than adopting a slot its author never chose.
+     *
+     * **Known limitation — one published value per kind per entity.** The row's
+     * key is `(entityKind, entityId, pluginId, socket)`, where `socket` is the
+     * KIND. So a plugin declaring two same-kind sockets on one surface can
+     * publish a value for only ONE of them against any given entity: a second
+     * publish for that entity and kind REPLACES the first rather than sitting
+     * beside it. `id` decides which declaration the surviving row fills; the
+     * other shows its manifest declaration for that entity and nothing more.
+     *
+     * Deliberately not fixed by widening the key. `plugin_contributions` is a
+     * replicated cr-sqlite CRR table, so its primary key is a migration across
+     * every synced device — a change that is designed and scheduled, never made
+     * in passing to widen an addressing corner. Declare two of a kind only when
+     * the second needs no per-entity value.
+     */
     publish(
       entityKind: PluginEntityKind,
       entityId: string,
@@ -351,8 +512,21 @@ export type AdePluginSdk = {
   };
 
   events: {
-    /** Debounced; returns an unsubscribe function. */
-    on(event: PluginEventName, listener: (payload: PluginEventPayload) => void): () => void;
+    /**
+     * Subscribe to one event kind; returns an unsubscribe function.
+     *
+     * The change events (`*.changed`) are debounced and coalesced. The runtime
+     * hooks (`turn.start`, `turn.end`, `tool.before`) are not — they are told
+     * as they happen and {@link PLUGIN_RUNTIME_HOOK_EVENTS} explains what that
+     * does and does not let a plugin do.
+     *
+     * Subscribing is not free for the host and it is not meant to be: a hook
+     * kind nobody registered for is never delivered to this child at all, so
+     * `tool.before` costs nothing in a plugin that does not ask for it. That
+     * is why the unsubscribe function matters — dropping the last listener for
+     * a kind stops the deliveries rather than merely ignoring them.
+     */
+    on<E extends PluginEventName>(event: E, listener: (payload: PluginEventPayloadFor<E>) => void): () => void;
   };
 
   panels: {
@@ -374,6 +548,79 @@ export type AdePluginSdk = {
      * microphone — so a plugin branches on it rather than reading a sentence.
      */
     captureClip(options?: PluginAudioCaptureOptions): Promise<PluginAudioClip>;
+  };
+
+  notifications: {
+    /**
+     * Tell the user something outside ADE's window. See
+     * {@link PluginNotificationInput}.
+     *
+     * The plugin's display name rides along with every post and is stamped by
+     * the host. Rate-limited per plugin ({@link PLUGIN_NOTIFICATIONS_PER_DAY},
+     * {@link PLUGIN_NOTIFICATIONS_PER_BURST}); over either ceiling rejects with
+     * `plugin_budget_exceeded` carrying which one in `detail.budget`.
+     */
+    post(input: PluginNotificationInput): Promise<PluginNotificationResult>;
+  };
+
+  schedules: {
+    /**
+     * Ask the host to call one of this plugin's own actions later. See
+     * {@link PluginScheduleCreateInput}.
+     *
+     * Rejects with `plugin_budget_exceeded` past
+     * {@link PLUGIN_SCHEDULES_MAX_PER_PLUGIN} live schedules.
+     */
+    create(input: PluginScheduleCreateInput): Promise<PluginSchedule>;
+    /** This plugin's schedules. Never another's. */
+    list(): Promise<PluginSchedule[]>;
+    /** Idempotent: deleting an id that is not this plugin's is a no-op, not an error. */
+    delete(scheduleId: string): Promise<void>;
+  };
+
+  automations: {
+    /**
+     * Fire one of this plugin's declared automation triggers. See
+     * {@link PluginAutomationTriggerInput}.
+     *
+     * The plugin says only THAT something happened; which rules care is the
+     * user's business, and a plugin with no matching rule is not an error —
+     * this resolves either way.
+     *
+     * Rejects with `invalid_args` for a `triggerId` the manifest never declared
+     * (a trigger nobody could have built a rule against), and with
+     * `plugin_budget_exceeded` past
+     * {@link PLUGIN_AUTOMATION_TRIGGER_PAYLOAD_MAX_BYTES}.
+     */
+    emitTrigger(input: PluginAutomationTriggerInput): Promise<void>;
+  };
+
+  clipboard: {
+    /** Whatever the user last copied, as text. See {@link PLUGIN_CLIPBOARD_TEXT_MAX_BYTES}. */
+    read(): Promise<string>;
+    write(text: string): Promise<void>;
+  };
+
+  dialogs: {
+    /**
+     * Ask the user for a path through the OS picker. See
+     * {@link PluginFilePickerOptions}.
+     *
+     * Rejects with `dialog_cancelled` when the user dismisses it and
+     * `desktop_unavailable` when ADE Desktop is not running.
+     */
+    pickFile(options?: PluginFilePickerOptions): Promise<string>;
+  };
+
+  /**
+   * This plugin's own durable memory. See {@link PLUGIN_MEMORY_COLLECTION} for
+   * what it is, and — more importantly — what it is not.
+   */
+  memory: {
+    get(key: string): Promise<unknown>;
+    set(key: string, value: unknown): Promise<void>;
+    delete(key: string): Promise<void>;
+    list(options?: { keyPrefix?: string; limit?: number }): Promise<PluginCollectionRow[]>;
   };
 
   log(level: PluginLogLevel, message: string, fields?: Record<string, unknown>): void;
@@ -516,6 +763,77 @@ export function hasPluginActionComposerRequest(result: unknown): boolean {
   return isRecord(result) && isRecord(result.composer);
 }
 
+// ---------------------------------------------------------------------------
+// Action-response dialog edits
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest value an action may write into a dialog field.
+ *
+ * Sized for the one long field in the set — a PR body — and applied to all of
+ * them, because a per-field ceiling would be a second table to keep in step
+ * with the first. Over it the edit is dropped rather than truncated, the same
+ * rule as the composer: a half-written branch name that then gets created is
+ * worse than a field that stayed empty.
+ */
+export const PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES = 16 * 1024;
+
+/**
+ * What a plugin action asks one of ADE's dialogs to do when it finishes.
+ *
+ * The third piece of control flow a plugin has over ADE's own UI, and the most
+ * tightly bounded of the three: it writes ONE allowlisted field of the dialog
+ * the user opened, on the surface they just pressed a button in. It cannot
+ * submit the dialog, cannot touch a confirmation control, and cannot name a
+ * field the dialog does not advertise — see `PLUGIN_DIALOG_FIELDS`. Creating
+ * the lane, or the PR, stays the user's.
+ *
+ * This is what makes "pick a Linear issue, fill in the lane name and base
+ * branch" a thing a third-party plugin can do, rather than a thing only the
+ * built-in integration can do.
+ */
+export type PluginActionDialogEdit<K extends PluginDialogKind = PluginDialogKind> = {
+  field: PluginDialogField<K>;
+  value: string;
+};
+
+/**
+ * Read a dialog edit out of whatever an action returned.
+ *
+ * Takes the dialog it is being read FOR, because the allowlist is per dialog
+ * and a create-lane section returning `{field: "body"}` is not a partial
+ * success to be filtered later — it is an edit for a different dialog, and the
+ * only place that can tell is the one holding the dialog kind.
+ *
+ * Tolerant in the same way as {@link readPluginActionNavigation}: unrecognized
+ * shapes are `null`, never an error.
+ */
+export function readPluginActionDialogEdit<K extends PluginDialogKind>(
+  result: unknown,
+  dialog: K,
+): PluginActionDialogEdit<K> | null {
+  if (!isRecord(result)) return null;
+  const request = result.dialog;
+  if (!isRecord(request)) return null;
+  const setField = request.setField;
+  if (!isRecord(setField)) return null;
+  const { field, value } = setField;
+  if (!isPluginDialogField(dialog, field)) return null;
+  if (typeof value !== "string") return null;
+  if (pluginUtf8ByteLength(value) > PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES) return null;
+  return { field, value };
+}
+
+/**
+ * Whether an action's result asked to write a dialog field at all, however
+ * malformed. Separate from the reader for the same reason as the composer's
+ * pair: "said nothing" and "asked for something this dialog refused" are
+ * different events, and only the second is worth a warning.
+ */
+export function hasPluginActionDialogRequest(result: unknown): boolean {
+  return isRecord(result) && isRecord(result.dialog) && isRecord((result.dialog as Record<string, unknown>).setField);
+}
+
 /**
  * What a plugin's entry module may export. Both hooks are optional: a plugin
  * that only registers CLI commands and panels needs neither.
@@ -542,7 +860,7 @@ export type PluginHostFrame =
     config: Record<string, string | number | boolean | null>;
   }
   | { type: "invoke"; requestId: string; action: string; args: Record<string, unknown> }
-  | { type: "event"; payload: PluginEventPayload }
+  | { type: "event"; payload: PluginAnyEventPayload }
   /** Reply to a `sdk` frame the child sent. */
   | { type: "sdkResult"; requestId: string; result?: unknown; error?: PluginStructuralError }
   | { type: "shutdown" };
@@ -598,6 +916,376 @@ export function isPluginAudioCaptureErrorCode(value: unknown): value is PluginAu
   return PLUGIN_AUDIO_CAPTURE_ERROR_CODES.some((code) => code === value);
 }
 
+// ---------------------------------------------------------------------------
+// Host capabilities — things the app does on a plugin's behalf
+// ---------------------------------------------------------------------------
+
+/**
+ * Refusals from the capabilities below, as their own vocabulary.
+ *
+ * Same argument as {@link PLUGIN_AUDIO_CAPTURE_ERROR_CODES}: `code` is the only
+ * field that survives the child boundary intact, and each of these is a normal
+ * outcome rather than a fault. A plugin that read "the user closed the file
+ * picker" as an internal error would log a crash for a deliberate act.
+ */
+export const PLUGIN_HOST_CAPABILITY_ERROR_CODES = [
+  /** Nothing on this machine could show the notification — no desktop, no paired phone. */
+  "notification_unavailable",
+  /**
+   * The capability needs ADE Desktop and none is attached.
+   *
+   * One code for every Electron-only verb (clipboard, file picker) rather than
+   * one each: the plugin's remedy is identical — ask again when the app is
+   * running — and the layer that discovered it is not the plugin's business.
+   */
+  "desktop_unavailable",
+  /** The user dismissed the picker. Not a failure; nothing was chosen. */
+  "dialog_cancelled",
+] as const;
+
+export type PluginHostCapabilityErrorCode = (typeof PLUGIN_HOST_CAPABILITY_ERROR_CODES)[number];
+
+export function isPluginHostCapabilityErrorCode(value: unknown): value is PluginHostCapabilityErrorCode {
+  return PLUGIN_HOST_CAPABILITY_ERROR_CODES.some((code) => code === value);
+}
+
+/**
+ * Post a notification the user sees outside ADE's window.
+ *
+ * ATTRIBUTED, always: the plugin supplies the words, the host supplies the
+ * name. `title` and `body` are the plugin's; the requesting plugin's
+ * `displayName` is stamped on by the host and cannot be claimed, spoofed or
+ * omitted from the payload. This is the same rule the audio pill follows, for
+ * the same reason — a notification that could name itself could name ADE.
+ *
+ * `target` says where: `"desktop"` is a native notification on this machine,
+ * `"mobile"` is a push to the user's paired phones, `"both"` (the default) is
+ * whichever of the two exists. A post that reached neither is refused with
+ * `notification_unavailable`; a post that reached one of two asked-for targets
+ * succeeds and says so in `delivered` — a plugin should not treat "your phone
+ * is not paired" as an error it needs to report.
+ */
+export type PluginNotificationTarget = "desktop" | "mobile";
+
+export const PLUGIN_NOTIFICATION_TARGETS = ["desktop", "mobile", "both"] as const;
+
+export type PluginNotificationTargetRequest = (typeof PLUGIN_NOTIFICATION_TARGETS)[number];
+
+export function isPluginNotificationTargetRequest(value: unknown): value is PluginNotificationTargetRequest {
+  return PLUGIN_NOTIFICATION_TARGETS.some((target) => target === value);
+}
+
+/**
+ * Bounds on the two strings, matching what a notification surface can render.
+ *
+ * A lock-screen alert shows roughly one line of title and two of body before
+ * the OS truncates; iOS clips silently and macOS clips silently, so a plugin
+ * that wrote an essay would get a mystery. Over the ceiling is refused with
+ * `invalid_args` rather than trimmed — a sentence cut mid-word and then pushed
+ * to someone's phone is worse than a rejected call the author sees in testing.
+ */
+export const PLUGIN_NOTIFICATION_TITLE_MAX_CHARS = 80;
+export const PLUGIN_NOTIFICATION_BODY_MAX_CHARS = 240;
+
+/**
+ * How many notifications one plugin may post per UTC day.
+ *
+ * A notification is an interrupt on a device the user carries, so the ceiling
+ * is set against *honest* use and not against capacity. The busiest plausible
+ * notifier — one alert per failed CI run, per review comment, per incident —
+ * lands in the tens on a bad day; 60 is past every one of those and still
+ * bounds a runaway loop to 60 interruptions instead of a dead battery.
+ *
+ * The cost side, since these leave the machine: each post is one relay publish
+ * per paired device. Eight installed plugins all pinned at this cap against
+ * three paired devices is 60 × 8 × 3 = 1,440 relay requests a day — about 0.3%
+ * of the relay's own 500,000/day spend backstop (`push-relay/src/relay.ts`), so
+ * a plugin cannot spend the user's relay budget even by trying. At 1,000/day
+ * per plugin that same fleet would be 24,000/day, still under the backstop but
+ * now a meaningful fraction of it, and long past anything a person would read.
+ *
+ * Resets at UTC midnight rather than on a rolling 24 h window because the
+ * counter has to survive restarts, and a day bucket is one comparison against a
+ * stored date rather than a persisted event log.
+ */
+export const PLUGIN_NOTIFICATIONS_PER_DAY = 60;
+
+/**
+ * The burst ceiling, which is the one that actually stops a bug.
+ *
+ * The daily cap bounds the damage; this bounds how fast it arrives. Five in a
+ * rolling minute covers every legitimate batch — a plugin reacting to four PRs
+ * that merged together still gets all four through — while a loop posting on
+ * every event tick is stopped inside the first second, before the phone has
+ * buzzed more than five times.
+ *
+ * Deliberately not a token bucket with a refill rate: a bucket that refills
+ * would let a wedged plugin settle into a steady drip forever, which is exactly
+ * the failure a user reports as "my phone will not stop". A hard window plus a
+ * hard day means the worst case is bounded in both dimensions.
+ */
+export const PLUGIN_NOTIFICATIONS_PER_BURST = 5;
+export const PLUGIN_NOTIFICATION_BURST_WINDOW_MS = 60_000;
+
+export type PluginNotificationInput = {
+  title: string;
+  body?: string;
+  /** Omitted means `"both"` — see {@link PLUGIN_NOTIFICATION_TARGETS}. */
+  target?: PluginNotificationTargetRequest;
+};
+
+export type PluginNotificationResult = {
+  /**
+   * Which targets actually took it. Never empty — a post that reached nothing
+   * rejects with `notification_unavailable` instead of resolving with `[]`,
+   * so `await post(...)` succeeding always means somebody was told.
+   */
+  delivered: PluginNotificationTarget[];
+};
+
+/**
+ * Text through the machine clipboard.
+ *
+ * Text only, and bounded: the clipboard is a user-facing buffer, not a
+ * transport, and a plugin that pasted a megabyte into it would break the next
+ * thing the user pressed ⌘V in. Images and other flavours are deliberately not
+ * exposed — `readImage` would let a plugin harvest a screenshot the user copied
+ * without ever asking for one.
+ *
+ * Be honest about what a read is: it returns whatever the user last copied,
+ * which is frequently a password or a token they were moving between apps.
+ * Installing a plugin grants it — the same grant that already lets its child
+ * process read any file the user can — but a plugin should still read the
+ * clipboard only in direct response to something the user just did, never on a
+ * timer.
+ */
+export const PLUGIN_CLIPBOARD_TEXT_MAX_BYTES = 64 * 1024;
+
+/**
+ * Ask the user to choose a path, through the operating system's own picker.
+ *
+ * The dialog IS the consent: nothing is read, and the plugin learns no path it
+ * was not handed. A dismissed picker rejects with `dialog_cancelled` rather
+ * than resolving null, so "the user said no" cannot be mistaken for "the user
+ * chose a file called nothing".
+ *
+ * The returned path is a plain path on this machine, readable with `fs`, the
+ * same contract {@link PluginAudioClip} uses.
+ */
+export type PluginFilePickerOptions = {
+  title?: string;
+  defaultPath?: string;
+  /** Pick a folder instead of a file. */
+  directory?: boolean;
+  /** e.g. `[{name: "Images", extensions: ["png", "jpg"]}]`. Ignored for `directory`. */
+  filters?: { name: string; extensions: string[] }[];
+};
+
+export const PLUGIN_FILE_PICKER_FILTERS_MAX = 8;
+export const PLUGIN_FILE_PICKER_EXTENSIONS_MAX = 24;
+
+/**
+ * A plugin's own durable memory: a reserved slice of its collections.
+ *
+ * Reserved rather than declared, so a plugin has somewhere to remember things
+ * without having to predict them in `plugin.json` at publish time. The name is
+ * refused through `collections.*` in both directions — a plugin cannot reach
+ * this slice by naming it, and declaring it in a manifest does not open it —
+ * which keeps one door on it and makes "what is in my memory" a question with a
+ * single answer.
+ *
+ * It shares the plugin's collection budget (2 MiB / 4,000 rows / 64 KiB a
+ * value), and it is dropped with everything else when the plugin is
+ * uninstalled, because it lives in `plugin_collections` like any other row.
+ *
+ * WHAT IT IS NOT: this is not ADE's CTO memory, and nothing written here is
+ * injected into any agent's prompt. CTO memory is spliced verbatim into the
+ * CTO's system context every turn (`ctoStateService.buildReconstructionContext`)
+ * and is CTO-only for exactly that reason — a plugin with write access to it
+ * would be a plugin with write access to what the operator's agent believes.
+ * Plugin memory is storage the plugin reads back itself.
+ */
+export const PLUGIN_MEMORY_COLLECTION = "ade.memory";
+
+/**
+ * True for the one collection name `collections.*` must refuse.
+ *
+ * A function rather than an inline comparison because both doors check it — the
+ * declared-collection gate and the memory verbs' own scoping — and a second
+ * spelling would mean one of them let the name through.
+ */
+export function isReservedPluginCollection(collection: string): boolean {
+  return collection === PLUGIN_MEMORY_COLLECTION;
+}
+
+/**
+ * A plugin-owned schedule: "call MY action later", not "type into a chat".
+ *
+ * The distinction is the whole point. A plugin can already reach ADE's chat
+ * schedulers through `actions.invoke`, and doing so leaves a cron that belongs
+ * to nobody: it carries no owner, no UI says which package created it, and
+ * uninstalling the plugin leaves it firing a prompt into the user's chat
+ * forever. A schedule created here belongs to the plugin by construction — it
+ * is quota'd against it, listed under it, and deleted with it.
+ *
+ * When it fires, the host invokes the named action on the plugin's own child,
+ * exactly as `plugin.invoke` would. The plugin decides what that means.
+ */
+export type PluginScheduleCreateInput = {
+  /** An action the plugin's entry module exports. Checked when it fires, not before. */
+  action: string;
+  /** Five-field cron in the machine's local timezone. Recurring. */
+  cron?: string;
+  /** ISO-8601 with an explicit offset or `Z`. One-shot. */
+  runAt?: string;
+  /** Seconds from now. One-shot. */
+  delaySeconds?: number;
+  /** Passed to the action as its arguments. */
+  args?: Record<string, unknown>;
+  /** Shown to the user beside the schedule. */
+  note?: string;
+};
+
+export type PluginSchedule = {
+  id: string;
+  pluginId: string;
+  action: string;
+  kind: "cron" | "once";
+  cron?: string;
+  args: Record<string, unknown>;
+  note?: string;
+  createdAt: string;
+  /** Null once a one-shot has fired and is waiting to be swept. */
+  nextRunAt: string | null;
+  lastRunAt?: string;
+  /** The last failure's message, so a silently broken schedule is visible. */
+  lastError?: string;
+};
+
+/**
+ * "This happened" — one firing of a trigger the plugin's manifest declares.
+ *
+ * The manifest supplies the VOCABULARY (so the rule builder can offer the
+ * trigger before the plugin has ever fired) and this supplies the EVENT. The
+ * plugin never says which rules should run: it names its own trigger, the
+ * engine matches it against whatever the user authored, and a firing that
+ * matches nothing is an ordinary outcome rather than a failure.
+ */
+export type PluginAutomationTriggerInput = {
+  /** One of the plugin's `automationTriggers[].id`. Anything else is refused. */
+  triggerId: string;
+  /** Reachable from a rule's step arguments as `{{trigger.plugin.payload.<key>}}`. */
+  payload?: Record<string, unknown>;
+};
+
+/**
+ * Active schedules one plugin may hold.
+ *
+ * Small on purpose. A schedule is a standing claim on the machine's clock that
+ * outlives every window, and a plugin that genuinely needs more than eight
+ * distinct recurrences wants one schedule and its own dispatch table inside it.
+ * Eight covers "hourly, daily, weekly, and a handful of one-shots the user
+ * asked for" with room left over.
+ *
+ * Counted over live rows, not lifetime creations: a fired one-shot stops
+ * counting once it is swept, so a plugin that schedules a reminder per user
+ * action is limited by how many are pending at once, which is the thing that
+ * actually costs anything.
+ */
+export const PLUGIN_SCHEDULES_MAX_PER_PLUGIN = 8;
+
+/**
+ * The floor between two fires of the same schedule.
+ *
+ * Cron's own granularity is a minute, so this binds nothing a cron string could
+ * express; it exists for `delaySeconds`, where a plugin could otherwise ask to
+ * be woken every second and turn a schedule into a busy loop with a persistence
+ * file. One minute is also the point below which "schedule it" is the wrong
+ * tool — a plugin that needs to run every ten seconds should hold its own timer
+ * in its own process, where the user can see it stop when the plugin stops.
+ */
+export const PLUGIN_SCHEDULE_MIN_INTERVAL_MS = 60_000;
+
+export const PLUGIN_SCHEDULE_NOTE_MAX_CHARS = 120;
+
+/**
+ * The `args` frame's ceiling, matching a contribution's.
+ *
+ * A schedule's arguments are a pointer — "run the daily report for repo X" —
+ * not a payload: the plugin's own collections hold everything else, and args
+ * big enough to carry a page would become a second unversioned data store that
+ * the schedules file has to keep on disk forever.
+ */
+export const PLUGIN_SCHEDULE_ARGS_MAX_BYTES = 4 * 1024;
+
+/**
+ * An emitted trigger's `payload` ceiling, matching a schedule's `args` for the
+ * same reason.
+ *
+ * A trigger payload is a pointer — "issue ADE-7 moved to In Review" — not the
+ * issue. Every rule the firing matches resolves its step arguments out of it
+ * and the whole thing is written into `automation_ingress_events` for the
+ * retention window, so a payload big enough to carry a document would turn the
+ * ingress log into an unversioned copy of the plugin's own store.
+ */
+export const PLUGIN_AUTOMATION_TRIGGER_PAYLOAD_MAX_BYTES = 4 * 1024;
+
+/**
+ * How often one plugin may fire its own automation triggers.
+ *
+ * The payload ceiling bounds what a firing CARRIES; this bounds what a firing
+ * COSTS. Every emit runs each of the user's matching rules, and a rule can
+ * start a lane, run a command or open a paid agent session — so an unbounded
+ * emit is the one plugin verb that spends the user's money rather than their
+ * attention, and it was the only new capability in this round without a
+ * ceiling. Deliberately generous: a plugin bridging a webhook fires in bursts,
+ * and the number that has to be wrong before this bites is a loop.
+ */
+export const PLUGIN_AUTOMATION_TRIGGERS_PER_BURST = 30;
+export const PLUGIN_AUTOMATION_TRIGGER_BURST_WINDOW_MS = 60_000;
+
+/**
+ * A plugin-authored `ade_card`'s serialized ceiling.
+ *
+ * A card is a transcript ROW, and the transcript is uncapped and replays on
+ * every client including a phone — so an unbounded card is unbounded growth in
+ * a file the user cannot prune and unbounded bytes over the sync wire. Same
+ * pointer-not-payload rule as {@link PLUGIN_AUTOMATION_TRIGGER_PAYLOAD_MAX_BYTES}:
+ * a card summarizes ("14 tests failed") and its panel or deeplink carries the
+ * detail. 4 KiB is past every legitimate card — the richest host-authored ones
+ * (a CI run with a dozen rows and metrics) land under 2 KiB.
+ *
+ * Applies to plugin-authored cards only. Host-authored cards are ADE's own
+ * chronology, written by code that already bounds itself (`rowsTruncated` is
+ * that bound), and failing one of those would break a product surface rather
+ * than an untrusted caller.
+ */
+export const PLUGIN_ADE_CARD_MAX_BYTES = 4 * 1024;
+
+/**
+ * The card panel's `$context` ceiling, matching
+ * {@link PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES} because it is the same binding
+ * arriving by a different door: a `plugin` deeplink spells it `?ctx=`, a card
+ * spells it `panel.context`, and both end up as the panel's `$context`.
+ * Checked before the whole-card cap so an oversized context is named as such.
+ */
+export const PLUGIN_ADE_CARD_PANEL_CONTEXT_MAX_BYTES = 2 * 1024;
+
+/**
+ * How many cards one chat session accepts from plugins in a rolling minute.
+ *
+ * The per-card cap bounds what one emit COSTS; this bounds how many arrive.
+ * The unit is the chat session rather than the plugin because the session's
+ * transcript is the resource being protected — it is what grows, what syncs to
+ * the phone, and what the user has to read. Mirrors
+ * {@link PLUGIN_AUTOMATION_TRIGGERS_PER_BURST}: generous enough that a plugin
+ * updating a live card as a run progresses (each state change is one emit, and
+ * an identical re-emit is deduped before it counts) never notices, low enough
+ * that a loop is stopped within a second.
+ */
+export const PLUGIN_ADE_CARDS_PER_SESSION_BURST = 30;
+export const PLUGIN_ADE_CARD_BURST_WINDOW_MS = 60_000;
+
 /** The SDK calls a child can make back into the host. */
 export type PluginSdkMethod =
   | "actions.invoke"
@@ -611,7 +1299,30 @@ export type PluginSdkMethod =
   | "contributions.publish"
   | "panels.update"
   | "config.get"
-  | "audio.captureClip";
+  | "audio.captureClip"
+  | "notifications.post"
+  | "schedules.create"
+  | "schedules.list"
+  | "schedules.delete"
+  | "automations.emitTrigger"
+  | "clipboard.read"
+  | "clipboard.write"
+  | "dialogs.pickFile"
+  | "memory.get"
+  | "memory.set"
+  | "memory.delete"
+  | "memory.list"
+  /**
+   * Tell the host this child does (or no longer does) want one event kind.
+   *
+   * Not a capability a plugin calls — `ade.events.on` sends it, and the SDK
+   * surface has no other spelling for it. It exists because the host fans an
+   * event out by writing one line per interested child, and `tool.before`
+   * fires dozens of times a turn: without the child saying which kinds it
+   * listens for, every running plugin would pay for every tool call in every
+   * chat on the machine, forever, to feed listeners that do not exist.
+   */
+  | "events.subscribe";
 
 /** Child → host. */
 export type PluginChildFrame =
@@ -658,9 +1369,11 @@ export type PluginInstallRecord = {
   installedAt: string;
   updatedAt: string;
   /**
-   * Manifest socket ids the user switched off — see
-   * {@link PluginSummary.disabledContributions}. Optional on the wire so a
-   * registry written by an older build parses; the reader fills in `[]`.
+   * Contribution ids the user switched off — see
+   * {@link PluginSummary.disabledContributions} and
+   * `shared/plugins/disabledContributions.ts` for the key namespaces. Optional
+   * on the wire so a registry written by an older build parses; the reader
+   * fills in `[]`.
    */
   disabledContributions?: string[];
 };
@@ -721,8 +1434,13 @@ export type PluginSummary = {
   /** Present only for theme plugins; the renderer's theme engine consumes it. */
   theme: { displayName: string; tokens: { dark?: Record<string, string>; light?: Record<string, string> } } | null;
   /**
-   * Manifest socket ids the user switched OFF, from the machine install
-   * registry.
+   * Contribution ids the user switched OFF, from the machine install registry.
+   *
+   * Manifest SOCKET ids are stored bare; the four engine registrations are
+   * stored kind-qualified (`search:issues`, `keybinding:openIssue`) so that two
+   * declarations sharing a name stay independent. `shared/plugins/
+   * disabledContributions.ts` owns both the keys and every reader's rule,
+   * including the one `plugin.invoke` applies.
    *
    * A list of what is off rather than what is on, because contributions are on
    * by default: an empty list has to mean "everything this plugin declares is
@@ -736,6 +1454,25 @@ export type PluginSummary = {
    */
   disabledContributions?: string[];
   cli: string[];
+  /**
+   * The plugin's engine registrations, in manifest shape.
+   *
+   * Carried on the summary rather than fetched per plugin because every
+   * consumer needs them for ALL installed plugins at once and needs them
+   * without a child running: the automations rule builder draws one picker over
+   * every plugin's triggers, the palette queries every provider, and the
+   * keybinding matrix cannot decide who won a chord until it has seen everyone
+   * who wanted it. A per-plugin `getManifest` round trip would make each of
+   * those an N-call fan-out to answer one question.
+   *
+   * Optional on the wire for the usual reason: a host that predates the field
+   * reports the plugin without it, and absent then means "this host has no
+   * engine registrations", which is exactly right rather than merely safe.
+   */
+  automationTriggers?: PluginManifestAutomationTrigger[];
+  automationSteps?: PluginManifestAutomationStep[];
+  searchProviders?: PluginManifestSearchProvider[];
+  keybindings?: PluginManifestKeybinding[];
   restartCount: number;
   lastCrashAt: string | null;
 };
@@ -1146,6 +1883,52 @@ export type PluginClientInstalled = {
   disabledContributions?: readonly string[];
   /** Drives the nav dot. Off unless the plugin asks for attention. */
   attention?: boolean;
+  /**
+   * Live-search providers this plugin declares, carried straight off
+   * {@link PluginSummary}.
+   *
+   * On the client shape rather than fetched per plugin because the palette asks
+   * ONE question — "who wants to answer this keystroke?" — about every installed
+   * plugin at once, and a `getManifest` round trip each would make that an
+   * N-call fan-out on the surface with the tightest latency budget in the app.
+   *
+   * Optional for the usual reason: a host that predates the field reports the
+   * plugin without it, and absent then means "no providers here", which is the
+   * right answer rather than merely the safe one.
+   */
+  searchProviders?: readonly PluginManifestSearchProvider[];
+  /**
+   * Automation triggers and steps this plugin declares, carried straight off
+   * {@link PluginSummary} for the same reason `searchProviders` is.
+   *
+   * The rule builder draws one picker across every installed plugin, and it has
+   * to be able to describe a plugin that is installed and NOT running — which
+   * is most of them most of the time, since a plugin's child starts on demand.
+   * A list published by a live child would be empty exactly when someone is
+   * building a rule against it.
+   */
+  automationTriggers?: readonly PluginManifestAutomationTrigger[];
+  automationSteps?: readonly PluginManifestAutomationStep[];
+  /**
+   * Declared keyboard shortcuts, carried straight off {@link PluginSummary} for
+   * the same reason the two above are — with one extra edge that makes it not
+   * merely a latency argument.
+   *
+   * The collision matrix (`shared/plugins/keybindings.ts`) cannot rule on any
+   * single plugin's chord until it has seen every other plugin that wanted it.
+   * Fetched per plugin, the same manifest would win or lose depending on which
+   * reads had landed by then, so the answer would change between renders.
+   */
+  keybindings?: readonly PluginManifestKeybinding[];
+  /**
+   * ISO install timestamp from the machine registry — what makes the matrix's
+   * "first installed wins" decidable rather than a coin flip on load order.
+   *
+   * Optional like the rest, and an absent value sorts first; that only affects
+   * the tie-break between two plugins wanting one chord, and a host too old to
+   * report it has no better answer to offer.
+   */
+  installedAt?: string;
 };
 
 /** One collection row as the UI reads it. The host's own row carries more. */

@@ -27,6 +27,12 @@ struct LanesTabView: View {
   /// Plugin contributions for the lanes on screen. Rebuilt only when plugin
   /// rows change, then read by value per row.
   @State var pluginContributions = PluginContributionIndex()
+  /// Contributions addressed to the Lanes surface itself rather than to a lane:
+  /// its toolbar, its chips, its empty state.
+  @State var pluginSurfaceContributions = PluginContributionIndex()
+  /// Filter chips the reader has turned on. List state, not chip state — it has
+  /// to survive the chip row's redraws and it is the list that applies it.
+  @State var selectedPluginFilterKeys: Set<String> = []
   @State private var lastLanesLocalProjectionReload = Date.distantPast
   @State private var lastHandledLanesProjectionRevision: Int?
 
@@ -145,6 +151,7 @@ struct LanesTabView: View {
             openLanesTray
               .transition(.move(edge: .top).combined(with: .opacity))
           }
+          pluginFilterChipRow
           laneList
         }
         .padding(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -163,9 +170,14 @@ struct LanesTabView: View {
         }
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: syncService.pluginsProjectionRevision) {
-        pluginContributions = syncService.pluginContributionIndex(entityKind: .lane)
-      }
+      .loadPluginContributions(.lane, into: $pluginContributions, active: isActive)
+      .loadPluginContributions(.surface, into: $pluginSurfaceContributions, active: isActive)
+      .onChange(of: pluginContributions) { _, _ in refreshLaneListPresentation() }
+      // The chips themselves are in this list too: when a plugin is uninstalled
+      // its chip disappears, and the lanes its key was hiding have to come back
+      // in the same pass — see `appliedPluginFilterKeys`.
+      .onChange(of: pluginSurfaceContributions) { _, _ in refreshLaneListPresentation() }
+      .onChange(of: selectedPluginFilterKeys) { _, _ in refreshLaneListPresentation() }
       .task(id: primaryBranchReloadKey) {
         guard primaryBranchReloadKey != nil else { return }
         await refreshPrimaryBranches(force: false)
@@ -261,7 +273,26 @@ struct LanesTabView: View {
 
   @ViewBuilder
   private var topBarActions: some View {
-    EmptyView()
+    PluginToolbarActions(
+      contributions: pluginSurfaceContributions.toolbarActions(.lanes),
+      surface: .lanes
+    )
+  }
+
+  /// Contributed filter chips, above the list and after the tab's own search
+  /// and scope controls — placement is the host's, always after core content.
+  @ViewBuilder
+  var pluginFilterChipRow: some View {
+    let chips = pluginSurfaceContributions.filterChips(.lanes)
+    if !chips.isEmpty {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          PluginFilterChips(contributions: chips, selectedKeys: $selectedPluginFilterKeys)
+        }
+        .padding(.horizontal, 2)
+      }
+      .scrollBounceBehavior(.basedOnSize)
+    }
   }
 
   @ViewBuilder

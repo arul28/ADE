@@ -770,7 +770,15 @@ func makeWorkAdeCardModel(from payload: AgentChatAdeCardPayload) -> WorkAdeCardM
     isStale: payload.stale,
     rowsTruncated: payload.rowsTruncated.map { max(0, $0) },
     fallbackText: fallbackText,
-    turnId: payload.turnId
+    turnId: payload.turnId,
+    author: workAdeCardAuthor(
+      pluginId: payload.authoredBy?.pluginId,
+      displayName: payload.authoredBy?.displayName
+    ),
+    panel: workAdeCardPanel(
+      panelId: payload.panel?.panelId,
+      context: PluginPanelContext.read(value: payload.panel?.context)
+    )
   )
 }
 

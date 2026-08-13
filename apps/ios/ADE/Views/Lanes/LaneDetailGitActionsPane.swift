@@ -42,6 +42,11 @@ struct LaneDetailGitActionsPane: View {
   let onForcePush: () -> Void
   let onOpenLinkedPullRequest: (PullRequestListItem) -> Void
   let onCreateLaneFromChanges: () -> Void
+  /// `detail-section` contributions published for THIS lane, drawn at the foot
+  /// of the pane after every section the product owns.
+  var pluginDetailSections: [PluginContribution] = []
+
+  @EnvironmentObject private var syncService: SyncService
 
   @State private var pullMode: String = "rebase"
   @State private var showMoreActions = false
@@ -73,6 +78,11 @@ struct LaneDetailGitActionsPane: View {
           filesSection
           stashesSection
           historySection
+          PluginDetailSections(
+            contributions: pluginDetailSections,
+            context: .lane(id: snapshot.lane.id),
+            syncService: syncService
+          )
         }
         .padding(EdgeInsets(top: 12, leading: 0, bottom: 20, trailing: 0))
       }

@@ -10,9 +10,38 @@
 export { PluginRowBadges } from "./PluginRowBadges";
 export { PluginToolbarActions } from "./PluginToolbarActions";
 export { PluginComposerActions } from "./PluginComposerActions";
+export { PluginChatCard } from "./PluginChatCard";
+export {
+  CHAT_CARD_ACTION_EVENT,
+  ensurePluginChatCardActionBridge,
+  handlePluginChatCardAction,
+} from "./pluginChatCardBridge";
+export { runPluginSocketAction } from "./pluginActionDispatch";
 export { PluginFilterChips } from "./PluginFilterChips";
 export { PluginEmptyStateExtra } from "./PluginEmptyStateExtra";
 export { PluginDetailSections } from "./PluginDetailSections";
+export { PluginActivityEntries, usePluginActivityEntryCount } from "./PluginActivityEntries";
+export {
+  PLUGIN_SETTINGS_FALLBACK_TAB,
+  PluginSettingsSections,
+  resolvePluginSettingsTab,
+} from "./PluginSettingsSections";
+export {
+  PluginSlotPanel,
+  usePluginPanelSlots,
+  type PluginPanelSlot,
+} from "./PluginPanelSlots";
+export {
+  isPluginPanelSlotId,
+  parsePluginPanelSlotId,
+  pluginPanelSlotId,
+} from "./panelSlotId";
+export {
+  PLUGIN_PALETTE_GROUP,
+  usePluginPaletteCommands,
+  type PluginPaletteCommand,
+} from "./usePluginPaletteCommands";
+export { PluginDialogSections } from "./PluginDialogSections";
 export { usePluginMenuEntries, type PluginMenuEntry } from "./usePluginMenuEntries";
 export { pluginContextMenuItems, PLUGIN_MENU_SECTION_LABEL } from "./pluginContextMenuItems";
 export { useExtendSurfaceEntry, extendSurfaceRoute } from "./useExtendSurfaceEntry";
@@ -29,7 +58,15 @@ export {
   type PluginComposerTarget,
 } from "./composerTarget";
 export {
+  applyPluginDialogEdit,
+  registerPluginDialogTarget,
+  reportPluginDialogRefusal,
+  unregisterPluginDialogTarget,
+  type PluginDialogTarget,
+} from "./dialogTarget";
+export {
   pluginAutomationContext,
+  pluginDialogContext,
   pluginLaneContext,
   pluginPrContext,
   pluginSessionContext,
@@ -44,3 +81,12 @@ export {
   type PluginViewerRegistration,
   type SurfaceContributionSet,
 } from "./contributionModel";
+export {
+  PLUGIN_SEARCH_GROUP,
+  usePluginSearchResults,
+  type PluginSearchRow,
+} from "./usePluginSearchResults";
+export {
+  dispatchPluginKeybindingEvent,
+  usePluginKeybindings,
+} from "./usePluginKeybindings";

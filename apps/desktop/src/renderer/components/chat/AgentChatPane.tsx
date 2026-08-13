@@ -7104,9 +7104,13 @@ export function AgentChatPane({
     if (!isTileActive) { setSdkSlashCommands([]); return; }
     if (!selectedSessionId && !laneId) { setSdkSlashCommands([]); return; }
     let cancelled = false;
+    // `includePluginCommands` is this client saying it can DISPATCH a plugin
+    // command, not that it would like to see one. The composer invokes them as
+    // plugin actions; a client without that path leaves the flag off rather
+    // than listing rows that would send `/name` to the model as literal text.
     const args = selectedSessionId
-      ? { sessionId: selectedSessionId, projectRoot }
-      : { laneId, provider: sessionProvider, projectRoot };
+      ? { sessionId: selectedSessionId, projectRoot, includePluginCommands: true }
+      : { laneId, provider: sessionProvider, projectRoot, includePluginCommands: true };
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
     if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) {
       setSdkSlashCommands([]);
@@ -11472,6 +11476,10 @@ export function AgentChatPane({
       sourcesContent={selectedSession?.provider === "codex" ? (
         <ChatSourcesPanel events={selectedEventsForDisplay} />
       ) : undefined}
+      sessionId={selectedSessionId}
+      sessionTitle={selectedSession?.title ?? null}
+      sessionProvider={selectedSession?.provider ?? null}
+      sessionStatus={selectedSession?.status ?? null}
     />
   );
   const cursorCloudPanelContent = (
@@ -13011,6 +13019,16 @@ export function AgentChatPane({
                         pendingApprovalIds={pendingApprovalIds}
                         laneId={laneId}
                         sessionId={renderedSessionId}
+                        // A plugin card's session context: the chat's own title
+                        // and runtime, and whether this tile is the one on
+                        // screen. Without them a card action ran against an
+                        // empty context and every background grid pane woke its
+                        // sockets up to draw a card nobody was looking at.
+                        sessionTitle={selectedSession?.title ?? null}
+                        sessionProvider={selectedSession
+                          ? chatToolTypeForProvider(selectedSession.provider)
+                          : null}
+                        paneActive={isTileVisible}
                         transcriptCollapseCacheKey={subagentView
                           ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
                           : undefined}

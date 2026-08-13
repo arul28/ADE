@@ -446,11 +446,18 @@ async function captureClip(maxDurationMs) {
  * transcribed, and keeping that promise for the ordinary case is worth more
  * than the tidiness of never touching a file it did not create. A clip
  * somewhere else is left alone and said so in the log.
+ *
+ * The prefix compare folds case on Windows and macOS, whose filesystems resolve
+ * paths case-insensitively: a future engine handing back `C:\TEMP\...` where
+ * `os.tmpdir()` reports `C:\Temp` would otherwise fall through to the
+ * "outside the temporary directory" branch and silently keep the recording.
  */
 async function discardClip(clipPath) {
   if (typeof clipPath !== "string" || !clipPath) return;
+  const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
+  const fold = (value) => (caseInsensitive ? value.toLowerCase() : value);
   const resolved = path.resolve(clipPath);
-  if (!resolved.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`)) {
+  if (!fold(resolved).startsWith(fold(`${path.resolve(os.tmpdir())}${path.sep}`))) {
     log("debug", "Left the recording in place: it is outside the temporary directory.");
     return;
   }

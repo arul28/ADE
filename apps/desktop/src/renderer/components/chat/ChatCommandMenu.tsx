@@ -44,8 +44,19 @@ export type ChatCommandMenuHandle = {
 type ChatCommandMenuProps = {
   /** The current trigger character and query. */
   trigger: ComposerTrigger | null;
-  /** Available slash commands. */
-  slashCommands: Array<{ name: string; description: string; argumentHint?: string; source?: "sdk" | "local" }>;
+  /**
+   * Available slash commands. `pluginName` is set only on a command a plugin
+   * contributed, and is what the row is attributed to — selecting one runs the
+   * plugin rather than sending text to the model, and the menu is the only
+   * place the user can tell the two apart before pressing.
+   */
+  slashCommands: Array<{
+    name: string;
+    description: string;
+    argumentHint?: string;
+    source?: "sdk" | "local" | "plugin";
+    pluginName?: string;
+  }>;
   /** File search callback. When omitted, @ file suggestions are unavailable. */
   onFileSearch?: (query: string) => Promise<Array<{ path: string }>>;
   /**
@@ -414,12 +425,18 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
     // ---- Description lookup for commands ----
     const commandMap = useMemo(() => {
-      const map = new Map<string, { description: string; argumentHint?: string; source?: "sdk" | "local" }>();
+      const map = new Map<string, {
+        description: string;
+        argumentHint?: string;
+        source?: "sdk" | "local" | "plugin";
+        pluginName?: string;
+      }>();
       for (const cmd of slashCommands) {
         map.set(cmd.name, {
           description: cmd.description,
           argumentHint: cmd.argumentHint,
           source: cmd.source,
+          pluginName: cmd.pluginName,
         });
       }
       return map;
@@ -565,6 +582,15 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                         )}>/{item.name}</span>
                         {command?.argumentHint ? (
                           <span className="shrink-0 text-fg/32">{command.argumentHint}</span>
+                        ) : null}
+                        {/* Attribution sits with the command word rather than
+                            at the row's end, where the description already is:
+                            "who runs this" is part of reading the command, and
+                            a long description would otherwise push it off. */}
+                        {command?.pluginName ? (
+                          <span className="shrink-0 truncate text-[10px] text-violet-300/50">
+                            {command.pluginName}
+                          </span>
                         ) : null}
                         {description && (
                           <span className="ml-auto truncate text-fg/40">{description}</span>

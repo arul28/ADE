@@ -2,6 +2,7 @@ import React from "react";
 
 import { rootAppStoreApi, useRootAppStore } from "../../state/appStore";
 import { subscribeToPluginChanges, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
+import { isPluginRegistrationDisabled } from "../../../shared/plugins/disabledContributions";
 import {
   appliedPluginTheme,
   applyPluginTheme,
@@ -82,6 +83,90 @@ function sameThemeDefinition(
   return a.pluginId === b.pluginId
     && a.displayName === b.displayName
     && JSON.stringify(a.tokens) === JSON.stringify(b.tokens);
+}
+
+/**
+ * One installed plugin's automation declaration, already attributed.
+ *
+ * Attribution is baked in rather than left to each caller: the rule builder
+ * shows every plugin's triggers in ONE list, so "issue moved" is meaningless
+ * without the name beside it, and two plugins may well declare the same id.
+ */
+export type PluginAutomationOption = {
+  pluginId: string;
+  /** The plugin's display name — what the picker shows the user. */
+  pluginName: string;
+  /** The declaration's id (a trigger id) or handler name (a step's `action`). */
+  value: string;
+  label: string;
+  description?: string;
+};
+
+/**
+ * Every enabled plugin's declared automation triggers, flattened.
+ *
+ * Disabled plugins are excluded: a disabled plugin's child does not run, so it
+ * cannot fire anything, and offering its triggers would build a rule that is
+ * armed against nothing. An existing rule pointing at one still renders — the
+ * builder falls back to the stored ids and marks them unavailable rather than
+ * reading this list.
+ */
+export function usePluginAutomationTriggers(): PluginAutomationOption[] {
+  const plugins = useRootAppStore((state) => state.installedPlugins);
+  return React.useMemo(
+    () =>
+      plugins
+        .filter((plugin) => plugin.enabled)
+        .flatMap((plugin) =>
+          (plugin.automationTriggers ?? [])
+            .filter((declared) => !isPluginRegistrationDisabled(
+              plugin.disabledContributions,
+              "automationTrigger",
+              declared.id,
+            ))
+            .map((declared) => ({
+              pluginId: plugin.pluginId,
+              pluginName: plugin.displayName || plugin.pluginId,
+              value: declared.id,
+              label: declared.label,
+              ...(declared.description ? { description: declared.description } : {}),
+            })),
+        ),
+    [plugins],
+  );
+}
+
+/**
+ * Every enabled plugin's declared automation steps, flattened.
+ *
+ * `value` is the manifest step's `action` — the handler `plugin.invoke` calls —
+ * not its id, because that is what a saved rule stores and what the runtime
+ * dispatches. The two are the same for most declarations; the parser defaults
+ * `action` to `id` precisely so they can be.
+ */
+export function usePluginAutomationSteps(): PluginAutomationOption[] {
+  const plugins = useRootAppStore((state) => state.installedPlugins);
+  return React.useMemo(
+    () =>
+      plugins
+        .filter((plugin) => plugin.enabled)
+        .flatMap((plugin) =>
+          (plugin.automationSteps ?? [])
+            .filter((declared) => !isPluginRegistrationDisabled(
+              plugin.disabledContributions,
+              "automationStep",
+              declared.id,
+            ))
+            .map((declared) => ({
+              pluginId: plugin.pluginId,
+              pluginName: plugin.displayName || plugin.pluginId,
+              value: declared.action,
+              label: declared.label,
+              ...(declared.description ? { description: declared.description } : {}),
+            })),
+        ),
+    [plugins],
+  );
 }
 
 /** The applied theme's definition, or null. Shared by Appearance and the sync hook. */

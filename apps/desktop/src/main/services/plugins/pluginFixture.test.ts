@@ -655,7 +655,13 @@ describe("the ade-voice package as shipped", () => {
     expect(schema.ok).toBe(true);
   });
 
-  it("ships a speech engine that is executable", () => {
+  // Skipped on Windows, where the assertion is meaningless rather than merely
+  // inconvenient: NTFS has no executable bit, Node synthesizes `mode` from the
+  // read-only attribute, and the darwin binary this checks is not the one a
+  // Windows machine would run anyway. Asserting it there would fail for a
+  // reason that says nothing about whether the copy preserved permissions.
+  const execBitTest = process.platform === "win32" ? it.skip : it;
+  execBitTest("ships a speech engine that is executable", () => {
     const binary = path.join(voiceRoot, "bin", "whisper-cli-darwin-universal");
     expect(fs.existsSync(binary)).toBe(true);
     // A binary that loses its executable bit in a copy is a plugin that

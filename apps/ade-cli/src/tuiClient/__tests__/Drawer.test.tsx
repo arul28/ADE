@@ -14,6 +14,7 @@ import {
   type ClosedCliSessionSummary,
 } from "../closedCliSessions";
 import type { TuiChatSessionSummary } from "../adeApi";
+import type { PluginRowBadgeStrip } from "../pluginSockets";
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -801,5 +802,78 @@ describe("Drawer next-wake marker", () => {
   it("omits the marker when there is no armed wake (null or past)", () => {
     expect(renderWith(null)).not.toContain("⏰");
     expect(renderWith(new Date(Date.now() - 60_000).toISOString())).not.toContain("⏰");
+  });
+});
+
+describe("Drawer plugin row badges", () => {
+  const badgedSession: AgentChatSessionSummary = {
+    sessionId: "chat-1",
+    laneId: "lane-1",
+    provider: "codex",
+    model: "gpt-5.5",
+    title: "Implement polish",
+    status: "idle",
+    startedAt: "2026-08-12T12:00:00.000Z",
+    endedAt: null,
+    lastActivityAt: "2026-08-12T12:00:00.000Z",
+    lastOutputPreview: null,
+    summary: null,
+    nextWakeAt: null,
+  };
+
+  function strip(text: string, overflowCount = 0): PluginRowBadgeStrip {
+    return {
+      cells: [{ key: `badge:${text}`, pluginId: "graph", text, tone: "warning", tooltip: null }],
+      overflowCount,
+    };
+  }
+
+  function renderDrawer(props: Record<string, unknown>): string {
+    return stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "graph", "ade/graph", "2026-08-12T11:55:00.000Z")]}
+        sessions={[badgedSession]}
+        activeLaneId="lane-1"
+        activeSessionId="chat-1"
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={0}
+        panelHeight={40}
+        width={48}
+        mode="chats"
+        {...props}
+      />,
+    ).lastFrame() ?? "");
+  }
+
+  it("draws a contributed badge on the lane row and the chat row", () => {
+    const frame = renderDrawer({
+      pluginLaneBadges: { "lane-1": strip("risk 8") },
+      pluginChatBadges: { "chat-1": strip("$1.20") },
+    });
+
+    expect(frame).toContain("[risk 8]");
+    expect(frame).toContain("[$1.20]");
+  });
+
+  it("draws nothing at all for rows no plugin contributes to", () => {
+    const frame = renderDrawer({});
+
+    expect(frame).not.toContain("[");
+    expect(frame).toContain("graph");
+    expect(frame).toContain("Implement polish");
+  });
+
+  it("keeps the lane's own name when a badge cannot fit beside it", () => {
+    // A 22-column mini drawer has no room for a 14-character badge, so the
+    // badge drops out entirely rather than truncating the lane's identity.
+    const frame = renderDrawer({
+      density: "mini",
+      width: 22,
+      pluginLaneBadges: { "lane-1": strip("a-very-long-one") },
+    });
+
+    expect(frame).toContain("graph");
+    expect(frame).not.toContain("a-very-long");
   });
 });

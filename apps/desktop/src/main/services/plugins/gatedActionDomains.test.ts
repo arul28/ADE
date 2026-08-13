@@ -4,10 +4,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  allGatedActionDomains,
   buildGatedDomainDenial,
   buildMissingSurfaceDenial,
   pluginDisplayNameFromCatalog,
   pluginNotInstalledMessage,
+  pluginStepUnavailableMessage,
+  pluginStepUnavailableReason,
   resolveDisabledActionDomains,
 } from "./gatedActionDomains";
 
@@ -135,6 +138,24 @@ describe("refusal copy", () => {
     expect(pluginNotInstalledMessage("ade-ios-sim", () => "  ")).toBeNull();
   });
 
+  it("returns null for two different reasons, so a caller must gate on the SET", () => {
+    // The two nulls above are indistinguishable — "not gated" and "gated but
+    // unnameable" — which is why every caller that treats null as a pass has to
+    // ask `allGatedActionDomains` first. The plugin action bridge in
+    // `bootstrap.ts` learned this the hard way: gated domains are also in
+    // `ADE_ACTION_ALLOWLIST`, so there was no generic unknown-domain error for
+    // a cold catalog to land in, and a machine with an unreadable bundled root
+    // handed `ios_simulator` and `app_control` straight to any plugin.
+    expect(buildGatedDomainDenial("ios_simulator", () => null)).toBeNull();
+    expect(buildGatedDomainDenial("lane", () => "Anything")).toBeNull();
+
+    const gated = allGatedActionDomains();
+    expect(gated.has("ios_simulator")).toBe(true);
+    expect(gated.has("app_control")).toBe(true);
+    expect(gated.has("linear_credentials")).toBe(true);
+    expect(gated.has("lane")).toBe(false);
+  });
+
   it("says nothing about a domain no plugin owns", () => {
     expect(buildGatedDomainDenial("lane", () => "Anything")).toBeNull();
     expect(buildGatedDomainDenial("not_a_domain", () => "Anything")).toBeNull();
@@ -211,5 +232,48 @@ describe("buildMissingSurfaceDenial", () => {
     expect(denial?.pluginId).toBe("ade-linear");
     expect(denial?.message).toBe("This machine doesn't have the ade-linear plugin.");
     expect(denial?.message).not.toContain("Marketplace");
+  });
+});
+
+describe("plugin step refusal", () => {
+  // An automation step names a plugin directly, so unlike the domain path it
+  // has no generic error to fall back on: the sentence IS the run's
+  // errorMessage. It therefore always answers, degrading the copy when the
+  // catalog is cold rather than withholding it.
+  it("uses the catalog's display name and points at the Marketplace", () => {
+    expect(pluginStepUnavailableMessage("ade-linear", () => "Linear")).toBe(
+      "This machine doesn't have Linear. It's provided by the ade-linear plugin — available in the Marketplace.",
+    );
+  });
+
+  it("names the plugin id when no catalog can name the plugin", () => {
+    expect(pluginStepUnavailableMessage("ade-linear", () => null)).toBe(
+      "This machine doesn't have the ade-linear plugin.",
+    );
+    // No invented advice: the degraded sentence stops at the registered fact.
+    expect(pluginStepUnavailableMessage("ade-linear", () => "   ")).not.toContain("Marketplace");
+  });
+
+  it("stays silent for an installed, enabled plugin", () => {
+    expect(pluginStepUnavailableReason("ade-linear", {
+      pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
+      lookupDisplayName: () => "Linear",
+    })).toBeNull();
+  });
+
+  it("refuses a plugin that is installed but switched off", () => {
+    // A disabled plugin's child never starts, so the invoke would fail anyway —
+    // with the host's own wording rather than one naming what to switch on.
+    expect(pluginStepUnavailableReason("ade-linear", {
+      pluginsRoot: writePluginsRoot({ "ade-linear": { enabled: false } }),
+      lookupDisplayName: () => "Linear",
+    })).toContain("Linear");
+  });
+
+  it("refuses a plugin that was never installed", () => {
+    expect(pluginStepUnavailableReason("ade-linear", {
+      pluginsRoot: writePluginsRoot({}),
+      lookupDisplayName: () => null,
+    })).toBe("This machine doesn't have the ade-linear plugin.");
   });
 });

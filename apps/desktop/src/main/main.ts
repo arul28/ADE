@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, session, shell } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -251,7 +251,7 @@ import {
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
 } from "./services/adeActions/registry";
-import { buildGatedDomainDenial } from "./services/plugins/gatedActionDomains";
+import { buildGatedDomainDenial, pluginStepUnavailableReason } from "./services/plugins/gatedActionDomains";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import {
@@ -1764,6 +1764,51 @@ app.whenReady().then(async () => {
           ...(maxDurationMs != null ? { maxDurationMs } : {}),
         });
         return { audioPath: clip.audioPath, durationMs: clip.durationMs };
+      },
+      // The rest of the plugin SDK's Electron-only verbs, for the same reason:
+      // the clipboard, the native picker and the notification centre are main-
+      // process APIs, and the daemon that runs plugin children has none of them.
+      hostCapabilities: {
+        readClipboard: () => clipboard.readText() ?? "",
+        writeClipboard: (text) => clipboard.writeText(text),
+        pickFile: async ({ title, defaultPath, directory, filters }) => {
+          // Parented to the focused window when there is one so the sheet
+          // belongs to ADE rather than floating free, matching every other
+          // dialog in this process.
+          const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+          const options: Electron.OpenDialogOptions = {
+            title: title || (directory ? "Choose a folder" : "Choose a file"),
+            ...(defaultPath ? { defaultPath } : {}),
+            properties: directory ? ["openDirectory"] : ["openFile"],
+            // Filters are meaningless on a directory picker and Electron
+            // renders an empty type dropdown if you pass them anyway.
+            ...(filters && !directory ? { filters } : {}),
+          };
+          const result = parent
+            ? await dialog.showOpenDialog(parent, options)
+            : await dialog.showOpenDialog(options);
+          return result.canceled ? null : result.filePaths[0] ?? null;
+        },
+        notify: ({ title, body, requesterLabel }) => {
+          if (!Notification.isSupported()) return false;
+          try {
+            // The plugin's name goes in the TITLE, matching the phone push, so
+            // there is one attribution rule to explain rather than one per
+            // surface. `subtitle` would read better on macOS but Electron
+            // ignores it everywhere else, and an attribution that renders on
+            // one platform is not an attribution.
+            new Notification({
+              title: requesterLabel ? `${requesterLabel}: ${title}` : title,
+              ...(body ? { body } : {}),
+            }).show();
+            return true;
+          } catch (error) {
+            builtInBrowserBridgeLogger.warn("desktop_host_bridge.notify_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return false;
+          }
+        },
       },
     });
   } catch (error) {
@@ -3853,6 +3898,11 @@ app.whenReady().then(async () => {
         conflictService,
         testService,
         agentChatService,
+        // A file read of the machine install registry, not a service handle:
+        // the plugin host is a daemon-side singleton this process never builds,
+        // and a `plugin` step's refusal has to name the missing plugin whether
+        // or not one exists here.
+        pluginAvailability: { unavailableReason: (pluginId) => pluginStepUnavailableReason(pluginId) },
         onEvent: (event) =>
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });

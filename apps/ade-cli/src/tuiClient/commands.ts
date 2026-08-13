@@ -85,6 +85,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   // this opens an ADE plugin's panel in the right pane. No argument lists the
   // installed plugins to pick from.
   { name: "/plugin-view", description: "Open an installed ADE plugin's panel", placement: "right", argumentHint: "[plugin]", category: "Nav" },
+  // The TUI's row menu. A pointer client right-clicks a lane or a chat; here the
+  // focused drawer row is the subject and this lists what plugins contribute for
+  // it, plus the surface-scoped actions a toolbar would hold in the app.
+  { name: "/plugin-actions", description: "Run a plugin action on the focused lane or chat", placement: "right", argumentHint: "[lane|chat]", category: "Nav" },
   { name: "/status", description: "Show project, lane, and runtime state", placement: "right", category: "Nav" },
   { name: "/activity", description: "Show account-wide work that needs you", placement: "right", category: "Nav" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },

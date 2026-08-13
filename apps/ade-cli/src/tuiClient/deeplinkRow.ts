@@ -123,10 +123,17 @@ export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
 }
 
 export function buildWebClientUrlForRow(row: DeeplinkRow): string | null {
-  // The hosted client does not host plugin tabs, so a web link to a panel would
-  // land the reader on its welcome surface. Null is the honest answer; the
-  // `ade://` form still works, because desktop is where the panel lives.
-  if (row.kind === "plugin") return null;
+  // Every row kind the TUI can focus now has a hosted destination, plugin
+  // panels included: the web client mounts the same `/plugin/:pluginId` route
+  // the desktop App does, reads panels off the sync `plugin_subscribe` stream
+  // and runs their actions through the `plugins.invoke` remote command. This
+  // used to return null because the hosted client hosted no plugin tabs and a
+  // link would have landed the reader on its welcome surface.
+  //
+  // The link does not promise the plugin is installed on whichever machine the
+  // reader's browser connects to. It does not have to: the page answers that
+  // itself, in the same words desktop uses ("Not installed here"), which is a
+  // better outcome than withholding the link from the reader who does have it.
   const target = deeplinkTargetForRow(row);
   return target ? buildWebClientUrl(target) : null;
 }

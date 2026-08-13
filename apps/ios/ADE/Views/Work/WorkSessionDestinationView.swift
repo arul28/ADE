@@ -1505,6 +1505,7 @@ struct WorkSessionDestinationView: View {
       composerDraftRestore: composerDraftRestore,
       inputLockMessage: inputLockMessage,
       transitionNamespace: transitionNamespace,
+      pluginSyncService: syncService,
       onOpenLane: openLaneAction,
       onSend: { text, attachments, mode in
         await sendMessage(text, attachments: attachments, deliveryMode: mode)

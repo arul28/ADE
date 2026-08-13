@@ -477,7 +477,9 @@ jobs:
           src/serviceManager/common.test.ts
           src/serviceManager/installWindows.test.ts
           src/serviceManager/windowsSupervisor.test.ts
+          src/services/audio/desktopAudioBridgeClient.test.ts
           src/services/builtInBrowser/desktopBridgeClient.test.ts
+          src/services/desktopHost/desktopHostBridgeClient.test.ts
           src/services/modelPickerStore.test.ts
           src/services/projects/machineLayout.test.ts
           src/services/projects/projectIconResolver.test.ts
@@ -556,6 +558,43 @@ jobs:
       # and device registry coverage. windows-latest is the only runner in this
       # workflow that has the extension, so this is where those tests actually
       # execute.
+      # The plugin platform had ZERO Windows coverage until this step, and it is
+      # the part of the product most exposed to path semantics: install roots
+      # are joined and containment-checked, the child is spawned with a
+      # bundled bootstrap, the webview protocol resolves a request path against
+      # a plugin directory (backslashes, drive letters, UNC, 8.3 names), and
+      # both new bridges ride the platform's named-pipe transport.
+      #
+      # Deliberately NOT the whole plugin tree — this job is capped at 25
+      # minutes and already carries the CRDT suites. Left out, with reasons:
+      # pluginDataStore/pluginEvents/pluginRegistryFile (SQLite and in-process
+      # bus, no path or transport surface), pilotPackages/registryIndex/
+      # builtinSurfaces/manifestBuiltin/vocabulary (pure data-shape assertions
+      # that cannot differ by platform), pluginFixture (asserts the bundled
+      # packages' contents; its one platform-sensitive assertion — the darwin
+      # speech binary's executable bit — is skipped on win32 in the suite).
+      - name: Test Windows plugin platform contracts
+        run: >-
+          cd apps/desktop && npx vitest run
+          src/main/services/plugins/pluginInstallService.test.ts
+          src/main/services/plugins/pluginInstallServiceAdapter.test.ts
+          src/main/services/plugins/pluginChildSupervisor.test.ts
+          src/main/services/plugins/pluginHostService.test.ts
+          src/main/services/plugins/pluginSdkServer.test.ts
+          src/main/services/plugins/pluginWebviewProtocol.test.ts
+          src/main/services/plugins/pluginWebviewBridgeServer.test.ts
+          src/main/services/plugins/pluginScheduleService.test.ts
+          src/main/services/plugins/pluginNotificationLimiter.test.ts
+          src/main/services/plugins/pluginAgentTools.test.ts
+          src/main/services/plugins/gatedActionDomains.test.ts
+          src/main/services/chat/adeCardProvenance.test.ts
+          src/main/services/chat/pluginSlashCommands.test.ts
+          src/main/services/chat/pluginRuntimeHookObserver.test.ts
+          src/shared/plugins/manifest.test.ts
+          src/shared/plugins/sockets.test.ts
+          src/shared/plugins/sdk.test.ts
+          src/shared/plugins/keybindings.test.ts
+
       - name: Test Windows CRDT, sync, and device registry contracts
         run: >-
           cd apps/desktop && npx vitest run

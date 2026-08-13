@@ -242,6 +242,10 @@
   --work-rail-ios: #60a5fa;
   --work-rail-app-control: #a78bfa;
   --work-rail-browser: #22d3ee;
+  /* Contributed `work-rail-pane` entries. One shared muted token rather
+     than a per-plugin hue: the six above name ADE's own tools, and a
+     plugin wearing one would read as a seventh built-in. */
+  --work-rail-plugin: var(--color-muted-fg);
 
   /* Work tab combobox / popover */
   --work-popover-bg: rgba(22, 20, 30, 0.96);
@@ -434,6 +438,10 @@
   --work-rail-ios: #60a5fa;
   --work-rail-app-control: #a78bfa;
   --work-rail-browser: #22d3ee;
+  /* Contributed `work-rail-pane` entries. One shared muted token rather
+     than a per-plugin hue: the six above name ADE's own tools, and a
+     plugin wearing one would read as a seventh built-in. */
+  --work-rail-plugin: var(--color-muted-fg);
 
   --work-pane-border: color-mix(in srgb, var(--color-border) 70%, transparent);
   --work-pane-header-bg: color-mix(in srgb, var(--color-card) 88%, transparent);

@@ -49,6 +49,8 @@ function laneDeleteSelectionHasAny(selection: LaneDeleteSelection): boolean {
   return selection.worktree || selection.localBranch || selection.remoteBranch;
 }
 import { LaneDialogShell } from "./LaneDialogShell";
+import { PluginDialogSections, reportPluginDialogRefusal } from "../plugins/sockets";
+import type { PluginDialogField } from "../../../shared/plugins/sockets";
 import {
   LABEL_CLASS_NAME,
   INPUT_CLASS_NAME,
@@ -84,16 +86,32 @@ const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   database_cleanup: "Updating database"
 };
 
+/**
+ * A dialog field a contributed section may prefill, and how to write it.
+ *
+ * Manage-lane's three writable fields live in two sub-components with their own
+ * local state — the rename control and the restack panel — so the dialog cannot
+ * write them directly. Each registers its own setter here instead, and the
+ * dialog routes a `{dialog:{setField}}` response to whichever is on screen.
+ * Returning `false` from a setter means the control refused the value.
+ */
+type ManageLanePluginFieldRegister = (
+  field: PluginDialogField<"manage-lane">,
+  setter: (value: string) => boolean,
+) => () => void;
+
 function ManageLaneRenameControls({
   lane,
   allLanes,
   onRenamed,
   runtimePin,
+  registerPluginField,
 }: {
   lane: LaneSummary;
   allLanes: LaneSummary[];
   onRenamed?: () => void | Promise<void>;
   runtimePin?: OpenProjectBinding | null;
+  registerPluginField?: ManageLanePluginFieldRegister;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(lane.name);
@@ -107,6 +125,21 @@ function ManageLaneRenameControls({
     }
   }, [editing, lane.name]);
 
+  const canRename = lane.laneType !== "primary";
+
+  /**
+   * A plugin prefilling the name opens the editor and fills the draft; Save
+   * stays the user's, exactly as when they click the pencil themselves.
+   */
+  useEffect(() => {
+    if (!registerPluginField || !canRename) return;
+    return registerPluginField("name", (value) => {
+      setEditing(true);
+      setDraftName(value);
+      return true;
+    });
+  }, [canRename, registerPluginField]);
+
   const trimmedDraft = draftName.trim();
   const unchanged = trimmedDraft === lane.name.trim();
   const duplicateLane = allLanes.find(
@@ -115,7 +148,6 @@ function ManageLaneRenameControls({
       && candidate.name.trim().toLowerCase() === trimmedDraft.toLowerCase(),
   );
   const canSave = Boolean(trimmedDraft) && !unchanged && !duplicateLane && !renameBusy;
-  const canRename = lane.laneType !== "primary";
 
   const cancelEdit = () => {
     setEditing(false);
@@ -222,12 +254,14 @@ function ManageLaneHeaderDetails({
   allLanes,
   onRenamed,
   runtimePin,
+  registerPluginField,
 }: {
   lanes: LaneSummary[];
   isBatch: boolean;
   allLanes: LaneSummary[];
   onRenamed?: () => void | Promise<void>;
   runtimePin?: OpenProjectBinding | null;
+  registerPluginField?: ManageLanePluginFieldRegister;
 }) {
   if (isBatch) {
     return (
@@ -267,6 +301,7 @@ function ManageLaneHeaderDetails({
           allLanes={allLanes}
           onRenamed={onRenamed}
           runtimePin={runtimePin}
+          {...(registerPluginField ? { registerPluginField } : {})}
         />
         {lane.status.dirty ? (
           <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
@@ -577,6 +612,55 @@ export function ManageLaneDialog({
     if (laneActionKind === "archive") setActiveTab("archive");
   }, [laneActionKind]);
 
+  /**
+   * Where a contributed section's `{dialog:{setField}}` response is routed.
+   *
+   * The rename control and the restack panel own the three writable fields, and
+   * the restack panel only exists while its tab is open. So a write for a field
+   * whose control is not mounted switches to the tab that holds it and waits:
+   * `registerPluginField` drains the pending value the moment that control
+   * registers. Without that, prefilling a base branch would silently do nothing
+   * whenever the user happened to be on the Delete tab.
+   */
+  const pluginFieldSinks = React.useRef(
+    new Map<PluginDialogField<"manage-lane">, (value: string) => boolean>(),
+  );
+  const pendingPluginField = React.useRef<
+    { field: PluginDialogField<"manage-lane">; value: string } | null
+  >(null);
+
+  const registerPluginField = React.useCallback<ManageLanePluginFieldRegister>((field, setter) => {
+    pluginFieldSinks.current.set(field, setter);
+    const pending = pendingPluginField.current;
+    if (pending && pending.field === field) {
+      pendingPluginField.current = null;
+      // The queued half of the write: `handlePluginSetField` returned before
+      // this control existed, so a refusal has to be reported from here or it
+      // would be the one silent drop in the path.
+      if (!setter(pending.value)) reportPluginDialogRefusal("manage-lane");
+    }
+    return () => {
+      if (pluginFieldSinks.current.get(field) === setter) pluginFieldSinks.current.delete(field);
+    };
+  }, []);
+
+  const handlePluginSetField = React.useCallback(
+    (field: PluginDialogField<"manage-lane">, value: string): boolean => {
+      // One lane, or there is no single subject for a section to write to.
+      if (!singleLane || laneActionBusy) return false;
+      const sink = pluginFieldSinks.current.get(field);
+      if (sink) return sink(value);
+      // Not mounted: the restack fields live behind their own tab, and a lane
+      // with no restack tab (the primary) has no control to fill at all.
+      if (field === "name") return false;
+      if (!tabDefs.some((tab) => tab.id === "stack")) return false;
+      pendingPluginField.current = { field, value };
+      setActiveTab("stack");
+      return true;
+    },
+    [laneActionBusy, singleLane, tabDefs],
+  );
+
   const headerExtra =
     lanes.length > 0 && !allPrimary
       ? (
@@ -586,6 +670,7 @@ export function ManageLaneDialog({
             allLanes={allLanes}
             onRenamed={onAppearanceChanged}
             runtimePin={runtimePin}
+            registerPluginField={registerPluginField}
           />
         )
       : undefined;
@@ -630,6 +715,7 @@ export function ManageLaneDialog({
                 disabled={laneActionBusy}
                 onDone={onStackReorganized}
                 runtimePin={runtimePin}
+                registerPluginField={registerPluginField}
               />
             </ManageLaneTabPanel>
           ) : null}
@@ -808,6 +894,22 @@ export function ManageLaneDialog({
                 </Button>
               </div>
             </ManageLaneTabPanel>
+          ) : null}
+
+          {/* Contributed sections, below every tab panel so they are reachable
+              whichever tab is open — a section that prefills the restack fields
+              is most useful from the tab that is NOT already showing them. Only
+              for a single lane: the context names one, and a batch has none. */}
+          {singleLane ? (
+            <PluginDialogSections
+              dialog="manage-lane"
+              laneId={singleLane.id}
+              laneName={singleLane.name}
+              branch={singleLane.branchRef}
+              projectKey={runtimePin?.key ?? null}
+              onSetField={handlePluginSetField}
+              active={open}
+            />
           ) : null}
         </div>
       )}
@@ -1260,12 +1362,14 @@ function StackPositionSection({
   disabled,
   onDone,
   runtimePin,
+  registerPluginField,
 }: {
   lane: LaneSummary;
   allLanes: LaneSummary[];
   disabled: boolean;
   onDone?: () => void | Promise<void>;
   runtimePin?: OpenProjectBinding | null;
+  registerPluginField?: ManageLanePluginFieldRegister;
 }) {
   const primaryLane = React.useMemo(
     () => allLanes.find((l) => l.laneType === "primary" && !l.archivedAt) ?? null,
@@ -1300,6 +1404,35 @@ function StackPositionSection({
     setError(null);
     setSuccess(null);
   }, [lane.id, lane.parentLaneId, lane.baseRef, effectiveCurrentParentId]);
+
+  /**
+   * The two restack fields, as a contributed section may prefill them.
+   *
+   * The parent arm takes only a lane the select is currently offering — an id
+   * outside the candidate list would blank the control instead of filling it —
+   * and clears the base override exactly as picking a parent by hand does. The
+   * base is free text here, so it is written verbatim; Apply stays the user's.
+   */
+  React.useEffect(() => {
+    if (!registerPluginField) return;
+    const unregister = [
+      registerPluginField("parentLaneId", (value) => {
+        if (!candidates.some((candidate) => candidate.id === value)) return false;
+        setStackParentId(value);
+        setBaseBranchInput("");
+        setSuccess(null);
+        return true;
+      }),
+      registerPluginField("baseBranch", (value) => {
+        setBaseBranchInput(value);
+        setSuccess(null);
+        return true;
+      }),
+    ];
+    return () => {
+      for (const drop of unregister) drop();
+    };
+  }, [candidates, registerPluginField]);
 
   const defaultBaseBranch = candidates.find((c) => c.id === stackParentId)?.branchRef ?? "";
 

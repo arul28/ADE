@@ -115,6 +115,8 @@ export const SURFACE_LABELS: Record<PluginSurfaceId, string> = {
   prs: "PRs",
   automations: "Automations",
   cto: "CTO",
+  app: "App",
+  settings: "Settings",
 };
 
 /* ── Directory entries ──────────────────────────────────────────────────── */

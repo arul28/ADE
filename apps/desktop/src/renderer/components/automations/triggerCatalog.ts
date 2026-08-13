@@ -11,6 +11,7 @@ import {
   FileText,
   GitBranch,
   GithubLogo,
+  PuzzlePiece,
   TreeStructure,
   WebhooksLogo,
 } from "@phosphor-icons/react";
@@ -28,6 +29,7 @@ export type TriggerSource =
   | "file"
   | "session"
   | "webhook"
+  | "plugin"
   | "manual";
 
 export type TriggerEvent = {
@@ -139,6 +141,18 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     ],
   },
   {
+    value: "plugin",
+    label: "Plugins",
+    icon: PuzzlePiece,
+    accent: "#C58AF9",
+    hint: "Events an installed plugin fires",
+    // One entry, and it is the TYPE rather than an event. Every other source
+    // knows its events at build time; this one's are whatever is installed
+    // right now, so the picker draws a second select from the plugin list and
+    // writes the choice into `pluginId` / `pluginTrigger`. See `TriggerCard`.
+    events: [{ value: "plugin", label: "Plugin event" }],
+  },
+  {
     value: "manual",
     label: "Manual",
     icon: CursorClick,
@@ -157,6 +171,7 @@ export function sourceForTriggerType(type: string): TriggerSource {
   if (type === "lane.created" || type === "lane.archived" || type === LANE_MERGED_TRIGGER_TYPE) return "lane";
   if (type === "session-end") return "session";
   if (type === "github-webhook" || type === "webhook") return "webhook";
+  if (type === "plugin") return "plugin";
   return "manual";
 }
 
@@ -208,6 +223,12 @@ export function defaultTriggerForSource(source: TriggerSource): AutomationTrigge
       return { type: "session-end" };
     case "webhook":
       return { type: "github-webhook", event: "pull_request" };
+    case "plugin":
+      // No plugin picked yet, on purpose: which plugins exist is a runtime
+      // question this data file cannot answer, and a default pointing at one
+      // that is not installed would be worse than an empty one the picker
+      // fills. Save-time validation refuses the empty pair.
+      return { type: "plugin" };
     case "manual":
       return { type: "manual" };
   }

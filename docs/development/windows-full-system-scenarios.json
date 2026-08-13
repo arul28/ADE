@@ -407,7 +407,7 @@
       "requiredEvidenceKinds": ["gui", "network", "process", "log"],
       "passConditions": [
         "The package uploads the matching Darwin or Linux runtime and native archive over SSH.",
-        "Lanes, files, terminals, chat, browser, and App Control remain owned by the remote runtime."
+        "Lanes, files, terminals, chat, browser, and Electron Control remain owned by the remote runtime."
       ],
       "dependencies": ["Supported macOS runtime host", "Supported Linux runtime host"]
     },
@@ -493,7 +493,7 @@
     },
     {
       "id": "browser-app-control-proof",
-      "title": "Built-in Browser, App Control, and proof ingestion regressions pass",
+      "title": "Built-in Browser, Electron Control, and proof ingestion regressions pass",
       "hosts": ["windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-11-x64"],
@@ -506,7 +506,7 @@
       "requiredEvidenceKinds": ["gui", "ipc", "network", "log"],
       "passConditions": [
         "Built-in Browser navigation and downloads work without claiming native Windows computer use.",
-        "App Control launches a developer-owned Electron app, attaches over CDP, and accepts input.",
+        "Electron Control launches a developer-owned Electron app, attaches over CDP, and accepts input.",
         "Intentional screenshots, traces, and redacted logs ingest through the proof broker."
       ],
       "dependencies": ["Local non-secret Electron fixture app"]

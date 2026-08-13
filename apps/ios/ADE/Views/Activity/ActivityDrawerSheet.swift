@@ -11,9 +11,23 @@ import SwiftUI
 struct ActivityDrawerSheet: View {
     @EnvironmentObject private var drawer: ActivityDrawerModel
     @EnvironmentObject private var accountService: AccountService
+    @EnvironmentObject private var syncService: SyncService
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bucket: ActivityBucket = .sessions
+    /// `activity-entry` contributions, published against the `app` surface.
+    /// Rebuilt only when plugin rows change.
+    @State private var pluginContributions = PluginContributionIndex()
+
+    /// Plugin rows for the Inbox, in placement order.
+    ///
+    /// Inbox rather than Sessions, and the split is what the two buckets mean:
+    /// Sessions is every agent across every machine, which a plugin has no
+    /// business joining, and Inbox is the traffic that wants an
+    /// acknowledgement — which is exactly what this socket is for.
+    private var pluginEntries: [PluginContribution] {
+        pluginContributions.activityEntries()
+    }
 
     var body: some View {
         NavigationStack {
@@ -57,6 +71,7 @@ struct ActivityDrawerSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationContentInteraction(.scrolls)
+        .loadPluginContributions(.surface, into: $pluginContributions)
         .task {
             await accountService.refreshAttentionSnapshot()
             await accountService.updateAttentionPresence(
@@ -87,7 +102,12 @@ struct ActivityDrawerSheet: View {
     }
 
     private func bucketLabel(_ value: ActivityBucket) -> String {
-        let count = drawer.rows(in: value).count
+        // Plugin rows count toward the Inbox tab, because the number on a tab
+        // is a promise about what is behind it. They do NOT count toward the
+        // bell's unread mark: that mark is cleared by "mark all seen", and a
+        // plugin's row has no seen state to clear — it goes away when the
+        // plugin retracts it and not before.
+        let count = drawer.rows(in: value).count + (value == .inbox ? pluginEntries.count : 0)
         return count > 0 ? "\(value.title) \(count)" : value.title
     }
 
@@ -107,7 +127,11 @@ struct ActivityDrawerSheet: View {
                 sessionsList
             }
         case .inbox:
-            if drawer.inbox.isEmpty {
+            // Plugin rows keep the bucket alive on their own: an Inbox holding
+            // only a plugin's "needs you" is not an empty Inbox, and showing
+            // the empty state over it would hide the very thing that put the
+            // unread mark on the bell.
+            if drawer.inbox.isEmpty && pluginEntries.isEmpty {
                 emptyState
             } else {
                 inboxList
@@ -138,6 +162,19 @@ struct ActivityDrawerSheet: View {
         List {
             ForEach(drawer.inboxEntries) { entry in
                 entryView(entry)
+            }
+            // After the pane's own rows, never among them. A contribution
+            // follows core content on every surface, and here that is also what
+            // keeps a plugin from putting itself above a failing check.
+            if !pluginEntries.isEmpty {
+                Section {
+                    PluginActivityEntries(
+                        contributions: pluginEntries,
+                        projectKey: syncService.activeProjectId
+                    )
+                } header: {
+                    ActivityPluginSectionHeader(count: pluginEntries.count)
+                }
             }
             if drawer.itemsTruncated {
                 truncationNote
@@ -313,6 +350,34 @@ private struct ActivitySectionHeader: View {
             Text("\(count)")
                 .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
                 .foregroundStyle(tint)
+                .contentTransition(.numericText())
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Header for the contributed rows. Deliberately not an ``ActivitySectionHeader``:
+/// that one is typed by ``ActivityBand`` — needs you / working / done — and a
+/// plugin does not get to claim one of the three priority bands the pane uses
+/// to rank the user's own work.
+private struct ActivityPluginSectionHeader: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "puzzlepiece.extension")
+                .font(.system(.caption, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.textMuted)
+            Text("From plugins")
+                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .textCase(nil)
+            Text("\(count)")
+                .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
+                .foregroundStyle(ADEColor.textMuted)
                 .contentTransition(.numericText())
             Spacer(minLength: 0)
         }

@@ -1406,7 +1406,10 @@ function HelpPane({ content, width }: { content: HelpPaneContent; width: number 
             const nameWidth = item.row.name.length;
             const descRoom = Math.max(4, inner - nameWidth - 2 - (item.row.keybind ? item.row.keybind.length + 2 : 0));
             return (
-              <Box key={`r-${item.row.name}`} flexDirection="row" justifyContent="space-between">
+              // Keyed by flat index as well as name: contributed plugin rows
+              // share the `/plugin-view <id>` name when one plugin binds more
+              // than one chord, and a duplicate key would drop a row.
+              <Box key={`r-${item.flatIndex}-${item.row.name}`} flexDirection="row" justifyContent="space-between">
                 <Box flexDirection="row">
                   <Text color={selected ? theme.color.violet : theme.color.t5}>{selected ? theme.rail : " "}</Text>
                   <Text color={selected ? theme.color.violet : theme.color.t2} bold={selected}>{` ${item.row.name}`}</Text>
@@ -2440,7 +2443,9 @@ function RightPaneComponent({
                 ? "arrows move · enter/c copies"
                 : content.action.kind === "snooze-duration"
                   ? "arrows move · enter snoozes"
-                  : "arrows move · enter opens"}
+                  : content.action.kind === "plugin-row-action"
+                    ? "arrows move · enter runs"
+                    : "arrows move · enter opens"}
             </Text>
           ) : null}
         </Box>

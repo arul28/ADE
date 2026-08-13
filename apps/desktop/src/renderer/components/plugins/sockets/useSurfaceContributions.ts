@@ -1,37 +1,28 @@
 import React from "react";
 
-import { showToast } from "../../app/toast/toastStore";
-import { navigateToAppTarget } from "../../../lib/openExternal";
 import { subscribeToPluginChanges } from "../../../lib/pluginRuntimeBridge";
-import {
-  hasPluginActionComposerRequest,
-  readPluginActionComposerEdit,
-  readPluginActionNavigation,
-} from "../../../../shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import {
-  pluginSocketInvokeTimeoutMs,
   type PluginContribution,
   type PluginSocketKind,
   type PluginSurfaceId,
 } from "../../../../shared/plugins/sockets";
 import {
   clearPluginManifestCache,
-  invokePluginSocketAction,
   pluginSocketsAvailable,
   readPluginSocketSources,
   readSurfaceContributionRows,
   type PluginContributionRow,
   type PluginSocketSource,
 } from "./contributionBridge";
-import { applyPluginComposerEdit } from "./composerTarget";
+import { runPluginSocketAction } from "./pluginActionDispatch";
 import {
   buildContributionSet,
   pluginChangeAffects,
   pluginContextMemoKey,
   pluginViewerRegistrations,
   selectContributions,
-  SURFACE_ENTITY_KIND,
+  surfaceContributionEntityKinds,
   EMPTY_CONTRIBUTION_SET,
   type PluginViewerRegistration,
   type SurfaceContributionSet,
@@ -163,13 +154,28 @@ class RowsStore extends Store<RowsSnapshot> {
     super(EMPTY_ROWS);
   }
 
+  /**
+   * One reveal, one load — but two reads, because a surface has two kinds of
+   * row: the entities it lists, and the tab itself.
+   *
+   * `surfaceContributionEntityKinds` decides which, and dedupes the three
+   * surfaces that already ARE `surface`. The reads are concurrent and land as a
+   * single snapshot, so the store still has exactly one inflight promise and a
+   * surface with a hundred rows still costs one reveal, not one per row.
+   *
+   * A failing read yields no rows rather than rejecting the pair: a host too old
+   * to answer for one entity kind must not blank the kind it does answer for.
+   */
   ensureLoaded(): void {
     this.listenForChanges();
     if (!this.stale || this.inflight) return;
     this.stale = false;
-    this.inflight = readSurfaceContributionRows(this.surface, SURFACE_ENTITY_KIND[this.surface])
-      .then((rows) => {
-        this.set({ status: "ready", rows });
+    this.inflight = Promise.all(
+      surfaceContributionEntityKinds(this.surface).map((entityKind) =>
+        readSurfaceContributionRows(this.surface, entityKind).catch(() => [] as PluginContributionRow[])),
+    )
+      .then((results) => {
+        this.set({ status: "ready", rows: results.flat() });
       })
       .catch(() => {
         this.set({ status: "ready", rows: [] });
@@ -296,50 +302,22 @@ export function usePluginFileViewers(active = true): PluginViewerRegistration[] 
  * `composer-action` that records or transcribes runs for minutes by design,
  * while a button on a row keeps the 60s default. A caller that names nothing
  * gets the default, which is what every socket had before this existed.
+ *
+ * `timeoutMs` overrides that for a caller with no socket to name — a plugin
+ * slash command invoked from the composer is the same long-running work
+ * wearing a different affordance, and it would be a lie to call it a
+ * `composer-action` just to inherit the budget. The host clamps whatever is
+ * asked for; see `clampPluginInvokeTimeoutMs`.
+ *
+ * The dispatch itself lives in `./pluginActionDispatch`, because one caller is
+ * not a component: the chat-card action bridge is a window listener, and it has
+ * to honour the response verbs identically.
  */
 export function usePluginSocketInvoke(): (
   pluginId: string,
   actionId: string,
   context: PluginSurfaceContext,
-  options?: { socket?: PluginSocketKind },
+  options?: { socket?: PluginSocketKind; timeoutMs?: number },
 ) => Promise<void> {
-  return React.useCallback((pluginId, actionId, context, options) => (
-    invokePluginSocketAction(
-      pluginId,
-      actionId,
-      { context },
-      { timeoutMs: pluginSocketInvokeTimeoutMs(options?.socket) },
-    )
-      .then((result) => {
-        // Applied before navigation, which may take the composer off screen:
-        // an action that writes a draft and then opens its own panel should do
-        // both, in the order the plugin can predict.
-        const edit = readPluginActionComposerEdit(result);
-        if (edit) applyPluginComposerEdit(edit, { context, pluginId, actionId });
-        else if (hasPluginActionComposerRequest(result)) {
-          // The plugin asked and this client refused: a non-string verb, an
-          // empty insert, or text over PLUGIN_COMPOSER_TEXT_MAX_BYTES.
-          console.warn("[plugin composer] ignored a malformed composer edit", pluginId, actionId);
-        }
-        // An action may ask to be followed: "I filed the issue, here it is."
-        // Routed through the ordinary navigation target rather than a direct
-        // `navigate`, so it passes the same installed-and-enabled gate a
-        // `plugin` deeplink does and lands on the same addressable URL.
-        const navigation = readPluginActionNavigation(result);
-        if (!navigation) return;
-        navigateToAppTarget({
-          kind: "plugin",
-          pluginId,
-          panelId: navigation.panelId,
-          context: navigation.context ?? null,
-        });
-      })
-      .catch((cause: unknown) => {
-        showToast({
-          title: "Plugin action failed",
-          message: cause instanceof Error ? cause.message : `${pluginId} couldn’t run ${actionId}.`,
-          tone: "error",
-        });
-      })
-  ), []);
+  return React.useCallback(runPluginSocketAction, []);
 }

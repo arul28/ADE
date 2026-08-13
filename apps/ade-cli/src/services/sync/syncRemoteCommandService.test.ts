@@ -3278,6 +3278,239 @@ describe("plugin remote commands", () => {
     }
   });
 
+  describe("plugins.contributions", () => {
+    /** One `plugin_contributions` row as the table stores it. */
+    function dbRow(overrides: Record<string, unknown> = {}) {
+      return {
+        entity_kind: "lane",
+        entity_id: "lane-1",
+        plugin_id: "graph",
+        socket: "row-badge",
+        payload_json: JSON.stringify({ text: "3 risks", tone: "warning" }),
+        updated_at: "2026-08-13T00:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    function dbWithRows(rows: Record<string, unknown>[]) {
+      return { run: vi.fn(), runChanged: vi.fn(), get: vi.fn(), all: vi.fn().mockReturnValue(rows) };
+    }
+
+    function bindInstalls(records: Record<string, unknown>[]) {
+      setPluginInstallService({
+        install: vi.fn(),
+        uninstall: vi.fn(),
+        setEnabled: vi.fn(),
+        list: vi.fn().mockResolvedValue(records),
+      } as never);
+    }
+
+    const graph = (overrides: Record<string, unknown> = {}) => ({
+      pluginId: "graph",
+      version: "1.0.0",
+      enabled: true,
+      displayName: "Graph",
+      icon: "",
+      accent: "",
+      source: "registry",
+      installedAt: "2026-08-11T00:00:00.000Z",
+      sockets: [{ socket: "row-badge", surface: "lanes", id: "risk-badge" }],
+      ...overrides,
+    });
+
+    it("is project-scoped, unlike every machine-scoped sibling", () => {
+      const { service } = createService({});
+      // The table is per project, so a runtime-scoped registration would answer
+      // from whichever project the daemon considered current — the wrong rows
+      // silently, rather than no rows loudly.
+      expect(service.getDescriptor("plugins.contributions")?.scope).toBe("project");
+      // Same read sensitivity as `plugins.list`: these are UI facts from the
+      // same install set, and a badge a viewer cannot see is a surface that
+      // silently differs by role.
+      expect(service.getDescriptor("plugins.contributions")?.policy).toEqual({ viewerAllowed: true });
+    });
+
+    it("joins rows to the manifest socket that declares them", async () => {
+      bindInstalls([graph()]);
+      const db = dbWithRows([dbRow()]);
+      const { service } = createService({ db } as never);
+
+      await expect(service.execute(makePayload("plugins.contributions", { surface: "lanes" })))
+        .resolves.toEqual({
+          contributions: [{
+            entityKind: "lane",
+            entityId: "lane-1",
+            pluginId: "graph",
+            socket: "row-badge",
+            // Neither of these is a column. The table stores a socket KIND;
+            // which surface it renders on and which declaration it fills are
+            // manifest detail the host resolves so a peer without the manifest
+            // can place the row at all.
+            surface: "lanes",
+            socketId: "risk-badge",
+            payload: { text: "3 risks", tone: "warning" },
+            updatedAt: "2026-08-13T00:00:00.000Z",
+          }],
+        });
+    });
+
+    it("drops rows whose plugin is disabled, whose socket is switched off, or which nothing declares", async () => {
+      bindInstalls([
+        graph({ enabled: false }),
+        graph({ pluginId: "lint", sockets: [{ socket: "row-badge", surface: "lanes", id: "lint-badge" }], disabledContributions: ["lint-badge"] }),
+        graph({ pluginId: "stale", sockets: [] }),
+      ]);
+      const db = dbWithRows([
+        dbRow(),
+        dbRow({ plugin_id: "lint" }),
+        dbRow({ plugin_id: "stale" }),
+      ]);
+      const { service } = createService({ db } as never);
+
+      // All three drop out HERE, so no reader has to re-derive any of it —
+      // matching what `pluginHostService.listContributions` does on desktop.
+      await expect(service.execute(makePayload("plugins.contributions", { surface: "lanes" })))
+        .resolves.toEqual({ contributions: [] });
+    });
+
+    /**
+     * Two declarations of one kind, which is where this transport used to
+     * disagree with the desktop.
+     *
+     * Keyed on `pluginId + kind` alone, both declarations collapsed to whichever
+     * was declared LAST, and every published row was stamped with that arbitrary
+     * winner's `socketId` and `enabled` flag — so switching off one badge hid
+     * the OTHER badge's rows on the phone while the desktop, which resolves per
+     * declaration, still drew them. The host was fixed; this path was not.
+     */
+    it("resolves an addressed row to its own declaration, not to whichever was declared last", async () => {
+      bindInstalls([graph({
+        sockets: [
+          { socket: "row-badge", surface: "lanes", id: "risk-badge" },
+          { socket: "row-badge", surface: "lanes", id: "size-badge" },
+        ],
+        disabledContributions: ["size-badge"],
+      })]);
+      const db = dbWithRows([
+        dbRow({ payload_json: JSON.stringify({ text: "3 risks", tone: "warning", id: "risk-badge" }) }),
+        dbRow({ entity_id: "lane-2", payload_json: JSON.stringify({ text: "L", tone: "muted", id: "size-badge" }) }),
+      ]);
+      const { service } = createService({ db } as never);
+
+      const result = await service.execute(makePayload("plugins.contributions", { surface: "lanes" })) as {
+        contributions: { entityId: string; socketId: string }[];
+      };
+      // The addressed row survives under its OWN declaration; the row addressed
+      // to the switched-off one drops. Neither outcome is reachable when `id`
+      // is stripped from the published payload.
+      expect(result.contributions).toHaveLength(1);
+      expect(result.contributions[0]).toMatchObject({ entityId: "lane-1", socketId: "risk-badge" });
+    });
+
+    it("leaves an unaddressed row unmatched when its kind is declared twice", async () => {
+      bindInstalls([graph({
+        sockets: [
+          { socket: "row-badge", surface: "lanes", id: "risk-badge" },
+          { socket: "row-badge", surface: "lanes", id: "size-badge" },
+        ],
+      })]);
+      const db = dbWithRows([dbRow()]);
+      const { service } = createService({ db } as never);
+
+      // Guessing is what produced the disagreement, so an unaddressed row with
+      // no non-arbitrary answer is dropped — the same refusal the host makes.
+      await expect(service.execute(makePayload("plugins.contributions", { surface: "lanes" })))
+        .resolves.toEqual({ contributions: [] });
+    });
+
+    it("answers only for the surface asked for", async () => {
+      bindInstalls([graph({
+        sockets: [
+          { socket: "row-badge", surface: "lanes", id: "risk-badge" },
+          { socket: "row-badge", surface: "prs", id: "pr-badge" },
+        ],
+      })]);
+      const db = dbWithRows([dbRow()]);
+      const { service } = createService({ db } as never);
+
+      const prs = await service.execute(makePayload("plugins.contributions", { surface: "prs" })) as {
+        contributions: { socketId: string }[];
+      };
+      expect(prs.contributions[0]?.socketId).toBe("pr-badge");
+      expect(prs.contributions[0]).toMatchObject({ surface: "prs" });
+    });
+
+    it("refuses a surface that is not a core surface instead of answering empty", async () => {
+      bindInstalls([graph()]);
+      const { service } = createService({ db: dbWithRows([]) } as never);
+
+      // Empty would read as "no plugin says anything about this surface", which
+      // is a claim about a surface that does not exist.
+      await expect(service.execute(makePayload("plugins.contributions", { surface: "not-a-surface" })))
+        .rejects.toThrow(/surface is required/);
+      await expect(service.execute(makePayload("plugins.contributions", {})))
+        .rejects.toThrow(/surface is required/);
+    });
+
+    it("keeps one unreadable payload from costing the whole surface", async () => {
+      bindInstalls([graph()]);
+      const db = dbWithRows([
+        dbRow({ entity_id: "lane-1", payload_json: "{ not json" }),
+        dbRow({ entity_id: "lane-2" }),
+      ]);
+      const { service } = createService({ db } as never);
+
+      const result = await service.execute(makePayload("plugins.contributions", { surface: "lanes" })) as {
+        contributions: { entityId: string; payload: unknown }[];
+      };
+      // Plugin-authored content: the bad row survives as an unreadable payload
+      // rather than throwing away the good one beside it.
+      expect(result.contributions.map((row) => [row.entityId, row.payload])).toEqual([
+        ["lane-1", null],
+        ["lane-2", { text: "3 risks", tone: "warning" }],
+      ]);
+    });
+
+    it("drops a row from an entity kind this build has never heard of", async () => {
+      bindInstalls([graph()]);
+      const db = dbWithRows([dbRow({ entity_kind: "wormhole" })]);
+      const { service } = createService({ db } as never);
+
+      // Nothing upstream restricts `entity_kind` to the closed union, so a row
+      // from a future kind is dropped rather than handed to a renderer that has
+      // no case for it.
+      await expect(service.execute(makePayload("plugins.contributions", { surface: "lanes" })))
+        .resolves.toEqual({ contributions: [] });
+    });
+
+    it("answers empty with no project database bound", async () => {
+      bindInstalls([graph()]);
+      const { service } = createService({});
+
+      // Empty is right here and wrong for `plugins.list`: a surface with no
+      // dynamic contributions is a quieter tab, not a claim about installs.
+      await expect(service.execute(makePayload("plugins.contributions", { surface: "lanes" })))
+        .resolves.toEqual({ contributions: [] });
+    });
+
+    it("narrows the table read by entity, so a list does not fetch the project", async () => {
+      bindInstalls([graph()]);
+      const db = dbWithRows([dbRow()]);
+      const { service } = createService({ db } as never);
+
+      await service.execute(makePayload("plugins.contributions", {
+        surface: "lanes",
+        entityKind: "lane",
+        entityIds: ["lane-1", "lane-2"],
+      }));
+
+      const sql = String(db.all.mock.calls[0]?.[0] ?? "");
+      expect(sql).toMatch(/entity_kind = \?/);
+      expect(sql).toMatch(/entity_id in \(\?, \?\)/);
+      expect(db.all.mock.calls[0]?.[1]).toEqual(["lane", "lane-1", "lane-2", expect.any(Number)]);
+    });
+  });
+
   it("keeps plugin actions out of the mobile required set", () => {
     // A phone paired to a host missing a REQUIRED action drops to limited mode,
     // so an optional capability in that set turns "no plugins on this build"

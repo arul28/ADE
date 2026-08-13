@@ -60,12 +60,17 @@ final class PluginContributionTests: XCTestCase {
   }
 
   func testSocketsThisBuildDoesNotDrawAreSkipped() {
-    // The taxonomy has seven kinds and this build renders two. The other five
-    // must decode to nothing rather than to a half-built control.
-    for socket in ["toolbar-action", "detail-section", "empty-state", "filter-chip", "file-viewer", "row-halo"] {
+    // The taxonomy has sixteen kinds and this build renders ten. The six that
+    // have no honest surface on a phone (window chrome, rails, drawers,
+    // dialogs, a flat Settings) must decode to nothing rather than to a
+    // half-built control — plus any kind this build has never heard of.
+    for socket in [
+      "command-palette-action", "settings-section", "work-rail-pane",
+      "drawer-tab", "dialog-section", "slash-command", "row-halo",
+    ] {
       XCTAssertNil(PluginContributionParser.parse(
         entityKind: "pr", entityId: "42", pluginId: "p",
-        socket: socket, payloadJSON: #"{ "label": "x", "actionId": "y", "panelId": "z" }"#, updatedAt: ""
+        socket: socket, payloadJSON: #"{ "label": "x", "actionId": "y", "panelId": "z", "command": "x", "dialog": "create-pr" }"#, updatedAt: ""
       ), "\(socket) should not decode in this build")
     }
   }

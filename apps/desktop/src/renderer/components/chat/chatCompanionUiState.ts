@@ -1,3 +1,4 @@
+import { isPluginPanelSlotId } from "../plugins/sockets/panelSlotId";
 import type { ChatActionsTab } from "./ChatActionsDrawerPanel";
 
 /**
@@ -62,6 +63,11 @@ function parseChatActionsTab(value: unknown): ChatActionsTab {
     || value === "handoff"
     || value === "missions"
   ) return value;
+  // A contributed `drawer-tab` persists by its slot id. Restoring one whose
+  // plugin has since been removed is safe — the drawer falls back to Agents
+  // when nothing answers to the id — and refusing to restore it here would
+  // lose the tab across a restart for every plugin that is still installed.
+  if (typeof value === "string" && isPluginPanelSlotId(value)) return value as ChatActionsTab;
   return "agents";
 }
 

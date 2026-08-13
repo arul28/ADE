@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { splitPluginRowBadges } from "../../../../shared/plugins/sockets";
 import type { PluginLaneContext, PluginSurfaceContext } from "../../../../shared/plugins/context";
+import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import { resolveViewerKind } from "../../files/v2/viewerRegistry";
 import type { PluginContributionRow, PluginSocketSource } from "./contributionBridge";
 import { pluginAutomationContext } from "./surfaceContexts";
@@ -16,6 +17,7 @@ import {
   pluginViewerKind,
   pluginViewerRegistrations,
   selectContributions,
+  surfaceContributionEntityKinds,
 } from "./contributionModel";
 
 /**
@@ -83,6 +85,143 @@ describe("manifest sockets → contributions", () => {
     ]);
     expect(contributions[0]?.payload).toMatchObject({ label: "Sync", actionId: "sync" });
     expect(contributions[2]?.payload).toMatchObject({ panelId: "main", title: "Graph" });
+  });
+
+  /**
+   * Every kind gets an arm, and every arm is exercised here.
+   *
+   * The bug this table closes is silent by construction: a kind with no arm in
+   * `payloadFromManifestSocket` parses in the manifest, installs clean, and
+   * contributes nothing, with no warning anywhere. So the assertion is not
+   * "the mapping is right" so much as "the mapping EXISTS for all sixteen" —
+   * which is why it is one table rather than sixteen scattered cases.
+   */
+  it("translates every socket kind a manifest can declare", () => {
+    const contributions = contributionsFromSource(
+      source("kitchen-sink", [
+        { socket: "toolbar-action", surface: "lanes", id: "a", label: "Sync", actionId: "sync" },
+        { socket: "row-badge", surface: "lanes", id: "b", label: "Risk" },
+        { socket: "row-menu-item", surface: "lanes", id: "c", label: "Open", actionId: "open" },
+        { socket: "detail-section", surface: "lanes", id: "d", label: "Graph", panelId: "graph" },
+        { socket: "empty-state", surface: "lanes", id: "e", label: "Nothing yet", actionId: "start" },
+        { socket: "filter-chip", surface: "lanes", id: "f", label: "Stacked", filterKey: "stacked" },
+        { socket: "file-viewer", surface: "files", id: "g", panelId: "proto", extensions: [".proto"] },
+        { socket: "composer-action", surface: "work", id: "h", label: "Dictate", actionId: "dictate" },
+        { socket: "chat-card", surface: "work", id: "i", label: "Lint report", panelId: "report" },
+        { socket: "slash-command", surface: "work", id: "j", label: "Fix the lint", command: "lint", actionId: "fix", description: "Fix every lint problem", argumentHint: "<path>" },
+        { socket: "command-palette-action", surface: "work", id: "k", label: "Run lint", actionId: "lint" },
+        { socket: "settings-section", surface: "settings", id: "l", label: "Lint", panelId: "settings", section: "integrations" },
+        { socket: "work-rail-pane", surface: "work", id: "m", label: "Lint", panelId: "rail" },
+        { socket: "drawer-tab", surface: "work", id: "n", label: "Lint", panelId: "drawer" },
+        { socket: "activity-entry", surface: "app", id: "o", label: "3 problems", actionId: "review" },
+        { socket: "dialog-section", surface: "lanes", id: "p", label: "Lint", panelId: "dialog", dialog: "create-lane" },
+      ]),
+    );
+
+    // Sixteen declared, sixteen renderable. A kind that lost its arm shows up
+    // here as a missing entry rather than as a plugin author's bug report.
+    expect(contributions).toHaveLength(16);
+    const payloadFor = (socket: string) =>
+      contributions.find((entry) => entry.socket === socket)?.payload;
+
+    expect(payloadFor("chat-card")).toMatchObject({ panelId: "report", title: "Lint report" });
+    expect(payloadFor("slash-command")).toMatchObject({
+      command: "lint",
+      actionId: "fix",
+      description: "Fix every lint problem",
+      argumentHint: "<path>",
+    });
+    expect(payloadFor("command-palette-action")).toMatchObject({ label: "Run lint", actionId: "lint" });
+    expect(payloadFor("settings-section")).toEqual({
+      panelId: "settings",
+      title: "Lint",
+      section: "integrations",
+    });
+    expect(payloadFor("work-rail-pane")).toMatchObject({ label: "Lint", panelId: "rail" });
+    expect(payloadFor("drawer-tab")).toMatchObject({ label: "Lint", panelId: "drawer" });
+    // Neutral, like a manifest row badge: a static entry cannot know whether
+    // the thing it describes currently needs anyone.
+    expect(payloadFor("activity-entry")).toMatchObject({
+      title: "3 problems",
+      tone: "neutral",
+      actionId: "review",
+    });
+    expect(payloadFor("activity-entry")).not.toHaveProperty("actionLabel");
+    expect(payloadFor("dialog-section")).toMatchObject({
+      dialog: "create-lane",
+      panelId: "dialog",
+      title: "Lint",
+    });
+  });
+
+  /**
+   * The three optional per-kind extras, which are passthroughs rather than
+   * requirements: dropping a whole contribution over a missing menu subtitle
+   * would be wrong, so an absent one is absent and the contribution still
+   * renders.
+   */
+  it("falls back to the label for a slash command written before `description` existed", () => {
+    const contributions = contributionsFromSource(
+      source("lint", [
+        { socket: "slash-command", surface: "work", id: "a", label: "Fix the lint", command: "lint", actionId: "fix" },
+      ]),
+    );
+
+    // Mirrors the host's mapping in `main/services/chat/pluginSlashCommands.ts`
+    // exactly; the two feed one command menu from different sides.
+    expect(contributions[0]?.payload).toMatchObject({ description: "Fix the lint" });
+    expect(contributions[0]?.payload).not.toHaveProperty("argumentHint");
+  });
+
+  it("keeps a settings section renderable when it names no page", () => {
+    const contributions = contributionsFromSource(
+      source("lint", [{ socket: "settings-section", surface: "settings", id: "a", label: "Lint", panelId: "p" }]),
+    );
+
+    expect(contributions).toHaveLength(1);
+    expect(contributions[0]?.payload).toEqual({ panelId: "p", title: "Lint" });
+  });
+
+  /**
+   * `bounded` REFUSES an over-length value rather than truncating it, so a
+   * description past the payload cap comes back absent — and deliberately does
+   * NOT fall back to the label. The host's mapping has the same behaviour, and
+   * a renderer that quietly substituted something else would print one subtitle
+   * in the composer and another in `getSlashCommands`.
+   */
+  it("drops an over-long description instead of truncating or substituting it", () => {
+    const contributions = contributionsFromSource(
+      source("lint", [
+        {
+          socket: "slash-command",
+          surface: "work",
+          id: "a",
+          label: "Fix the lint",
+          command: "lint",
+          actionId: "fix",
+          description: "x".repeat(121),
+        },
+      ]),
+    );
+
+    expect(contributions).toHaveLength(1);
+    expect(contributions[0]?.payload).not.toHaveProperty("description");
+  });
+
+  it("drops a new-kind socket that is missing the one field its kind needs", () => {
+    // The requirement table is per kind, and these are the fields the four
+    // generic ones (`label`/`actionId`/`panelId`/`extensions`) do not cover.
+    const contributions = contributionsFromSource(
+      source("kitchen-sink", [
+        // No `command` — a slash entry with no word to type.
+        { socket: "slash-command", surface: "work", id: "a", label: "Fix", actionId: "fix" },
+        // No `dialog` — a section that cannot say which dialog it mounts on.
+        { socket: "dialog-section", surface: "lanes", id: "b", label: "Lint", panelId: "dialog" },
+        // No `panelId` — a rail pane with nothing to reveal.
+        { socket: "work-rail-pane", surface: "work", id: "c", label: "Lint" },
+      ]),
+    );
+    expect(contributions).toEqual([]);
   });
 
   it("drops a socket whose implied payload is incomplete", () => {
@@ -189,6 +328,112 @@ describe("composer actions", () => {
       draft: "",
       cursor: null,
     }).map((entry) => entry.payload)).toEqual([{ label: "Dictate", actionId: "dictate" }]);
+  });
+});
+
+/**
+ * Rows a plugin publishes against the TAB rather than against a row on it.
+ *
+ * A plugin can only reach a client with no manifest feed by publishing, so the
+ * phone receives toolbar actions, empty states and filter chips as
+ * `{entityKind: "surface", entityId: <surface>}` rows. Desktop asked only for
+ * the entity kind its surface carries, so those rows were fetched by nobody and
+ * the same plugin lit up on iOS and stayed dark here.
+ */
+describe("surface-scoped contribution rows", () => {
+  const surfaceRow = (
+    pluginId: string,
+    socket: PluginContributionRow["socket"],
+    payload: Record<string, unknown>,
+    surface: PluginSurfaceId = "lanes",
+  ): PluginContributionRow => ({
+    entityKind: "surface",
+    entityId: surface,
+    pluginId,
+    socket,
+    surface,
+    payload,
+    updatedAt: "2026-08-13T00:00:00.000Z",
+  });
+
+  it("reads both the surface's own entity kind and `surface`, deduped", () => {
+    // Lanes lists lanes, so it needs both. The three subject-less surfaces
+    // already ARE `surface`; asking twice there would double every row.
+    expect(surfaceContributionEntityKinds("lanes")).toEqual(["lane", "surface"]);
+    expect(surfaceContributionEntityKinds("work")).toEqual(["session", "surface"]);
+    expect(surfaceContributionEntityKinds("prs")).toEqual(["pr", "surface"]);
+    expect(surfaceContributionEntityKinds("cto")).toEqual(["surface"]);
+    expect(surfaceContributionEntityKinds("app")).toEqual(["surface"]);
+    expect(surfaceContributionEntityKinds("settings")).toEqual(["surface"]);
+  });
+
+  it("renders a surface-published contribution on the surface", () => {
+    const set = buildContributionSet(
+      [source("graph", [])],
+      [surfaceRow("graph", "toolbar-action", { label: "Sync", actionId: "sync" })],
+      "lanes",
+    );
+
+    // Both spellings of "no subject" reach it: an explicit surface-only
+    // context, and a caller that passes none at all.
+    const withContext = selectContributions(set, "toolbar-action", { kind: "surface", surface: "lanes" });
+    expect(withContext.map((entry) => entry.payload)).toEqual([{ label: "Sync", actionId: "sync" }]);
+    expect(selectContributions(set, "toolbar-action")).toHaveLength(1);
+  });
+
+  it("does not leak a surface row onto the entities the surface lists", () => {
+    // A row addressed to the tab is about the tab. Folding it into an entity
+    // lookup would print one toolbar contribution onto every lane on the list.
+    const set = buildContributionSet(
+      [source("graph", [])],
+      [surfaceRow("graph", "row-badge", { text: "Tab", tone: "neutral" })],
+      "lanes",
+    );
+
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT)).toEqual([]);
+    expect(selectContributions(set, "row-badge", { kind: "surface", surface: "lanes" })).toHaveLength(1);
+  });
+
+  it("keeps entity rows working exactly as before", () => {
+    const set = buildContributionSet(
+      [source("graph", [])],
+      [
+        laneBadgeRow("graph", { text: "Risk", tone: "warning" }),
+        surfaceRow("graph", "row-badge", { text: "Tab", tone: "neutral" }),
+      ],
+      "lanes",
+    );
+
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload))
+      .toEqual([{ text: "Risk", tone: "warning" }]);
+  });
+
+  /**
+   * The regression this fix could most easily have caused.
+   *
+   * `entityMatchesPluginFilters` reads a null from
+   * `pluginContributionKeyForContext` as "this subject is not filterable, keep
+   * it". Teaching THAT function about surfaces — rather than routing the
+   * surface key through `pluginSurfaceContributionKey` as this fix does — would
+   * make selecting any chip look up a surface in `filterKeysByEntity`, miss,
+   * and silently hide every row on the tab.
+   */
+  it("does not make surface subjects filterable, so selecting a chip hides nothing", () => {
+    const set = buildContributionSet(
+      [source("graph", [])],
+      [
+        surfaceRow("graph", "filter-chip", { label: "Stacked", filterKey: "stacked" }),
+        laneBadgeRow("graph", { text: "Risk", tone: "warning", filterKey: "stacked" }),
+      ],
+      "lanes",
+    );
+
+    const surfaceContext: PluginSurfaceContext = { kind: "surface", surface: "lanes" };
+    expect(entityMatchesPluginFilters(set, surfaceContext, [])).toBe(true);
+    expect(entityMatchesPluginFilters(set, surfaceContext, ["stacked"])).toBe(true);
+    // A chip nobody tagged still filters the ENTITIES it was meant to filter.
+    expect(entityMatchesPluginFilters(set, LANE_CONTEXT, ["stacked"])).toBe(true);
+    expect(entityMatchesPluginFilters(set, LANE_CONTEXT, ["unrelated"])).toBe(false);
   });
 });
 
@@ -351,6 +596,36 @@ describe("ordering and caps", () => {
       "A2",
       "Z",
     ]);
+  });
+
+  /**
+   * The half the test above does not reach.
+   *
+   * Everything it orders is a STATIC manifest contribution, and statics never
+   * pass through `parsePluginContributionPayload`. Published rows do, and
+   * `order` was stripped there — so every published contribution fell back to
+   * `Number.MAX_SAFE_INTEGER` and sorted last while the statics beside them
+   * ordered correctly. One merged list, two halves disagreeing about whether
+   * ordering worked, and a green suite either way.
+   *
+   * `order` beating the plugin-id tie-break is what makes this discriminating:
+   * `zeta` sorts after `alpha` on every other term, so it can only come first
+   * if its published `order` was actually read. The companion assertion lives
+   * at the writer (`pluginDataStore.test.ts`, that `order` survives publish);
+   * together they cover the seam that let this ship.
+   */
+  it("honours order on a published row, not just on a manifest declaration", () => {
+    const set = buildContributionSet(
+      [source("alpha", []), source("zeta", [])],
+      [
+        laneBadgeRow("alpha", { text: "Unordered" }),
+        laneBadgeRow("zeta", { text: "Ordered", order: 1 }),
+      ],
+      "lanes",
+    );
+
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+      .toEqual(["Ordered", "Unordered"]);
   });
 
   it("shows two badges and folds the rest into an overflow count", () => {

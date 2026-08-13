@@ -15,6 +15,7 @@ import {
 import { ACTIVITY_EVENT_BY_KIND, type ActivityIconKey } from "../../../shared/activityCatalog";
 import type { AttentionItem } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
+import { PluginActivityEntries, usePluginActivityEntryCount } from "../plugins/sockets";
 import { cn } from "../ui/cn";
 import { ActivitySectionHeader } from "./ActivitySectionHeader";
 import { activityItemPresentation } from "./activityPresentation";
@@ -135,6 +136,7 @@ export function ActivityInboxColumn({
   onClearAll: (items: readonly AttentionItem[]) => void;
 }) {
   const inbox = useMemo(() => activityInboxItems(items), [items]);
+  const pluginEntryCount = usePluginActivityEntryCount();
   const collapse = useActivitySectionCollapse("pane");
   const {
     visibleRows: shown,
@@ -172,7 +174,10 @@ export function ActivityInboxColumn({
         ) : null}
       </header>
       <div className="activity-column-scroll" data-testid="activity-inbox-scroll">
-        {inbox.length === 0 ? (
+        {/* The empty state answers for ADE's own rows only. A plugin with a
+            raised hand makes "Inbox zero" false, and the pane exists to say
+            what is waiting on you — so the plugin section suppresses it. */}
+        {inbox.length === 0 && pluginEntryCount === 0 ? (
           <div className="activity-empty" data-activity-empty="inbox">
             {filtered ? (
               <>
@@ -232,6 +237,9 @@ export function ActivityInboxColumn({
             ) : null}
           </>
         )}
+        {/* Always last in the column: placement is host-controlled and a
+            contribution never interleaves with the product's own rows. */}
+        <PluginActivityEntries />
       </div>
     </section>
   );

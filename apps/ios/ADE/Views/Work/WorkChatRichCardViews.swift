@@ -3971,6 +3971,19 @@ struct WorkAdeCardView: View {
   /// locally through `navTarget` on every client.
   var onAction: ((WorkAdeCardAction) -> Void)? = nil
   var onOpenDeeplink: (URL) -> Void = { DeepLinkRouter.shared.handle($0) }
+  /// The chat this card sits in, for a plugin panel's context. Empty in the
+  /// previews and in any caller with no session, which is also the only state
+  /// where a `chat-card` panel cannot be drawn.
+  var sessionId: String = ""
+  /// `chat-card` declarations for this chat. A card's panel draws only when the
+  /// plugin that emitted it also declared a card naming that panel — the card
+  /// carries the placement, the contribution carries the permission — so a
+  /// caller that passes nothing gets every card as an ordinary card.
+  var pluginContributions = PluginContributionIndex()
+  /// Passed rather than read from the environment because the panel builds a
+  /// `PluginPaneStore` in its `init`, where `@EnvironmentObject` is not yet
+  /// populated. Nil in previews, which is also where there is no panel to draw.
+  var pluginSyncService: SyncService? = nil
 
   private var deeplink: URL? { workAdeCardDeeplink(card.navTarget) }
   private var availableActions: [WorkAdeCardAction] {
@@ -3998,6 +4011,25 @@ struct WorkAdeCardView: View {
 
   private var accentTint: Color { workAdeCardToneColor(accentTone) }
 
+  /// The plugin panel this card may draw, or nil.
+  ///
+  /// Three things have to hold, and each is a different question: the card must
+  /// name an author (who), it must name a panel (what), and that plugin must
+  /// have declared a `chat-card` naming that panel for this chat (whether it
+  /// may). Missing any one leaves an ordinary card, which is the honest
+  /// degradation — the title, rows and metrics it also sent are real.
+  private var declaredPanel: WorkAdeCardPanel? {
+    guard let author = card.author, let panel = card.panel, !sessionId.isEmpty else { return nil }
+    guard pluginContributions.declaresChatCard(
+      pluginId: author.pluginId,
+      panelId: panel.panelId,
+      sessionId: sessionId
+    ) else {
+      return nil
+    }
+    return panel
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       progressBar
@@ -4006,6 +4038,7 @@ struct WorkAdeCardView: View {
       } else {
         fallbackBody
       }
+      pluginPanelSection
     }
     .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
@@ -4015,6 +4048,50 @@ struct WorkAdeCardView: View {
     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel(card.fallbackText)
+  }
+
+  /// The plugin's panel and its byline, under the card's own body.
+  ///
+  /// The byline is drawn whenever the card HAS an author, panel or not, and on
+  /// both the rich and the fallback path — one placement here rather than
+  /// desktop's two call sites, because it hangs off the frame rather than off
+  /// either body.
+  ///
+  /// "via <plugin>", quiet by design: it is a byline, not a badge. What it must
+  /// never be is absent. Everything else in this transcript is either the
+  /// user's words or the agent's, so a card with no byline reads as something
+  /// ADE observed — and installed code writing rows under ADE's own voice is
+  /// the failure the field exists to prevent. The value is host-stamped, so it
+  /// names the package whose code ran rather than whatever the payload claimed.
+  @ViewBuilder
+  private var pluginPanelSection: some View {
+    if let author = card.author {
+      VStack(alignment: .leading, spacing: 8) {
+        if let panel = declaredPanel, let syncService = pluginSyncService {
+          Divider().overlay(ADEColor.border.opacity(0.4))
+          PluginChatCardPanel(
+            pluginId: author.pluginId,
+            panelId: panel.panelId,
+            context: panel.context,
+            sessionId: sessionId,
+            syncService: syncService
+          )
+        }
+        HStack(spacing: 4) {
+          Image(systemName: "puzzlepiece.extension")
+            .font(.system(size: 9, weight: .semibold))
+          Text("via \(author.label)")
+            .font(.caption2)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Card from \(author.label)")
+      }
+      .padding(.horizontal, 12)
+      .padding(.bottom, 8)
+    }
   }
 
   // MARK: Progress

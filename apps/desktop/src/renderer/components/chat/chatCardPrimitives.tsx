@@ -225,22 +225,29 @@ export function ChatCardButton({
   children,
   onClick,
   title,
+  busy = false,
 }: {
   primary?: boolean;
   children: React.ReactNode;
   onClick?: () => void;
   title?: string;
+  /** This button's own action is in flight: it says so, and it refuses a second press. */
+  busy?: boolean;
 }) {
   return (
     <button
       type="button"
       title={title}
+      aria-busy={busy ? true : undefined}
+      disabled={busy}
       onClick={(clickEvent) => {
         clickEvent.stopPropagation();
+        if (busy) return;
         onClick?.();
       }}
       className={cn(
         "inline-flex items-center rounded-[7px] border px-2.5 py-1 font-sans font-semibold transition-colors",
+        busy && "cursor-progress opacity-60",
         CHAT_CARD_MICRO_TEXT,
         primary
           ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[color:var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"

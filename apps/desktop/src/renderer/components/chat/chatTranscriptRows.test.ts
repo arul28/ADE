@@ -3389,6 +3389,28 @@ describe("ade_card transcript rows", () => {
     expect(rows[1]!.timestamp).toBe("2026-07-27T10:00:03.000Z");
   });
 
+  // `cardId` is an emitter-chosen string in a namespace ADE and every installed
+  // plugin share, so a collision must not leave a host card wearing a plugin's
+  // byline. Attribution describes the emit, not the row.
+  it("never carries a plugin's attribution or panel into the next emit", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", card({
+        authoredBy: { pluginId: "lint", displayName: "Lint" },
+        panel: { panelId: "report" },
+        metrics: [{ label: "problems", value: "3" }],
+      })),
+      env("2026-07-27T10:00:01.000Z", card({ state: "terminal" })),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const merged = rows[0]!.event;
+    if (merged.type !== "ade_card") throw new Error("Expected ade_card");
+    expect(merged.authoredBy).toBeUndefined();
+    expect(merged.panel).toBeUndefined();
+    // The ordinary accumulate-on-partial-update rule is untouched.
+    expect(merged.metrics).toEqual([{ label: "problems", value: "3" }]);
+  });
+
   it("merges partial updates rather than blanking omitted fields", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-07-27T10:00:00.000Z", card({

@@ -898,6 +898,7 @@ export function CreateLaneDialogHost({
       createChildBaseBranch={createChildBaseBranch}
       setCreateChildBaseBranch={setCreateChildBaseBranch}
       projectRoot={activeProjectRoot}
+      projectKey={projectBinding?.key ?? null}
       createBranches={createBranches}
       lanes={lanes}
       onSubmit={handleCreateSubmit}

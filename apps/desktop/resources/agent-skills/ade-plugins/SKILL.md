@@ -29,7 +29,7 @@ Say the consequence out loud when you ship one: **installing a plugin is trustin
 
 - **Whole surfaces** — a `tab` or a `pane` rendering a panel schema, and on the desktop a `webview` drawing your own HTML page.
 - **Declarative panels**, which desktop, web, iOS and the `ade code` TUI each render with their own native widgets from one JSON document.
-- **Sockets on the six core surfaces** — `work`, `lanes`, `files`, `prs`, `automations`, `cto` — in eight shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`, `composer-action`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
+- **Sockets on eight surfaces** — the six tabs `work`, `lanes`, `files`, `prs`, `automations`, `cto`, plus `app` (⌘K palette, activity pane) and `settings` — in sixteen shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`, `composer-action`, `chat-card`, `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `activity-entry`, `dialog-section`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
 - **Themes** (token sets, no code at all), **`ade` CLI subcommands**, **agent skills** that load only where the plugin is installed, **deeplinks** into your own panels, **cross-surface navigation** — an action returns `{navigate: {…}}` and the client moves the user to another of your panels — and **draft edits**, where an action returns `{composer: {…}}` and writes into the chat prompt the user is typing.
 
 Three shapes that fit the platform well:
@@ -56,7 +56,7 @@ Three shapes that fit the platform well:
 
 **You cannot declare yourself Official.** The directory decides: an entry is official only when ADE's curated `official.json` lists it *and* both its repo and its install source sit in ADE's own GitHub organizations — otherwise it lists as community with a warning. Official entries carry a per-version sha256 the installer checks against the fetched tree; community plugins are not checksummed by the directory and install as unverified. Being listed in the Marketplace is not an endorsement.
 
-**Sockets and action domains are closed sets.** You fill the eight slots above on those six surfaces; there is no way to inject UI anywhere else, and placement is host-controlled and always after core content, so a contribution never reorders or interleaves with the product's own rows. `ade.actions.invoke` reaches ADE's existing action domains at **agent** role — CTO-only actions are refused — and a plugin cannot define a domain of its own.
+**Sockets and action domains are closed sets.** You fill the sixteen slots above on those eight surfaces; there is no way to inject UI anywhere else, and placement is host-controlled and always after core content, so a contribution never reorders or interleaves with the product's own rows. `ade.actions.invoke` reaches ADE's existing action domains at **agent** role — CTO-only actions are refused — and a plugin cannot define a domain of its own.
 
 **Plugins cannot see each other.** The SDK server is constructed per plugin and answers every call against that plugin's id; the child never puts an id on the wire. Collections must be declared in your own manifest (an undeclared name is refused, not created), secrets are namespaced `plugin:<id>:<NAME>`, and `config.get()` returns your own settings. There is no cross-plugin read of any kind.
 
@@ -372,18 +372,30 @@ ade plugin dev board                 # watch + reload on every save
 
 ## Sockets — appearing on core surfaces
 
-Six core surfaces: `work`, `lanes`, `files`, `prs`, `automations`, `cto`. Eight socket kinds. Both sets are closed — a plugin fills a slot, it never invents one. Placement is **host-controlled and always after core content** — a contribution never reorders, replaces, or interleaves with the product's own rows. `order` sorts plugins against each other and nothing more.
+Eight surfaces: the six list-shaped tabs — `work`, `lanes`, `files`, `prs`, `automations`, `cto` — plus `app` (the window chrome: the ⌘K palette and the activity pane) and `settings` (settings pages). Sixteen socket kinds. Both sets are closed — a plugin fills a slot, it never invents one. Placement is **host-controlled and always after core content** — a contribution never reorders, replaces, or interleaves with the product's own rows. `order` sorts plugins against each other and nothing more.
 
-| Socket kind | Payload | What it draws |
-|---|---|---|
-| `toolbar-action` | `{label, actionId, icon?, disabled?}` | A button in a surface's toolbar |
-| `row-badge` | `{text, tone, icon?, tooltip?}` | A badge on a row |
-| `row-menu-item` | `{label, actionId, icon?, danger?}` | An entry in a row's context menu |
-| `detail-section` | `{panelId, title?}` | A panel rendered as a section in a detail view |
-| `empty-state` | `{title, body?, actionId?, actionLabel?}` | Extra content on a surface's empty state |
-| `filter-chip` | `{label, filterKey, count?}` | A chip in a surface's filter row |
-| `file-viewer` | `{panelId, extensions[]}` | A viewer for matching files in the Files tab |
-| `composer-action` | `{label, actionId, icon?, disabled?}` | A button in the chat composer's accessory row (`work`). The one socket whose handler may run for minutes — see *Long-running composer actions* |
+| Socket kind | Surface | Payload | What it draws |
+|---|---|---|---|
+| `toolbar-action` | any | `{label, actionId, icon?, disabled?}` | A button in a surface's toolbar |
+| `row-badge` | any | `{text, tone, icon?, tooltip?}` | A badge on a row |
+| `row-menu-item` | any | `{label, actionId, icon?, danger?}` | An entry in a row's context menu |
+| `detail-section` | any | `{panelId, title?}` | A panel rendered as a section in a detail view |
+| `empty-state` | any | `{title, body?, actionId?, actionLabel?}` | Extra content on a surface's empty state |
+| `filter-chip` | any | `{label, filterKey, count?}` | A chip in a surface's filter row |
+| `file-viewer` | `files` | `{panelId, extensions[]}` | A viewer for matching files in the Files tab |
+| `composer-action` | `work` | `{label, actionId, icon?, disabled?}` | A button in the chat composer's accessory row. May run for minutes — see *Long-running composer actions* |
+| `chat-card` | `work` | `{panelId, title?, icon?}` | Your panel, drawn as a card in the chat transcript |
+| `slash-command` | `work` | `{command, actionId, description?, argumentHint?, icon?}` | A command the user types into the composer. Same long budget as `composer-action` |
+| `command-palette-action` | `app` | `{label, actionId, icon?, disabled?}` | An entry in the ⌘K palette |
+| `settings-section` | `settings` | `{panelId, title?, section?}` | Your panel as a section on a settings page. `section` names the page and is optional |
+| `work-rail-pane` | `work` | `{label, panelId, icon?}` | A pane in the Work tools rail, beside Terminal / Git / Files |
+| `drawer-tab` | `work` | `{label, panelId, icon?}` | A tab in the chat actions drawer, beside Sources / Agents / Proof |
+| `activity-entry` | `app` | `{title, tone, body?, actionId?, actionLabel?}` | A row in the activity pane |
+| `dialog-section` | `lanes`, `prs` | `{dialog, panelId, title?}` | Your panel as a section inside Create lane / Manage lane / Create PR — see *Writing into a dialog* |
+
+**Every payload above may also carry three cross-kind fields**, whatever its own shape: `filterKey` tags the entity for a filter chip, `id` says which of your declarations the row fills, and `order` sorts the row among your own. All three are optional and none is listed per-kind in the table, because none belongs to a kind — they describe the ROW. `filterKey` and `id` are capped at 64 characters; `order` is any finite number. See *How a filter chip actually filters* and the `id` and `order` notes below.
+
+**The panel kinds carry a panel id and nothing else.** `chat-card`, `settings-section`, `work-rail-pane`, `drawer-tab` and `dialog-section` all render the vocabulary, which is what makes them portable: a card built from a panel draws wherever panels draw, and one built from markup would have been desktop-only forever. Buttons inside them are the vocabulary's own `button` node dispatching your actions, so none of these kinds needs an action payload.
 
 Two sources, deliberately different:
 
@@ -392,7 +404,19 @@ Two sources, deliberately different:
 
 A payload that fails validation renders nothing at all rather than a half-built row, so a missing `label` or `actionId` shows up as an absence, not as a blank button.
 
-Entity kinds for `publish`: `lane`, `pr`, `session`, `file`, `automation`, `surface`. A composer belongs to its chat, so publish a `composer-action` row against `session` to change what your button says for one conversation. Row badges cap at **2 visible** per row with the rest behind a "+N", and composer buttons do the same in the accessory row; a single plugin may place at most **8** contributions in one socket slot.
+Entity kinds for `publish`: `lane`, `pr`, `session`, `file`, `automation`, `surface`. The three kinds that sit on the tab rather than on a row — `toolbar-action`, `empty-state`, `filter-chip` — plus `file-viewer` publish against `surface` with the surface's own name as the entity id.
+
+**How a filter chip actually filters.** The chip itself is surface-scoped, but what it matches is the ENTITIES: put `filterKey` on any contribution you publish for an entity — a badge, a menu item, anything — and selecting your chip keeps the rows whose contributions carry that key. A chip whose key no published row carries filters everything out, which reads as a broken list, so publish the tags before you ship the chip.
+
+**Put an `id` in the payload if you declare two sockets of the same kind on one surface.** A published row names your plugin, its entity and its socket KIND, and has no field for which of your declarations it fills — `id` is the only thing that says so. Without it the platform will not guess: the row resolves only when that kind was declared once, and otherwise **does not render at all**. An `id` naming a socket you no longer declare is stale, and that row drops too. One declaration of a kind needs nothing.
+
+**When you do set `id`, it must name one of your declared socket ids.** It is routing input, not a label: an arbitrary value resolves to nothing, and on an older host that cannot resolve the join it can leave your unfilled declaration drawn as a neutral placeholder *beside* the row that was meant to fill it. If you want a per-row label, use the payload's own text fields.
+
+**`order` sorts your own rows and works the same way** — put it on any contribution you publish, alongside `filterKey` and `id`. All three are cross-kind: they describe the ROW, not the socket kind, so every payload may carry them and none is listed per-kind in the table above. A row without `order` sorts after every row that has one.
+
+Publish against an entity on the surface you declared the socket for. A row for an entity belonging to another surface is dropped on desktop and on the web, where the host joins per surface.
+
+**One published value per kind, per entity.** A contribution row is keyed by `(entity kind, entity id, plugin, socket kind)`, so publishing a second row for the same entity and the same kind REPLACES the first. If you declare two same-kind sockets on one surface, only one of them can carry a per-entity value — `id` decides which — and the other shows its manifest declaration and nothing more. Declare two of a kind only when the second needs no published value; otherwise use one socket and vary its payload. A composer belongs to its chat, so publish a `composer-action` row against `session` to change what your button says for one conversation. Row badges cap at **2 visible** per row with the rest behind a "+N", and composer buttons do the same in the accessory row; a single plugin may place at most **8** contributions in one socket slot.
 
 Your action receives a typed, read-only context object — a projection, not a handle:
 
@@ -403,8 +427,10 @@ Your action receives a typed, read-only context object — a projection, not a h
 | `session` | `id`, `title`, `provider`, `status` |
 | `file` | `path`, `size`, `extension`, `workspaceId` |
 | `automation` | `id`, `name`, `enabled` |
-| `composer` | `sessionId`, `projectKey`, `projectRoot`, `laneId`, `draft`, `cursor` |
-| `surface` | `surface` (for toolbar actions, empty states, chips — no per-entity subject) |
+| `composer` | `sessionId`, `projectKey`, `projectRoot`, `laneId`, `draft`, `cursor` (for `composer-action` and `slash-command`) |
+| `dialog` | `dialog` (`create-lane`\|`manage-lane`\|`create-pr`), `laneId`, `laneName`, `branch`, `projectKey`. `laneId` is null on create-lane, where nothing exists yet |
+| `activity` | `entryId` — the row of yours that was pressed — plus `projectKey`, `laneId` |
+| `surface` | `surface` (for toolbar actions, empty states, chips, palette entries, settings sections — no per-entity subject) |
 
 You cannot reach the lane's worktree, the PR's token, or the session's transcript from a context. Widening one is a platform change, not something a plugin arranges.
 
@@ -412,13 +438,25 @@ You cannot reach the lane's worktree, the PR's token, or the session's transcrip
 
 ### Per-surface socket support
 
-| Socket | Desktop / web | iOS | TUI |
-|---|---|---|---|
-| `row-badge`, `row-menu-item` | yes | yes | no |
-| `toolbar-action`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer` | yes | decoded, not drawn — a later iOS build adds the arm with no wire change | no |
-| `composer-action` | yes | no — dropped where the row decodes, so it is simply absent | no |
+| Socket | Desktop | Web | iOS | TUI |
+|---|---|---|---|---|
+| `toolbar-action` | yes | yes | yes | yes |
+| `row-badge`, `row-menu-item` | yes | yes | yes | yes |
+| `detail-section`, `empty-state`, `filter-chip`, `file-viewer`, `composer-action` | yes | yes | yes | no |
+| `chat-card`, `activity-entry` | yes | yes | yes | no |
+| `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `dialog-section` | yes | yes | no — dropped where the row decodes, so it is simply absent | no |
 
-The TUI surfaces plugins through `/plugin-view [plugin]`, which opens a panel in the right pane; it renders no sockets. Design so a badge is an enhancement, never the only way to learn something.
+The live answer is `PLUGIN_SOCKET_CLIENT_SUPPORT` in `shared/plugins/sockets.ts`, one line per kind; this table is its prose. A client that has not grown an arm for a kind drops it where it decodes, so an unsupported kind is **absent** there, never half-drawn — which is what lets a kind ship on desktop first.
+
+**iOS reads what you declared and what you published, the same as desktop does.** Both sources reach the phone: `plugins.list` carries your manifest's socket declarations, and your published `plugin_contributions` rows replicate. So a contribution you only declared renders on iOS exactly as on desktop, and nothing needs publishing to be visible there.
+
+One consequence of that worth designing around: a declared `row-badge` draws as a neutral placeholder on **every** row of its surface until a published row fills it in, and a declared `composer-action` appears in every chat. That is deliberate — it keeps a plugin that never publishes honest rather than invisible — but it is conspicuous on a phone. Publish, or do not declare.
+
+**The hosted web client draws sockets too**, as of the round that gave it both reads it was missing. One gap remains and it is per surface rather than per kind: the web build does not mount `automations`, so a contribution declared on that surface draws nowhere there.
+
+Which still points the same way: **design a socket as an enhancement on top of a panel that stands on its own.** The panel renders on all four clients; the socket is what makes it reachable from a row.
+
+The TUI draws your badges on the drawer's lane cards and chat rows, and lists your menu items and toolbar actions through **`/plugin-actions`** — menu items for the focused lane or chat, toolbar actions for the surface itself, on `lanes` and `work` only. `/plugin-view [plugin]` opens a panel in the right pane. Design so a badge is an enhancement, never the only way to learn something — and prefer the panel-shaped kinds (`chat-card`, `drawer-tab`, `settings-section`, `dialog-section`, `work-rail-pane`) for anything that matters on a phone, since they are the kinds a client can draw with the renderer it already has.
 
 ### Writing into the draft
 
@@ -435,6 +473,7 @@ Four things worth knowing before you rely on it:
 - **`replaceText` wins if you send both.** "Replace, then insert into the replacement" is not what either verb means.
 - **32 KiB is the ceiling**, in UTF-8 bytes. Over it the edit is dropped, never truncated — a prompt cut off mid-sentence and then sent is worse than one that never arrived.
 - **You cannot send the message.** Composing and sending stay the user's; the verbs write text and stop there.
+- **iOS applies both verbs too**, and `insertText` appends there — the phone's composer publishes no caret, which is the same `cursor: null` case desktop treats as "append".
 
 ### Long-running composer actions
 
@@ -471,6 +510,50 @@ exports.actions = {
 };
 ```
 
+### Commands the user types
+
+A `slash-command` is the same act as a composer button by a different gesture, so it gets the same `composer` context — session, project, lane, the live `draft`, the caret — the same `{composer: {…}}` verbs back, and the same 15-minute budget. What differs is the declaration: the word lives in `command`, not `label`.
+
+`command` is `^[a-z][a-z0-9-]{1,30}$` — lowercase, hyphenated, two characters at least. Write it with or without the slash; ADE strips one and draws its own, the way it draws the `@` on a mention. `description` is the single line the command menu shows, and `argumentHint` (`<issue-id>`, `[branch]`) is drawn beside the command in that row. Both are optional — a command with neither still works.
+
+**Selecting your command invokes it immediately.** This is the one place a plugin command differs from a runtime's own, and it decides how to word the hint. An SDK command scaffolds `/fix ` into the draft and waits for the user to finish typing; yours does not — there is no keystroke between the user picking your row and your handler running. The command word is consumed and **whatever else was in the composer arrives as `context.draft`**, so `tidy the imports /fix` invokes with `draft: "tidy the imports "`.
+
+So `argumentHint` describes what your handler reads out of the draft, not a prompt the user will be given. `<issue-id>` promises a field that never appears; something like `reads the issue id from your prompt` says the true thing. Handle an empty draft — a user who types `/fix` and nothing else is the common case, not the edge one.
+
+Your command joins the runtime's own commands in one list, on **every** runtime — unlike a skill-derived command, which only Claude and Codex surface.
+
+```json
+{ "socket": "slash-command", "surface": "work", "id": "conventional",
+  "command": "/conventional", "description": "Rewrite the draft as a conventional commit",
+  "actionId": "conventional" }
+```
+
+```js
+exports.actions = {
+  async conventional(args) {
+    const { draft } = args.context;               // the live prompt, verbatim
+    if (draft.trim().length === 0) return {};     // nothing to rewrite; say nothing
+    const subject = draft.trim().split("\n")[0].toLowerCase();
+    return { composer: { replaceText: `feat: ${subject}` } };
+  },
+};
+```
+
+### Writing into a dialog
+
+A `dialog-section` renders your panel inside Create lane, Manage lane, or Create PR, and its actions may answer with a third verb:
+
+| Verb | Effect |
+|---|---|
+| `{dialog: {setField: {field, value}}}` | Write one field of the dialog the section is in |
+
+This is what makes "pick an issue, fill in the lane name and the base branch" something a third-party plugin can do rather than something only a built-in integration can do. Four rules bound it:
+
+- **The field must be on the allowlist for that dialog**, and the lists are short: `create-lane` takes `name`, `baseBranch`, `parentLaneId`, `templateId`, `color`, `machineId`; `manage-lane` takes `name`, `baseBranch`, `parentLaneId`; `create-pr` takes `title`, `body`, `baseBranch`. A field from another dialog is dropped, not translated.
+- **Nothing outside those lists is reachable.** The delete confirmation, the discard-dirty checkbox and the reclaim phrase are not fields, and no verb can arm them.
+- **You cannot submit.** Creating the lane, or the PR, stays the user's — the same line the composer verbs draw.
+- **16 KiB per value**, dropped rather than truncated. A half-written branch name that then gets created is worse than a field that stayed empty.
+
 ## The SDK your code gets
 
 The entry module is CommonJS and dependency-free — the child bootstrap `require`s it and a plugin may not assume a bundler ran.
@@ -494,17 +577,64 @@ exports.actions = {
 | `ade.collections.list(collection, {keyPrefix?, limit?})` | Rows as `{collection, key, value, updatedAt}` |
 | `ade.secrets.get/set/delete(name)` | Machine credential store, namespaced `plugin:<id>:<NAME>`. Never readable by another plugin |
 | `ade.contributions.publish(entityKind, entityId, socket, payload)` | Publish or clear (`payload: null`) a dynamic contribution |
-| `ade.events.on(event, cb)` | `lane.changed`, `pr.changed`, `session.changed`, `install.changed`. Debounced; returns an unsubscribe function. Payload is `{event, ids[], projectId, overflow?}` — `overflow: true` means `ids` was truncated at the delivery cap; treat it as a bare refetch signal rather than trusting the partial list |
+| `ade.events.on(event, cb)` | Two families — **change events** `lane.changed`, `pr.changed`, `session.changed`, `install.changed` (debounced; payload `{event, ids[], projectId, overflow?}`, where `overflow: true` means `ids` was truncated at the delivery cap and you should treat it as a bare refetch signal rather than trusting the partial list) and **runtime hooks** `turn.start`, `turn.end`, `tool.before` (told as they happen — see *Runtime hooks* below). Returns an unsubscribe function; call it, because a hook kind nobody subscribed to is never delivered at all |
 | `ade.panels.update(panelId, schema)` | Replace a panel's schema. Refused for a panel the manifest never declared |
 | `ade.config.get()` | Current values for `manifest.settings`, defaults applied. `secret` kinds are redacted |
+| `ade.memory.get/set/delete(key)` / `list({keyPrefix?, limit?})` | Your own durable memory: a reserved slice of your collections, no manifest declaration needed. Shares the collection budget and is dropped on uninstall. **Not** ADE's CTO memory — nothing you write here reaches any agent's prompt. `ade.memory` is refused as a `collections` name in both directions, so this slice has exactly one door |
+| `ade.notifications.post({title, body?, target?})` | Tell the user outside ADE's window. `target` is `"desktop"`, `"mobile"` or `"both"` (default). Your **display name is stamped on by the host** and cannot be set, spoofed or omitted. Resolves `{delivered: [...]}` with what actually landed; rejects `notification_unavailable` only when nothing was reached. Rate-limited — see *Budgets* |
+| `ade.schedules.create({action, cron\|runAt\|delaySeconds, args?, note?})` | Ask ADE to call one of **your own** actions later. `cron` is five-field local time and recurs; `runAt`/`delaySeconds` fire once and are then dropped. Rejects `plugin_budget_exceeded` past the quota |
+| `ade.schedules.list()` / `delete(scheduleId)` | Your schedules, never another plugin's. `delete` is idempotent |
+| `ade.clipboard.read()` / `write(text)` | Machine clipboard, text only. A read returns whatever the user last copied — often a password they were moving between apps — so read it in response to something the user just did, never on a timer |
+| `ade.dialogs.pickFile({title?, defaultPath?, directory?, filters?})` | Native picker; resolves the chosen path. Rejects `dialog_cancelled` when the user dismisses it — a dismissal is an answer, not a fault |
 | `ade.log(level, message, fields?)` | `debug`/`info`/`warn`/`error` into the ring buffer `ade plugin logs` reads |
 | `ade.pluginId` / `ade.sdkVersion` / `ade.manifest` | Identity, read-only |
 
+The last four need a host that can perform them. `notifications`, `clipboard` and `dialogs` are the desktop's — a plugin running against a headless daemon gets `notification_unavailable` or `desktop_unavailable`, which are refusals worth retrying later rather than reasons to give up. Check the code, don't check the platform.
+
+**Two things you may no longer borrow through `ade.actions.invoke`, because these verbs replace them:** `session.requestSessionAttention` (its push arrived unlabelled and unlimited, and it lied about a chat session waiting on the user) and `chat.createScheduledWork` (its cron carried no owner, so nothing listed it as yours and uninstalling you left it firing forever). Both are refused for plugins and name their replacement in the refusal.
+
 `PLUGIN_SDK_VERSION` is **0** and the handshake is additive: methods get added, never removed or re-shaped. Anything that would break a shipped plugin gets a new method name.
 
-Every rejection is a structural error carrying a `code` you can branch on: `plugin_not_found`, `plugin_disabled`, `plugin_no_entry`, `plugin_crashed`, `plugin_timeout`, `invalid_args`, `plugin_budget_exceeded`, `not_permitted`, `unsupported_method`, `internal_error`. A budget refusal additionally carries `detail: {budget, limit, actual}` — enough to tell the user exactly which ceiling they hit.
+Every rejection is a structural error carrying a `code` you can branch on: `plugin_not_found`, `plugin_disabled`, `plugin_no_entry`, `plugin_crashed`, `plugin_timeout`, `invalid_args`, `plugin_budget_exceeded`, `not_permitted`, `unsupported_method`, `internal_error`, plus `notification_unavailable`, `desktop_unavailable` and `dialog_cancelled` from the host capabilities above. A budget refusal additionally carries `detail: {budget, limit, actual}` — enough to tell the user exactly which ceiling they hit.
 
 Naming rules the SDK enforces: collection names `^[A-Za-z][A-Za-z0-9._-]{0,63}$`, keys `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`, secret names `^[A-Za-z][A-Za-z0-9_.-]{0,127}$`.
+
+### Runtime hooks
+
+Three events tell you what the coding agent is doing, as it does it.
+
+```js
+const off = ade.events.on("tool.before", ({ sessionId, runtime, toolName }) => {
+  void ade.collections.put("toolstats", `${runtime}:${toolName}`, { at: Date.now() }, { ifFull: "evictOldest" });
+});
+```
+
+| Event | Payload |
+|---|---|
+| `turn.start` | `{sessionId, projectId, runtime, model?}` |
+| `turn.end` | `{sessionId, projectId, runtime, outcome, durationMs?}` — `outcome` is `"completed"`, `"error"` or `"cancelled"` (the user stopped the agent, which is not a failure to report). `durationMs` is absent when the host never saw the matching start |
+| `tool.before` | `{sessionId, projectId, runtime, toolName}` |
+
+`projectId` is the same identifier the change events carry, and is null for a turn in a project this machine has no binding for.
+
+**Observe-only, and that is the design rather than a first iteration.** Delivery is one fire-and-forget line on your stdin. Nothing you do in a handler can veto a turn, change a tool call, delay the agent, or alter what it sees — and there is no return value the host reads. A plugin that stops reading its input has its hook deliveries **dropped**, counted in ADE's log, because the alternative is an installed plugin able to stall the user's agent. Vetoing a tool call is a permission question rather than an API one: the user's yes/no over what an agent may do stays core, and if a veto tier ever ships it will be a separate, explicitly-granted capability.
+
+**Payloads are metadata, never content.** No message text, no prompts, no tool arguments, no tool results, no file paths. You can build a cost guard, a turn timer, a tool-usage dashboard or a lint trigger from this; you cannot read the user's conversation from it. If you need the transcript, ask for it through its own gate: `ade.actions.invoke("chat", "readTranscript", …)`.
+
+**Subscribe narrowly.** `tool.before` fires dozens of times in a single turn, and a kind nobody subscribed to is never written to your process at all. Unsubscribe when you stop caring, rather than registering a listener that ignores most of what it gets.
+
+**Per-runtime coverage.** ADE normalizes every runtime's stream into one transcript vocabulary and the hooks are derived from that funnel, so all six are covered on the same code path — there is no per-runtime hook wiring to fall behind.
+
+| Runtime | `turn.start` | `turn.end` | `tool.before` |
+|---|---|---|---|
+| Claude | yes | yes | yes |
+| Codex | yes | yes | yes |
+| Cursor | yes | yes | yes |
+| Droid | yes | yes | yes |
+| Pi | yes | yes | yes |
+| OpenCode | yes | yes | yes |
+
+Two honest caveats. **`tool.before` reports what the runtime told ADE**, so a runtime that batches or omits a tool announcement omits a hook — the hook stream is as complete as the transcript is, and no more. **Codex announces a turn twice** (once when ADE dispatches, once when the runtime names it); ADE collapses that to one `turn.start`, and likewise reports one `turn.end` per turn however many times it settles, so counting turns is safe.
 
 ## Budgets
 
@@ -520,6 +650,16 @@ Writer-enforced, inside the transaction. These are not advice — a write past a
 | Panels per plugin | 32 |
 | One panel schema | 64 KiB |
 | Log ring | 500 lines, 2,000 bytes each |
+| Notifications per plugin | 60 a UTC day, 5 a rolling minute |
+| Notification title / body | 80 / 240 characters |
+| Live schedules per plugin | 8 |
+| Shortest schedule interval | 60 seconds |
+| One schedule's `args` | 4 KiB |
+| Clipboard text | 64 KiB |
+
+The notification ceilings are the only ones here that bound a rate rather than a size, because a notification is an interrupt on a device the user carries. Sixty a day is past every honest notifier — one per failed CI run, per review comment, per incident lands in the tens on a bad day — and the rolling-minute cap is what stops a bug: a plugin looping on an event tick is cut off inside the first second, while a plugin reacting to four PRs that merged together still gets all four through. They are counted per plugin per machine and they **survive a restart**, so crashing the child does not refill the allowance. Over either one you get `plugin_budget_exceeded` with `detail.budget` naming which.
+
+Schedule quota counts *live* rows: a one-shot stops counting once it has fired, so what is bounded is how many standing claims on the clock you hold at once. Eight is enough for hourly, daily and weekly plus a handful of user-requested reminders; a plugin that wants more wants one schedule and its own dispatch table inside it.
 
 Contributions are glances, not pages: 4 KiB is room for a badge and a tooltip, and that is the intent.
 
@@ -650,7 +790,7 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 1. **Data, never code.** No expressions, no conditionals, no formatting strings, no callbacks in a schema. Compute on your machine, store the result. A `webview` is the one exception, and it buys unlimited UI by giving up three of the four clients.
 2. **Every panel declares `fallback` with a `title` and `text`.** A panel without one is fatal on every client. Add a `deeplink` too.
 3. **Secrets go through `ade.secrets`, never through the environment.** The child's env is denylisted, and a secret in a collection value is a secret in the sync layer.
-4. **Never assume a socket renders.** iOS draws two of the eight kinds today, `composer-action` is desktop and web only, and the TUI draws none. A contribution is an enhancement; the panel and the fallback are the floor.
+4. **Never assume a socket renders.** Desktop and the web client draw all sixteen kinds; iOS draws ten and the TUI draws three. A contribution is an enhancement; the panel and the fallback are the floor.
 5. **The `plugin_*` SQL shapes are frozen.** A plugin never gets its own table or its own column on an ADE entity — collections and contributions are the two storage shapes there are.
 6. **Budgets are refusals, not warnings.** Catch `plugin_budget_exceeded` on every `put`, prune, and carry on — a full store must never stall a plugin (*Never stall*). Budgets bound what leaves the machine, never what the plugin's own process may do (*What you can build*).
 7. **`"official": true` in your manifest buys no trust.** Official is a statement the registry makes about a plugin, never one the plugin makes about itself. The one thing the field does locally is unlock the reserved `builtin` binding, which still gates nothing unless the compiled owner table already names your plugin id.
@@ -675,7 +815,7 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 | `adePlugin.collections.put` fails with `plugins_unavailable` | A page can only write where the plugin host runs in the same process. Call your own action with `adePlugin.invoke(...)` and write from the child instead |
 | Contribution never appears | Check `manifest.sockets` declares the kind on that surface, the payload validates for that kind, and you published from the machine that owns the entity |
 | Composer button is there but nothing lands in the draft | Look for `[plugin composer]` in the renderer console. "no composer on screen" means the action was invoked from a surface with no composer; "malformed" means the verb was not a string, was an empty `insertText`, or was over the 32 KiB ceiling |
-| Composer button never appears on the phone or in the TUI | Expected — `composer-action` is desktop and web only (see the support table). Give the same action a `row-menu-item` or a panel button if it has to be reachable everywhere |
+| Composer button never appears in the TUI | Expected — see the support table. It DOES appear on the phone and on the web, declared or published. Give the same action a panel button if it has to be reachable everywhere |
 | `ade plugin <cmd>` says it needs the brain | `install`/`remove`/`enable`/`disable`/`reload`/`logs`/`dev` are daemon-backed. Start ADE or run `ade brain start`. `list` and `create` never need it |
 | `ade <pluginId> <word>` says unknown command | The plugin must be installed, **enabled**, and declare that exact word in `cli` — otherwise the CLI treats it as a typo, which is what you want |
 | A directory in `~/.ade/plugins/` is ignored | `state.json` is the only source of truth for "installed". A stray clone is a leftover, not a plugin. Install it properly |

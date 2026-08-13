@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PLUGIN_WEBVIEW_CSP } from "../../../shared/plugins/webviewBridge";
-import { createPluginWebviewProtocolHandler } from "./pluginWebviewProtocol";
+import { createPluginWebviewProtocolHandler, resolvePluginWebviewRequestPath } from "./pluginWebviewProtocol";
 
 const tempRoots: string[] = [];
 
@@ -129,5 +129,49 @@ describe("createPluginWebviewProtocolHandler", () => {
       expect(response.headers.get("Content-Security-Policy")).toBe(PLUGIN_WEBVIEW_CSP);
       expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     }
+  });
+});
+
+/**
+ * The Windows spellings of an escape, checked on whatever platform CI runs.
+ *
+ * These go at the resolver rather than through the handler because the handler
+ * needs a real plugin directory, and the thing under test is a decision about a
+ * string. Every branch below is unreachable on a POSIX host through the
+ * handler's own path — `path.isAbsolute` says no to `C:\x` and a backslash is
+ * an ordinary filename character here — so without these the guards that make
+ * the resolver Windows-safe would be entirely unexecuted on a macOS CI, and
+ * deleting them would still go green.
+ */
+describe("resolvePluginWebviewRequestPath on Windows spellings", () => {
+  it("refuses a backslash-rooted path", () => {
+    expect(resolvePluginWebviewRequestPath("/%5Csecrets.txt")).toBeNull();
+  });
+
+  it("refuses a backslash parent-directory escape", () => {
+    expect(resolvePluginWebviewRequestPath("/x%5C..%5C..%5Csecrets.txt")).toBeNull();
+  });
+
+  it("refuses a drive-absolute path", () => {
+    expect(resolvePluginWebviewRequestPath("/C%3A%5CWindows%5Csystem.ini")).toBeNull();
+  });
+
+  it("refuses a drive-relative path, which resolves against another drive's cwd", () => {
+    expect(resolvePluginWebviewRequestPath("/c%3Asecrets.txt")).toBeNull();
+  });
+
+  it("refuses a UNC share", () => {
+    expect(resolvePluginWebviewRequestPath("//server/share/secrets.txt")).toBeNull();
+  });
+
+  it("still serves an ordinary relative request", () => {
+    expect(resolvePluginWebviewRequestPath("/assets/app.css")).toBe("assets/app.css");
+  });
+
+  it("allows a backslash inside a name, which is a separator only on Windows", () => {
+    // Not an escape in either spelling: containment is decided afterwards by
+    // `path.resolve` against the plugin root, which is where the difference
+    // between a separator and a filename character stops mattering.
+    expect(resolvePluginWebviewRequestPath("/assets%5Capp.css")).toBe("assets\\app.css");
   });
 });

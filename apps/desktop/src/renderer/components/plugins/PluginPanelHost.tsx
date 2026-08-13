@@ -20,6 +20,7 @@ import {
   type VocabAction,
 } from "../../../shared/plugins/vocabulary";
 import { readPluginActionNavigation } from "../../../shared/plugins/sdk";
+import { applyPluginDialogEdit } from "./sockets/dialogTarget";
 
 /**
  * Data plumbing for one plugin panel.
@@ -197,6 +198,16 @@ export function PluginPanelHost({
       // whose only effect is outside the plugin's own tables would otherwise
       // leave a stale panel on screen.
       setRefreshToken((token) => token + 1);
+      // A panel mounted in one of ADE's dialogs may write one allowlisted field
+      // of it. Applied here rather than at the socket, because a dialog
+      // section's buttons ARE panel buttons — they dispatch through this
+      // callback and never through `runPluginSocketAction`. A no-op for every
+      // other context, which is every other place a panel is mounted.
+      applyPluginDialogEdit(result, {
+        context: surfaceContext ?? null,
+        pluginId,
+        actionId: action.action,
+      });
       const navigation = readPluginActionNavigation(result);
       if (navigation) onNavigate?.(navigation);
     },

@@ -80,6 +80,16 @@ vi.mock("../../../state/appStore", () => ({
       applyAutoSizeChatFontOnLargeScreenIfNotOverridden: () => undefined,
     }),
   },
+  // The adapter-swap handler dynamically imports this to tell the plugin
+  // registry to refetch for the newly active target. Omitting it did not fail
+  // any assertion — the import rejects inside a `void`ed promise — it just
+  // meant the swap path threw an unhandled rejection on every run and the
+  // refetch was never actually exercised.
+  rootAppStoreApi: {
+    getState: () => ({
+      bumpPluginAdapterGeneration: () => undefined,
+    }),
+  },
 }));
 
 const signedOutAccount: BrowserAccountSnapshot = {
@@ -358,6 +368,13 @@ describe("web route translation", () => {
       prNumber: 42,
     },
     { kind: "linear-issue", issueIdentifier: "ADE-123", branch: "arul/ade-123" },
+    { kind: "plugin", pluginId: "ade-graph", panelId: "overview" },
+    {
+      kind: "plugin",
+      pluginId: "ade-graph",
+      panelId: "overview",
+      context: { issue: "ISS-14" },
+    },
   ];
 
   /** Every target in this block is routable; a null here IS the failure. */
@@ -374,16 +391,38 @@ describe("web route translation", () => {
     expect(paths[1]).toBe("/work?sessionId=sess-abc123");
   });
 
-  it("has no web route for a plugin panel", () => {
-    // The hosted client does not host plugin tabs, so the honest answer is
-    // "nowhere" — not a route that lands the reader somewhere else.
+  it("routes a plugin panel to the same address the desktop App uses", () => {
+    // Byte-for-byte what `resolvePluginDeeplinkRouting` produces, because the
+    // two clients mount the same `/plugin/:pluginId` route: a second spelling
+    // is a link that works in one client and 404s in the other.
+    expect(targetToWebPath({ kind: "plugin", pluginId: "ade-graph", panelId: "overview" }))
+      .toBe("/plugin/ade-graph?panel=overview");
     expect(targetToWebPath({
       kind: "plugin",
       pluginId: "ade-graph",
       panelId: "overview",
       context: { issue: "ISS-14" },
-    })).toBeNull();
-    expect(parseWebPath("/plugin/ade-graph?panel=overview")).toBeNull();
+    })).toBe("/plugin/ade-graph?panel=overview&ctx=%7B%22issue%22%3A%22ISS-14%22%7D");
+  });
+
+  it("refuses a plugin route whose ids the manifest grammar would not mint", () => {
+    // The reader may have typed this. An id the shared parser rejects would
+    // round-trip into an `ade://` link that does not parse back, so the route
+    // carries no target at all rather than an unusable one.
+    expect(parseWebPath("/plugin/Ade_Graph?panel=overview")).toBeNull();
+    expect(parseWebPath("/plugin/ade-graph?panel=not%20a%20panel")).toBeNull();
+    // A panel is required: `/plugin/<id>` alone names a plugin, not a view.
+    expect(parseWebPath("/plugin/ade-graph")).toBeNull();
+    // One segment only — a deeper path is not a panel address in any client.
+    expect(parseWebPath("/plugin/ade-graph/overview?panel=overview")).toBeNull();
+  });
+
+  it("drops an unparseable plugin context rather than losing the panel", () => {
+    expect(parseWebPath("/plugin/ade-graph?panel=overview&ctx=not-json")).toEqual({
+      kind: "plugin",
+      pluginId: "ade-graph",
+      panelId: "overview",
+    });
   });
 
   it("preserves repository identity for PR routes while ignoring desktop-only extras", () => {

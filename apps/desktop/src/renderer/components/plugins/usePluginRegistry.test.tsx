@@ -29,7 +29,11 @@ vi.mock("../../lib/pluginRuntimeBridge", () => ({
   subscribeToPluginChanges: () => () => {},
 }));
 
-const { usePluginRegistrySync } = await import("./usePluginRegistry");
+const {
+  usePluginAutomationSteps,
+  usePluginAutomationTriggers,
+  usePluginRegistrySync,
+} = await import("./usePluginRegistry");
 const {
   isPreviewingPluginTheme,
   previewPluginTheme,
@@ -92,5 +96,54 @@ describe("usePluginRegistrySync", () => {
     rerender();
 
     expect(isPreviewingPluginTheme()).toBe(false);
+  });
+});
+
+/**
+ * The rule builder's pickers. A declaration the user switched off must not be
+ * offered — building a rule against it would arm the rule against nothing —
+ * and the key is kind-qualified so a hidden socket cannot take a trigger with
+ * it. See `shared/plugins/disabledContributions.ts`.
+ */
+describe("automation declarations offered to the rule builder", () => {
+  const automating = (disabledContributions: string[]): InstalledPlugin => ({
+    pluginId: "tracker",
+    displayName: "Tracker",
+    version: "1.0.0",
+    enabled: true,
+    icon: null,
+    accent: null,
+    theme: null,
+    disabledContributions,
+    automationTriggers: [
+      { id: "issueMoved", label: "Issue moved" },
+      { id: "issueClosed", label: "Issue closed" },
+    ],
+    automationSteps: [
+      { id: "comment", label: "Comment", action: "postComment" },
+      { id: "close", label: "Close", action: "closeIssue" },
+    ],
+  } as unknown as InstalledPlugin);
+
+  it("offers every trigger and step a plugin declares", () => {
+    registry.plugins = [automating([])];
+    expect(renderHook(() => usePluginAutomationTriggers()).result.current.map((option) => option.value))
+      .toEqual(["issueMoved", "issueClosed"]);
+    expect(renderHook(() => usePluginAutomationSteps()).result.current.map((option) => option.value))
+      .toEqual(["postComment", "closeIssue"]);
+  });
+
+  it("drops the ones the user switched off", () => {
+    registry.plugins = [automating(["automationTrigger:issueClosed", "automationStep:close"])];
+    expect(renderHook(() => usePluginAutomationTriggers()).result.current.map((option) => option.value))
+      .toEqual(["issueMoved"]);
+    expect(renderHook(() => usePluginAutomationSteps()).result.current.map((option) => option.value))
+      .toEqual(["postComment"]);
+  });
+
+  it("keeps a declaration whose id merely matches a disabled socket", () => {
+    registry.plugins = [automating(["issueClosed", "close"])];
+    expect(renderHook(() => usePluginAutomationTriggers()).result.current).toHaveLength(2);
+    expect(renderHook(() => usePluginAutomationSteps()).result.current).toHaveLength(2);
   });
 });

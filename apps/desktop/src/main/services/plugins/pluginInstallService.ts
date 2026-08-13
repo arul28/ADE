@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import type { Logger } from "../logging/logger";
+import { isPathInside } from "../shared/pathCompare";
 import { preferNativeExecutablePath } from "../shared/processExecution";
 import { dirExists, nowIso, spawnAsync, writeTextAtomic } from "../shared/utils";
 import {
@@ -781,7 +782,7 @@ export function createPluginInstallService(deps: {
     return described;
   };
 
-  const skillRoots = (): string[] => collectSkillRoots(root, list());
+  const skillRoots = (): string[] => collectSkillRoots(root, list(), deps.logger);
 
   const bundledPackageVersion = (pluginId: string): string | null =>
     findBuiltinPackage(pluginId)?.manifest.version ?? null;
@@ -800,8 +801,79 @@ export function createPluginInstallService(deps: {
   };
 }
 
-function collectSkillRoots(root: string, installed: readonly PluginInstalledPlugin[]): string[] {
+/**
+ * Ceilings on plugin-contributed agent skills.
+ *
+ * A skills root is not just files on disk: every runtime that supports skills
+ * reads at least each `SKILL.md`'s front matter into the system prompt of every
+ * session, and Claude and Codex are handed the whole root. Panels are capped at
+ * 64 KiB and collections at 2 MiB, but skills had no ceiling at all — a plugin
+ * could inject unbounded prompt text into every session it touched, and the
+ * first symptom would be a context window that filled up for no visible reason.
+ *
+ * Two numbers rather than one. The per-root file count bounds the WALK, so
+ * measuring the budget cannot itself become the slow path on a plugin that
+ * shipped a build output tree. The total-byte budget bounds what reaches the
+ * runtimes, across every plugin, because the agent pays for the sum.
+ */
+const PLUGIN_SKILL_ROOTS_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+const PLUGIN_SKILL_ROOT_MAX_FILES = 2_000;
+
+/**
+ * Bytes in a skills root, or null when it exceeds the file-count ceiling.
+ *
+ * Stops walking the moment either ceiling is passed: a root that is already too
+ * big does not need an exact size, only a verdict. Symlinks are not followed —
+ * `readdirSync` reports a link as neither file nor directory here, so a link out
+ * of the plugin directory contributes nothing and cannot make the walk escape.
+ */
+function measureSkillRootBytes(root: string, budgetBytes: number): number | null {
+  let bytes = 0;
+  let files = 0;
+  const pending = [root];
+  while (pending.length) {
+    const dir = pending.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(child);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      files += 1;
+      if (files > PLUGIN_SKILL_ROOT_MAX_FILES) return null;
+      try {
+        bytes += fs.statSync(child).size;
+      } catch {
+        continue;
+      }
+      if (bytes > budgetBytes) return bytes;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * The skill roots to hand agent runtimes, in registry order, within budget.
+ *
+ * Truncation is LOGGED, never silent: a dropped root means a skill the plugin
+ * author shipped and the agent will not see, and a plugin that appears installed
+ * and enabled while one of its skills is invisible is exactly the kind of gap
+ * that gets debugged as "the model ignored my instructions".
+ */
+function collectSkillRoots(
+  root: string,
+  installed: readonly PluginInstalledPlugin[],
+  logger: Pick<Logger, "warn"> | null = null,
+): string[] {
   const roots: string[] = [];
+  let totalBytes = 0;
   for (const plugin of installed) {
     if (!plugin.record.enabled || !plugin.manifest) continue;
     for (const relative of plugin.manifest.skills) {
@@ -809,9 +881,23 @@ function collectSkillRoots(root: string, installed: readonly PluginInstalledPlug
       // The manifest parser already refuses traversal, but a skills root is
       // handed to agent runtimes verbatim, so it is re-checked against both the
       // plugin directory and the plugins root before it can escape.
-      if (!resolved.startsWith(`${plugin.root}${path.sep}`) && resolved !== plugin.root) continue;
-      if (!resolved.startsWith(`${root}${path.sep}`)) continue;
-      if (dirExists(resolved)) roots.push(resolved);
+      if (!isPathInside(resolved, plugin.root)) continue;
+      if (!isPathInside(resolved, root)) continue;
+      if (!dirExists(resolved)) continue;
+      const remaining = PLUGIN_SKILL_ROOTS_MAX_TOTAL_BYTES - totalBytes;
+      const bytes = measureSkillRootBytes(resolved, remaining);
+      if (bytes === null || bytes > remaining) {
+        logger?.warn("plugin.skill_root_dropped", {
+          pluginId: plugin.record.pluginId,
+          root: resolved,
+          reason: bytes === null ? "file_count" : "total_bytes",
+          ...(bytes === null ? { maxFiles: PLUGIN_SKILL_ROOT_MAX_FILES } : { bytes, remainingBytes: remaining }),
+          totalBudgetBytes: PLUGIN_SKILL_ROOTS_MAX_TOTAL_BYTES,
+        });
+        continue;
+      }
+      totalBytes += bytes;
+      roots.push(resolved);
     }
   }
   return roots;
@@ -823,14 +909,26 @@ function collectSkillRoots(root: string, installed: readonly PluginInstalledPlug
  * exists). Reads the same registry, never the directory listing.
  */
 export function listPluginAgentSkillRoots(
-  options: { pluginsRoot?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { pluginsRoot?: string; env?: NodeJS.ProcessEnv; logger?: Pick<Logger, "warn"> } = {},
 ): string[] {
   const root = options.pluginsRoot?.trim() || resolvePluginsRoot(options.env ?? process.env);
-  const registry = readPluginRegistryContents(root);
-  const installed = Object.values(registry.plugins).map((record): PluginInstalledPlugin => {
-    const pluginRoot = path.join(root, record.pluginId);
+  return collectSkillRoots(root, readInstalledPluginsFromRegistry(root), options.logger ?? null);
+}
+
+/**
+ * Every registry-listed plugin with its manifest, without constructing the
+ * install service.
+ *
+ * Shared by the two daemon-free readers below. Reads the registry, never the
+ * directory listing: a directory nobody registered is not installed, and a
+ * registry entry whose manifest will not parse must still appear (as a plugin
+ * with a null manifest) so callers can tell "absent" from "broken".
+ */
+export function readInstalledPluginsFromRegistry(pluginsRoot: string): PluginInstalledPlugin[] {
+  const registry = readPluginRegistryContents(pluginsRoot);
+  return Object.values(registry.plugins).map((record): PluginInstalledPlugin => {
+    const pluginRoot = path.join(pluginsRoot, record.pluginId);
     const parsed = readManifestAt(pluginRoot);
     return { record, manifest: parsed.manifest, root: pluginRoot, errors: parsed.errors, warnings: parsed.warnings };
   });
-  return collectSkillRoots(root, installed);
 }

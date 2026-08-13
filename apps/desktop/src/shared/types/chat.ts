@@ -2792,11 +2792,32 @@ export type AgentChatUpdateSessionArgs = {
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
 };
 
+/**
+ * One command in the composer's slash menu.
+ *
+ * `source` says who owns dispatch, and the three answers behave differently:
+ * `sdk` goes to the runtime as text, `local` is intercepted by the client, and
+ * `plugin` is invoked as a plugin action and never reaches the model at all.
+ * A client that has not grown a plugin arm must not offer `plugin` commands —
+ * see `includePluginCommands` on the args below.
+ */
 export type AgentChatSlashCommand = {
   name: string;
   description: string;
   argumentHint?: string;
-  source: "sdk" | "local";
+  source: "sdk" | "local" | "plugin";
+  /**
+   * Present exactly when `source` is `"plugin"`. Carries the identity the
+   * client needs to invoke and to attribute the row, so the menu never has to
+   * parse it back out of `name` — which namespacing would break anyway.
+   */
+  plugin?: {
+    pluginId: string;
+    /** The plugin's display name, shown as the menu row's attribution. */
+    displayName: string;
+    /** The plugin action a selection invokes. */
+    actionId: string;
+  };
 };
 
 export type AgentChatSlashCommandsArgs = {
@@ -2804,6 +2825,16 @@ export type AgentChatSlashCommandsArgs = {
   laneId?: string | null;
   provider?: AgentChatProvider | null;
   projectRoot?: string | null;
+  /**
+   * Whether the caller can dispatch `source: "plugin"` commands.
+   *
+   * Opt-in rather than default-on because a client that lists a plugin command
+   * it cannot invoke produces a dead menu row: selecting it sends the literal
+   * `/name` to the model, which is strictly worse than the command not being
+   * offered. Desktop and the hosted web client set it; the TUI and iOS leave it
+   * off until they grow an invoke path.
+   */
+  includePluginCommands?: boolean;
 };
 
 export type AgentChatClaudeOutputStylesArgs = {

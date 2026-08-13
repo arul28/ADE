@@ -164,6 +164,75 @@ describe("pluginDataStore", () => {
     expect(store.usage("graph").entries).toHaveLength(0);
   });
 
+  /**
+   * Goes THROUGH publish, not around it.
+   *
+   * The filter-chip regression that made this test necessary was invisible to
+   * the model-level suites because they build their fixtures by hand —
+   * `laneBadgeRow("graph", { text: "Risk", filterKey: "stacked" })`, a payload
+   * shape the publish path could not produce. Those tests proved the model and
+   * not the pipeline, so a whitelist that dropped `filterKey` from every kind
+   * but `filter-chip` shipped: the tag never reached the database, every
+   * client's filter-key map was empty in production, and selecting a chip hid
+   * every row instead of filtering them. Reading the stored JSON back out is
+   * the assertion that could not have passed then.
+   */
+  it("persists a cross-kind filterKey tag, which is what makes a chip filter", async () => {
+    const { db, store } = await openStore();
+
+    store.publishContribution("graph", "lane", "lane-1", "row-badge", {
+      text: "Risk",
+      tone: "warning",
+      filterKey: "stacked",
+    });
+
+    const stored = db.all<{ payload_json: string }>(
+      "select payload_json from plugin_contributions where entity_id = ?",
+      ["lane-1"],
+    );
+    expect(JSON.parse(stored[0]!.payload_json)).toMatchObject({ text: "Risk", filterKey: "stacked" });
+  });
+
+  it("persists id and order, the other two fields the whitelist dropped", async () => {
+    const { db, store } = await openStore();
+
+    store.publishContribution("graph", "lane", "lane-3", "row-badge", {
+      text: "Risk",
+      tone: "warning",
+      id: "risk-badge",
+      order: 2,
+    });
+
+    const stored = db.all<{ payload_json: string }>(
+      "select payload_json from plugin_contributions where entity_id = ?",
+      ["lane-3"],
+    );
+    // `id` addresses one of two same-kind declarations; `order` sorts a
+    // plugin's own rows. Both were read structurally by clients off a payload
+    // the writer had already stripped them from, so both were inert.
+    expect(JSON.parse(stored[0]!.payload_json)).toMatchObject({ id: "risk-badge", order: 2 });
+  });
+
+  it("refuses a filterKey no chip could match rather than storing it", async () => {
+    const { db, store } = await openStore();
+
+    // Over the 64-character ceiling the chip's own copy is held to. Dropped
+    // rather than truncated: a truncated tag would silently group the entity
+    // under a key no declared chip carries, which looks exactly like the bug
+    // above from the user's side.
+    store.publishContribution("graph", "lane", "lane-2", "row-badge", {
+      text: "Risk",
+      tone: "warning",
+      filterKey: "x".repeat(65),
+    });
+
+    const stored = db.all<{ payload_json: string }>(
+      "select payload_json from plugin_contributions where entity_id = ?",
+      ["lane-2"],
+    );
+    expect(JSON.parse(stored[0]!.payload_json).filterKey).toBeUndefined();
+  });
+
   it("reports per-plugin usage with the writer's own budgets", async () => {
     const { store } = await openStore();
 

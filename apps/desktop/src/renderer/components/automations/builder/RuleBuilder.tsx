@@ -30,6 +30,7 @@ import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
 import { StepStack } from "./StepStack";
 import { applyStepsToDraft, draftToSteps, isRequireLaneMode, readLaneMode, type WorkflowStep } from "./draftBridge";
+import { PluginDetailSections, pluginAutomationContext } from "../../plugins/sockets";
 
 function Section({
   icon: Icon,
@@ -131,6 +132,7 @@ export function RuleBuilder({
   simulating = false,
   running = false,
   dirty = false,
+  active = true,
 }: {
   draft: AutomationRuleDraft;
   setDraft: (draft: AutomationRuleDraft) => void;
@@ -150,6 +152,8 @@ export function RuleBuilder({
   simulating?: boolean;
   running?: boolean;
   dirty?: boolean;
+  /** False while the workspace is mounted but not visible. */
+  active?: boolean;
 }) {
   const primaryTrigger: AutomationTrigger = draft.triggers[0] ?? draft.trigger ?? { type: "manual" };
   const source = sourceForTriggerType(primaryTrigger.type);
@@ -329,6 +333,23 @@ export function RuleBuilder({
           >
             <StepStack steps={steps} triggerType={primaryTrigger.type} suites={suites} onChange={setSteps} />
           </Section>
+
+          {/* Contributed sections, after the builder's own. Gated on a saved
+              rule: an unsaved draft has no id, so there is no automation for a
+              plugin to be talking about yet — and a section that rendered
+              against a null id would be published per-entity rows for a rule
+              that may never exist. */}
+          {draft.id ? (
+            <PluginDetailSections
+              surface="automations"
+              context={pluginAutomationContext({
+                id: draft.id,
+                name: draft.name,
+                enabled: draft.enabled,
+              })}
+              active={active}
+            />
+          ) : null}
         </div>
       </div>
     </div>

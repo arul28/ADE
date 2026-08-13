@@ -29,6 +29,20 @@ export type AdeActionValue = {
   resolvers?: Record<string, string>;
 };
 
+/**
+ * A plugin step's editable value.
+ *
+ * `action` is the handler `plugin.invoke` calls — the manifest step's `action`,
+ * which defaults to its `id`. Stored rather than looked up so a rule keeps
+ * working (and keeps rendering) when the plugin that declared it is not
+ * installed.
+ */
+export type PluginStepValue = {
+  pluginId: string;
+  action: string;
+  args?: Record<string, unknown>;
+};
+
 export type WorkflowStep = {
   kind: StepKind;
   // Shared runtime controls
@@ -47,6 +61,8 @@ export type WorkflowStep = {
   permissionConfig?: AiPermissionSettings;
   // ade-action
   adeAction?: AdeActionValue;
+  // plugin
+  pluginStep?: PluginStepValue;
   // run-tests
   suiteId?: string;
   // run-command
@@ -140,6 +156,8 @@ function actionToStep(action: AutomationAction): WorkflowStep | null {
       return { kind: "predict-conflicts", ...runtime };
     case "ade-action":
       return { kind: "ade-action", adeAction: action.adeAction ?? { domain: "", action: "" }, ...runtime };
+    case "plugin":
+      return { kind: "plugin", pluginStep: action.pluginStep ?? { pluginId: "", action: "" }, ...runtime };
     case "agent-session":
       return {
         kind: "agent-session",
@@ -189,6 +207,8 @@ export function actionToDraftAction(action: AutomationAction): AutomationDraftAc
       return { ...base, type: "predict-conflicts" };
     case "ade-action":
       return { ...base, type: "ade-action", adeAction: action.adeAction ?? { domain: "", action: "" } };
+    case "plugin":
+      return { ...base, type: "plugin", pluginStep: action.pluginStep ?? { pluginId: "", action: "" } };
     case "agent-session":
       return {
         ...base,
@@ -229,6 +249,12 @@ function stepToAction(step: WorkflowStep): AutomationAction {
         type: "ade-action",
         ...runtime,
         adeAction: step.adeAction ?? { domain: "", action: "" },
+      } as AutomationAction;
+    case "plugin":
+      return {
+        type: "plugin",
+        ...runtime,
+        pluginStep: step.pluginStep ?? { pluginId: "", action: "" },
       } as AutomationAction;
     case "agent-session":
       return {
@@ -318,6 +344,8 @@ export function blankStep(kind: StepKind, defaultSuiteId?: string): WorkflowStep
       return { kind, prompt: "", sessionTitle: "" };
     case "ade-action":
       return { kind, adeAction: { domain: "", action: "" } };
+    case "plugin":
+      return { kind, pluginStep: { pluginId: "", action: "" } };
     case "run-tests":
       return { kind, suiteId: defaultSuiteId ?? "" };
     case "run-command":

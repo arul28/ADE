@@ -304,6 +304,16 @@ export type TriggerContext = {
   pr?: TriggerPrContext;
   /** Structured Linear payload for `linear.*` triggers. */
   linear?: { issue: TriggerLinearIssueContext };
+  /**
+   * Structured payload for `plugin` triggers: who fired, which declared
+   * trigger, and whatever the plugin sent with it.
+   *
+   * One nested field rather than three flat ones so `payload` has a home that
+   * placeholders can reach — a step's args resolve `{{trigger.plugin.payload.x}}`
+   * by walking this object, the same way `{{trigger.issue.number}}` walks
+   * `issue`.
+   */
+  plugin?: { pluginId: string; triggerId: string; payload?: Record<string, unknown> };
 };
 
 export type LaneMergedNotification = {
@@ -589,6 +599,19 @@ export function triggerMatches(
   laneName: string | undefined,
 ): boolean {
   if (!triggerTypesMatch(ruleTrigger.type, trigger.triggerType)) return false;
+
+  // `plugin` is one trigger TYPE shared by every plugin, so the type check
+  // above admits every plugin's every firing and the identity has to be
+  // compared here. Fail closed on a half-written rule: a rule missing either
+  // half would otherwise run on all of them, and a user cannot debug a rule
+  // that fires for reasons its own filter does not mention.
+  if (normalizeTriggerType(ruleTrigger.type) === "plugin") {
+    const expectedPlugin = (ruleTrigger.pluginId ?? "").trim();
+    const expectedTrigger = (ruleTrigger.pluginTrigger ?? "").trim();
+    if (!expectedPlugin || !expectedTrigger) return false;
+    if (expectedPlugin !== (trigger.plugin?.pluginId ?? "").trim()) return false;
+    if (expectedTrigger !== (trigger.plugin?.triggerId ?? "").trim()) return false;
+  }
 
   const canonicalType = normalizeTriggerType(ruleTrigger.type);
   const isPrCanonical =
@@ -1067,6 +1090,7 @@ export function createAutomationService({
   agentChatService,
   budgetCapService,
   adeActionRegistry,
+  pluginAvailability,
   linearIngressAvailable,
   githubPollingAvailable,
   onEvent,
@@ -1089,6 +1113,23 @@ export function createAutomationService({
    * instances. See `apps/desktop/src/main/services/adeActions/registry.ts`.
    */
   adeActionRegistry?: AutomationAdeActionRegistry | null;
+  /**
+   * Why an installed-plugin step cannot run right now, or null when it can.
+   *
+   * Injected rather than imported for the same reason the registry above is:
+   * this service must not depend on the plugin install service. That service is
+   * a machine-scoped daemon singleton this process may not own, while an
+   * automation service is per-project and is constructed in bootstrap/main
+   * where both already exist — so the one place that has both supplies the
+   * lookup, and every test constructs without it.
+   *
+   * Optional, and asked FIRST — before the ade-action allowlist — mirroring
+   * {@link AutomationAdeActionRegistry.unavailableReason}: the run must record
+   * the sentence that names the fix ("this machine doesn't have X") rather than
+   * the allowlist's "action is not in the ADE action registry", which tells a
+   * user nothing they can act on.
+   */
+  pluginAvailability?: { unavailableReason(pluginId: string): string | null } | null;
   /** True when Linear event ingress is connected and able to deliver events. */
   linearIngressAvailable?: () => boolean;
   /** True when direct GitHub polling can resolve a configured repository. */
@@ -2679,6 +2720,42 @@ export function createAutomationService({
       }
       return await dispatchAdeAction(config, trigger);
     }
+    if (action.type === "plugin") {
+      const config = action.pluginStep;
+      if (!config) {
+        return { status: "failed", output: "plugin action is missing pluginStep config." };
+      }
+      const pluginId = (config.pluginId ?? "").trim();
+      const pluginAction = (config.action ?? "").trim();
+      if (!pluginId || !pluginAction) {
+        return { status: "failed", output: "plugin step requires both 'pluginId' and 'action'." };
+      }
+      // Asked before the registry, so an uninstalled plugin's run records the
+      // sentence that names the fix instead of a domain-allowlist message about
+      // `plugin.invoke`.
+      const unavailable = pluginAvailability?.unavailableReason(pluginId) ?? null;
+      if (unavailable) {
+        return { status: "failed", output: unavailable };
+      }
+      // Dispatched through the SAME `plugin.invoke` ade-action path a hand-
+      // written `ade-action` step would take, rather than reaching for a plugin
+      // service this file must not know about. Placeholder resolution, the
+      // chat-provenance strip and the error shaping are then identical by
+      // construction — `{{trigger.*}}` inside `args` included, since
+      // `dispatchAdeAction` resolves the whole args tree before calling.
+      return await dispatchAdeAction(
+        {
+          domain: "plugin",
+          action: "invoke",
+          args: {
+            pluginId,
+            action: pluginAction,
+            ...(config.args ? { args: config.args } : {}),
+          },
+        },
+        trigger,
+      );
+    }
     if (action.type === "agent-session") {
       // Spawn a scoped agent chat session as one step in a built-in chain.
       // The prompt on the action wins over the rule-level prompt; placeholders
@@ -3657,6 +3734,8 @@ export function createAutomationService({
     issue?: TriggerIssueContext | null;
     pr?: TriggerPrContext | null;
     linear?: { issue: TriggerLinearIssueContext } | null;
+    /** `triggerType: "plugin"` only. See `TriggerContext.plugin`. */
+    plugin?: { pluginId: string; triggerId: string; payload?: Record<string, unknown> } | null;
     project?: string | null;
     team?: string | null;
     assignee?: string | null;
@@ -3738,6 +3817,7 @@ export function createAutomationService({
       issue: args.issue ?? undefined,
       pr: args.pr ?? undefined,
       linear: args.linear ?? undefined,
+      plugin: args.plugin ?? undefined,
       project: args.project ?? undefined,
       team: args.team ?? undefined,
       assignee: args.assignee ?? undefined,
@@ -4144,6 +4224,7 @@ export function createAutomationService({
       issue?: TriggerIssueContext | null;
       pr?: TriggerPrContext | null;
       linear?: { issue: TriggerLinearIssueContext } | null;
+      plugin?: { pluginId: string; triggerId: string; payload?: Record<string, unknown> } | null;
       project?: string | null;
       team?: string | null;
       assignee?: string | null;
@@ -4151,6 +4232,36 @@ export function createAutomationService({
       changedFields?: string[];
     }): Promise<AutomationIngressEventRecord | null> {
       return await dispatchIngressTrigger(args);
+    },
+
+    /**
+     * One plugin firing of one declared trigger.
+     *
+     * A named entry point rather than a `dispatchIngressTrigger` call at the
+     * binding site, because the EVENT KEY is a contract: the uninstall sweep
+     * finds a plugin's rows by the `<pluginId>:` prefix, so the one place that
+     * mints it should be the one place that documents it. The uuid tail makes
+     * every firing distinct on purpose — ingress dedupe exists to swallow a
+     * webhook delivered twice, and two genuine firings of the same trigger are
+     * two events, not a redelivery.
+     */
+    async dispatchPluginTrigger(args: {
+      pluginId: string;
+      triggerId: string;
+      payload?: Record<string, unknown>;
+    }): Promise<AutomationIngressEventRecord | null> {
+      return await dispatchIngressTrigger({
+        source: "plugin",
+        eventKey: `${args.pluginId}:${args.triggerId}:${randomUUID()}`,
+        triggerType: "plugin",
+        eventName: args.triggerId,
+        summary: `${args.pluginId} fired ${args.triggerId}`,
+        plugin: {
+          pluginId: args.pluginId,
+          triggerId: args.triggerId,
+          ...(args.payload ? { payload: args.payload } : {}),
+        },
+      });
     },
 
     onSessionEnded(args: { laneId: string; sessionId: string }) {

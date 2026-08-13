@@ -108,7 +108,7 @@ function createInitialValuesFromDialogProps(props?: Record<string, unknown>): Cr
   return { sourceLaneId: sourceLaneId || null, target };
 }
 
-function PRsPageInner() {
+function PRsPageInner({ active }: { active: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const projectRoot = useAppStore(selectActiveProjectRoot);
@@ -561,13 +561,14 @@ function PRsPageInner() {
             <Plus size={14} weight="bold" />
             Create PR
           </button>
-          <PluginToolbarActions surface="prs" />
+          <PluginToolbarActions surface="prs" active={active} />
         </div>
       </div>
 
       <div className="min-h-0 flex-1">
         {activeMode === "github" ? (
           <GitHubTab
+            active={active}
             lanes={visibleLanes}
             mergeMethod={mergeMethod}
             selectedPrId={selectedPrId}
@@ -616,7 +617,7 @@ export function PRsPage({ active = true }: { active?: boolean } = {}) {
 
   return (
     <PrsProvider key={providerKey} active={active}>
-      <PRsPageInner />
+      <PRsPageInner active={active} />
     </PrsProvider>
   );
 }
