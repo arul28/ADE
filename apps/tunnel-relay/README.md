@@ -131,6 +131,29 @@ the same jittered reconnect state machine as any other disconnect. These are
 protocol control frames handled at the Cloudflare edge: they do not become JSON
 `{t:"ping"}` messages, wake a hibernated DO, or add billed DO messages.
 
+## Spend backstop
+
+Relay traffic bills to the vendor's Cloudflare account and Cloudflare has no
+native hard billing cap, so each machine gets a daily ceiling enforced in code —
+the same philosophy as `apps/push-relay`'s daily request budget. Every frame in
+either direction (control frames included, since they bill the same) counts
+against `TUNNEL_DAILY_FRAMES_PER_MACHINE` (default 500,000) and
+`TUNNEL_DAILY_BYTES_PER_MACHINE` (default 250 MiB) for the current UTC day.
+
+Passing either ceiling closes every socket on that machine with `4511` and
+latches it: new `/connect`, `/host` and pipe upgrades are accepted only to be
+closed with `4511` until midnight UTC. Because the Durable Object is keyed by
+`machineKey`, one object sees all of a machine's traffic and the latch covers
+every tunnel it can open. A normal remote day is a few thousand frames and a few
+MB, so the caps sit ~100× above legitimate use; at Durable Object pricing a
+machine pinned at the frame cap costs ~$0.075/day (≈$2.30/month) in requests.
+
+Counters live in the object's memory and flush to storage every 1,000 frames or
+1 MiB of unpersisted usage, so no frame pays for a storage write and an eviction
+cannot reset more than a fraction of a percent of the day. The latch itself is
+written the moment it trips. One record is kept per object and replaced in place
+when the day rolls over, so there are no per-day keys to sweep.
+
 ## Close codes
 
 | Code | Where | Meaning |
@@ -145,6 +168,7 @@ protocol control frames handled at the Cloudflare edge: they do not become JSON
 | `4508` | pipe | Pipe epoch or id did not match a pending client |
 | `4509` | phone/pipe | One side could not receive a forwarded frame |
 | `4510` | phone | Ready-v2 client sent data before relay readiness |
+| `4511` | host control/pipe/phone | Machine passed its daily relay budget (see Spend backstop) |
 | `4000` | pipe/phone/local bridge | Partner closed without an application close code |
 
 For pipe/phone and brain pipe/local boundaries, application close codes in

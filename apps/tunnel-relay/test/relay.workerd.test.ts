@@ -5,10 +5,14 @@ import worker from "../src";
 import {
   buildHostSignatureBase,
   buildPipeSignatureBase,
+  DEFAULT_TUNNEL_DAILY_BYTES_PER_MACHINE,
+  DEFAULT_TUNNEL_DAILY_FRAMES_PER_MACHINE,
   hmacSha256Hex,
 } from "../src/relay";
 import {
+  BUDGET_CLOSE_REASON,
   CLOSE_BRIDGE_REJECTED,
+  CLOSE_BUDGET,
   CLOSE_CLIENT_GONE,
   CLOSE_FORWARD_FAILED,
   CLOSE_IDLE,
@@ -187,6 +191,29 @@ async function establishEpochV2(keyDigit: string): Promise<{
   await claim(stub, key);
   const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
   return { key, stub, control, ...(await openTunnel({ stub, key, control })) };
+}
+
+type BudgetRecord = { day: string; frames: number; bytes: number; latched: boolean };
+
+function utcToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Writes the machine's daily counters, then evicts the instance so the object
+ * has to reload them from storage — the same path a hibernated object takes.
+ */
+async function seedBudget(stub: DurableObjectStub, record: BudgetRecord): Promise<void> {
+  await runInDurableObject<TunnelDurableObject, void>(stub, async (_instance, state) => {
+    await state.storage.put("budget", record);
+  });
+  await evictDurableObject(stub, { webSockets: "hibernate" });
+}
+
+async function readBudget(stub: DurableObjectStub): Promise<BudgetRecord | undefined> {
+  return runInDurableObject<TunnelDurableObject, BudgetRecord | undefined>(stub, (_instance, state) => (
+    state.storage.get<BudgetRecord>("budget")
+  ));
 }
 
 async function prewarm(stub: DurableObjectStub, key: string): Promise<unknown> {
@@ -451,6 +478,92 @@ describe("TunnelDurableObject in workerd", () => {
 
     const posted = await stub.fetch(`https://relay.test/prewarm/${key}`, { method: "POST" });
     expect(posted.status).toBe(405);
+  });
+
+  it("closes both ends and refuses reconnects once the daily frame budget is passed", async () => {
+    const { key, stub, control, client, pipe } = await establishEpochV2("7");
+    await seedBudget(stub, {
+      day: utcToday(),
+      frames: DEFAULT_TUNNEL_DAILY_FRAMES_PER_MACHINE - 1,
+      bytes: 0,
+      latched: false,
+    });
+
+    // The frame that lands exactly on the ceiling still relays.
+    const routed = nextMessage(pipe);
+    client.send("last-under-budget");
+    expect(await routed).toBe("last-under-budget");
+
+    const closes = [nextClose(client), nextClose(pipe), nextClose(control)];
+    client.send("over-budget");
+    for (const close of closes) {
+      const event = await close;
+      expect(event.code).toBe(CLOSE_BUDGET);
+      expect(event.reason).toBe(BUDGET_CLOSE_REASON);
+    }
+    expect(await readBudget(stub)).toMatchObject({ day: utcToday(), latched: true });
+
+    // The latch lives in the machine's own object, so a reconnect is refused at
+    // accept time rather than after another day's worth of frames.
+    const reconnect = await upgrade(stub, `https://relay.test/connect/${key}?ready=${RELAY_READY_VERSION}`);
+    const refused = await nextClose(reconnect);
+    expect(refused.code).toBe(CLOSE_BUDGET);
+    expect(refused.reason).toBe(BUDGET_CLOSE_REASON);
+  });
+
+  it("trips the same latch on the byte budget while far under the frame budget", async () => {
+    const { stub, client, pipe } = await establishEpochV2("8");
+    await seedBudget(stub, {
+      day: utcToday(),
+      frames: 3,
+      bytes: DEFAULT_TUNNEL_DAILY_BYTES_PER_MACHINE,
+      latched: false,
+    });
+
+    const closed = nextClose(pipe);
+    client.send("one byte too many");
+
+    expect((await closed).code).toBe(CLOSE_BUDGET);
+    expect(await readBudget(stub)).toMatchObject({ frames: 4, latched: true });
+  });
+
+  it("clears a stale latch when the UTC day rolls over", async () => {
+    const key = machineKey("9");
+    const stub = stubFor(key);
+    await claim(stub, key);
+    await seedBudget(stub, { day: "1999-01-01", frames: 9_999_999, bytes: 9_999_999, latched: true });
+
+    const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
+    const tunnel = await openTunnel({ stub, key, control });
+    const routed = nextMessage(tunnel.pipe);
+    tunnel.client.send("new day");
+
+    expect(await routed).toBe("new day");
+    // Yesterday's record is replaced in place rather than accumulating a key per
+    // day, and the replacement waits for a flush instead of writing eagerly.
+    expect(await readBudget(stub)).toMatchObject({ day: "1999-01-01" });
+  });
+
+  it("persists counters across an eviction once a flush threshold is crossed", async () => {
+    const { stub, client, pipe } = await establishEpochV2("e");
+    const halfMebibyte = new Uint8Array(512 * 1024);
+
+    for (let index = 0; index < 2; index += 1) {
+      const routed = nextMessage(pipe);
+      client.send(halfMebibyte);
+      // The runtime hands binary frames back as an ArrayBuffer or a Blob
+      // depending on the socket's binaryType; only the size matters here.
+      const received = (await routed) as ArrayBuffer | Blob;
+      const size = received instanceof ArrayBuffer ? received.byteLength : received.size;
+      expect(size).toBe(halfMebibyte.byteLength);
+    }
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+
+    // Three frames: the host's control `ready` plus both data frames — control
+    // traffic bills like everything else, so it counts like everything else.
+    const record = await readBudget(stub);
+    expect(record).toMatchObject({ day: utcToday(), frames: 3, latched: false });
+    expect(record?.bytes).toBeGreaterThanOrEqual(1024 * 1024);
   });
 
   it("routes prewarm for an unknown machine without creating any state", async () => {

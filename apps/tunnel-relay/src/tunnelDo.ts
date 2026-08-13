@@ -5,8 +5,11 @@ import {
   CONTROL_EPOCH_PATTERN,
   constantTimeEqual,
   DEFAULT_MAX_TUNNELS_PER_MACHINE,
+  DEFAULT_TUNNEL_DAILY_BYTES_PER_MACHINE,
+  DEFAULT_TUNNEL_DAILY_FRAMES_PER_MACHINE,
   generateConnectionId,
   jsonResponse,
+  positiveIntEnv,
   routeTunnelPath,
   verifySignedQuery,
   type TunnelRelayEnv,
@@ -24,7 +27,9 @@ export const CLOSE_BRIDGE_REJECTED = 4507; // host rejected an open it could not
 export const CLOSE_STALE_PIPE = 4508; // pipe epoch/id did not match one pending client
 export const CLOSE_FORWARD_FAILED = 4509; // one side could not receive a forwarded frame
 export const CLOSE_NOT_READY = 4510; // v2 client sent data before relay readiness
+export const CLOSE_BUDGET = 4511; // machine past its daily relay frame/byte budget
 export const HOST_OFFLINE_REASON = "host offline";
+export const BUDGET_CLOSE_REASON = "daily relay budget reached";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const IDLE_MS = 10 * 60 * 1000;
@@ -37,6 +42,19 @@ const ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
 // cannot lose their first protocol frame and no per-frame DO storage is needed.
 const MAX_BUFFERED_CLIENT_FRAMES = 64;
 const MAX_BUFFERED_CLIENT_BYTES = 256 * 1024;
+// Daily budget counters live in instance memory and are flushed to storage
+// every BUDGET_FLUSH_FRAMES frames or BUDGET_FLUSH_BYTES bytes of unpersisted
+// usage — never once per frame, which would put a storage write on the very hot
+// path the budget exists to bound. The trade-off is that an eviction can lose
+// at most one flush window: under 0.2% of the default frame budget and under
+// 0.4% of the default byte budget, so a machine cannot meaningfully reset its
+// day by cycling the object, while a machine pinned at the cap costs only a few
+// hundred writes/day. The latch is written the instant it trips rather than
+// waiting for a flush, so the one piece of state that must survive a restart
+// always does.
+const BUDGET_FLUSH_FRAMES = 1_000;
+const BUDGET_FLUSH_BYTES = 1024 * 1024;
+const BUDGET_STORAGE_KEY = "budget";
 export const RELAY_READY_VERSION = 2;
 export const LEGACY_CONTROL_EPOCH = "legacy-v1";
 const MAX_CLOSE_REASON_BYTES = 123;
@@ -87,6 +105,36 @@ function logTunnel(kind: string, fields: Record<string, unknown> = {}): void {
 
 type SocketRole = "control" | "client" | "pipe";
 
+/**
+ * The machine's usage for one UTC day. Exactly one of these exists per object,
+ * replaced in place when the day rolls over, so old days can never accumulate
+ * as separate storage keys — there is nothing to sweep.
+ */
+type BudgetRecord = {
+  /** UTC day (yyyy-mm-dd) the counters below belong to. */
+  day: string;
+  frames: number;
+  bytes: number;
+  /** Set once either ceiling tripped on `day`; cleared by the day rolling over. */
+  latched: boolean;
+};
+
+function utcDay(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+function emptyBudget(day: string): BudgetRecord {
+  return { day, frames: 0, bytes: 0, latched: false };
+}
+
+function isBudgetRecord(value: unknown): value is BudgetRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<BudgetRecord>;
+  return typeof record.day === "string"
+    && typeof record.frames === "number"
+    && typeof record.bytes === "number";
+}
+
 type SocketAttachment = {
   role: SocketRole;
   id?: string;
@@ -123,6 +171,12 @@ export class TunnelDurableObject implements DurableObject {
   // to the durable copy (or a tag scan) and repopulates itself after a wake.
   private readonly cachedAttachments = new WeakMap<WebSocket, SocketAttachment>();
   private readonly cachedPartners = new WeakMap<WebSocket, WebSocket>();
+  // Today's budget counters, read from storage once per instance (see
+  // `loadBudget`) and advanced in memory from there.
+  private budget: BudgetRecord | null = null;
+  private budgetLoad: Promise<BudgetRecord> | null = null;
+  private unflushedFrames = 0;
+  private unflushedBytes = 0;
 
   constructor(
     private readonly state: DurableObjectState,
@@ -264,6 +318,11 @@ export class TunnelDurableObject implements DurableObject {
       return new Response(verified.reason, { status: 401 });
     }
 
+    if (await this.budgetLatched()) {
+      logTunnel("connect_rejected", { role: "host", reason: "budget", machineKey: machineKey.slice(0, 8) });
+      return this.acceptClosed({ role: "control", epoch }, CLOSE_BUDGET, BUDGET_CLOSE_REASON);
+    }
+
     // Only one control socket per machine; a fresh host connection supersedes a
     // stale one (e.g. after the brain restarted before the old socket dropped).
     for (const existing of this.state.getWebSockets("control")) {
@@ -309,6 +368,11 @@ export class TunnelDurableObject implements DurableObject {
       signature: sig,
     });
     if (!verified.ok) return new Response(verified.reason, { status: 401 });
+    // Checked after the signature so an unauthenticated caller cannot probe a
+    // machine's budget state.
+    if (await this.budgetLatched()) {
+      return this.acceptClosed({ role: "pipe", id, epoch }, CLOSE_BUDGET, BUDGET_CLOSE_REASON);
+    }
 
     const client = this.clientForId(id, epoch);
     if (!client) {
@@ -376,6 +440,14 @@ export class TunnelDurableObject implements DurableObject {
     const notWs = await this.requireWebSocket(request);
     if (notWs) return notWs;
     const correlationId = relayCorrelationId(url);
+    if (await this.budgetLatched()) {
+      logTunnel("connect_rejected", { reason: "budget", correlationId });
+      return this.acceptClosed(
+        { role: "client", epoch: "offline", correlationId },
+        CLOSE_BUDGET,
+        BUDGET_CLOSE_REASON,
+      );
+    }
     const control = this.currentControl();
     if (!control) {
       // No host is registered — accept then close so the phone gets a clean,
@@ -602,9 +674,135 @@ export class TunnelDurableObject implements DurableObject {
     return Number.isFinite(raw) ? Math.max(1, Math.trunc(raw)) : DEFAULT_MAX_TUNNELS_PER_MACHINE;
   }
 
+  /**
+   * This machine's counters for the current UTC day. Storage is read once per
+   * instance and memoized, so a hibernated object pays a single read on its
+   * first frame after waking rather than one per frame.
+   */
+  private async loadBudget(): Promise<BudgetRecord> {
+    if (!this.budget) {
+      this.budgetLoad ??= this.state.storage.get<BudgetRecord>(BUDGET_STORAGE_KEY).then((stored) => {
+        // Assigned inside the memoized load, so the several frames that can be
+        // in flight when an object wakes all settle on one record instead of
+        // each installing its own and dropping the others' counts.
+        this.budget ??= isBudgetRecord(stored) ? stored : emptyBudget(utcDay(Date.now()));
+        return this.budget;
+      });
+      await this.budgetLoad;
+    }
+    const day = utcDay(Date.now());
+    const current = this.budget ?? emptyBudget(day);
+    if (current.day === day) {
+      this.budget = current;
+      return current;
+    }
+    // Day rollover: fresh counters, and the latch clears with them. Nothing is
+    // written here — the stale stored record is overwritten by the next flush,
+    // and an eviction before then simply rolls the same stale record over again.
+    const rolled = emptyBudget(day);
+    this.budget = rolled;
+    this.unflushedFrames = 0;
+    this.unflushedBytes = 0;
+    return rolled;
+  }
+
+  private async persistBudget(): Promise<void> {
+    if (!this.budget) return;
+    this.unflushedFrames = 0;
+    this.unflushedBytes = 0;
+    await this.state.storage.put(BUDGET_STORAGE_KEY, this.budget);
+  }
+
+  private async budgetLatched(): Promise<boolean> {
+    return (await this.loadBudget()).latched;
+  }
+
+  /**
+   * Accounts one frame against the machine's daily budget. Returns true when the
+   * machine is over budget — the tunnels have already been torn down and the
+   * caller must not forward the frame.
+   *
+   * Frames from every socket count, control included: the ceiling is on what
+   * this object costs to run, and a host flooding control frames bills exactly
+   * like one flooding data.
+   */
+  private async chargeRelayFrame(bytes: number): Promise<boolean> {
+    const budget = await this.loadBudget();
+    if (budget.latched) {
+      // A socket that survived the teardown (or reconnected into the same
+      // instance) gets closed on its next frame rather than relaying for free.
+      this.closeMachineForBudget();
+      return true;
+    }
+    budget.frames += 1;
+    budget.bytes += bytes;
+    this.unflushedFrames += 1;
+    this.unflushedBytes += bytes;
+    const frameLimit = positiveIntEnv(
+      this.env.TUNNEL_DAILY_FRAMES_PER_MACHINE,
+      DEFAULT_TUNNEL_DAILY_FRAMES_PER_MACHINE,
+    );
+    const byteLimit = positiveIntEnv(
+      this.env.TUNNEL_DAILY_BYTES_PER_MACHINE,
+      DEFAULT_TUNNEL_DAILY_BYTES_PER_MACHINE,
+    );
+    if (budget.frames > frameLimit || budget.bytes > byteLimit) {
+      budget.latched = true;
+      logTunnel("budget_exceeded", {
+        day: budget.day,
+        frames: budget.frames,
+        bytes: budget.bytes,
+        frameLimit,
+        byteLimit,
+      });
+      await this.persistBudget();
+      this.closeMachineForBudget();
+      return true;
+    }
+    if (this.unflushedFrames >= BUDGET_FLUSH_FRAMES || this.unflushedBytes >= BUDGET_FLUSH_BYTES) {
+      await this.persistBudget();
+    }
+    return false;
+  }
+
+  /**
+   * Cuts the machine off until UTC midnight: both ends of every tunnel and the
+   * host control socket. The Durable Object is keyed by machineKey (see
+   * `idFromName` in relay.ts), so there is exactly one object per machine and
+   * this latch covers every tunnel that machine can open — no sharding, no
+   * second object that could keep relaying on its behalf. What it cannot avoid
+   * is the request carrying a refused upgrade: reaching this object to be told
+   * "no" is itself billable, so the latch bounds sustained relaying, not the
+   * reconnect attempts of a client that ignores the close code.
+   */
+  private closeMachineForBudget(): void {
+    this.pendingClientFrames.clear();
+    for (const ws of this.state.getWebSockets()) {
+      try {
+        ws.close(CLOSE_BUDGET, BUDGET_CLOSE_REASON);
+      } catch {
+        // already closing
+      }
+    }
+  }
+
+  /** Accepts a socket only to close it with the budget code, as `/connect` does for CLOSE_TOO_MANY. */
+  private acceptClosed(attachment: Omit<SocketAttachment, "ts">, code: number, reason: string): Promise<Response> {
+    return this.acceptSocket(attachment, (server) => {
+      try {
+        server.close(code, reason);
+      } catch {
+        // already closing
+      }
+    });
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     let att = this.normalizedAttachment(ws);
     if (!att) return;
+    // Charged before forwarding: the frame that blows the budget is the frame
+    // the tunnel dies on, so nothing is relayed past the ceiling.
+    if (await this.chargeRelayFrame(bufferedFrameBytes(message))) return;
 
     if (att.role === "control") {
       // Native WebSocket ping/pong frames are handled by the Cloudflare edge

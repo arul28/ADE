@@ -7,6 +7,13 @@ export type TunnelRelayEnv = {
   CF_VERSION_METADATA: WorkerVersionMetadata;
   /** Optional override for the max concurrent tunnels per machine. */
   MAX_TUNNELS_PER_MACHINE?: string;
+  /**
+   * Hard per-machine ceilings on relayed frames and bytes per UTC day — the
+   * spend backstop. Exceeding either closes the machine's tunnels and refuses
+   * new ones until midnight UTC; see `DEFAULT_TUNNEL_DAILY_FRAMES_PER_MACHINE`.
+   */
+  TUNNEL_DAILY_FRAMES_PER_MACHINE?: string;
+  TUNNEL_DAILY_BYTES_PER_MACHINE?: string;
 };
 
 export { TunnelDurableObject };
@@ -20,6 +27,24 @@ export const CONNECTION_ID_PATTERN = /^[a-f0-9]{8,32}$/i;
 export const CONTROL_EPOCH_PATTERN = /^[a-f0-9]{32}$/i;
 export const SIGNATURE_TIMESTAMP_SKEW_SECONDS = 5 * 60;
 export const DEFAULT_MAX_TUNNELS_PER_MACHINE = 16;
+
+// Spend backstop. Every user's tunnel traffic bills to the vendor's Cloudflare
+// account and Cloudflare has no native hard billing cap, so the ceiling is
+// enforced in code. Durable Objects bill per incoming WebSocket message
+// (~$0.15/M requests past the included tier) plus active duration: a machine
+// pinned at 500,000 frames/day costs ~$0.075/day in requests ≈ ~$2.30/month,
+// which is the worst case a single abusive machine can inflict. A legitimate
+// remote day is a few thousand frames and a few MB, so both caps sit ~100×
+// above honest use and no real machine ever approaches them. Enforced per
+// machine (one Durable Object per machineKey) and tunable via wrangler vars.
+export const DEFAULT_TUNNEL_DAILY_FRAMES_PER_MACHINE = 500_000;
+export const DEFAULT_TUNNEL_DAILY_BYTES_PER_MACHINE = 250 * 1024 * 1024;
+
+/** Positive-integer env override, falling back on anything unparseable. */
+export function positiveIntEnv(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
+}
 
 const encoder = new TextEncoder();
 

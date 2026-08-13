@@ -12,7 +12,9 @@ import {
   type TunnelRelayEnv,
 } from "../src/relay";
 import {
+  BUDGET_CLOSE_REASON,
   CLOSE_BRIDGE_REJECTED,
+  CLOSE_BUDGET,
   CLOSE_FORWARD_FAILED,
   CLOSE_HOST_OFFLINE,
   CLOSE_NOT_READY,
@@ -133,9 +135,11 @@ class FakeState {
   acceptWebSocket(): void {}
 }
 
-function makeDoHarness(): { durable: TunnelDurableObject; state: FakeState; storage: FakeStorage } {
+function makeDoHarness(
+  env: Partial<TunnelRelayEnv> = {},
+): { durable: TunnelDurableObject; state: FakeState; storage: FakeStorage } {
   const state = new FakeState();
-  const durable = new TunnelDurableObject(state as unknown as DurableObjectState, {} as TunnelRelayEnv);
+  const durable = new TunnelDurableObject(state as unknown as DurableObjectState, env as TunnelRelayEnv);
   return { durable, state, storage: state.storage };
 }
 
@@ -815,5 +819,169 @@ describe("durable socket lifecycle", () => {
     expect(response.status).toBe(200);
     expect(client?.closes).toEqual([{ code: CLOSE_HOST_OFFLINE, reason: "host offline" }]);
     expect(storage.setAlarmCalls).toBe(0);
+  });
+});
+
+describe("daily relay budget", () => {
+  const budgetClose = { code: CLOSE_BUDGET, reason: BUDGET_CLOSE_REASON };
+
+  function today(): string {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  async function signedHostRequest(): Promise<Request> {
+    const ts = String(Math.floor(Date.now() / 1_000));
+    const sig = await hmacSha256Hex(SECRET, buildHostSignatureBase(MACHINE_KEY, CONTROL_EPOCH, ts));
+    const query = new URLSearchParams({ ts, sig, epoch: CONTROL_EPOCH });
+    return new Request(`https://relay.test/host/${MACHINE_KEY}?${query}`, {
+      headers: { Upgrade: "websocket" },
+    });
+  }
+
+  it("relays ordinary traffic without touching storage", async () => {
+    const { durable, state, storage } = makeDoHarness();
+    const client = state.addSocket("client", "abcdef01", Date.now(), { established: true });
+    const pipe = state.addSocket("pipe", "abcdef01", Date.now(), { established: true });
+
+    for (const frame of ["one", "two", "three"]) {
+      await durable.webSocketMessage(client as unknown as WebSocket, frame);
+    }
+    await durable.webSocketMessage(pipe as unknown as WebSocket, "back");
+
+    expect(pipe.sent).toEqual(["one", "two", "three"]);
+    expect(client.sent).toEqual(["back"]);
+    expect(client.closes).toEqual([]);
+    expect(pipe.closes).toEqual([]);
+    // A day far under budget must cost zero storage writes; counters only reach
+    // storage once a flush threshold is crossed.
+    expect(await storage.get("budget")).toBeUndefined();
+  });
+
+  it("stops relaying and closes the machine when the frame budget is passed", async () => {
+    const { durable, state, storage } = makeDoHarness({ TUNNEL_DAILY_FRAMES_PER_MACHINE: "2" });
+    const control = state.addSocket("control", undefined, Date.now(), { epoch: CONTROL_EPOCH });
+    const client = state.addSocket("client", "abcdef01", Date.now(), { established: true });
+    const pipe = state.addSocket("pipe", "abcdef01", Date.now(), { established: true });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await durable.webSocketMessage(client as unknown as WebSocket, "one");
+    await durable.webSocketMessage(pipe as unknown as WebSocket, "two");
+    expect(pipe.sent).toEqual(["one"]);
+    expect(client.sent).toEqual(["two"]);
+
+    await durable.webSocketMessage(client as unknown as WebSocket, "three");
+
+    // The frame that passes the ceiling is never forwarded, and the whole
+    // machine — control socket included — goes down with it.
+    expect(pipe.sent).toEqual(["one"]);
+    expect(client.closes).toEqual([budgetClose]);
+    expect(pipe.closes).toEqual([budgetClose]);
+    expect(control.closes).toEqual([budgetClose]);
+    expect(await storage.get("budget")).toEqual({ day: today(), frames: 3, bytes: 11, latched: true });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"kind":"budget_exceeded"'));
+    log.mockRestore();
+  });
+
+  it("trips on the byte budget while still under the frame budget", async () => {
+    const { durable, state, storage } = makeDoHarness({ TUNNEL_DAILY_BYTES_PER_MACHINE: "16" });
+    const client = state.addSocket("client", "abcdef01", Date.now(), { established: true });
+    const pipe = state.addSocket("pipe", "abcdef01", Date.now(), { established: true });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await durable.webSocketMessage(client as unknown as WebSocket, new ArrayBuffer(16));
+    expect(client.closes).toEqual([]);
+    await durable.webSocketMessage(client as unknown as WebSocket, new ArrayBuffer(1));
+
+    expect(client.closes).toEqual([budgetClose]);
+    expect(pipe.closes).toEqual([budgetClose]);
+    expect(await storage.get("budget")).toMatchObject({ frames: 2, bytes: 17, latched: true });
+    log.mockRestore();
+  });
+
+  it("refuses every new socket while the machine is latched", async () => {
+    const { durable, state, storage } = makeDoHarness();
+    await storage.put("secret", SECRET);
+    await storage.put("budget", { day: today(), frames: 9, bytes: 9, latched: true });
+    installAcceptSocketStub(durable, state);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await durable.fetch(new Request(`https://relay.test/connect/${MACHINE_KEY}?ready=2`, {
+      headers: { Upgrade: "websocket" },
+    }));
+    const refusedClient = state.sockets.at(-1)!;
+    await durable.fetch(await signedHostRequest());
+    const refusedControl = state.sockets.at(-1)!;
+    // A pipe only reaches the budget gate when its phone is already waiting.
+    state.addSocket("client", "abcdef01", Date.now(), { epoch: CONTROL_EPOCH });
+    await durable.fetch(await signedPipeRequest({ id: "abcdef01", epoch: CONTROL_EPOCH }));
+    const refusedPipe = state.sockets.at(-1)!;
+
+    expect(refusedClient.tags).toContain("client");
+    expect(refusedControl.tags).toContain("control");
+    expect(refusedPipe.tags).toContain("pipe");
+    for (const socket of [refusedClient, refusedControl, refusedPipe]) {
+      expect(socket.closes).toEqual([budgetClose]);
+    }
+    const rejection = log.mock.calls
+      .map(([entry]) => String(entry))
+      .find((entry) => entry.includes('"kind":"connect_rejected"'));
+    expect(rejection).toContain('"reason":"budget"');
+    log.mockRestore();
+  });
+
+  it("resets counters and clears the latch when the UTC day rolls over", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.parse("2026-03-01T23:59:00.000Z"));
+      const { durable, state, storage } = makeDoHarness({ TUNNEL_DAILY_FRAMES_PER_MACHINE: "1" });
+      await storage.put("secret", SECRET);
+      installAcceptSocketStub(durable, state);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const control = state.addSocket("control", undefined, Date.now(), { epoch: CONTROL_EPOCH });
+
+      await durable.webSocketMessage(control as unknown as WebSocket, JSON.stringify({ t: "ping" }));
+      await durable.webSocketMessage(control as unknown as WebSocket, JSON.stringify({ t: "ping" }));
+      expect(control.closes).toEqual([budgetClose]);
+      expect(await storage.get("budget")).toMatchObject({ day: "2026-03-01", latched: true });
+
+      vi.setSystemTime(Date.parse("2026-03-02T00:00:01.000Z"));
+      await durable.fetch(await signedHostRequest());
+
+      const reconnected = state.sockets.filter((socket) => socket.tags.includes("control")).at(-1)!;
+      expect(reconnected).not.toBe(control);
+      expect(reconnected.closes).toEqual([]);
+      log.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes persisted counters after the object is reconstructed", async () => {
+    const { durable, state, storage } = makeDoHarness();
+    const control = state.addSocket("control", undefined, Date.now(), { epoch: CONTROL_EPOCH });
+
+    // One megabyte of usage crosses the flush threshold, so the day's count is
+    // durable even though no single frame wrote to storage.
+    await durable.webSocketMessage(control as unknown as WebSocket, new ArrayBuffer(1024 * 1024));
+    expect(await storage.get("budget")).toEqual({
+      day: today(),
+      frames: 1,
+      bytes: 1024 * 1024,
+      latched: false,
+    });
+
+    // A cold instance with a one-frame ceiling: it can only trip on this frame
+    // if it resumed the persisted count instead of starting the day over.
+    const reconstructed = new TunnelDurableObject(
+      state as unknown as DurableObjectState,
+      { TUNNEL_DAILY_FRAMES_PER_MACHINE: "1" } as TunnelRelayEnv,
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await reconstructed.webSocketMessage(control as unknown as WebSocket, "after restart");
+
+    expect(control.closes).toEqual([budgetClose]);
+    expect(await storage.get("budget")).toMatchObject({ frames: 2, latched: true });
+    log.mockRestore();
   });
 });
