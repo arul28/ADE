@@ -4,7 +4,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { AccountPage, SignInCard, reconnectNeedsFreshSignIn } from "./AccountPage";
+import { AccountPage, SignInCard, describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./AccountPage";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
 import type { AdeAccountMachine, AdeAccountStatus } from "../../../shared/types";
@@ -188,7 +188,7 @@ describe("AccountPage signed-in", () => {
   const signOut = vi.fn(async () => SIGNED_OUT);
   const repairMachinePairing = vi.fn();
 
-  /** The directory answers `ok` but has no row for this computer — i.e. removed. */
+  /** The directory answers `ok` but has no row for this computer. */
   function machinesWithoutThisComputer() {
     listMachines.mockResolvedValue({
       state: "ok",
@@ -219,7 +219,10 @@ describe("AccountPage signed-in", () => {
     });
     getLocalMachineIdentity.mockResolvedValue({ machineKey: "this-key", deviceId: "this-dev" });
     window.ade = {
-      app: { openExternal: vi.fn(async () => undefined) },
+      app: {
+        openExternal: vi.fn(async () => undefined),
+        restartBackgroundService: vi.fn(async () => undefined),
+      },
       github: {
         getStatus: vi.fn(async () => ({ connected: false })),
         onStatusChanged: vi.fn(() => () => {}),
@@ -230,6 +233,12 @@ describe("AccountPage signed-in", () => {
         removeMachine,
         renameMachine,
         repairMachinePairing,
+        repairSession: vi.fn(async () => ({
+          outcome: "repaired" as const,
+          readable: true,
+          recoveredKeys: 0,
+          brainRestarted: true,
+        })),
         signOut,
       },
     } as unknown as typeof window.ade;
@@ -433,6 +442,12 @@ describe("AccountPage signed-in", () => {
     renderPage();
 
     expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    expect(screen.queryByText(/It was removed/)).toBeNull();
+    expect(
+      screen.getByText(/isn't sharing Activity and your other computers can't reach it/),
+    ).toBeTruthy();
+    expect(screen.getByText(/Repair restarts ADE's background service/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
 
     await waitFor(() => expect(repairMachinePairing).toHaveBeenCalledTimes(1));
@@ -441,6 +456,30 @@ describe("AccountPage signed-in", () => {
         "This computer is back on your account. Activity and alerts are delivering again.",
       ),
     ).toBeTruthy();
+  });
+
+  it("shows recovery controls when the local machine is the only missing row and the directory is empty", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [],
+    });
+    renderPage();
+
+    expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    expect(screen.getByText("No computers connected yet")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+  });
+
+  it("repairs the background service from a missing directory row", async () => {
+    machinesWithoutThisComputer();
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Repair" }));
+    await waitFor(() => expect(window.ade.account?.repairSession).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Fixed — your sign-in is back.")).toBeTruthy();
   });
 
   it("shows the brain's reason and says the computer is still disconnected on failure", async () => {
@@ -514,6 +553,7 @@ describe("AccountPage signed-in", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
     const pending = await screen.findByRole("button", { name: "Reconnecting…" });
     expect(pending.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Repair" }).hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(pending);
     expect(repairMachinePairing).toHaveBeenCalledTimes(1);
@@ -772,5 +812,26 @@ describe("AccountPage signed-in", () => {
 
     expect(await screen.findByText("Use the machine menu above to switch computers.")).toBeTruthy();
     expect(screen.queryByText(/still connect from Connections/)).toBeNull();
+  });
+});
+
+describe("describeThisComputerMissing", () => {
+  it("never claims removal as fact for an active session", () => {
+    const copy = describeThisComputerMissing("active");
+    expect(copy.title).toBe("This computer isn't on your account");
+    expect(copy.body).toMatch(/isn't sharing Activity/);
+    expect(copy.body).toMatch(/Repair restarts ADE's background service/);
+    expect(copy.body).not.toMatch(/It was removed/);
+  });
+
+  it("explains an expired sign-in as a publish stop, not a removal", () => {
+    expect(describeThisComputerMissing("expired").body).toMatch(/sign-in expired/);
+    expect(describeThisComputerMissing("expired").body).toMatch(/Repair restarts ADE's background service/);
+    expect(describeThisComputerMissing("expired").body).not.toMatch(/It was removed/);
+  });
+
+  it("points an unreadable session at Repair rather than removal", () => {
+    expect(describeThisComputerMissing("unreadable").body).toMatch(/can't read this computer's sign-in/);
+    expect(describeThisComputerMissing("unreadable").body).not.toMatch(/It was removed/);
   });
 });

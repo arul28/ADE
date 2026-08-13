@@ -11,6 +11,7 @@ import {
   accountMachineMatchesTarget,
   assignMachineSections,
   describePublishHealth,
+  formatRemoteTargetError,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
 
@@ -361,5 +362,31 @@ describe("describePublishHealth", () => {
     expect(
       describePublishHealth(health({ state: "http_timeout", failingSinceMs }), NOW),
     ).toEqual({ kind: "failing", minutes: 5 });
+  });
+});
+
+describe("formatRemoteTargetError", () => {
+  it("does not blame sshd for a refused paired-sync port", () => {
+    expect(formatRemoteTargetError("ECONNREFUSED")).toBe(
+      "The machine refused the connection. Check that ADE is running on that computer and reachable on the saved port.",
+    );
+    expect(formatRemoteTargetError("ECONNREFUSED")).not.toMatch(/sshd|Remote Login/);
+  });
+
+  it("does not blame sshd for a reset paired connection", () => {
+    expect(formatRemoteTargetError("ECONNRESET")).not.toMatch(/sshd|Remote Login|SSH/);
+  });
+
+  it("keeps SSH recovery copy when the error already names SSH", () => {
+    expect(formatRemoteTargetError("SSH ECONNREFUSED")).toMatch(/Remote Login\/sshd/);
+    expect(formatRemoteTargetError("sshd ECONNRESET")).toMatch(/Remote Login\/sshd/);
+  });
+
+  it("keeps SSH recovery copy when only the IPC method name embeds Ssh", () => {
+    expect(
+      formatRemoteTargetError(
+        "Error invoking remote method 'ade.remoteRuntime.getSshHostKeyTrust': Error: read ECONNRESET",
+      ),
+    ).toMatch(/SSH server closed the connection before ADE could finish the SSH handshake/);
   });
 });

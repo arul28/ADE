@@ -1,5 +1,4 @@
 import http from "node:http";
-import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type {
@@ -25,13 +24,11 @@ import {
   terminatePidGracefullyAsync,
 } from "../../serviceManager/common";
 import { getRuntimeServiceMainPid } from "../../serviceManager";
-import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import {
-  buildWindowsPortHolderQueryArgs,
-  parseWindowsPortHolders,
-  type WindowsPortHolder,
-} from "./windowsPortHolders";
+  inspectSyncListenerPort,
+  type SyncListenerPortDiagnosis,
+} from "./syncListenerPortInspect";
 
 // Re-exported so existing importers (and `ade doctor`) keep their entry point.
 export {
@@ -40,6 +37,10 @@ export {
   parseWindowsPortHolders,
   type WindowsPortHolder,
 } from "./windowsPortHolders";
+export {
+  inspectSyncListenerPort,
+  type SyncListenerPortDiagnosis,
+} from "./syncListenerPortInspect";
 
 // Bind the sync host on all interfaces by default so phones on the same
 // wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
@@ -88,11 +89,6 @@ type SharedSyncListenerLogger = {
   debug?: (message: string, fields?: Record<string, unknown>) => void;
   info?: (message: string, fields?: Record<string, unknown>) => void;
   warn?: (message: string, fields?: Record<string, unknown>) => void;
-};
-
-export type SyncListenerPortDiagnosis = {
-  port: number;
-  holders: WindowsPortHolder[];
 };
 
 export type SharedSyncListenerConnection = {
@@ -180,6 +176,12 @@ export type SharedSyncListener = {
    * port — project switches never rebind, so connected peers survive them.
    */
   ensureListening(portCandidates: number[]): Promise<number>;
+  /**
+   * Bind `port` alongside the current listener, then close the old one.
+   * Used to steal 8787 back after a dual-brain split left us on 8788.
+   * Returns null when the target is still busy; the existing bind is kept.
+   */
+  tryMigrateToPort(port: number): Promise<number | null>;
   getPort(): number | null;
   isListening(): boolean;
   getExpectedLoopbackNonce(): string;
@@ -218,29 +220,6 @@ type ParkedEntry = {
   onError: (error: Error) => void;
   expireTimer: ReturnType<typeof setTimeout>;
 };
-
-// `lsof`/`ps` answer in a few milliseconds. PowerShell needs to start a
-// runtime and load a CIM module first, so the POSIX budget would kill every
-// Windows query before it produced a holder.
-const PORT_INSPECT_TIMEOUT_MS = 200;
-const WINDOWS_PORT_INSPECT_TIMEOUT_MS = 5_000;
-
-function execFileText(
-  command: string,
-  args: string[],
-  timeoutMs: number = PORT_INSPECT_TIMEOUT_MS,
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(
-      command,
-      args,
-      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true },
-      (error, stdout) => {
-        resolve(error ? null : String(stdout ?? ""));
-      },
-    );
-  });
-}
 
 function isRetryableListenerBindError(error: unknown): boolean {
   if (isLoopbackShadowedError(error)) return true;
@@ -337,10 +316,10 @@ export function createSharedSyncListener(options: {
   const findStaleHolder = (
     diagnosis: SyncListenerPortDiagnosis,
   ): SyncListenerPortDiagnosis["holders"][number] | null => {
-    const excludedPids = new Set([
-      process.pid,
-      activeServicePid() ?? -1,
-    ]);
+    // Only exclude ourselves. Launchd's tracked main pid is often the wedged
+    // predecessor still bound to 8787; excluding it is how a replacement brain
+    // ended up stuck on 8788 with two listeners on the same machine.
+    const excludedPids = new Set([process.pid]);
     return diagnosis.holders.find((holder) =>
       !excludedPids.has(holder.pid)
       && holder.command != null
@@ -361,6 +340,7 @@ export function createSharedSyncListener(options: {
   // externally-supplied server, so we track it to free the port on close.
   let httpServer: http.Server | null = null;
   let listeningPromise: Promise<number> | null = null;
+  let migratePromise: Promise<number | null> | null = null;
   let handler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackSuppressedUntilMs = 0;
@@ -516,18 +496,25 @@ export function createSharedSyncListener(options: {
     parked.set(ws, entry);
   };
 
-  const bindOnce = async (portCandidates: number[]): Promise<number> => {
+  const bindOnce = async (
+    portCandidates: number[],
+    bindOptions: { migrate?: boolean } = {},
+  ): Promise<number> => {
     const candidates = portCandidates.length > 0 ? portCandidates : [DEFAULT_SYNC_HOST_PORT];
     // A fixed preferred port is re-attempted so a dying listener can free it.
     // An ephemeral port (0) is ALSO re-attempted, but for a different reason:
     // each bind(0) yields a fresh OS-assigned port, so a loopback shadow on the
     // first resolved port is escaped simply by re-binding. Both are bounded by
     // PREFERRED_PORT_BIND_ATTEMPTS so a persistent shadow still terminates.
-    const attemptPlan = candidates.flatMap((candidatePort, candidateIndex) =>
-      (candidateIndex === 0 && candidatePort !== 0) || candidatePort === 0
-        ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
-        : [candidatePort],
-    );
+    // Runtime migrate probes one candidate; the 3.2s retry storm is for the
+    // initial bind, not a 15s heal loop against a live ADE Beta on 8787.
+    const attemptPlan = bindOptions.migrate
+      ? [...candidates]
+      : candidates.flatMap((candidatePort, candidateIndex) =>
+        (candidateIndex === 0 && candidatePort !== 0) || candidatePort === 0
+          ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
+          : [candidatePort],
+      );
     let lastError: unknown = null;
     let previousAttemptedPort: number | null = null;
     // Tracks RESOLVED shadowed ports. For port 0 the literal 0 is never added
@@ -681,6 +668,7 @@ export function createSharedSyncListener(options: {
               logger.info?.("sync_listener.zombie_reaped", {
                 port: attemptedPort,
                 pid: staleHolder.pid,
+                servicePid: activeServicePid(),
               });
               // Non-preferred candidates occur only once in the normal plan.
               // Insert exactly one immediate retry for the newly-freed port.
@@ -699,7 +687,10 @@ export function createSharedSyncListener(options: {
           : retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed";
         if (event !== "sync_listener.bind_port_conflict" || !loggedConflictPorts.has(attemptedPort)) {
           if (event === "sync_listener.bind_port_conflict") loggedConflictPorts.add(attemptedPort);
-          logger.warn?.(event, {
+          const log = bindOptions.migrate && event === "sync_listener.bind_port_conflict"
+            ? logger.debug
+            : logger.warn;
+          log?.(event, {
             attemptedPort,
             error: error instanceof Error ? error.message : String(error),
             code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
@@ -718,10 +709,12 @@ export function createSharedSyncListener(options: {
         .slice(0, 5)
         .map((port) => diagnosePort(port)),
     );
-    logger.warn?.("sync_listener.bind_exhausted", {
-      candidates: candidateDiagnosis,
-      error: lastError instanceof Error ? lastError.message : String(lastError),
-    });
+    if (!bindOptions.migrate) {
+      logger.warn?.("sync_listener.bind_exhausted", {
+        candidates: candidateDiagnosis,
+        error: lastError instanceof Error ? lastError.message : String(lastError),
+      });
+    }
     throw lastError instanceof Error
       ? lastError
       : new Error("Unable to bind the shared sync listener.");
@@ -740,6 +733,49 @@ export function createSharedSyncListener(options: {
       const port = await listeningPromise;
       notifyLoopbackValidated();
       return port;
+    },
+
+    async tryMigrateToPort(port: number): Promise<number | null> {
+      if (closed) return null;
+      if (migratePromise) return migratePromise;
+      const currentMigrate = (async (): Promise<number | null> => {
+        if (listeningPromise) {
+          await listeningPromise.catch(() => null);
+        }
+        if (closed) return null;
+        const currentAddress = server?.address();
+        const currentPort = typeof currentAddress === "object" && currentAddress
+          ? currentAddress.port
+          : null;
+        if (currentPort == null || server == null || httpServer == null) return null;
+        const target = Math.max(1, Math.min(65_535, Math.floor(port)));
+        if (currentPort === target) return currentPort;
+        const previousServer = server;
+        const previousHttp = httpServer;
+        let nextPort: number;
+        try {
+          nextPort = await bindOnce([target], { migrate: true });
+        } catch (error) {
+          logger.debug?.("sync_listener.canonical_port_still_busy", {
+            port: target,
+            from: currentPort,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+        listeningPromise = Promise.resolve(nextPort);
+        await closeCandidateServer(previousServer, previousHttp).catch(() => {});
+        logger.info?.("sync_listener.migrated_to_canonical_port", {
+          from: currentPort,
+          to: nextPort,
+        });
+        notifyLoopbackValidated();
+        return nextPort;
+      })();
+      migratePromise = currentMigrate.finally(() => {
+        migratePromise = null;
+      });
+      return migratePromise;
     },
 
     getPort(): number | null {
@@ -878,77 +914,4 @@ export function createSharedSyncListener(options: {
       });
     },
   };
-}
-
-async function inspectWindowsSyncListenerPort(
-  port: number,
-  exec: typeof execFileText,
-): Promise<SyncListenerPortDiagnosis> {
-  let powershell: string;
-  let args: string[];
-  try {
-    powershell = resolveTrustedWindowsTool("powershell");
-    args = buildWindowsPortHolderQueryArgs(port);
-  } catch {
-    return { port, holders: [] };
-  }
-  const raw = await exec(powershell, args, WINDOWS_PORT_INSPECT_TIMEOUT_MS);
-  return { port, holders: parseWindowsPortHolders(raw) };
-}
-
-async function inspectPosixSyncListenerPort(
-  port: number,
-  exec: typeof execFileText,
-): Promise<SyncListenerPortDiagnosis> {
-  const lsof = await exec(
-    "lsof",
-    ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"],
-  );
-  if (lsof == null) return { port, holders: [] };
-  const pids = [...new Set(
-    lsof
-      .split(/\r?\n/)
-      .filter((line) => /^p\d+$/.test(line))
-      .map((line) => Number(line.slice(1)))
-      .filter((pid) => Number.isFinite(pid) && pid > 0),
-  )];
-  return {
-    port,
-    holders: await Promise.all(pids.map(async (pid) => {
-      const [commandResult, startResult] = await Promise.all([
-        exec("ps", ["-p", String(pid), "-o", "command="]),
-        exec("ps", ["-p", String(pid), "-o", "lstart="]),
-      ]);
-      const command = commandResult?.trim() ?? "";
-      const startTime = startResult?.trim() ?? "";
-      return {
-        pid,
-        command: command || null,
-        startTime: startTime || null,
-      };
-    })),
-  };
-}
-
-/**
- * Processes listening on `port`, dispatched per platform.
- *
- * Both consumers degrade badly when this silently answers "nothing": the
- * stale-port reclaim in `createSharedSyncListener` cannot recognise a wedged
- * same-channel sibling and permanently drifts mobile sync onto a fallback port,
- * and `ade doctor` reports "no holders visible to this user" with advice that
- * only makes sense on macOS.
- */
-export async function inspectSyncListenerPort(
-  port: number,
-  deps: {
-    platform?: NodeJS.Platform;
-    exec?: typeof execFileText;
-  } = {},
-): Promise<SyncListenerPortDiagnosis> {
-  const platform = deps.platform ?? process.platform;
-  const exec = deps.exec ?? execFileText;
-  return platform === "win32"
-    ? inspectWindowsSyncListenerPort(port, exec)
-    : inspectPosixSyncListenerPort(port, exec);
 }

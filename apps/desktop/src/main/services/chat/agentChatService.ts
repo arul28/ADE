@@ -6976,6 +6976,11 @@ type AgentChatAutomationService = {
   cancelRunForDeletedChat: (args: { sessionId: string; runId?: string | null }) => void;
 };
 
+/** Live in-memory chat-event rings kept by the brain. Snapshot hydration must
+ *  not grow this set — that is how a long-lived brain reached ~1 GB and wedged
+ *  the event loop on GC. */
+export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -7280,7 +7285,9 @@ export function createAgentChatService(args: {
   // emitted event (see emitChatEvent → commitChatEvent) and merged with the
   // persisted transcript when a snapshot is requested. The transcript recovers
   // older project/tab-switch history; the ring contributes events that may not
-  // have reached fs.appendFile yet.
+  // have reached fs.appendFile yet. Session count is LRU-capped: a history
+  // snapshot must not copy the transcript into this map, or every hydrated
+  // chat parks up to 4 MB in the brain until process death.
   const CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION = 4_000;
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
@@ -7379,6 +7386,16 @@ export function createAgentChatService(args: {
         : envelopes,
       CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
     );
+
+  const touchEventHistoryRing = (sessionId: string, envelopes: AgentChatEventEnvelope[]): void => {
+    eventHistoryBySession.delete(sessionId);
+    eventHistoryBySession.set(sessionId, envelopes);
+    while (eventHistoryBySession.size > CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS) {
+      const oldestSessionId = eventHistoryBySession.keys().next().value;
+      if (typeof oldestSessionId !== "string" || oldestSessionId === sessionId) break;
+      eventHistoryBySession.delete(oldestSessionId);
+    }
+  };
   type TranscriptHistoryCacheEntry = {
     transcriptPath: string;
     size: number;
@@ -7428,7 +7445,7 @@ export function createAgentChatService(args: {
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
     current.push(envelope);
-    eventHistoryBySession.set(envelope.sessionId, boundRingEnvelopes(current));
+    touchEventHistoryRing(envelope.sessionId, boundRingEnvelopes(current));
   };
 
   const rememberTranscriptHistoryCache = (
@@ -9839,7 +9856,6 @@ export function createAgentChatService(args: {
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
-    eventHistoryBySession.set(sessionId, boundRingEnvelopes(merged.slice()));
 
     const parentVisibleMerged = merged.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry));
     const parentVisibleLength = parentVisibleMerged.length;
@@ -15333,7 +15349,7 @@ export function createAgentChatService(args: {
       // Single bulk ring update; the per-envelope recordChatEventInHistory
       // re-bounds the whole buffer each call (O(n²) across a large import).
       const current = eventHistoryBySession.get(managed.session.id) ?? [];
-      eventHistoryBySession.set(
+      touchEventHistoryRing(
         managed.session.id,
         boundRingEnvelopes([...current, ...storedEnvelopes]),
       );
@@ -44549,6 +44565,10 @@ export function createAgentChatService(args: {
     ensureSessionSurface,
     hasActiveWorkloads,
     hasRetainableSessions,
+    residentChatEventHistorySessionCount: () => eventHistoryBySession.size,
+    seedLiveChatEventHistory(envelopes: AgentChatEventEnvelope[]): void {
+      for (const envelope of envelopes) recordChatEventInHistory(envelope);
+    },
     countActiveForLane,
     disposeForLane,
     getChatTranscript,

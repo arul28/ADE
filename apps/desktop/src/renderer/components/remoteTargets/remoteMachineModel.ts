@@ -316,13 +316,21 @@ export function isSshOnlyDiscovered(
 }
 
 export function formatRemoteTargetError(error: unknown): string {
-  const message = extractError(error)
+  // Keep the raw IPC wrapper text for SSH detection. Stripping
+  // `ade.remoteRuntime.getSshHostKeyTrust` first would leave a bare
+  // `ECONNRESET` and incorrectly blame a paired ADE port.
+  const raw = extractError(error).trim();
+  const message = raw
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
     .replace(/^Error:\s*/i, "")
     .trim();
+  // No word-boundary: camelCase IPC names embed `Ssh` without `\b` edges.
+  const sshHint = /ssh|sshd|remote login/i.test(raw);
 
-  if (/^(?:read\s+)?ECONNRESET$/i.test(message)) {
-    return "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again.";
+  if (/ECONNRESET/i.test(message)) {
+    return sshHint
+      ? "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again."
+      : "The connection was reset before ADE could finish connecting. Check that the machine is awake and reachable, then try again.";
   }
 
   if (
@@ -342,11 +350,15 @@ export function formatRemoteTargetError(error: unknown): string {
       message,
     )
   ) {
-    return "SSH did not finish connecting. Check that the machine is awake, reachable on Tailscale or LAN, and Remote Login is enabled.";
+    return sshHint
+      ? "SSH did not finish connecting. Check that the machine is awake, reachable on Tailscale or LAN, and Remote Login is enabled."
+      : "ADE did not finish connecting. Check that the machine is awake and reachable on Tailscale or LAN.";
   }
 
   if (/ECONNREFUSED/i.test(message)) {
-    return "The machine refused the SSH connection. Check the port and make sure Remote Login/sshd is running.";
+    return sshHint
+      ? "The machine refused the SSH connection. Check the port and make sure Remote Login/sshd is running."
+      : "The machine refused the connection. Check that ADE is running on that computer and reachable on the saved port.";
   }
 
   if (

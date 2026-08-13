@@ -9,19 +9,23 @@ import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 export function BrainRepairButton({
   repair,
   height,
+  disabled = false,
 }: {
   repair: BrainRepair;
   height: number;
+  /** Extra disable, e.g. while a sibling Reconnect is in flight. */
+  disabled?: boolean;
 }) {
+  const blocked = repair.pending || disabled;
   return (
     <>
       <button
         type="button"
-        disabled={repair.pending}
+        disabled={blocked}
         onClick={repair.run}
         style={{
           ...outlineButton({ height, padding: "0 9px", fontSize: 11, flexShrink: 0 }),
-          opacity: repair.pending ? 0.6 : 1,
+          opacity: blocked ? 0.6 : 1,
         }}
       >
         {repair.pending ? "Repairing…" : "Repair"}

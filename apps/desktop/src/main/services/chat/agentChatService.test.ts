@@ -23834,6 +23834,53 @@ describe("createAgentChatService", () => {
       )).toEqual(["persisted-1", "persisted-2"]);
     });
 
+    it("does not copy transcript hydration into the live event ring", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const afterCreate = service.residentChatEventHistorySessionCount();
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-08-12T18:00:00.000Z",
+        event: { type: "text", text: "hydrated-from-disk" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      const history = await service.getChatEventHistory(session.id);
+      expect(history.events.map((entry) =>
+        entry.event.type === "text" ? entry.event.text : "",
+      )).toContain("hydrated-from-disk");
+      expect(service.residentChatEventHistorySessionCount()).toBe(afterCreate);
+    });
+
+    it("does not retain a live ring for every hydrated chat", async () => {
+      const { service } = createService();
+      for (let index = 0; index < 12; index += 1) {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        const envelope: AgentChatEventEnvelope = {
+          sessionId: session.id,
+          timestamp: "2026-08-12T18:00:00.000Z",
+          event: { type: "text", text: `hydrated-${index}` },
+          sequence: 1,
+        };
+        const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+        fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+        vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+        await service.getChatEventHistory(session.id);
+      }
+      expect(service.residentChatEventHistorySessionCount()).toBe(0);
+    });
+
     it("hydrates through the async path without synchronous realpath or transcript flushing", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -24520,6 +24567,7 @@ describe("createAgentChatService", () => {
         fs.writeFileSync(transcriptFile, `${seeded.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
         vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
           raw.includes("ring-seed") ? seeded : []);
+        service.seedLiveChatEventHistory(seeded);
         expect((await service.getChatEventHistory(sessionId)).events).toHaveLength(seeded.length);
       };
 
