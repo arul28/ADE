@@ -31,6 +31,7 @@ import {
   runtimeCatalogProviderIsFresh,
   setRuntimeCatalogRequest,
   refreshProviderForFamily,
+  reserveRuntimeCatalogScope,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "./runtimeCatalogCache";
 
@@ -198,6 +199,9 @@ export const ModelPicker = memo(function ModelPicker({
       return next;
     }
 
+    // Claim the bucket now so a response that lands after this machine's bucket
+    // was evicted or reset is dropped rather than resurrecting it.
+    const scopeSerial = reserveRuntimeCatalogScope(catalogScopeKey);
     const request = (async () => {
       try {
         const fetchArgs = {
@@ -214,6 +218,7 @@ export const ModelPicker = memo(function ModelPicker({
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
           scopeKey: catalogScopeKey,
+          scopeSerial,
         });
         setRuntimeCatalog(visible);
         if (args.refreshProvider) setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);

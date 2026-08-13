@@ -11,6 +11,7 @@ import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPicke
 import {
   getSharedRuntimeCatalog,
   rememberRuntimeCatalog,
+  reserveRuntimeCatalogScope,
   resetModelPickerRuntimeCatalogForTests,
   runtimeCatalogProviderIsFresh,
 } from "./runtimeCatalogCache";
@@ -582,6 +583,31 @@ describe("runtime catalog machine scoping", () => {
     // descriptors behind it.
     expect(getSharedRuntimeCatalog("remote:target-0:project-0")).toBeNull();
     expect(getRuntimeCatalogModelDescriptor("ollama/m-0", "remote:target-0:project-0")).toBeUndefined();
+  });
+
+  // A catalog fetch is async, so its bucket can be evicted or reset before the
+  // response lands. Writing anyway would resurrect a machine the window stopped
+  // tracking — and, after a reset, repopulate state something else now owns.
+  it("drops a catalog response whose bucket was evicted or reset mid-flight", () => {
+    const scopeKey = "remote:target-late:project-late";
+    const serial = reserveRuntimeCatalogScope(scopeKey);
+
+    // The bucket disappears while the request is in flight.
+    resetModelPickerRuntimeCatalogForTests();
+
+    const late = localModelCatalog("ollama/late", ["low"]);
+    // The caller still gets the catalog back for immediate display...
+    expect(rememberRuntimeCatalog(late, { mode: "cached", scopeKey, scopeSerial: serial })).toBe(late);
+    // ...but the bucket is not resurrected.
+    expect(getSharedRuntimeCatalog(scopeKey)).toBeNull();
+
+    // A fresh reservation for the same key is a different bucket, and its own
+    // response is written normally.
+    const nextSerial = reserveRuntimeCatalogScope(scopeKey);
+    expect(nextSerial).not.toBe(serial);
+    const current = localModelCatalog("ollama/current", ["low"]);
+    rememberRuntimeCatalog(current, { mode: "cached", scopeKey, scopeSerial: nextSerial });
+    expect(getSharedRuntimeCatalog(scopeKey)).toBe(current);
   });
 
   it("marks provider freshness per machine so one machine's refresh cannot silence another's", () => {

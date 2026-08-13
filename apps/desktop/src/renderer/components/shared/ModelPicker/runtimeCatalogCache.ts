@@ -44,6 +44,11 @@ type RuntimeCatalogScopeState = {
   // catalog rather than in a parallel registry so one cap and one eviction
   // govern both, and a dropped scope can never leave descriptors behind.
   descriptorsById: Map<string, ModelDescriptor>;
+  // Identity of this bucket instance. A catalog fetch reserves the bucket and
+  // remembers this value; a response that comes back after the bucket was
+  // evicted or reset finds a different serial (or none) and is dropped instead
+  // of resurrecting a machine the window has stopped tracking.
+  serial: number;
 };
 
 // Scopes are bounded by the project bindings a window has open, so this cap is
@@ -51,6 +56,7 @@ type RuntimeCatalogScopeState = {
 const MAX_RUNTIME_CATALOG_SCOPES = 8;
 const runtimeCatalogScopes = new Map<string, RuntimeCatalogScopeState>();
 const sharedRuntimeCatalogRequests = new Map<string, Promise<AgentChatModelCatalog | null>>();
+let nextRuntimeCatalogScopeSerial = 1;
 
 function peekRuntimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState | undefined {
   return runtimeCatalogScopes.get(scopeKey);
@@ -71,9 +77,20 @@ function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
     providerRefreshedAt: new Map(),
     cursorSourceRefreshedAt: new Map(),
     descriptorsById: new Map(),
+    serial: nextRuntimeCatalogScopeSerial++,
   };
   runtimeCatalogScopes.set(scopeKey, created);
   return created;
+}
+
+/**
+ * Claim this machine's bucket before fetching its catalog, and return the token
+ * the write must present. Reserving up front is what lets a late response tell
+ * "my bucket is still here" apart from "my bucket was evicted and something
+ * else now owns this key".
+ */
+export function reserveRuntimeCatalogScope(scopeKey: string): number {
+  return runtimeCatalogScope(scopeKey).serial;
 }
 
 /** This machine's parsed descriptors, created on first write. */
@@ -191,9 +208,18 @@ export function rememberRuntimeCatalog(
     refreshProvider?: AgentChatModelCatalogRefreshProvider;
     cursorSource?: "sdk" | "cli";
     scopeKey?: string;
+    /** Token from {@link reserveRuntimeCatalogScope}; omit to skip the check. */
+    scopeSerial?: number;
   },
 ): AgentChatModelCatalog {
   const scopeKey = args.scopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  if (args.scopeSerial !== undefined
+    && peekRuntimeCatalogScope(scopeKey)?.serial !== args.scopeSerial) {
+    // The bucket this response was fetched for is gone (evicted or reset).
+    // Hand the catalog back for immediate display, but do not recreate the
+    // bucket or overwrite whatever now owns this key.
+    return catalog;
+  }
   const scope = runtimeCatalogScope(scopeKey);
   if (args.mode === "cached" && scope.catalog) {
     for (const provider of REFRESH_PROVIDERS) {

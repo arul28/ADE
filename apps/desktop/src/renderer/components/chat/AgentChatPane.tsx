@@ -11523,7 +11523,7 @@ export function AgentChatPane({
                 modelId={handoffModelId}
                 reasoningEffort={handoffReasoningEffort}
                 onChange={setHandoffReasoningEffort}
-                catalogScopeKey={modelCatalogScopeKey}
+                catalogScopeKey={composerModelCatalogScopeKey}
               />
             </div>
             <div className="text-[10px] leading-4 text-fg/40">
@@ -11560,7 +11560,7 @@ export function AgentChatPane({
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
-                catalogScopeKey={modelCatalogScopeKey}
+                catalogScopeKey={composerModelCatalogScopeKey}
                 reasoningEffort={handoffReasoningEffort}
                 onChange={setHandoffReasoningEffort}
               />
