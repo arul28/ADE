@@ -191,6 +191,11 @@ struct NotchSurfaceView: View {
                 floatingCompactContent
             }
         }
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { model.toggleExpanded() }
+        }
     }
 
     /// Split around the hardware cutout: state groups on the left ear, one real
@@ -202,6 +207,8 @@ struct NotchSurfaceView: View {
         return HStack(spacing: 0) {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.toggleExpanded() }
                 stripLeadingWing
             }
             .padding(.leading, 9)
@@ -215,6 +222,8 @@ struct NotchSurfaceView: View {
             HStack(spacing: 0) {
                 stripTrailingWing
                 Spacer(minLength: 0)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.toggleExpanded() }
             }
             .padding(.leading, 8)
             .padding(.trailing, 9)
@@ -227,6 +236,8 @@ struct NotchSurfaceView: View {
         HStack(spacing: 10) {
             stripLeadingWing
             Spacer(minLength: 6)
+                .contentShape(Rectangle())
+                .onTapGesture { model.toggleExpanded() }
             stripTrailingWing
         }
         .padding(.horizontal, 12)
@@ -239,26 +250,38 @@ struct NotchSurfaceView: View {
     @ViewBuilder
     private var stripLeadingWing: some View {
         if model.isAllClear {
-            AllClearBeat()
-                .transition(.opacity.combined(with: .scale(scale: 0.85)))
+            Button(action: { model.toggleExpanded() }) {
+                AllClearBeat()
+            }
+            .buttonStyle(.plain)
+            .transition(.opacity.combined(with: .scale(scale: 0.85)))
         } else {
             let groups = model.stripGroups
             HStack(spacing: 9) {
                 if groups.isEmpty {
-                    StripIdentity(status: status)
+                    Button(action: { model.toggleExpanded() }) {
+                        StripIdentity(status: status)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(status?.compactLabel ?? "ADE")
                 } else {
                     ForEach(groups) { group in
-                        StripGroupBadge(
-                            group: group,
-                            pulses: group.kind == .needsYou && !reduceMotion,
-                            landing: model.isTakeoverCollapsing && group.kind == .needsYou
-                        )
+                        Button {
+                            model.revealGroup(group.kind)
+                        } label: {
+                            StripGroupBadge(
+                                group: group,
+                                pulses: group.kind == .needsYou && !reduceMotion,
+                                landing: model.isTakeoverCollapsing && group.kind == .needsYou
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(group.accessibilityLabel)
+                        .accessibilityHint("Shows \(group.kind.sectionLabel) in the Activity panel")
                     }
                 }
             }
             .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.8), value: groups)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(countsAccessibilityLabel)
         }
     }
 
@@ -266,25 +289,32 @@ struct NotchSurfaceView: View {
     /// "Claude is asking" — and a quiet machine summary when nothing happened.
     private var stripTrailingWing: some View {
         let signal = model.topSignal
-        return HStack(spacing: 5) {
-            Image(systemName: signal.symbolName)
-                .font(.system(size: signal.isNotable ? 8 : 7.5, weight: .bold))
-                .foregroundStyle(
-                    signal.isNotable ? notchToneColor(signal.tone) : ADE.mutedFg.opacity(0.8)
-                )
-            Text(signal.text)
-                .font(.system(size: ADE.fs2xs, weight: signal.isNotable ? .semibold : .medium))
-                .foregroundStyle(signal.isNotable ? ADE.fg : ADE.mutedFg)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .monospacedDigit()
+        return Button(action: { model.revealTopSignal() }) {
+            HStack(spacing: 5) {
+                Image(systemName: signal.symbolName)
+                    .font(.system(size: signal.isNotable ? 8 : 7.5, weight: .bold))
+                    .foregroundStyle(
+                        signal.isNotable ? notchToneColor(signal.tone) : ADE.mutedFg.opacity(0.8)
+                    )
+                Text(signal.text)
+                    .font(.system(size: ADE.fs2xs, weight: signal.isNotable ? .semibold : .medium))
+                    .foregroundStyle(signal.isNotable ? ADE.fg : ADE.mutedFg)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .monospacedDigit()
+            }
         }
+        .buttonStyle(.plain)
         .layoutPriority(1)
         .id(signal.text)
         .transition(.opacity)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: signal.text)
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel(signal.text)
+        .accessibilityHint(
+            signal.itemId == nil
+                ? "Opens the Activity panel"
+                : "Opens this update in the Activity panel"
+        )
     }
 
     // MARK: - Flash takeover (#24)
@@ -299,12 +329,9 @@ struct NotchSurfaceView: View {
             let tone = notchToneColor(toast.resolvedTone)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    ProviderMark(
-                        item: item,
-                        status: status,
-                        diameter: 20,
-                        active: true,
-                        reducedMotion: reduceMotion
+                    NotchStateGlyph(
+                        kind: item.map { notchStripGroupKind(for: $0) } ?? .needsYou,
+                        diameter: 20
                     )
                     Text(toast.title)
                         .font(.system(size: ADE.fsSm + 1, weight: .semibold))
@@ -503,7 +530,6 @@ struct NotchSurfaceView: View {
                 selected: rowItem.id == model.selectedItem?.id,
                 focused: model.focusedRowId == row.id,
                 indented: false,
-                reducedMotion: reduceMotion,
                 onOpen: { model.open(rowItem) },
                 onDismiss: { model.dismiss(rowItem) },
                 onFocus: { model.focus(rowItem) }
@@ -529,7 +555,6 @@ struct NotchSurfaceView: View {
                 selected: rowItem.id == model.selectedItem?.id,
                 focused: model.focusedRowId == row.id,
                 indented: true,
-                reducedMotion: reduceMotion,
                 onOpen: { model.open(rowItem) },
                 onDismiss: { model.dismiss(rowItem) },
                 onFocus: { model.focus(rowItem) }
@@ -540,10 +565,16 @@ struct NotchSurfaceView: View {
     private var expandedFooter: some View {
         HStack(spacing: 8) {
             if model.overflowCount > 0 {
-                Text("+\(model.overflowCount) more")
-                    .font(.system(size: ADE.fs2xs, weight: .medium))
-                    .foregroundStyle(ADE.mutedFg)
-                    .monospacedDigit()
+                Button {
+                    model.openActivity()
+                } label: {
+                    Text("+\(model.overflowCount) more")
+                        .font(.system(size: ADE.fs2xs, weight: .medium))
+                        .foregroundStyle(ADE.mutedFg)
+                        .monospacedDigit()
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens the rest of Activity in ADE")
             }
             Spacer(minLength: 4)
             secondaryActionButtons
@@ -833,13 +864,46 @@ private struct StripGroupBadge: View {
     }
 
     /// The triangle and the notepad read a size larger than the dots at the
-    /// same point size, so they are drawn a hair smaller.
+    /// same point size, so they are drawn a hair smaller. The clock is a dial
+    /// with hands inside it and needs the room the checkmark gets, or it fills
+    /// in to a solid blob; its neutral hue is what keeps the idle band from
+    /// competing with the live ones, the way regular weight does on the web.
     private var glyphSize: CGFloat {
         switch group.kind {
         case .needsYou: return 6.5
         case .working: return 7
-        case .done: return 8
+        case .idle, .done: return 8
         case .failed, .planning: return 7.5
+        }
+    }
+}
+
+/// The iOS island row mark: a tinted state glyph in a quiet disc, not a
+/// provider logo. One hue, one meaning, the same table the strip counts with.
+private struct NotchStateGlyph: View {
+    let kind: NotchStripGroupKind
+    var diameter: CGFloat = 18
+
+    var body: some View {
+        let tone = notchToneColor(kind.tone)
+        ZStack {
+            Circle()
+                .fill(tone.opacity(0.16))
+            Image(systemName: kind.symbolName)
+                .font(.system(size: glyphSize, weight: .bold))
+                .foregroundStyle(tone)
+        }
+        .frame(width: diameter, height: diameter)
+        .overlay(Circle().strokeBorder(tone.opacity(0.24), lineWidth: 0.5))
+        .accessibilityHidden(true)
+    }
+
+    private var glyphSize: CGFloat {
+        switch kind {
+        case .needsYou: return diameter * 0.40
+        case .working: return diameter * 0.44
+        case .idle, .done: return diameter * 0.50
+        case .failed, .planning: return diameter * 0.47
         }
     }
 }
@@ -902,124 +966,9 @@ private struct TakeoverMorph: ViewModifier {
 
 // MARK: - Components
 
-/// Bundled provider SVGs are loose resources, not asset-catalog entries, so
-/// `Image(_:bundle:)` never resolves them. Load by URL and fall back to a
-/// monogram rather than rendering an empty tile.
-@MainActor
-private enum ProviderIconStore {
-    private static var cache: [String: NSImage?] = [:]
-
-    static func image(named name: String) -> NSImage? {
-        if let cached = cache[name] { return cached }
-        let url = Bundle.module.url(forResource: name, withExtension: "svg", subdirectory: "ProviderIcons")
-            ?? Bundle.module.url(forResource: name, withExtension: "svg")
-        let image = url.flatMap { NSImage(contentsOf: $0) }
-        image?.isTemplate = true
-        cache[name] = image
-        return image
-    }
-}
-
-private struct ProviderMark: View {
-    let item: AttentionItem?
-    let status: NotchStatusPresentation?
-    let diameter: CGFloat
-    let active: Bool
-    let reducedMotion: Bool
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 20, paused: !active || reducedMotion)) { timeline in
-            let pulse = active && !reducedMotion
-                ? (sin(timeline.date.timeIntervalSinceReferenceDate * 3.2) + 1) / 2
-                : 0
-            ZStack {
-                RoundedRectangle(cornerRadius: diameter * 0.3, style: .continuous)
-                    .fill(markGradient)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: diameter * 0.3, style: .continuous)
-                            .stroke(.white.opacity(0.14), lineWidth: 0.7)
-                    }
-                glyph
-                    .foregroundStyle(.white.opacity(0.95))
-                Circle()
-                    .fill(toneColor)
-                    .frame(width: diameter * 0.26, height: diameter * 0.26)
-                    .overlay(Circle().stroke(ADE.bg, lineWidth: 1.1))
-                    .shadow(color: toneColor.opacity(0.7), radius: 1.5 + pulse * 2)
-                    .offset(x: diameter * 0.37, y: diameter * 0.37)
-            }
-            .frame(width: diameter, height: diameter)
-        }
-        .accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private var glyph: some View {
-        if item == nil, let symbol = status?.symbolName {
-            Image(systemName: symbol)
-                .font(.system(size: diameter * 0.5, weight: .semibold))
-        } else if let icon = providerIconName, let image = ProviderIconStore.image(named: icon) {
-            Image(nsImage: image)
-                .renderingMode(.template)
-                .resizable()
-                .scaledToFit()
-                .frame(width: diameter * 0.56, height: diameter * 0.56)
-        } else if item?.kind == "pull_request" {
-            Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: diameter * 0.46, weight: .bold))
-        } else {
-            Text(monogram)
-                .font(.system(size: diameter * 0.46, weight: .heavy))
-        }
-    }
-
-    private var toneColor: Color {
-        item.map { notchStatusColor(for: $0.phase) } ?? notchToneColor(status?.tone ?? .neutral)
-    }
-
-    private var providerName: String {
-        let value = item?.provider?.lowercased() ?? ""
-        if value.contains("codex") || value.contains("openai") { return "Codex" }
-        if value.contains("claude") || value.contains("anthropic") { return "Claude" }
-        if value.contains("cursor") { return "Cursor" }
-        if value.contains("opencode") { return "OpenCode" }
-        if value.contains("droid") || value.contains("factory") { return "Droid" }
-        if let provider = item?.provider, !provider.isEmpty { return provider }
-        return "ADE"
-    }
-
-    private var providerIconName: String? {
-        switch providerName {
-        case "Codex": return "openai"
-        case "Claude": return "claude"
-        case "Cursor": return "cursor"
-        case "OpenCode": return "opencode"
-        default: return item?.kind == "pull_request" ? "github" : nil
-        }
-    }
-
-    private var monogram: String {
-        String(providerName.prefix(1)).uppercased()
-    }
-
-    private var markGradient: LinearGradient {
-        let colors: [Color]
-        switch providerName {
-        case "Claude": colors = [adeColor(0xD97757), adeColor(0x7A3F2C)]
-        case "Cursor": colors = [adeColor(0x4C4F5A), adeColor(0x16181F)]
-        case "OpenCode": colors = [adeColor(0x3FBF8F), adeColor(0x14503F)]
-        case "Droid": colors = [adeColor(0xF5B23C), adeColor(0x7F4712)]
-        case "Codex": colors = [adeColor(0x4A4F5C), adeColor(0x14171F)]
-        default: colors = [ADE.accent, ADE.accentDeep]
-        }
-        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-}
-
-/// The Swift mirror of the renderer's compact `ActivityCard`: provider mark,
-/// status dot + label + elapsed, title, lane, machine. Same anatomy and the
-/// same one-hue-one-meaning table, so a row reads identically in the notch and
-/// in the desktop popover.
+/// The Swift mirror of the iOS island row and the desktop Activity card:
+/// state glyph, session title, short elapsed, lane. The provider logo is not
+/// drawn — it is metadata, and this row only has room for status and content.
 private struct NotchActivityRow: View {
     let item: AttentionItem
     let hideDetails: Bool
@@ -1027,7 +976,6 @@ private struct NotchActivityRow: View {
     let focused: Bool
     /// Rows inside an expanded event cluster hang under their header.
     let indented: Bool
-    let reducedMotion: Bool
     let onOpen: () -> Void
     let onDismiss: () -> Void
     let onFocus: () -> Void
@@ -1036,16 +984,9 @@ private struct NotchActivityRow: View {
 
     var body: some View {
         let presentation = item.presentation(hideDetails: hideDetails)
-        let tone = notchStatusColor(for: item.phase)
         Button(action: onOpen) {
-            HStack(alignment: .top, spacing: 9) {
-                ProviderMark(
-                    item: item,
-                    status: nil,
-                    diameter: 20,
-                    active: item.isAttention && !reducedMotion,
-                    reducedMotion: reducedMotion
-                )
+            HStack(alignment: .center, spacing: 9) {
+                NotchStateGlyph(kind: notchStripGroupKind(for: item), diameter: 18)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(presentation.title)
@@ -1053,16 +994,6 @@ private struct NotchActivityRow: View {
                             .foregroundStyle(ADE.fg)
                             .lineLimit(1)
                         Spacer(minLength: 4)
-                        Circle()
-                            .fill(tone)
-                            .frame(width: 4.5, height: 4.5)
-                        Text(item.statusLabel)
-                            .font(.system(size: ADE.fs2xs, weight: .semibold))
-                            .foregroundStyle(tone)
-                            .lineLimit(1)
-                        // `statusSince` is immutable for the life of a phase;
-                        // `occurredAt` is the honest approximation while a
-                        // publisher predates it.
                         ElapsedTimeLabel(isoDate: item.elapsedAnchor)
                             .fixedSize()
                     }

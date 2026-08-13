@@ -7358,6 +7358,53 @@ final class SyncService: ObservableObject {
   /// Ensures a notification/Attention deeplink is resolved against its owning
   /// account machine before any project/session/PR lookup runs. A nil key is a
   /// legacy local link and needs no machine transition.
+  /// Whether navigating to this account machine would be a no-op — i.e. we are
+  /// already attached to it.
+  ///
+  /// Exists so a caller can decide whether to SHOW a connecting affordance
+  /// before awaiting `ensureAccountMachineForNavigation`, which returns `true`
+  /// immediately in this case and would otherwise make every local tap flash
+  /// "Connecting…". Reuses the same two helpers that function uses, so the two
+  /// answers cannot drift.
+  /// The account-directory identity of the machine this phone is attached to.
+  ///
+  /// The reverse of `accountMachineIsCurrent`: that asks "is this key the one we
+  /// are on", this asks "which key are we on". Resolved by matching the account
+  /// roster's `deviceId` against the live host identity, because those are the
+  /// only two values the pairing layer and the account layer share.
+  ///
+  /// Returns nil when signed out or when the paired host is not in the account
+  /// roster — the caller must treat that as "unknown machine", never as "no
+  /// machine".
+  func currentAccountMachineIdentity() -> (key: String, name: String)? {
+    guard let hostIdentity = syncNonEmpty(
+      activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId
+    ) else { return nil }
+    guard let machine = AccountService.shared.machines.first(where: {
+      syncNonEmpty($0.deviceId) == hostIdentity
+    }) else { return nil }
+    let name = syncNonEmpty(machine.customName)
+      ?? syncNonEmpty(machine.name)
+      ?? syncNonEmpty(hostName)
+      ?? "This computer"
+    return (key: machine.machineKey, name: name)
+  }
+
+  func accountMachineIsCurrent(_ rawMachineKey: String?) -> Bool {
+    guard let machineKey = syncNonEmpty(rawMachineKey) else { return true }
+    guard let machine = syncAccountMachineNavigationTarget(
+      rawMachineKey: machineKey,
+      machines: AccountService.shared.machines
+    ) else { return false }
+    return syncAccountMachineNavigationIsCurrent(
+      targetDeviceId: syncNonEmpty(machine.deviceId),
+      activeHostIdentity: syncNonEmpty(
+        activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId
+      ),
+      connectionState: connectionState
+    )
+  }
+
   func ensureAccountMachineForNavigation(_ rawMachineKey: String?) async -> Bool {
     guard let machineKey = syncNonEmpty(rawMachineKey) else { return true }
     if let current = accountNavigationInFlight {
@@ -20257,13 +20304,23 @@ extension SyncService {
     default: connection = "disconnected"
     }
 
+    // Identity is NOT optional decoration here. The Activity drawer merges this
+    // snapshot over the relay's account feed, and it can only scope that merge
+    // to one machine if the snapshot says which machine it is. Written without
+    // these two fields — which is how it shipped — the drawer silently threw the
+    // live rows away and rendered the relay's copy alone, so the Hub (reading
+    // the socket directly) showed four agents working at the same instant the
+    // Activity sheet showed none.
+    let identity = currentAccountMachineIdentity()
     let snapshot = WorkspaceSnapshot(
       generatedAt: Date(),
       agents: activeSessions,
       prs: prs,
       connection: connection,
       awaitingInputCount: awaitingInputSessionsCount,
-      idleCount: idleSessionsCount
+      idleCount: idleSessionsCount,
+      machineId: identity?.key,
+      machineName: identity?.name
     )
 
     if ADESharedContainer.writeWorkspaceSnapshot(snapshot) {
@@ -21179,7 +21236,12 @@ extension SyncService {
         attentionRequestedAt: session.attentionRequestedAt,
         attentionMessage: session.attentionMessage,
         lastTurnFailedAt: session.lastTurnFailedAt,
-        exitCode: session.exitCode
+        exitCode: session.exitCode,
+        settleOverride: session.settleOverride,
+        snoozedUntil: session.snoozedUntil,
+        snoozedAt: session.snoozedAt,
+        wokeAt: session.wokeAt,
+        wokeReason: session.wokeReason
       )
     }
     let rosterLanes: [RemoteRosterLane] = lanes.map { lane in
@@ -21200,7 +21262,7 @@ extension SyncService {
       iconDataUrl: active?.iconDataUrl,
       lastOpenedAt: active?.lastOpenedAt,
       booted: true,
-      runningCount: chats.filter(\.isRunning).count,
+      runningCount: chats.filter(\.countsTowardRunning).count,
       attentionCount: chats.filter(\.needsAttention).count,
       lanes: rosterLanes,
       chats: chats
@@ -21257,7 +21319,7 @@ extension SyncService {
     }
 
     merged.booted = remote.booted || local.booted
-    merged.runningCount = merged.chats.filter(\.isRunning).count
+    merged.runningCount = merged.chats.filter(\.countsTowardRunning).count
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     return merged
@@ -21287,6 +21349,7 @@ extension SyncService {
     merged.model = nonEmptyRosterString(remote.model) ?? local.model
     merged.toolType = nonEmptyRosterString(remote.toolType) ?? local.toolType
     merged.chatSessionId = nonEmptyRosterString(remote.chatSessionId) ?? local.chatSessionId
+    merged.applyLocalSnoozeOverlay(local)
     return merged
   }
 

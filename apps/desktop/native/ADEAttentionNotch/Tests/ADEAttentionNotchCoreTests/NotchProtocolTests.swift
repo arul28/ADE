@@ -728,7 +728,7 @@ final class NotchProtocolTests: XCTestCase {
 
     // MARK: - Compact strip
 
-    /// Every nonzero group, most urgent first, one hue each. The five-way split
+    /// Every nonzero group, most urgent first, one hue each. The six-way split
     /// is finer than the host's three counts, which file failed and review rows
     /// inside their own `needsYou` band.
     func testStripGroupsAreNonzeroAndUrgencyOrdered() {
@@ -742,16 +742,23 @@ final class NotchProtocolTests: XCTestCase {
             fixtureItem(id: "review", phase: "review_requested"),
             fixtureItem(id: "checks", phase: "checks_failing"),
             fixtureItem(id: "needs", phase: "needs_you"),
+            // Went quiet mid-work. It used to be counted as `working`, so the
+            // strip claimed live agents that had stopped hours earlier.
+            fixtureItem(id: "stale-1", phase: "stale"),
         ]
         let groups = notchStripGroups(items: items)
         XCTAssertEqual(
             groups.map(\.kind),
-            [.needsYou, .failed, .planning, .working, .done]
+            [.needsYou, .failed, .planning, .working, .idle, .done]
         )
-        XCTAssertEqual(groups.map(\.count), [1, 1, 1, 3, 1])
+        XCTAssertEqual(groups.map(\.count), [1, 1, 1, 3, 1, 1])
         // Amber is "your move" and nothing else borrows it.
         XCTAssertEqual(groups.first?.tone, .amber)
         XCTAssertEqual(NotchStripGroupKind.working.tone, .blue)
+        // Idle sorts above done and is neutral, not emerald: "stopped without
+        // finishing" is likelier to want you than "finished", and it is not an
+        // outcome to be pleased about.
+        XCTAssertEqual(NotchStripGroupKind.idle.tone, .neutral)
         XCTAssertEqual(NotchStripGroupKind.done.tone, .emerald)
 
         // Nothing running at all draws no groups rather than a row of zeroes.
@@ -769,10 +776,11 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertEqual(groups.first(where: { $0.kind == .done })?.count, 54)
     }
 
-    /// All five groups are floored, not three: the projection truncates by
-    /// priority, so failed and planning rows are exactly the ones it drops, and
-    /// counting only what survived is the strip under-reporting the account.
-    func testEveryGroupIsFlooredByTheAccountCountsIncludingFailedAndPlanning() {
+    /// All six groups are floored, not three: the projection truncates by
+    /// priority, so failed, planning and idle rows are exactly the ones it
+    /// drops, and counting only what survived is the strip under-reporting the
+    /// account.
+    func testEveryGroupIsFlooredByTheAccountCountsIncludingFailedPlanningAndIdle() {
         let items = [
             fixtureItem(id: "fail-1", phase: "checks_failing"),
             fixtureItem(id: "plan-1", phase: "running", chatActivityMode: .planning),
@@ -784,16 +792,23 @@ final class NotchProtocolTests: XCTestCase {
                 failed: 6,
                 planning: 4,
                 working: 9,
+                idle: 31,
                 done: 54,
-                total: 75
+                total: 106
             )
         )
-        XCTAssertEqual(groups.map(\.kind), [.needsYou, .failed, .planning, .working, .done])
-        XCTAssertEqual(groups.map(\.count), [2, 6, 4, 9, 54])
+        XCTAssertEqual(
+            groups.map(\.kind),
+            [.needsYou, .failed, .planning, .working, .idle, .done]
+        )
+        XCTAssertEqual(groups.map(\.count), [2, 6, 4, 9, 31, 54])
     }
 
-    /// A host that predates the two new counts must keep exactly the behaviour
-    /// it has today: absent is not zero, so those groups stay row-derived.
+    /// A host that predates the newer counts must keep exactly the behaviour it
+    /// has today: absent is not zero, so those groups stay row-derived. `idle`
+    /// is the newest of them and every shipped host omits it, which is why it
+    /// may never be required — a missing count must cost a floor, never the
+    /// whole frame.
     func testAbsentFailedAndPlanningCountsLeaveThoseGroupsRowDerived() throws {
         let line = """
         {"type":"snapshot","snapshot":{"contractVersion":1,"revision":1,
@@ -806,10 +821,15 @@ final class NotchProtocolTests: XCTestCase {
         let counts = try XCTUnwrap(snapshot.counts)
         XCTAssertNil(counts.failed)
         XCTAssertNil(counts.planning)
+        XCTAssertNil(counts.idle)
 
-        let items = [fixtureItem(id: "fail-1", phase: "failed")]
+        let items = [
+            fixtureItem(id: "fail-1", phase: "failed"),
+            fixtureItem(id: "stale-1", phase: "stale"),
+        ]
         let groups = notchStripGroups(items: items, counts: counts)
         XCTAssertEqual(groups.first(where: { $0.kind == .failed })?.count, 1)
+        XCTAssertEqual(groups.first(where: { $0.kind == .idle })?.count, 1)
         XCTAssertNil(groups.first(where: { $0.kind == .planning }))
     }
 
@@ -830,9 +850,25 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertEqual(counts.planning, 0)
     }
 
+    /// A host that sends the newest count is believed, through the same total
+    /// decoding and the same clamp.
+    func testIdleCountDecodesFromTheWire() throws {
+        let line = """
+        {"type":"snapshot","snapshot":{"contractVersion":1,"revision":1,
+         "generatedAt":"2026-08-01T12:00:00Z","items":[],
+         "counts":{"needsYou":0,"working":2,"idle":31,"done":3,"total":36}}}
+        """
+        guard case .snapshot(let snapshot) = try NotchInputDecoder.decode(line: line) else {
+            return XCTFail("expected a snapshot")
+        }
+        let counts = try XCTUnwrap(snapshot.counts)
+        XCTAssertEqual(counts.idle, 31)
+        XCTAssertEqual(counts.done, 3)
+    }
+
     /// Without a counts block the fallback tallies the rows through the same
-    /// five-way table, so the panel and the strip cannot disagree with it.
-    func testResolvedCountsFallBackThroughTheFiveWayTable() {
+    /// six-way table, so the panel and the strip cannot disagree with it.
+    func testResolvedCountsFallBackThroughTheSixWayTable() {
         let snapshot = AttentionSnapshot(
             revision: 1,
             generatedAt: "2026-08-01T12:00:00Z",
@@ -841,6 +877,10 @@ final class NotchProtocolTests: XCTestCase {
                 fixtureItem(id: "fail", phase: "changes_requested"),
                 fixtureItem(id: "plan", phase: "running", chatActivityMode: .planning),
                 fixtureItem(id: "run", phase: "running"),
+                fixtureItem(id: "stale", phase: "stale"),
+                // Roster history: an idle-tier row keeps its phase but is not
+                // the finished work `done` is counting.
+                fixtureItem(id: "roster", phase: "completed", tier: "idle"),
             ]
         )
         let counts = snapshot.resolvedCounts()
@@ -848,8 +888,9 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertEqual(counts.failed, 1)
         XCTAssertEqual(counts.planning, 1)
         XCTAssertEqual(counts.working, 1)
+        XCTAssertEqual(counts.idle, 2)
         XCTAssertEqual(counts.done, 0)
-        XCTAssertEqual(counts.total, 4)
+        XCTAssertEqual(counts.total, 6)
     }
 
     /// The right wing carries real content, and falls back to a quiet summary

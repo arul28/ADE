@@ -148,6 +148,50 @@ final class NotchGeometryTests: XCTestCase {
         XCTAssertLessThanOrEqual(notchedSurface.height, NotchDisplayGeometry.panelSize.height)
     }
 
+    /// A strip carrying every state group at once has to actually fit its ear.
+    ///
+    /// The ear had one flat 150pt ceiling for both wings, which was already a
+    /// group short of the FIVE-state strip at two-digit counts — and the two
+    /// wings fail differently: prose truncates with an ellipsis that admits it,
+    /// while the glyph wing just loses whatever sorted last, so the strip would
+    /// silently deny a state the account is in (`done` at five, `idle` at six).
+    /// The glyph ceiling is derived from the group table now, so it grows with
+    /// it; the signal ceiling stays flat because prose can be cut.
+    func testEveryStateGroupFitsInTheCompactEar() {
+        let crowded = NotchStripGroupKind.allCases.map {
+            NotchStripGroup(kind: $0, count: 42)
+        }
+        let metrics = notchStripMetrics(groups: crowded, signal: nil)
+        XCTAssertEqual(metrics.leadingWidth, notchStripWidestGlyphWingWidth, accuracy: 0.001)
+
+        // Nothing is clipped: the ear holds the whole wing, plus its padding.
+        let ear = notchCompactEarWidth(metrics)
+        XCTAssertGreaterThan(ear, metrics.leadingWidth)
+
+        // …and the strip that results still fits the transparent host it is
+        // drawn into, even on the widest cutout a display may claim.
+        let widest = notchSurfaceSize(
+            presentation: .compact,
+            physicalNotchWidth: 400,
+            safeAreaTop: 34,
+            strip: metrics
+        )
+        XCTAssertLessThanOrEqual(widest.width, NotchDisplayGeometry.panelSize.width)
+
+        // A runaway signal is still capped, because prose truncates visibly.
+        let runaway = notchStripMetrics(
+            groups: [],
+            signal: NotchTopSignal(
+                text: String(repeating: "x", count: 200),
+                tone: .amber,
+                symbolName: "x",
+                isNotable: true
+            )
+        )
+        XCTAssertEqual(notchCompactEarWidth(runaway), 150)
+        XCTAssertLessThan(notchCompactEarWidth(runaway), ear)
+    }
+
     private func geometry(
         safeAreaTop: Double,
         left: NotchRect?,

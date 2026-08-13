@@ -195,7 +195,11 @@ apps/ios/
 │   │   │                            # branch/event/offset scope; the app-root task
 │   │   │                            # routes the request to Hub or Work, including
 │   │   │                            # when it is already present at cold launch.
-│   │   │                            # Linear issue links route in-app when a
+│   │   │                            # `ade://activity[?state=<group>]` opens the
+│   │   │                            # Activity drawer, optionally pre-filtered to
+│   │   │                            # that state band; an unrecognised `state` is
+│   │   │                            # ignored so a newer widget still opens the
+│   │   │                            # drawer. Linear issue links route in-app when a
 │   │   │                            # project is open; lane/file/commit/artifact/
 │   │   │                            # repo-branch, full PR, and projectless
 │   │   │                            # Linear issue links post
@@ -305,7 +309,9 @@ apps/ios/
 │   │   ├── ActivityWidgetPresentation.swift # tone → colour binding and the
 │   │   │                            # lock-screen ranking, shared by the app and
 │   │   │                            #   the widget so the two cannot describe the
-│   │   │                            #   same session differently. iOS 17 only.
+│   │   │                            #   same session differently. Owns
+│   │   │                            #   `activityURL(for:)` (`ade://activity?state=`).
+│   │   │                            #   iOS 17 only.
 │   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
 │   │   ├── Activity/                # ActivityDrawerSheet (global account-wide
@@ -330,6 +336,9 @@ apps/ios/
 │   │   │                            # — `ADEStreamingShimmer.swift` was retired
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Hub/                     # HubScreen (all-projects roster home),
+│   │   │                            # HubActivityState (canonical six-group
+│   │   │                            #   glyphs/tallies for the project→lane→chat
+│   │   │                            #   tree; snoozed running chats file as idle),
 │   │   │                            # HubComponents (project/lane/chat cards,
 │   │   │                            #   HubNoMachineState), HubQuickConnect
 │   │   │                            #   (HubQuickConnectSection — one-tap connect
@@ -338,10 +347,7 @@ apps/ios/
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look),
-│   │   │                            # HubLiveStrip ("Live now" — agents working
-│   │   │                            #   across every account machine, read from
-│   │   │                            #   ActivityDrawerModel; hidden when empty)
+│   │   │                            #   cross-project quick look)
 │   │   ├── PersonalChats/           # Hub-only projectless chat list,
 │   │   │                            # new-chat model composer, and reused
 │   │   │                            # Work transcript destination adapter
@@ -513,11 +519,19 @@ apps/ios/
 │   ├── LockScreenPriorityStatus.swift # machine-local single-focus derivation,
 │   │                                # used when there is no account feed
 │   └── ADEAgentActivityWidget.swift # ActivityKit Live Activity + Dynamic Island
-│                                    # presentation for active agent runs
+│                                    # presentation for active agent runs;
+│                                    # expanded island insets corner glyphs and
+│                                    # budgets two agent rows (banner still three)
 └── ADETests/
     ├── ADETests.swift
     ├── AccountEmailAuthFlowTests.swift # returning email sign-in, new-email
     │                                   # sign-up fallback, exact error codes
+    ├── ActivityDrawerModelTests.swift # live-host merge, six-group sections,
+    │                                   # glyph-strip filter, resting collapse
+    ├── ActivityRowPresentationTests.swift # six-group table pinned to
+    │                                   # activityStateGroup.cases.json
+    ├── HubProjectPresentationTests.swift # Hub state glyphs, snooze→idle,
+    │                                   # runningCount excludes snoozed
     ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
     ├── PrMergeMergeStateTests.swift # PR merge state, history/count decoding,
     │                                # reconciliation, partial-detail retention
@@ -1576,9 +1590,9 @@ still resolve it — do not "clean it up" to match the enum.
 
 Agent rows mirror desktop's shared status vocabulary: blue `Working`, amber
 `Needs you`, emerald `Done`, red `Failed`, violet `Planning`, and neutral
-`Stale`. Amber is reserved for the one state asking the user to act. Syncing,
-offline hosts, blocked work, and a live-but-silent stale run remain neutral;
-stale uses a clock rather than a network-offline glyph.
+`Idle` / `Stale`. Amber is reserved for the one state asking the user to act.
+Syncing, offline hosts, blocked work, and a live-but-silent stale run remain
+neutral; idle and stale use a clock rather than a network-offline glyph.
 
 Control Center widgets are intentionally not registered. Home Screen widgets,
 ActivityKit, and Dynamic Island all are — see the Live Activity section below.
@@ -1637,10 +1651,18 @@ contract) is documented in
   on every foreground transition (`PushNotificationService.clearAppBadge`,
   called from `ADEApp`'s scene-phase handler) so a lingering count never
   reads as stale.
-- **Live Activity** mirrors up to three active agent runs plus up to two
-  recent PR lifecycle/status rows on the Lock Screen and Dynamic Island.
-  `LiveActivityService` owns one account-wide `agent-runs` activity per phone,
-  applies relay-pushed content-state updates, and ends it when the account
+- **Live Activity** mirrors active agent runs plus up to two recent PR
+  lifecycle/status rows on the Lock Screen and Dynamic Island. The lock-screen
+  banner budgets three agent rows (two when a lead row carries Approve/Deny);
+  the expanded island budgets two, because a third row plus the footer silently
+  clips. The expanded island's leading/trailing regions inset 10pt horizontally
+  and 2pt vertically so the corner glyphs keep their edges inside the rounder
+  capsule; compact leading/trailing have no extra inset. Glyph counts link to
+  `ade://activity?state=<group>`. `LiveActivityService` owns one account-wide
+  `agent-runs` activity per phone, applies relay-pushed content-state updates,
+  and also writes a local `Activity.update` from the merged drawer feed whenever
+  the app is alive (`refreshLocalContent`, hash-deduped, 1 s floor) so a working
+  count can tick without spending APNs. It ends the activity when the account
   activity settles, Live Activities are disabled, or the user signs out. Each
   `Run` / `PullRequest` row carries an optional `accountMachineKey`; exact
   element-level links preserve it so tapping a secondary row never opens the
@@ -1700,11 +1722,22 @@ the same source-revision, account-cursor, tombstone, and expiry rules as
 desktop. The existing per-project drawer is a project lens over that model; it
 is not a separate inbox.
 
-The sheet has two buckets: **Sessions**, ordered as Needs you → Working → Done,
-and **Inbox** for PR/CI work and unseen outcomes. It includes project filtering
-and machine/project context on every item, and remains useful when the phone is
+The sheet sections **Sessions** by the six canonical groups (Needs you → Failed
+→ Planning → Working → Idle → Done) and keeps **Inbox** for PR/CI work and
+unseen outcomes. Resting bands (idle, done) collapse into a summary line unless
+the reader expands them or a state filter is on. A glyph strip at the top is
+the status display and the single-select filter; tapping a count opens that
+band. It includes project filtering and machine/project context on every item,
+and remains useful when the phone is
 account-signed-in but not directly paired to a machine. Rows can be dismissed
 with a swipe; account fallback and offline states remain explicit.
+
+`rebuild(from:live:)` merges the paired host's live `WorkspaceSnapshot` over
+that host's relay rows (session identity always, machine identity when the live
+snapshot names one). The account poll lags and goes quiet when a brain is
+signed out; without the merge the Hub could show working agents while the
+drawer showed only week-old idle rows. The merged list is what
+`LiveActivityService.refreshLocalContent` writes into the island.
 
 Each row uses the shared item destination and actions:
 
@@ -1722,8 +1755,9 @@ extension as well as the app, which is what keeps the lock screen from
 describing a session in words and colours the app does not use; it also means
 both files are pinned to the extension's iOS 17 deployment target.
 
-`ActivityRowPresentation.swift` also holds iOS's copy of the five-group state
-table (`ActivityStateGroup`: needs-you, failed, planning, working, done), pinned
+`ActivityRowPresentation.swift` also holds iOS's copy of the six-group state
+table (`ActivityStateGroup`: needs-you, failed, planning, working, idle, done),
+pinned
 to `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the same
 fixture the renderer, the native notch, and the relay run, because this copy
 drifted on `merge_ready`, on idle-tier demotion, and on how planning is derived
@@ -1735,10 +1769,11 @@ compact brand chip. `chatActivityMode` decodes losslessly into `planning` or an
 unrecognized value; no `planning` member was added to the phase enum, which
 stays frozen wire.
 
-The Hub's
-"Live now" strip (`Views/Hub/HubLiveStrip.swift`) is a third reader of the same
-model, showing agents working on any account machine and hiding itself entirely
-when none are.
+The Hub's project → lane → chat tree (`Views/Hub/HubActivityState.swift`) is
+another reader of the same table: each row carries `HubStateGlyph`, and headers
+tally every nonzero group including resting bands. A snoozed running chat files
+as `idle` so the project card's blue working count cannot disagree with the
+Activity sheet the user just hid. There is no separate "Live now" strip.
 
 The drawer uses the same one-hue-one-meaning contract as the widget and desktop
 Activity pane. `blocked` is a neutral Working item with an Open action, distinct from the
@@ -1865,8 +1900,12 @@ ordering). Attention bubbles are driven by the roster's `attentionCount`
 chat rows and shells attached to a chat: a standalone CLI session that exited
 non-zero never contributes, because attention feeds the attention-first
 project sort and CLI rows have no mobile archive/clear affordance to make a
-stale failure go away. The Hub replaces the old
-the legacy project picker's connected-state layout while preserving its
+stale failure go away. Roster `runningCount` (and the Hub overlay of it) counts
+only chats that are live running and **not snoozed** —
+`RemoteRosterChat.countsTowardRunning`. A snoozed running chat is idle on every
+other Activity surface, so including it would paint the project card blue while
+the Activity sheet hid the row. The Hub replaces the
+legacy project picker's connected-state layout while preserving its
 no-machine / connecting blank states. It still merges the runtime-provided
 catalog with projects already present in the local replicated DB, marks
 cached/unavailable rows, and requests a fresh bootstrap connection for the
@@ -2044,7 +2083,14 @@ The iOS pieces:
 - `apps/ios/ADE/Models/RemoteModels.swift` and `RemoteRosterModels.swift` decode
   `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt`, and `wokeReason` as
   optional `String` fields through `decodeIfPresent`, and include them in
-  equality so a lifecycle-only change still redraws the row.
+  equality so a lifecycle-only change still redraws the row. Roster chats expose
+  `countsTowardRunning` (live running, not snoozed) and
+  `applyLocalSnoozeOverlay`, because snooze does not bump `lastActivityAt` and a
+  fresher remote row would otherwise wipe the overlay the phone just wrote.
+- `apps/ios/ADE/Views/Hub/HubActivityState.swift` maps a roster chat onto
+  `ActivityStateGroup`: a raised hand outranks a failure, a snoozed running chat
+  is `idle`, and both `idle` and `ended` strings land on `idle` rather than
+  `done` so week-old roster history does not paint emerald.
 - `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
   callers. The phone never decides a lifecycle value, so these commands are the
   mechanism, and the connect-time descriptor list gates the affordances.
@@ -2078,7 +2124,7 @@ The iOS pieces:
   slot from another. `workSessionStatusBadge` / `workSessionRowTone` /
   `workSessionStatusPresentation` are thin reads of it. Labels and hues come
   from the shared `ActivityPhaseVocabulary` mirror, so a Work row, the Activity
-  drawer, the hub strip, and the widget all read the same table.
+  drawer, the Hub tree, and the widget all read the same table.
 - `WorkSessionGrouping.swift`'s `workSessionGroups` builds the by-lane (default)
   / by-status / by-time groups, and `WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, `WorkRootComponents.swift`, and
@@ -3091,7 +3137,9 @@ the stats and shows update guidance.
   into `WorkSessionNavigationRequest` / `PrNavigationRequest`, and navigation
   selects or adopts that exact machine before opening the session, pending
   item/event, PR, or PR tab. Missing keys remain valid only for legacy/local
-  payloads.
+  payloads. `ade://activity?state=<group>` is the widget/island glyph-strip
+  target: it opens the drawer pre-filtered to that band, and an unrecognised
+  value is ignored rather than rejected.
 - **The chat-summary cache merges, it never wholesale-replaces.**
   `cacheChatSummaries` folds each incoming summary into
   `chatSummaryCache` by session id rather than swapping the whole map.

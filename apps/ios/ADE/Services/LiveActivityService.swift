@@ -580,6 +580,102 @@ final class LiveActivityService {
         }
     }
 
+    // MARK: - Local content updates
+
+    /// How long a locally-written frame claims to be current for. Matches the
+    /// relay's own stale-date so a local write and a pushed write age
+    /// identically — a shorter one here would make the island flip to
+    /// "Reconnecting" purely because the app, rather than the relay, drew it.
+    private static let localStaleWindow: TimeInterval = 600
+
+    /// Floor between local writes. `Activity.update` is cheap next to an APNs
+    /// push, but it still animates the island and re-renders the lock screen,
+    /// and the merged feed can churn several times a second while a turn
+    /// streams. One write per second is under any human's ability to notice a
+    /// missed tick and well clear of thrashing the widget process.
+    private static let localUpdateFloor: TimeInterval = 1
+
+    private var lastLocalUpdateAt: Date?
+    private var lastLocalContentHash: Int?
+    private var pendingLocalItems: [AccountAttentionItem]?
+    private var localUpdateTask: Task<Void, Never>?
+
+    /// Push the app's own merged view of the account into the running Live
+    /// Activity, without spending an APNs push.
+    ///
+    /// This is the whole real-time story for the island and the lock screen.
+    /// Content used to be mutable ONLY by a relay push, and the relay's budget
+    /// gate deliberately coarsens everything except `needs_you` and `failed` to
+    /// presence booleans — so a working count going 3 → 7, or a session
+    /// finishing, never reached the island at all. Whenever the app is alive it
+    /// holds strictly fresher truth than the last push did (a 20s poll, plus
+    /// the live paired-host socket merged over the top), so it simply writes
+    /// the frame. The relay push remains the backstop for a suspended app.
+    ///
+    /// Safe to call on every feed change: writes are hash-deduped and floored.
+    func refreshLocalContent(items: [AccountAttentionItem]) {
+        guard started, !items.isEmpty || lastLocalContentHash != nil else { return }
+        // Latest-wins: an older pending set is worthless the moment a newer one
+        // arrives, so it is replaced rather than queued.
+        pendingLocalItems = items
+        guard localUpdateTask == nil else { return }
+
+        localUpdateTask = Task { @MainActor [weak self] in
+            // Drain in a loop rather than one-shot. Clearing the task handle
+            // before the await would let a refresh that lands mid-write spawn a
+            // second writer; clearing it after would drop that refresh on the
+            // floor. Looping until the queue is empty does neither.
+            while let self, let next = self.pendingLocalItems {
+                let wait = self.lastLocalUpdateAt.map {
+                    max(0, Self.localUpdateFloor - Date().timeIntervalSince($0))
+                } ?? 0
+                if wait > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                }
+                // Re-read: a newer set may have landed during the sleep, and
+                // that one is the one worth writing.
+                let items = self.pendingLocalItems ?? next
+                self.pendingLocalItems = nil
+                await self.writeLocalContent(items: items)
+            }
+            self?.localUpdateTask = nil
+        }
+    }
+
+    private func writeLocalContent(items: [AccountAttentionItem]) async {
+        let activities = Activity<ADEAgentRunsAttributes>.activities
+            .filter { $0.attributes.isAccountWide && $0.activityState == .active }
+        guard !activities.isEmpty else { return }
+
+        let ownership = ADESharedContainer.readAccountDeviceOwnershipState()
+        let state = ADEAgentRunsAttributes.ContentState.local(
+            items: items,
+            ownershipEpoch: ownership?.ownershipEpoch,
+            hideDetails: ADESharedContainer.hideAttentionDetails
+        )
+        // `updatedAt` moves on every call by construction, so it is excluded
+        // from the hash — including it would defeat the dedupe entirely and
+        // make this write on every single feed tick.
+        var hasher = Hasher()
+        hasher.combine(state.runs)
+        hasher.combine(state.prs)
+        hasher.combine(state.activeCount)
+        hasher.combine(state.moreCount)
+        hasher.combine(state.groups)
+        let hash = hasher.finalize()
+        guard hash != lastLocalContentHash else { return }
+        lastLocalContentHash = hash
+        lastLocalUpdateAt = Date()
+
+        let content = ActivityContent(
+            state: state,
+            staleDate: Date().addingTimeInterval(Self.localStaleWindow)
+        )
+        for activity in activities {
+            await activity.update(content)
+        }
+    }
+
     private func endOrphanedActivities() async {
         // Only reap when we actually know the current machine — a transient
         // disconnect (nil host) must not tear down a valid activity.

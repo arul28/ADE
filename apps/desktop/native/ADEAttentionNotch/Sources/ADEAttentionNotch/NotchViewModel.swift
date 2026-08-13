@@ -34,12 +34,18 @@ final class NotchViewModel: ObservableObject {
     @Published private(set) var isHoldingReveal = false
 
     @Published private(set) var selectedTab: NotchPanelTab = .agents
-    /// Done is the most final and most common state, so the panel opens with it
-    /// folded away. Named through the group table rather than as a literal, so
-    /// a renamed section id cannot silently stop collapsing it.
-    @Published private(set) var collapsedSectionIds: Set<String> = [
-        NotchStripGroupKind.done.sectionId,
-    ]
+    /// The panel opens with both resting bands folded away. Done and idle are
+    /// by far the two most common states, and a panel that opens onto a wall of
+    /// finished and gone-quiet work buries the rows that wanted a human — the
+    /// same reason the host keeps both out of its header popover
+    /// (`ACTIVITY_POPOVER_SECTION_IDS`). Neither is hidden: the headings and
+    /// their counts are still there, one click from the rows.
+    ///
+    /// Read off `isResting` rather than listed as literals, so a seventh group
+    /// cannot be added on the resting side and quietly open expanded.
+    @Published private(set) var collapsedSectionIds: Set<String> = Set(
+        NotchStripGroupKind.allCases.filter(\.isResting).map(\.sectionId)
+    )
     @Published private(set) var expandedClusterIds: Set<String> = []
     /// The row keyboard navigation is on, which is also what Return opens.
     @Published private(set) var focusedRowId: String?
@@ -222,7 +228,7 @@ final class NotchViewModel: ObservableObject {
     var panelRows: [NotchPanelRow] {
         switch selectedTab {
         case .agents:
-            // The same five-way table the strip counts with, so a row the strip
+            // The same six-way table the strip counts with, so a row the strip
             // counts as failed is a row the panel files under Failed.
             var rows: [NotchPanelRow] = []
             for section in notchActivityGroupSections(notchItems(items, in: .agents)) {
@@ -461,12 +467,35 @@ final class NotchViewModel: ObservableObject {
         return opened
     }
 
+    /// Compact-strip group badge: open the panel already showing that band,
+    /// the way an iOS island count is a link into the matching Activity filter.
+    func revealGroup(_ kind: NotchStripGroupKind) {
+        selectedTab = .agents
+        collapsedSectionIds.remove(kind.sectionId)
+        let match = notchItems(items, in: .agents).first { notchStripGroupKind(for: $0) == kind }
+        _ = openPanel(revealing: match)
+        if match == nil {
+            focusedRowId = "section:\(kind.sectionId)"
+        }
+    }
+
+    /// Compact trailing signal: open the row it names, or expand the panel
+    /// when the wing is only a quiet machine summary.
+    func revealTopSignal() {
+        if let itemId = topSignal.itemId,
+           let item = items.first(where: { $0.id == itemId }) {
+            _ = openPanel(revealing: item)
+            return
+        }
+        _ = toggleExpanded()
+    }
+
     /// Opens the panel already showing a particular row: the Events tab for a
     /// PR or CI outcome, with that item's cluster expanded and focused.
     @discardableResult
     func openPanel(revealing item: AttentionItem?) -> Bool {
         var next = interaction
-        guard next.explicitToggle(hasItems: hasPresentableContent, policy: policy) else {
+        guard next.ensureExpanded(hasItems: hasPresentableContent, policy: policy) else {
             interaction = next
             if !policy.clickOpensPanel, hasPresentableContent { openActivity() }
             return false

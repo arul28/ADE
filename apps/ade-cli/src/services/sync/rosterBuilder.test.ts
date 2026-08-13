@@ -61,7 +61,9 @@ function seedDatabase(): void {
         status_note text,
         attention_requested_at text,
         attention_message text,
-        last_turn_failed_at text
+        last_turn_failed_at text,
+        snoozed_until text,
+        snoozed_at text
       );
   `);
 
@@ -459,5 +461,44 @@ describe("buildRosterSnapshot", () => {
     } finally {
       fs.rmSync(emptyRoot, { recursive: true, force: true });
     }
+  });
+
+  it("emits snooze columns and does not count a snoozed running chat", async () => {
+    const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
+    db.prepare(
+      `insert into terminal_sessions (id, lane_id, tool_type, title, status, last_output_at, started_at, snoozed_until, snoozed_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "chat-snoozed",
+      "lane-primary",
+      "cursor",
+      "ADE-121 Prototype",
+      "running",
+      "2026-07-27T00:00:00Z",
+      "2026-07-01T00:00:00Z",
+      "2126-07-10T00:00:00.000Z",
+      "2026-07-27T00:00:00.000Z",
+    );
+    db.close();
+
+    const projects = await buildRosterSnapshot({
+      projectRegistry,
+      scopeRegistry: bootedScopes([
+        {
+          sessionId: "chat-snoozed",
+          status: "active",
+          awaitingInput: false,
+          provider: "cursor",
+        },
+      ]),
+      hostProjectId: PROJECT_ID,
+    });
+    const row = projects[0]!.chats.find((chat) => chat.id === "chat-snoozed");
+    expect(row).toMatchObject({
+      status: "running",
+      snoozedUntil: "2126-07-10T00:00:00.000Z",
+      snoozedAt: "2026-07-27T00:00:00.000Z",
+    });
+    expect(projects[0]!.runningCount).toBe(0);
   });
 });

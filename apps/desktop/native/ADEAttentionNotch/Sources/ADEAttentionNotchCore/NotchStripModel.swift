@@ -7,13 +7,20 @@ import Foundation
 // now two wings around the hardware cutout: state groups with counts on the
 // left, one real signal on the right, and a width derived from both.
 
-/// The five states the strip counts and the panel files under, one hue each.
+/// The six states the strip counts and the panel files under, one hue each.
 ///
 /// This is the Swift mirror of `ACTIVITY_STATE_GLYPHS` / `activityStateGroup`
 /// in `apps/desktop/src/renderer/components/activity/activityPresentation.ts`,
 /// which is the single table for every Activity surface. Amber is "your move"
 /// and is spent nowhere else; violet is deliberation; a change belongs there
 /// first and here second.
+///
+/// `idle` is its own band rather than a corner of `done`. A session that went
+/// quiet mid-work and a session that finished are not the same fact, and
+/// folding the first into the second made `done` a bucket that filled with
+/// week-old roster rows. It sorts above `done` because "stopped without
+/// finishing" is likelier to want you than "finished", and it is neutral
+/// because nobody is blocked on it.
 ///
 /// Declaration order *is* priority order, the way `ACTIVITY_STATE_GROUPS`'
 /// array order is on the canonical side: `allCases` yields these in the order
@@ -25,6 +32,7 @@ public enum NotchStripGroupKind: String, CaseIterable, Equatable, Sendable {
     case failed
     case planning
     case working
+    case idle
     case done
 
     /// Matches `ActivitySectionId`, so a section id crossing between the
@@ -35,6 +43,7 @@ public enum NotchStripGroupKind: String, CaseIterable, Equatable, Sendable {
         case .failed: return "failed"
         case .planning: return "planning"
         case .working: return "working"
+        case .idle: return "idle"
         case .done: return "done"
         }
     }
@@ -45,19 +54,27 @@ public enum NotchStripGroupKind: String, CaseIterable, Equatable, Sendable {
         case .failed: return .red
         case .planning: return .violet
         case .working: return .blue
+        case .idle: return .neutral
         case .done: return .emerald
         }
     }
 
     /// One glyph per meaning: a filled dot only ever means "your move", an open
     /// circle only ever means "still running", the notepad only ever means the
-    /// agent is planning.
+    /// agent is planning, the clock only ever means the work went quiet.
+    ///
+    /// `idle` draws the `stale` glyph identity, which the renderer draws as a
+    /// Phosphor `Clock`. The bare `clock` rather than iOS's
+    /// `clock.badge.exclamationmark`: these are 11pt marks in a menu bar, where
+    /// the badge is a smear and the exclamation contradicts the one thing this
+    /// band must not do, which is compete with the live ones for the eye.
     public var symbolName: String {
         switch self {
         case .needsYou: return "circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .planning: return "note.text"
         case .working: return "circle"
+        case .idle: return "clock"
         case .done: return "checkmark"
         }
     }
@@ -69,6 +86,7 @@ public enum NotchStripGroupKind: String, CaseIterable, Equatable, Sendable {
         case .failed: return "Failed"
         case .planning: return "Planning"
         case .working: return "Working"
+        case .idle: return "Idle"
         case .done: return "Done"
         }
     }
@@ -80,13 +98,23 @@ public enum NotchStripGroupKind: String, CaseIterable, Equatable, Sendable {
         case .failed: return "failed"
         case .planning: return "planning"
         case .working: return "working"
+        case .idle: return "idle"
         case .done: return "done"
         }
+    }
+
+    /// Resting bands: nothing here is in motion and nothing here is waiting on
+    /// the reader. The canonical side keeps both out of the header popover
+    /// (`ACTIVITY_POPOVER_SECTION_IDS`) for the same reason the panel opens
+    /// with both folded — a glance surface that opens onto a wall of finished
+    /// and gone-quiet work buries the two rows that wanted a human.
+    public var isResting: Bool {
+        self == .idle || self == .done
     }
 }
 
 /// Which group a row belongs to. Mirrors `activityStateGroup` exactly,
-/// including its two load-bearing rules:
+/// including its three load-bearing rules:
 ///
 /// - `planning` comes from `chatActivityMode`, not from a phase. The phase
 ///   vocabulary is frozen push wire and cannot carry the state, so a running
@@ -96,10 +124,14 @@ public enum NotchStripGroupKind: String, CaseIterable, Equatable, Sendable {
 ///   move, so they file with the live band rather than borrowing amber. Their
 ///   phase tone stays violet/emerald in a row pill — the group is about who has
 ///   to act, the pill is about what the phase is.
+/// - The idle TIER and the `stale` PHASE both land in `idle`, and neither one
+///   lands in `done`. `done` means finished.
 public func notchStripGroupKind(for item: AttentionItem) -> NotchStripGroupKind {
-    // Idle rows are disk-only roster history: quiet, never alerting, always the
-    // ambient tail no matter what phase they preserved.
-    if item.isIdleTier { return .done }
+    // Idle rows are disk-only roster history: quiet, never alerting, and their
+    // own band no matter what phase they preserved. They used to file under
+    // `done`, which is how week-old roster rows came to outnumber the runs that
+    // actually finished under one emerald heading.
+    if item.isIdleTier { return .idle }
     switch item.phase {
     case "needs_you":
         return .needsYou
@@ -107,7 +139,12 @@ public func notchStripGroupKind(for item: AttentionItem) -> NotchStripGroupKind 
         return .failed
     case "starting", "running":
         return item.isPlanning ? .planning : .working
-    case "stale", "open", "review_requested", "merge_ready", "blocked":
+    case "stale":
+        // Went quiet mid-work. Not live, not finished — the exact gap `idle`
+        // exists to name. It used to file with `working`, which is why the
+        // strip could claim agents were working hours after they stopped.
+        return .idle
+    case "open", "review_requested", "merge_ready", "blocked":
         return .working
     default:
         return .done
@@ -147,11 +184,11 @@ public func notchStripTally(_ items: [AttentionItem]) -> [NotchStripGroupKind: I
 ///
 /// The host's counts are the account's truth and the rows are a bounded
 /// projection of it, so each group the host counts takes whichever is larger.
-/// Every count the host sends comes from this same five-way table, so this is
-/// a floor and not a reinterpretation. `failed` and `planning` are optional
-/// because they are the newest two on the wire: a host that does not send them
-/// leaves those groups purely row-derived, which is exactly the behaviour every
-/// shipped build already has.
+/// Every count the host sends comes from this same six-way table, so this is
+/// a floor and not a reinterpretation. `failed`, `planning` and `idle` are
+/// optional because they are the newest on the wire: a host that does not send
+/// one leaves that group purely row-derived, which is exactly the behaviour
+/// every shipped build already has.
 public func notchStripGroups(
     items: [AttentionItem],
     counts: AttentionCounts? = nil
@@ -163,6 +200,7 @@ public func notchStripGroups(
         tally[.done] = max(tally[.done] ?? 0, counts.done)
         if let failed = counts.failed { tally[.failed] = max(tally[.failed] ?? 0, failed) }
         if let planning = counts.planning { tally[.planning] = max(tally[.planning] ?? 0, planning) }
+        if let idle = counts.idle { tally[.idle] = max(tally[.idle] ?? 0, idle) }
     }
     return NotchStripGroupKind.allCases
         .compactMap { kind in
@@ -198,15 +236,13 @@ public func notchActivityGroupSections(_ items: [AttentionItem]) -> [NotchActivi
     for item in sortedAttentionItems(items) {
         grouped[notchStripGroupKind(for: item), default: []].append(item)
     }
+    // Idle-tier rows used to need re-sorting to the tail of `done`, because
+    // they shared that section with genuinely finished work and their preserved
+    // phase could outrank a fresh completed outcome. They have their own
+    // section now, so priority order alone is correct for every section.
     return NotchStripGroupKind.allCases
         .compactMap { kind in
-            guard var sectionItems = grouped[kind], !sectionItems.isEmpty else { return nil }
-            if kind == .done {
-                // Idle roster history is the ambient tail even when its
-                // preserved phase outranks a fresh completed outcome.
-                sectionItems = sectionItems.filter { !$0.isIdleTier }
-                    + sectionItems.filter(\.isIdleTier)
-            }
+            guard let sectionItems = grouped[kind], !sectionItems.isEmpty else { return nil }
             return NotchActivityGroupSection(kind: kind, items: sectionItems)
         }
 }
@@ -311,7 +347,10 @@ private func notchSignalIsNotable(_ item: AttentionItem) -> Bool {
     case .done:
         // A merge or a finished run is news for as long as it is unseen.
         return item.kind == "pull_request" && item.seenAt == nil
-    case .working:
+    case .working, .idle:
+        // Nothing happened. A row that went quiet is the absence of news, and
+        // announcing it in the right wing is how the surface used to insist an
+        // agent was working hours after it stopped.
         return false
     }
 }
@@ -372,6 +411,26 @@ public func notchStripMetrics(
     }
     return NotchStripMetrics(leadingWidth: leading, trailingWidth: trailing)
 }
+
+/// The widest the glyph wing can honestly get: every state group on screen at
+/// once, each carrying a two-digit count.
+///
+/// The ear ceiling is derived from this rather than chosen, because a ceiling
+/// below it clips the end off the strip — and text truncates with an ellipsis
+/// that admits it, while a glyph wing just silently loses its last group, which
+/// is the surface denying a state the account is actually in. The flat 150pt
+/// ceiling was already one group short at five, so a busy account's `done`
+/// count was being cut off before `idle` ever existed.
+///
+/// Derived from `allCases`, so adding a seventh group widens the ear by
+/// construction instead of quietly overflowing it.
+public let notchStripWidestGlyphWingWidth: Double = {
+    let groups = Double(NotchStripGroupKind.allCases.count)
+    let group = NotchStripTypeMetrics.glyph
+        + NotchStripTypeMetrics.glyphGap
+        + 2 * NotchStripTypeMetrics.digit
+    return groups * group + max(0, groups - 1) * NotchStripTypeMetrics.groupGap
+}()
 
 // MARK: - Expanded panel
 

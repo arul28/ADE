@@ -196,6 +196,7 @@ describe("createPushPublisherService flush", () => {
       lastPublishedRevisionById?: Record<string, number>;
       remoteAttentionAcknowledgments?: StoredRemoteAttentionAcknowledgment[];
       machineRevokedAt?: string | null;
+      machineName?: string | (() => string);
     } = {},
   ) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
@@ -404,7 +405,7 @@ describe("createPushPublisherService flush", () => {
       logger: publisherLogger as never,
       store: store as never,
       relayClient: relayClient as never,
-      machineName: "MacBook",
+      machineName: options.machineName ?? "MacBook",
       getAccountMachineIdentity: () => ({
         machineKey: "b".repeat(32),
         deviceId: "desktop-device",
@@ -1598,7 +1599,11 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("publishes an empty presence heartbeat without rebuilding the roster", async () => {
+  it("heartbeats with a presence frame, not a write, when the roster is unchanged", async () => {
+    // The write half of the heartbeat contract. Rebuilding the roster every
+    // 30 s must not turn into a D1 write every 30 s: the content hash has to
+    // recognize an unmoved roster and fall back to the presence post, which
+    // only touches `last_seen_at`. See the paired freshness test below.
     const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(1)]);
     const { publisher, publishAttention, emit } = makeHarness(
       device,
@@ -1628,7 +1633,160 @@ describe("createPushPublisherService flush", () => {
       items: [],
       tombstones: [],
     });
-    expect(buildSnapshot).toHaveBeenCalledTimes(1);
+    // The roster IS rebuilt now — that is what makes the hash comparison
+    // possible — it just does not get published when it did not move.
+    expect(buildSnapshot).toHaveBeenCalledTimes(2);
+    publisher.dispose();
+  });
+
+  it("republishes the roster on the heartbeat instead of letting the feed rot", async () => {
+    // Regression: the 30 s heartbeat posted `mode: "presence"` with `items: []`
+    // unconditionally. The relay only bumps `last_seen_at` for that and never
+    // recomputes the feed, so with RUNNING_TTL_MS (2 h) far shorter than the
+    // 7-day idle roster TTL a machine decayed into idle-only rows that nothing
+    // came back to correct. A heartbeat that finds changed roster content must
+    // carry it.
+    const chatStatus = { value: "idle" as "idle" | "running" };
+    const buildSnapshot = vi.fn().mockImplementation(async () => {
+      const project = rosterProject(1);
+      return [{
+        ...project,
+        chats: project.chats.map((chat) => ({ ...chat, status: chatStatus.value })),
+      }];
+    });
+    const { publisher, publishAttention } = makeHarness(
+      device,
+      undefined,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+    publishAttention.mockClear();
+
+    // Roster content moves with no local chat/PTY event to schedule a flush —
+    // the heartbeat is the only thing that will notice. 33 s covers the 30 s
+    // interval plus the 2 s flush debounce it schedules.
+    chatStatus.value = "running";
+    await vi.advanceTimersByTimeAsync(33_000);
+
+    const payload = publishAttention.mock.calls.at(-1)?.[0];
+    expect(payload.mode).toBe("delta");
+    expect(payload.items).toEqual([
+      expect.objectContaining({
+        id: `agent:${"a".repeat(40)}:disk-session-000`,
+        phase: "running",
+      }),
+    ]);
+    publisher.dispose();
+  });
+
+  it("backs the heartbeat roster rebuild off on a settled machine, and re-arms on change", async () => {
+    // The heartbeat carries the roster so the feed cannot rot, but the rebuild
+    // is a disk read across every project. On a machine nobody is touching
+    // that must not stay a 30 s job forever. Presence still posts every 30 s;
+    // only the rebuild backs off, and any real change re-arms it at once.
+    const chatStatus = { value: "idle" as "idle" | "running" };
+    const buildSnapshot = vi.fn().mockImplementation(async () => {
+      const project = rosterProject(1);
+      return [{
+        ...project,
+        chats: project.chats.map((chat) => ({ ...chat, status: chatStatus.value })),
+      }];
+    });
+    const { publisher, publishAttention } = makeHarness(
+      device,
+      undefined,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+    const buildsAfterStart = buildSnapshot.mock.calls.length;
+    publishAttention.mockClear();
+
+    const heartbeats = 20;
+    for (let beat = 0; beat < heartbeats; beat += 1) {
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    await vi.advanceTimersByTimeAsync(3_000);
+    const settledRebuilds = buildSnapshot.mock.calls.length - buildsAfterStart;
+
+    // Every heartbeat still reached the relay — `last_seen_at` never lags.
+    expect(publishAttention.mock.calls.length).toBeGreaterThanOrEqual(heartbeats);
+    expect(publishAttention.mock.calls.every(([payload]) => payload.mode === "presence"))
+      .toBe(true);
+    // ...but far fewer than one disk rebuild per heartbeat, and none of them
+    // wrote. The ramp keeps early rebuilds, so this is a bound, not a count.
+    expect(settledRebuilds).toBeLessThanOrEqual(heartbeats / 2);
+    expect(settledRebuilds).toBeGreaterThan(0);
+
+    // A change is still noticed inside the cap — at most 4 heartbeats, the
+    // ~2 min worst case, which is ~59x inside the 2 h RUNNING_TTL_MS whose
+    // expiry caused the rot in the first place.
+    chatStatus.value = "running";
+    publishAttention.mockClear();
+    for (let beat = 0; beat < 4; beat += 1) {
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const delta = publishAttention.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload.mode === "delta");
+    expect(delta?.items).toEqual([
+      expect.objectContaining({
+        id: `agent:${"a".repeat(40)}:disk-session-000`,
+        phase: "running",
+      }),
+    ]);
+
+    // ...and noticing it re-arms per-heartbeat rebuilding immediately: the two
+    // heartbeats after the change each rebuild rather than resuming the skips.
+    const buildsAfterChange = buildSnapshot.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(33_000);
+    expect(buildSnapshot.mock.calls.length - buildsAfterChange).toBe(2);
+    publisher.dispose();
+  });
+
+  it("publishes the machine's display name, re-read per publish", async () => {
+    // Regression: bootstrap passed `os.hostname()`, so Activity labelled the
+    // machine "Mac.lan" while every other ADE surface showed the macOS
+    // ComputerName. `resolveDeviceDisplayName` returns the hostname fallback
+    // synchronously and swaps in the real name when its async probe lands, so
+    // a name captured at construction would latch the fallback forever.
+    let resolved = "Mac.lan";
+    const { publisher, publishAttention, emit } = makeHarness(
+      device,
+      undefined,
+      { activityProtocol: 2, machineName: () => resolved },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publishAttention.mock.calls.at(-1)?.[0].machineName).toBe("Mac.lan");
+
+    resolved = "Arul's Mac Studio";
+    emit({
+      sessionId: "s-2",
+      timestamp: "",
+      event: { type: "text", text: "a second run starts" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publishAttention.mock.calls.at(-1)?.[0].machineName).toBe("Arul's Mac Studio");
+    expect((await publisher.getMachineAttentionSnapshot()).machines?.[0]?.name)
+      .toBe("Arul's Mac Studio");
     publisher.dispose();
   });
 
@@ -2975,7 +3133,7 @@ describe("createPushPublisherService flush", () => {
       eventKind: "agent_running",
       activityTier: "ambient",
     });
-    expect(working.title).toContain("is working");
+    expect(working.privacyPreview).toBe("An ADE agent is working.");
 
     // Draining the last background task is what finally settles the run.
     emit(backgroundTask("s-bg", "task-1", "completed"));
@@ -2983,7 +3141,7 @@ describe("createPushPublisherService flush", () => {
 
     const done = (await publisher.getMachineAttentionSnapshot()).items[0]!;
     expect(done).toMatchObject({ phase: "completed", eventKind: "agent_completed" });
-    expect(done.title).toContain("is done");
+    expect(done.privacyPreview).toBe("An ADE agent is done.");
     publisher.dispose();
   });
 

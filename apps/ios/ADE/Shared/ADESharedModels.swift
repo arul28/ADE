@@ -358,29 +358,6 @@ public enum AccountAttentionPhase: RawRepresentable, Codable, Hashable, Sendable
         if case .unrecognized = self { return false }
         return true
     }
-
-    /// Row copy for the Activity drawer. Same words as `AgentRunPhase.label`
-    /// and the desktop sidebar — "Working", not "Running"; "Done", not
-    /// "Completed" — so one device never describes one session two ways.
-    public var displayLabel: String {
-        switch self {
-        case .starting: return "Starting"
-        case .running: return "Working"
-        case .needsYou: return "Needs you"
-        case .blocked: return "Blocked"
-        case .failed: return "Failed"
-        case .completed: return "Done"
-        case .stale: return "Stale"
-        case .checksFailing: return "Checks failing"
-        case .reviewRequested: return "Review requested"
-        case .changesRequested: return "Changes requested"
-        case .mergeReady: return "Ready to merge"
-        case .open: return "Open"
-        case .merged: return "Merged"
-        case .closed: return "Closed"
-        case .unrecognized: return "Unknown"
-        }
-    }
 }
 
 public enum AccountAttentionEventKind: RawRepresentable, Codable, Hashable, Sendable {

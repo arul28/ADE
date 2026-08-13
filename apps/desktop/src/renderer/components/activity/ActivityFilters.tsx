@@ -3,21 +3,39 @@ import { CaretDown, Check } from "@phosphor-icons/react";
 
 import type { AttentionItem } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { ActivityStateGlyphMark } from "./ActivityStateGlyphMark";
+import {
+  ACTIVITY_STATE_GLYPHS,
+  ACTIVITY_STATE_GROUPS,
+  activityStateGroup,
+  type ActivityStateGroup,
+} from "./activityPresentation";
+import {
+  ACTIVITY_SECTION_TONE,
+  activityCountPhrase,
+  activityCountPhrases,
+  activitySectionCounts,
+  activitySections,
+  type ActivitySectionCounts,
+} from "./activityPriority";
 
 /**
- * Activity's three filters — machine, chat type, model. Every option is derived
- * from the snapshot on screen rather than a fixed list, so a filter can never
- * offer a machine the account no longer has or hide one it just gained.
+ * Activity's filters — machine, project, chat type, model, and the state group.
+ * Every option is derived from the snapshot on screen rather than a fixed list,
+ * so a filter can never offer a machine the account no longer has or hide one
+ * it just gained.
  *
  * Selection is a set per axis; an empty set means "everything", which is why
  * clearing a filter and selecting all of its options read the same on screen
- * and produce the same list.
+ * and produce the same list. `stateGroup` is the exception and is deliberately
+ * a single value — see `ActivityStateStrip` for why a set would be wrong there.
  */
 export type ActivityFilterState = {
   machineKeys: string[];
   projects: string[];
   kinds: AttentionItem["kind"][];
   models: string[];
+  stateGroup: ActivityStateGroup | null;
 };
 
 export const EMPTY_ACTIVITY_FILTERS: ActivityFilterState = {
@@ -25,13 +43,15 @@ export const EMPTY_ACTIVITY_FILTERS: ActivityFilterState = {
   projects: [],
   kinds: [],
   models: [],
+  stateGroup: null,
 };
 
 export function activityFiltersAreEmpty(filters: ActivityFilterState): boolean {
   return filters.machineKeys.length === 0
     && filters.projects.length === 0
     && filters.kinds.length === 0
-    && filters.models.length === 0;
+    && filters.models.length === 0
+    && filters.stateGroup === null;
 }
 
 /**
@@ -63,6 +83,12 @@ export function applyActivityFilters(
     // An item with no model can only ever match "everything": a model filter is
     // a claim about which model is running, and "unknown" is not one.
     if (models.size > 0 && !(item.model && models.has(item.model))) return false;
+    // The state axis is AND-ed with the rest, like every other one, and it is
+    // applied to notifications too rather than only to the agent feed the strip
+    // counts. An axis that silently skipped one column would leave the two
+    // lists disagreeing about what "filtered" even means, and the columns
+    // already say "nothing here matches" for exactly this case.
+    if (filters.stateGroup && activityStateGroup(item) !== filters.stateGroup) return false;
     return true;
   });
 }
@@ -172,6 +198,79 @@ function FilterChip({
   );
 }
 
+/**
+ * The state strip: one glyph and one count per populated group, and the pane's
+ * status filter.
+ *
+ * It is a glyph strip rather than a fifth chip row because the pane already
+ * spends a whole row on chips, and a sixth word chip would have cost height to
+ * say something the sections were already saying. Glyph plus count says it in
+ * the space that row already had.
+ *
+ * SINGLE-select, unlike every other axis. The strip is a status display first
+ * and a filter second: several lit glyphs read as "these four states are
+ * happening", which is a broken status display, not a wider filter. Pressing
+ * the lit one clears it, so there is no separate gesture to learn and no state
+ * the strip can be left in that it cannot leave.
+ *
+ * The counts come from the UNFILTERED item set. A facet that recounts itself
+ * after narrowing shows the chosen group's number beside six zeroes, and the
+ * zeroes are the escape routes — a filter that hides its own counts cannot be
+ * turned off from the control that turned it on.
+ */
+function ActivityStateStrip({
+  counts,
+  selected,
+  onSelect,
+}: {
+  counts: ActivitySectionCounts;
+  selected: ActivityStateGroup | null;
+  onSelect: (next: ActivityStateGroup | null) => void;
+}) {
+  // Empty groups are not rendered — six glyphs where five mean zero is noise
+  // pretending to be a status line. The selected group is the one exception: if
+  // the last row of the group you are filtered to finishes, dropping its button
+  // would strand the filter with no way back through the strip.
+  const populated = ACTIVITY_STATE_GROUPS.filter(
+    (group) => counts[group] > 0 || group === selected,
+  );
+  if (populated.length === 0) return null;
+
+  return (
+    <div
+      className="activity-state-strip"
+      role="group"
+      // One name for the whole strip, so a screen reader hears the state of the
+      // account as a sentence instead of walking six unlabelled counters.
+      aria-label={activityCountPhrases(counts).join(", ") || "All agents idle"}
+      data-testid="activity-state-strip"
+    >
+      {populated.map((group) => {
+        const active = selected === group;
+        return (
+          <button
+            key={group}
+            type="button"
+            className={cn(
+              "activity-state-pip",
+              `activity-tone-${ACTIVITY_SECTION_TONE[group]}`,
+            )}
+            data-activity-state-pip={group}
+            data-active={active ? "true" : "false"}
+            aria-pressed={active}
+            aria-label={activityCountPhrase(group, counts[group])}
+            title={`${ACTIVITY_STATE_GLYPHS[group].label} · ${counts[group]}`}
+            onClick={() => onSelect(active ? null : group)}
+          >
+            <ActivityStateGlyphMark group={group} size={11} />
+            <span>{counts[group]}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ActivityFilters({
   items,
   filters,
@@ -218,7 +317,21 @@ export function ActivityFilters({
     [items],
   );
 
+  /**
+   * Derived from `items`, which the pane hands over unfiltered — the same set
+   * the option lists come from, and the reason the strip keeps reporting the
+   * groups you are not currently looking at.
+   */
+  const stateCounts = useMemo(
+    () => activitySectionCounts(activitySections(items)),
+    [items],
+  );
+
   const clear = useCallback(() => onChange(EMPTY_ACTIVITY_FILTERS), [onChange]);
+  const selectStateGroup = useCallback(
+    (stateGroup: ActivityStateGroup | null) => onChange({ ...filters, stateGroup }),
+    [filters, onChange],
+  );
 
   return (
     <div className="activity-filters" data-testid="activity-filters">
@@ -254,6 +367,11 @@ export function ActivityFilters({
           Clear filters
         </button>
       )}
+      <ActivityStateStrip
+        counts={stateCounts}
+        selected={filters.stateGroup}
+        onSelect={selectStateGroup}
+      />
     </div>
   );
 }

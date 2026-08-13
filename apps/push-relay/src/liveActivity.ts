@@ -54,32 +54,48 @@ function resolveActivityDevicePreferences(
 }
 
 /**
- * The five-way state vocabulary the Dynamic Island's compact leading, the
+ * The six-way state vocabulary the Dynamic Island's compact leading, the
  * desktop notch strip and the renderer's Activity Center all share. Ordered by
  * urgency: the island shows the first nonzero group's glyph.
+ *
+ * `idle` is its own band rather than a corner of `done`: a session that went
+ * quiet mid-work and a session that finished are not the same fact, and folding
+ * the first into the second made `done` a bucket that filled with week-old
+ * roster rows. It sorts above `done` because "stopped without finishing" is
+ * likelier to want you than "finished".
  */
-type ActivityStateGroup = "needs_you" | "failed" | "planning" | "working" | "done";
+type ActivityStateGroup =
+  | "needs_you"
+  | "failed"
+  | "planning"
+  | "working"
+  | "idle"
+  | "done";
 
 const ACTIVITY_STATE_GROUP_ORDER: readonly ActivityStateGroup[] = [
   "needs_you",
   "failed",
   "planning",
   "working",
+  "idle",
   "done",
 ];
 
 /**
  * Mirrors `notchStripGroupKind` (Swift) and `activityStateGroup` (renderer)
- * exactly, including the two rules that are easy to get wrong:
+ * exactly, including the three rules that are easy to get wrong:
  *
  * - `planning` comes from `chatActivityMode`, never from a phase. The phase
  *   vocabulary is frozen wire and cannot carry the state, so an item that does
  *   not stamp the field groups exactly as it did before the field existed.
- * - Idle-tier rows are disk-only roster history — quiet, never alerting, always
- *   the ambient tail no matter which phase they preserved.
+ * - Idle-tier rows are disk-only roster history — quiet, never alerting, and
+ *   they land in `idle`, NOT `done`: `done` means the work actually finished.
+ * - `stale` is a resting state, not a live one. It used to file with `working`,
+ *   which is how the island came to claim agents were working hours after they
+ *   had stopped.
  */
 function activityStateGroup(item: ParsedAttentionItem): ActivityStateGroup {
-  if (item.activityTier === "idle") return "done";
+  if (item.activityTier === "idle") return "idle";
   switch (item.phase) {
     case "needs_you":
       return "needs_you";
@@ -91,16 +107,35 @@ function activityStateGroup(item: ParsedAttentionItem): ActivityStateGroup {
     case "running":
       return item.chatActivityMode === "planning" ? "planning" : "working";
     case "stale":
+      // Went quiet mid-work: not live, not finished — the exact gap `idle` names.
+      return "idle";
     case "open":
     case "review_requested":
     case "merge_ready":
     case "blocked":
+      // Someone else's move, not the reader's, but still an open thread: filed
+      // with the live band so it cannot borrow the amber "needs you" heading.
       return "working";
     default:
       return "done";
   }
 }
 
+/**
+ * Sort rank for the roster, which is sliced to the top three — so this ladder
+ * decides which runs the island can see at all, and a session that has gone
+ * quiet must never take a slot from a live one.
+ *
+ * `stale` used to share rank 4 with `open`, back when it grouped as `working`.
+ * That was never an observable bug — `running` already outranked both, and this
+ * function's only caller filters `open`/`closed` rows out before sorting, so
+ * rank 4 had exactly one occupant — but it encoded stale as a live phase, which
+ * is the belief that let the island report agents as working hours after they
+ * stopped. Now that `stale` groups as `idle`, it ranks below every live phase
+ * and above the terminal ones: resting-but-unfinished beats finished, and never
+ * beats running. Keeping the ladder honest here means the next reader cannot
+ * re-derive "stale is live" from the sort.
+ */
 function activityPriority(item: ParsedAttentionItem): number {
   switch (item.phase) {
     case "needs_you": return 0;
@@ -112,11 +147,11 @@ function activityPriority(item: ParsedAttentionItem): number {
     case "blocked": return 2;
     case "starting":
     case "running": return 3;
-    case "stale":
     case "open": return 4;
+    case "stale": return 5;
     case "completed":
-    case "merged": return 5;
-    default: return 6;
+    case "merged": return 6;
+    default: return 7;
   }
 }
 
@@ -129,6 +164,17 @@ function activityRun(item: ParsedAttentionItem): Record<string, unknown> | null 
   const phase = item.phase === "needs_you" || item.phase === "blocked"
     ? approval ? "waiting_for_approval" : "waiting_for_input"
     : item.phase;
+  // Unix SECONDS, matching `updatedAt`'s unit on this content state. The
+  // client renders a system-ticked relative date from it, so a row's elapsed
+  // time keeps counting between pushes instead of freezing at whatever it read
+  // when the last transition happened to earn one. `statusSince` is the right
+  // anchor rather than `updatedAt`: it is immutable for the life of a phase,
+  // so the timer measures time in the STATE and does not reset on a cosmetic
+  // republish.
+  const statusSinceRaw = typeof item.statusSince === "string"
+    ? item.statusSince
+    : typeof item.occurredAt === "string" ? item.occurredAt : "";
+  const statusSinceMs = Date.parse(statusSinceRaw);
   return {
     id: sessionId,
     accountMachineKey: requiredString(item.machine.accountMachineKey, 128),
@@ -137,6 +183,9 @@ function activityRun(item: ParsedAttentionItem): Record<string, unknown> | null 
     model: boundedText(item.model, 120),
     lane: boundedText(item.laneName, 160),
     detail: boundedText(item.preview, MAX_PREVIEW_LENGTH),
+    ...(Number.isFinite(statusSinceMs)
+      ? { statusSince: Math.floor(statusSinceMs / 1_000) }
+      : {}),
   };
 }
 
@@ -216,8 +265,20 @@ async function accountActivityContentState(
     (latest, item) => Math.max(latest, Date.parse(item.updatedAt)),
     0,
   );
+  // The island's "N agents working" headline, so the invariant is: an idle-tier
+  // row is never active, whatever phase it preserved. Both halves are needed.
+  //
+  // The phase list excludes `stale` — a session that went quiet is not one of
+  // the N. The group check then closes the case the phase list cannot see: an
+  // idle-tier row keeps whatever phase it died in, so a roster row frozen at
+  // `running` reads as live by phase alone. That is precisely the frame this
+  // change set exists to kill (the island claiming agents were working hours
+  // after they stopped), and the conformance fixture pins idle-tier-plus-
+  // `running` as a case the vocabulary must handle — so `activeCount` handles it
+  // by rule rather than by trusting today's publisher to never emit it.
   const activeCount = items.filter((item) =>
     item.kind === "agent"
+    && activityStateGroup(item) !== "idle"
     && (
       item.phase === "starting"
       || item.phase === "running"
@@ -279,9 +340,12 @@ async function accountActivityContentState(
  * - EXACT counts for `needs_you` and `failed`, plus the set of alert
  *   fingerprints in those two groups. Any delta pushes — including a swap where
  *   the count holds but a *different* run is the one waiting on you.
- * - PRESENCE ONLY (`> 0`) for `planning`, `working` and `done`, and for
+ * - PRESENCE ONLY (`> 0`) for `planning`, `working`, `idle` and `done`, and for
  *   `moreCount`. Work ticking 3→4 while the island still reads "working" is not
- *   worth a push; the band emptying out (working→done) is.
+ *   worth a push; the band emptying out (working→idle, working→done) is. `idle`
+ *   is presence-only for the same reason as the rest: sessions go quiet in
+ *   batches on a machine sleep, and nobody is blocked on any of them — exact
+ *   counts stay reserved for the two bands that can actually want you.
  * - Pull-request rows contribute their alert fingerprints exactly: PR phase
  *   entries are rare, so they carry no churn risk.
  * - `planning` never pushes on its own. It flips several times a turn, which is
@@ -314,6 +378,7 @@ function activityTransitionSource(
     failed: tally.get("failed") ?? 0,
     planning: (tally.get("planning") ?? 0) > 0,
     working: (tally.get("working") ?? 0) > 0,
+    idle: (tally.get("idle") ?? 0) > 0,
     done: (tally.get("done") ?? 0) > 0,
     more: moreCount > 0,
     alerting,

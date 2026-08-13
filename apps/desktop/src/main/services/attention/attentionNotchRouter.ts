@@ -308,7 +308,7 @@ const ATTENTION_COUNT_KEYS = [
  * fails `isAttentionCounts`, which drops the ENTIRE snapshot, so requiring them
  * would blank the notch for any machine mid-rollout that still omits them.
  */
-const OPTIONAL_ATTENTION_COUNT_KEYS = ["failed", "planning"] as const;
+const OPTIONAL_ATTENTION_COUNT_KEYS = ["failed", "planning", "idle"] as const;
 
 function isCountValue(value: unknown): boolean {
   return Number.isSafeInteger(value) && Number(value) >= 0;

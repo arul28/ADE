@@ -33,11 +33,13 @@ import type {
 import { PushRelayMachineRevokedError, PushRelayRequestError } from "./pushRelayClient";
 import {
   activityPublishFingerprint,
+  activityRosterFingerprint,
   withActivityFingerprints,
 } from "./activityFingerprint";
 import {
   ATTENTION_RECENT_TTL_MS,
   RUNNING_TTL_MS,
+  attentionMachineRef,
   buildAttentionItems as projectAttentionItems,
   laneTitleLine,
   prNotificationCopy,
@@ -46,6 +48,7 @@ import {
   runSubject,
 } from "./attentionItemBuilder";
 import type {
+  AccountMachineIdentity,
   ActivityRosterProject,
   AgentRunPhase,
   AgentRunState,
@@ -112,6 +115,16 @@ const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible
 export const ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE = 300;
 export const ACTIVITY_ROSTER_MIN_ITEMS_PER_MACHINE = 100;
 export const ACTIVITY_PUBLISH_PAGE_ITEMS = 48;
+/**
+ * Full-roster republish interval. Freshness is NOT its job any more — the 30 s
+ * heartbeat carries the roster now (see `publishActivity`), so a machine's feed
+ * no longer waits half an hour to stop lying. What is left is drift repair:
+ * deltas are computed against in-process maps, so a write the relay dropped, a
+ * cap it shrank, or a restart that lost the comparison baseline can leave the
+ * relay holding rows this machine no longer publishes. Only a reconcile
+ * tombstones those. Keep it long — a reconcile writes the whole roster, and
+ * that write amplification is what the per-30 s content hash exists to avoid.
+ */
 export const ACTIVITY_RECONCILE_INTERVAL_MS = 30 * 60_000;
 const ACTIVITY_ROSTER_CACHE_MS = 10_000;
 const LEGACY_ATTENTION_PUBLISH_MAX_ITEMS = 64;
@@ -134,6 +147,26 @@ const TERMINAL_RESUME_GRACE_MS = 10_000;
  */
 const CHAT_ACTIVITY_MODE_REFRESH_MS = 10_000;
 const ATTENTION_HEARTBEAT_MS = 30_000;
+/**
+ * Heartbeat roster-rebuild backoff. The rebuild is a disk read across every
+ * project, so a machine nobody is touching must not pay it every 30 s for the
+ * rest of its uptime — "ADE is slow in the background" is a worse bug than the
+ * feed rot this heartbeat fixes.
+ *
+ * The first `..._SETTLE_REBUILDS` unchanged rebuilds still happen at full
+ * cadence: a machine that JUST went quiet is exactly when the feed has to land
+ * on the truth. Past that the rebuild interval ramps one heartbeat at a time up
+ * to `..._MAX_SKIPPED` skipped heartbeats, i.e. a rebuild every 4th heartbeat —
+ * two minutes, the cap. Presence posts continue every 30 s regardless.
+ *
+ * Worst case for the case this whole fix targets (disk state changes with no
+ * local activity event to schedule a flush): ~122 s — a 120 s rebuild interval
+ * plus the 2 s flush debounce. That is ~59× inside the 2 h RUNNING_TTL_MS whose
+ * expiry caused the original rot, and it only applies after a machine has been
+ * unchanged for at least four consecutive heartbeats.
+ */
+const HEARTBEAT_ROSTER_SETTLE_REBUILDS = 4;
+const HEARTBEAT_ROSTER_MAX_SKIPPED = 3;
 const APNS_HEALTH_CACHE_MS = 24 * 60 * 60 * 1000;
 
 /** The OSC 133-derived terminal state pushed by ptyService.onSessionRuntimeSignal. */
@@ -183,11 +216,15 @@ export type PushPublisherDeps = {
   logger: Logger;
   store: PushRegistrationStore;
   relayClient: PushRelayClient;
-  machineName: string;
-  getAccountMachineIdentity?: () => {
-    machineKey: string;
-    deviceId?: string | null;
-  } | null;
+  /**
+   * The name the user sees next to this machine in Activity. Accepts a getter
+   * because the canonical source (`resolveDeviceDisplayName`) answers with the
+   * `os.hostname()` fallback synchronously and swaps in the real macOS
+   * ComputerName once an async `scutil` probe returns. A string captured at
+   * construction would latch "Mac.lan" for the life of the brain.
+   */
+  machineName: string | (() => string);
+  getAccountMachineIdentity?: () => AccountMachineIdentity | null;
   getAccountOwnerId?: () => string | null;
   activityRosterProvider?: {
     buildSnapshot(): Promise<ActivityRosterProject[]>;
@@ -465,6 +502,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const now = deps.now ?? (() => Date.now());
   const flushDebounceMs = deps.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS;
   const promptFlushMs = deps.promptFlushMs ?? DEFAULT_PROMPT_FLUSH_MS;
+  /**
+   * Read per publish, never cached: see `PushPublisherDeps.machineName`. The
+   * display name can change under a running brain (the async ComputerName
+   * probe lands, or the user renames the Mac), and Activity is the surface
+   * where a wrong machine name reads as a different machine entirely.
+   */
+  const machineName = (): string =>
+    typeof deps.machineName === "function" ? deps.machineName() : deps.machineName;
 
   const runs = new Map<string, AgentRunState>();
   const recentRuns = new Map<string, AgentRunState>();
@@ -493,6 +538,27 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let lastReconcileAt = 0;
   let lastActivityAccountOwnerId: string | null | undefined =
     persistedPublishedRevisions?.accountOwnerId ?? initialAccountOwnerId;
+  /**
+   * Content hash of the last roster the relay accepted, or null when there
+   * isn't one to compare against (nothing published yet, a failed publish, a
+   * new account owner). Only the heartbeat reads it: it is what lets a
+   * roster-carrying heartbeat cost a presence post when nothing moved. Item
+   * deltas keep using the per-item map — this is a whole-roster shortcut, not a
+   * replacement for it.
+   */
+  let lastRosterFingerprint: string | null = null;
+  /**
+   * Backoff state for the heartbeat's roster rebuild (see
+   * `HEARTBEAT_ROSTER_SETTLE_REBUILDS`). `unchangedRosterRebuilds` is how
+   * settled the machine looks; `heartbeatsSinceRosterRebuild` is how many
+   * heartbeats have been served from presence alone since the last rebuild.
+   * Both are reset by `resetRosterRebuildBackoff`, which must be called
+   * everywhere `lastRosterFingerprint` is nulled — a backoff that outlived a
+   * reset would keep skipping rebuilds against a baseline it no longer has,
+   * which is the feed silently going blind again.
+   */
+  let unchangedRosterRebuilds = 0;
+  let heartbeatsSinceRosterRebuild = 0;
   let activityRosterCap = ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE;
   let lastLegacyAttentionFingerprint: string | null = null;
   let lastAttentionPublishedAt = 0;
@@ -790,7 +856,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       includeRoster,
       machineKey: deps.store.getOrCreateIdentity().machineKey,
       accountMachineIdentity: deps.getAccountMachineIdentity?.() ?? null,
-      machineName: deps.machineName,
+      machineName: machineName(),
       runs,
       recentRuns,
       prActivities,
@@ -1172,7 +1238,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         ...(event === "start"
           ? {
             attributesType: AGENT_RUNS_ATTRIBUTES_TYPE,
-            attributes: { machineName: deps.machineName },
+            attributes: { machineName: machineName() },
             alert: startAlert,
           }
           : {}),
@@ -1305,7 +1371,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       return "unchanged";
     }
     const result = await deps.relayClient.publishAttention?.({
-      machineName: deps.machineName,
+      machineName: machineName(),
       fullSnapshot: true,
       items,
     });
@@ -1348,7 +1414,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     let unchanged = true;
     for (let page = 0; page < pageCount; page += 1) {
       const result = await deps.relayClient.publishAttention!({
-        machineName: deps.machineName,
+        machineName: machineName(),
         mode: "reconcile",
         rosterEpoch,
         page,
@@ -1417,7 +1483,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         return "unchanged";
       }
       const result = await deps.relayClient.publishAttention!({
-        machineName: deps.machineName,
+        machineName: machineName(),
         mode: "presence",
         rosterEpoch,
         items: [],
@@ -1446,7 +1512,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         (page + 1) * ACTIVITY_PUBLISH_PAGE_ITEMS,
       );
       const result = await deps.relayClient.publishAttention!({
-        machineName: deps.machineName,
+        machineName: machineName(),
         mode: "delta",
         rosterEpoch,
         items: pageItems,
@@ -1474,6 +1540,44 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     return unchanged ? "unchanged" : "published";
   };
 
+  const resetRosterRebuildBackoff = (): void => {
+    unchangedRosterRebuilds = 0;
+    heartbeatsSinceRosterRebuild = 0;
+  };
+
+  /**
+   * How many heartbeats may be served from presence alone before the roster is
+   * rebuilt again. Ramps one heartbeat at a time so a machine that only just
+   * settled still gets frequent rebuilds, and stops at the two-minute cap.
+   */
+  const rosterRebuildSkipBudget = (): number => Math.min(
+    Math.max(0, unchangedRosterRebuilds - HEARTBEAT_ROSTER_SETTLE_REBUILDS),
+    HEARTBEAT_ROSTER_MAX_SKIPPED,
+  );
+
+  /**
+   * The cheap half of the heartbeat: tells the relay this machine is alive
+   * without asking it to recompute anything. The relay rejects items on a
+   * presence post, so this can never write the feed by accident.
+   */
+  const publishPresenceHeartbeat = async (
+    nowMs: number,
+  ): Promise<"published" | "unchanged" | "unavailable"> => {
+    const result = await deps.relayClient.publishAttention!({
+      machineName: machineName(),
+      mode: "presence",
+      rosterEpoch,
+      items: [],
+      tombstones: [],
+    });
+    if (!result) return "unavailable";
+    const response = recordActivityPublishResponse(result, nowMs);
+    if (response.protocol >= 2) return "unchanged";
+    return await publishLegacyAttention(nowMs, true) === "published"
+      ? "published"
+      : "unchanged";
+  };
+
   const publishActivity = async (
     nowMs: number,
     presenceOnly: boolean,
@@ -1485,6 +1589,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       lastPublishedFingerprintById.clear();
       lastPublishedRevisionById.clear();
       lastOverflowRevisionById.clear();
+      lastRosterFingerprint = null;
+      resetRosterRebuildBackoff();
       lastActivityAccountOwnerId = accountOwnerId;
       persistLastPublishedRevisions();
       reconcilePending = true;
@@ -1499,36 +1605,71 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         if (legacy !== "protocol2") return legacy;
       }
 
-      // A pure presence heartbeat must never touch the all-project disk roster.
-      if (presenceOnly && !reconcilePending) {
-        const result = await deps.relayClient.publishAttention({
-          machineName: deps.machineName,
-          mode: "presence",
-          rosterEpoch,
-          items: [],
-          tombstones: [],
-        });
-        if (!result) return "unavailable";
-        const response = recordActivityPublishResponse(result, nowMs);
-        if (response.protocol >= 2) return "unchanged";
-        return await publishLegacyAttention(nowMs, true) === "published"
-          ? "published"
-          : "unchanged";
+      // The 30 s heartbeat used to stop here with `mode: "presence"` and an
+      // empty item list. The relay only touches `last_seen_at` for that — it
+      // never recomputes the feed — and the two roster TTLs are asymmetric
+      // (RUNNING_TTL_MS retires a live row after 2 h, IDLE_ROSTER_TTL_MS keeps
+      // a resting one for 7 days). So any gap in *content* publishes decayed a
+      // machine into idle-only rows that nothing ever came back to correct.
+      // The heartbeat therefore builds the roster like any other flush.
+      //
+      // Two costs to respect, and they are different costs:
+      //
+      // 1. Relay writes. This feed runs to a ~$0.50/account/month write budget
+      //    and reconcile amplification has already spent it once.
+      //    `activityRosterFingerprint` is that guard — hash the built roster
+      //    against the last content the relay accepted and, when it is
+      //    identical, take the cheap presence post instead. Only a changed
+      //    roster writes.
+      // 2. Local disk. Building the roster reads every project's state, and a
+      //    machine nobody is using would otherwise pay that every 30 s
+      //    forever. `rosterRebuildSkipBudget` backs the REBUILD off once a
+      //    machine has demonstrably settled; presence keeps posting on the
+      //    normal 30 s cadence throughout, so `last_seen_at` never lags.
+      if (presenceOnly && !reconcilePending && lastRosterFingerprint !== null) {
+        if (heartbeatsSinceRosterRebuild < rosterRebuildSkipBudget()) {
+          heartbeatsSinceRosterRebuild += 1;
+          return await publishPresenceHeartbeat(nowMs);
+        }
       }
 
       const built = mergeMachineAcknowledgments(await buildAttentionItems(nowMs, true));
       const { selected, overflow } = selectActivityRoster(built);
+      const rosterFingerprint = activityRosterFingerprint(selected, overflow);
+      heartbeatsSinceRosterRebuild = 0;
+      // `lastRosterFingerprint == null` means nothing has been accepted yet (or
+      // the last attempt failed), which is never a safe skip.
+      if (
+        presenceOnly
+        && !reconcilePending
+        && lastRosterFingerprint !== null
+        && rosterFingerprint === lastRosterFingerprint
+      ) {
+        unchangedRosterRebuilds += 1;
+        return await publishPresenceHeartbeat(nowMs);
+      }
+      // Anything the hash did not recognize is real movement: the machine is
+      // not settled, so the backoff starts over from full 30 s attention.
+      if (rosterFingerprint !== lastRosterFingerprint) resetRosterRebuildBackoff();
+
       const protocolResult = reconcilePending
         ? await publishProtocol2Reconcile(nowMs, selected, overflow)
         : await publishProtocol2Delta(nowMs, selected, overflow, presenceOnly);
       if (protocolResult === "unavailable") {
         reconcilePending = true;
+        lastRosterFingerprint = null;
+        resetRosterRebuildBackoff();
         return "unavailable";
       }
-      if (protocolResult !== "legacy") return protocolResult;
+      if (protocolResult !== "legacy") {
+        lastRosterFingerprint = rosterFingerprint;
+        return protocolResult;
+      }
       lastPublishedFingerprintById.clear();
       lastPublishedRevisionById.clear();
       lastOverflowRevisionById.clear();
+      lastRosterFingerprint = null;
+      resetRosterRebuildBackoff();
       persistLastPublishedRevisions();
       reconcilePending = true;
       return await publishLegacyAttention(nowMs, true) === "published"
@@ -1540,6 +1681,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         return "unavailable";
       }
       reconcilePending = true;
+      lastRosterFingerprint = null;
+      resetRosterRebuildBackoff();
       if (
         error instanceof PushRelayRequestError
         && error.status >= 400
@@ -2596,14 +2739,16 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const items = selectActivityRoster(built).selected;
       const accountMachineIdentity = deps.getAccountMachineIdentity?.() ?? null;
       const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
-      const machine = items[0]?.machine ?? {
+      // An item-less snapshot still has to describe this machine, and it has to
+      // describe it identically to the items — same two-key identity, so a
+      // reader grouping on `accountMachineKey` does not see an empty machine
+      // split away from its own rows.
+      const machine = items[0]?.machine ?? attentionMachineRef({
         machineKey,
-        accountMachineKey: accountMachineIdentity?.machineKey ?? null,
-        deviceId: accountMachineIdentity?.deviceId ?? null,
-        name: deps.machineName,
-        online: true,
-        lastSeenAt: new Date(nowMs).toISOString(),
-      };
+        accountMachineIdentity,
+        machineName: machineName(),
+        lastSeenAtMs: nowMs,
+      });
       lastMachineSnapshotItems.clear();
       for (const item of items) lastMachineSnapshotItems.set(item.id, item);
       lastMachineSnapshotAccountOwnerId = accountOwnerId;

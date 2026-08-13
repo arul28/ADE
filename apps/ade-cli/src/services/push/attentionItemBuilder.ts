@@ -11,6 +11,7 @@ import type {
   SyncRosterProject,
 } from "../../../../desktop/src/shared/types/sync";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
+import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
 import { withActivityFingerprints } from "./activityFingerprint";
 
 /**
@@ -299,6 +300,25 @@ export const laneTitleLine = (run: AgentRunState): string => {
 };
 
 /**
+ * The row title every Activity surface actually reads. Provider-phase copy
+ * ("Cursor is working") used to occupy this slot, so the island, lock screen,
+ * and desktop drawer all said the same sentence for every in-flight chat.
+ * Privacy-safe lock-screen copy stays on `privacyPreview`.
+ */
+export function attentionSessionTitle(args: {
+  sessionTitle?: string | null;
+  laneName?: string | null;
+  provider?: string | null;
+  phase: AttentionPhase;
+}): string {
+  const sessionTitle = args.sessionTitle?.trim();
+  if (sessionTitle) return sessionTitle;
+  const laneName = args.laneName?.trim();
+  if (laneName) return laneName;
+  return agentAttentionTitle(args.provider?.trim() || "Agent", args.phase);
+}
+
+/**
  * Row titles and privacy-safe previews, by published phase.
  *
  * Tables, not ternary ladders: the live-run path and the roster path publish
@@ -307,6 +327,14 @@ export const laneTitleLine = (run: AgentRunState): string => {
  * path (and the desktop's "Stale" label) called it idle. A `Partial` record
  * with an explicit fallback keeps a new `AttentionPhase` from silently
  * acquiring a wrong title.
+ *
+ * `stale` is the wire name of a state the user is never shown that word for.
+ * Its one user-facing word is "idle", set by the canonical state table in
+ * apps/desktop/src/renderer/components/activity/activityPresentation.ts
+ * (`ACTIVITY_STATE_GLYPHS.idle` → label "Idle", `activityStateSentence` →
+ * "<Agent> is idle"). The lock screen, the row label and the detail sheet all
+ * describe the same fact, so they get the same word — one state must never
+ * arrive as "Stale" here, "has gone quiet" there and "idle" in the title.
  */
 const AGENT_TITLE_SUFFIX_BY_PHASE: Partial<Record<AttentionPhase, string>> = {
   needs_you: "needs you",
@@ -324,7 +352,10 @@ const AGENT_PRIVACY_PREVIEW_BY_PHASE: Partial<Record<AttentionPhase, string>> = 
   needs_you: "An ADE agent needs your input.",
   failed: "An ADE agent run failed.",
   completed: "An ADE agent is done.",
-  stale: "An ADE agent session is idle.",
+  // "An ADE agent is idle." — same subject ("An ADE agent") and same verb
+  // phrase as the title suffix above. The old "An ADE agent session is idle."
+  // named a different subject for the same row.
+  stale: "An ADE agent is idle.",
 };
 const AGENT_PRIVACY_PREVIEW_FALLBACK = "An ADE agent is working.";
 
@@ -371,12 +402,52 @@ export function attentionProjectRef(
   };
 }
 
+/** The account-directory identity, as the publisher can resolve it. */
+export type AccountMachineIdentity = { machineKey: string; deviceId?: string | null };
+
+/**
+ * The published machine identity. Two keys, and they are not interchangeable:
+ *
+ * - `machineKey` is the push-registration identity. The relay authenticates a
+ *   publish with it and rejects any item or tombstone whose id is not
+ *   `agent:<machineKey>:…` / `pull-request:<machineKey>:…` (see
+ *   `parseAttentionItem` and `ownsItemId` in apps/push-relay/src/attention.ts).
+ *   Item ids are therefore married to this key and cannot be re-namespaced
+ *   without tombstoning every row every account already holds.
+ * - `accountMachineKey` is the account-directory / sync-relay identity. It is
+ *   the one that is stable across ADE surfaces and the one deep links carry.
+ *
+ * So: ids key on `machineKey`, identity keys on `accountMachineKey`. Readers
+ * group and de-duplicate machines by `accountMachineKey ?? machineKey`, never
+ * by `machineKey` alone — the two keys are minted independently, which is how
+ * one physical Mac used to render as two rows across surfaces.
+ *
+ * A blank key would silently defeat that fallback, and the relay's 32–64 hex
+ * check would drop the entire item rather than just the field, so empty
+ * strings normalize to null here.
+ */
+export function attentionMachineRef(args: {
+  machineKey: string;
+  accountMachineIdentity: AccountMachineIdentity | null;
+  machineName: string;
+  lastSeenAtMs: number;
+}): AttentionItem["machine"] {
+  return {
+    machineKey: args.machineKey,
+    accountMachineKey: args.accountMachineIdentity?.machineKey?.trim() || null,
+    deviceId: args.accountMachineIdentity?.deviceId?.trim() || null,
+    name: args.machineName,
+    online: true,
+    lastSeenAt: new Date(args.lastSeenAtMs).toISOString(),
+  };
+}
+
 /** Everything `buildAttentionItems` reads, stated explicitly. */
 export type AttentionItemBuildContext = {
   nowMs: number;
   includeRoster: boolean;
   machineKey: string;
-  accountMachineIdentity: { machineKey: string; deviceId?: string | null } | null;
+  accountMachineIdentity: AccountMachineIdentity | null;
   machineName: string;
   /** Live runs; later entries win over `recentRuns` on the same session id. */
   runs: ReadonlyMap<string, AgentRunState>;
@@ -468,7 +539,12 @@ function buildRunItems(context: AttentionItemBuildContext, machine: AttentionIte
       ...(phase === "running" && run.chatActivityMode === "planning"
         ? { chatActivityMode: "planning" as const }
         : {}),
-      title: agentAttentionTitle(subject, phase),
+      title: attentionSessionTitle({
+        sessionTitle: run.title,
+        laneName: run.lane,
+        provider: subject,
+        phase,
+      }),
       preview,
       privacyPreview: agentAttentionPrivacyPreview(phase),
       detail: run.detail ? sanitizeAttentionPreview(run.detail, 1_000) : null,
@@ -493,6 +569,7 @@ function buildRunItems(context: AttentionItemBuildContext, machine: AttentionIte
 async function buildRosterItems(
   context: AttentionItemBuildContext,
   machine: AttentionItem["machine"],
+  snoozedItemIds: Set<string>,
 ): Promise<AttentionItem[]> {
   if (!context.includeRoster) return [];
   const projects = await context.loadRoster();
@@ -513,18 +590,31 @@ async function buildRosterItems(
       const parentId = chat.chatSessionId?.trim();
       return !(parentId && parentId !== chat.id && rosterChatIds.has(parentId));
     }).map((chat): AttentionItem => {
-      const phase = rosterAttentionPhase(chat.status);
-      const activityTier = rosterActivityTier(chat.status);
+      let phase = rosterAttentionPhase(chat.status);
+      let activityTier = rosterActivityTier(chat.status);
+      // Snooze is a visibility overlay, not a phase. Activity still has to
+      // stop counting a snoozed row as working — otherwise ADE-121-style
+      // until-asked chats inflate the island's working tally forever.
+      // Failed and needs-you stay visible: those are the rows the glance is
+      // for, and filing them away would hide the reason you opened it.
       const revision = validTimestampMs(chat.lastActivityAt, context.nowMs);
       const activityAt = new Date(revision).toISOString();
       const id = `agent:${context.machineKey}:${chat.id}`;
+      if (
+        isSessionSnoozed(chat, context.nowMs)
+        && phase !== "failed"
+        && phase !== "needs_you"
+      ) {
+        phase = "stale";
+        activityTier = "idle";
+        snoozedItemIds.add(id);
+      }
       const existingAnchor = context.rosterPhaseAnchors.get(id);
       const statusSinceAt = existingAnchor?.status === chat.status
         ? existingAnchor.statusSinceAt
         : Math.max(revision, (existingAnchor?.statusSinceAt ?? -1) + 1);
       context.rosterPhaseAnchors.set(id, { status: chat.status, statusSinceAt });
       const provider = providerDisplayName(chat.provider ?? chat.toolType);
-      const subject = provider ?? chat.title?.trim() ?? "Agent";
       const preview = sanitizeAttentionPreview(
         chat.attentionMessage?.trim()
           || chat.statusNote?.trim()
@@ -564,7 +654,12 @@ async function buildRosterItems(
         laneName: laneNames.get(chat.laneId) ?? null,
         provider,
         model: chat.model ?? null,
-        title: agentAttentionTitle(subject, phase),
+        title: attentionSessionTitle({
+          sessionTitle: chat.title,
+          laneName: laneNames.get(chat.laneId) ?? null,
+          provider,
+          phase,
+        }),
         preview,
         privacyPreview: agentAttentionPrivacyPreview(phase),
         detail: chat.statusNote ? sanitizeAttentionPreview(chat.statusNote, 1_000) : null,
@@ -670,38 +765,67 @@ function buildPrItems(
   });
 }
 
+function shouldKeepRosterItem(
+  rosterItem: AttentionItem | undefined,
+  liveItem: AttentionItem,
+  snoozedItemIds: ReadonlySet<string>,
+): boolean {
+  if (!rosterItem) return false;
+  if (
+    rosterItem.phase === "running"
+    && (liveItem.phase === "completed" || liveItem.phase === "stale")
+  ) {
+    return true;
+  }
+  if (
+    (rosterItem.phase === "failed" || rosterItem.phase === "needs_you")
+    && (
+      liveItem.phase === "running"
+      || liveItem.phase === "starting"
+      || liveItem.phase === "stale"
+      || liveItem.phase === "completed"
+    )
+  ) {
+    return true;
+  }
+  return snoozedItemIds.has(liveItem.id)
+    && liveItem.phase !== "needs_you"
+    && liveItem.phase !== "failed";
+}
+
 export async function buildAttentionItems(
   context: AttentionItemBuildContext,
 ): Promise<AttentionItem[]> {
-  const machine = {
+  const machine = attentionMachineRef({
     machineKey: context.machineKey,
-    accountMachineKey: context.accountMachineIdentity?.machineKey ?? null,
-    deviceId: context.accountMachineIdentity?.deviceId ?? null,
-    name: context.machineName,
-    online: true,
-    lastSeenAt: new Date(context.nowMs).toISOString(),
-  };
+    accountMachineIdentity: context.accountMachineIdentity,
+    machineName: context.machineName,
+    lastSeenAtMs: context.nowMs,
+  });
 
   const runItems = buildRunItems(context, machine);
-  const rosterItems = await buildRosterItems(context, machine);
+  const snoozedItemIds = new Set<string>();
+  const rosterItems = await buildRosterItems(context, machine, snoozedItemIds);
   const prItems = buildPrItems(context, machine);
 
   const agentItems = new Map<string, AttentionItem>();
   for (const item of rosterItems) agentItems.set(item.id, item);
   // Live state is authoritative on the shared terminal_sessions.id/sessionId
-  // namespace and therefore wins every collision with a roster row — with one
-  // exception. The publisher's view of a run can go quiet (a provider bookend,
-  // a missed event) while the roster, which reads the booted runtime, still
-  // reports the session running. A frozen terminal run must not bury a row
-  // that a live runtime says is working.
+  // namespace and therefore wins every collision with a roster row — with
+  // three exceptions:
+  //
+  // 1. The publisher's view of a run can go quiet (a provider bookend, a
+  //    missed event) while the roster, which reads the booted runtime, still
+  //    reports the session running. A frozen terminal run must not bury a
+  //    row that a live runtime says is working.
+  // 2. A live run stuck at `running` must not paint over a roster `failed`
+  //    or `needs_you`. That is how "phase 3 running; will hold before phase 4"
+  //    showed as working on the island while the session had already failed.
+  // 3. A snoozed roster row must not be revived as working by a stale live
+  //    run. Snooze is a visibility overlay; Activity still has to honor it.
   for (const item of runItems) {
     const rosterItem = agentItems.get(item.id);
-    if (
-      rosterItem?.phase === "running"
-      && (item.phase === "completed" || item.phase === "stale")
-    ) {
-      continue;
-    }
+    if (shouldKeepRosterItem(rosterItem, item, snoozedItemIds)) continue;
     agentItems.set(item.id, item);
   }
   return [...agentItems.values(), ...prItems].map((item) => {

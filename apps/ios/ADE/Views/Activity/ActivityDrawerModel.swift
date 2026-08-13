@@ -46,14 +46,31 @@ public enum ActivityListEntry: Identifiable, Hashable, Sendable {
     }
 }
 
+/// One heading's worth of rows.
+///
+/// Keyed by `ActivityStateGroup`, not by the three-case `ActivityBand` it used
+/// to use. The band folds failure into "needs you" and everything resting into
+/// "done", so a drawer sectioned by it showed ten unrelated rows under one
+/// heading — the state the Activity sheet was in when this was rewritten. The
+/// state group is the vocabulary every other surface counts by, so sectioning
+/// by it also means the headings and the glyph strip can never disagree.
 public struct ActivitySection: Identifiable, Hashable, Sendable {
-    public let band: ActivityBand
+    public let group: ActivityStateGroup
     public let rows: [ActivityRowPresentation]
     public let entries: [ActivityListEntry]
 
-    public var id: String { band.rawValue }
-    public var title: String { band.title }
+    public var id: String { group.rawValue }
+    public var title: String { group.label }
     public var count: Int { rows.count }
+}
+
+/// A nonzero state bucket for the drawer's glyph strip. Same shape the widget
+/// and the island use, so all three read from one tally.
+public struct ActivityGroupCount: Identifiable, Hashable, Sendable {
+    public let group: ActivityStateGroup
+    public let count: Int
+
+    public var id: String { group.rawValue }
 }
 
 /// Source of truth for the in-app Activity drawer.
@@ -80,6 +97,13 @@ public final class ActivityDrawerModel: ObservableObject {
     @Published public private(set) var offlineScopes: [ActivityOfflineScope] = []
     @Published public private(set) var unreadCount: Int = 0
     @Published public private(set) var source: ActivitySource = .none
+    /// Which single state the reader has narrowed to, or nil for all of them.
+    /// Deliberately single-select: the glyph strip is the control, and a strip
+    /// where several glyphs can be lit reads as a status display that has gone
+    /// wrong rather than as a filter that is on.
+    @Published public var stateFilter: ActivityStateGroup?
+    /// Whether the resting bands (idle, done) are rendered inline.
+    @Published public var restingExpanded: Bool = false
     /// The relay capped the account feed. Surfaced so the drawer can say so
     /// rather than quietly showing a partial list.
     @Published public private(set) var itemsTruncated: Bool = false
@@ -115,18 +139,150 @@ public final class ActivityDrawerModel: ObservableObject {
     // MARK: - Reducer
 
     /// Rebuild from the account-level contract — the real path once signed in.
-    public func rebuild(from snapshot: AccountAttentionSnapshot) {
+    ///
+    /// `live`, when present, is this phone's own view of the machine it is
+    /// paired to, and it WINS for that machine. The account feed is a 20-second
+    /// REST poll of rows each machine's brain published, so it lags, and it
+    /// goes quiet entirely when a brain is signed out or a scope is detached.
+    /// This method used to not exist: the caller returned early on any account
+    /// snapshot fetched within 24 hours, and since `generatedAt` is the relay's
+    /// clock at fetch time it is ALWAYS within 24 hours while online. The live
+    /// snapshot was therefore unreachable whenever the user was signed in —
+    /// which is how the home dropdown could show a working Claude session at
+    /// the same instant this drawer showed only week-old idle rows.
+    ///
+    /// Scope is deliberately narrow: only the live machine's own rows are
+    /// replaced. Every other machine keeps its relay rows, so the feed stays
+    /// account-wide.
+    public func rebuild(
+        from snapshot: AccountAttentionSnapshot,
+        live: WorkspaceSnapshot? = nil
+    ) {
         let now = Date()
         let active = snapshot.items.filter { item in
             item.dismissedAt == nil
-                && (item.expiresAt == nil || item.expiresAt! > now)
+                && (item.expiresAt.map { $0 > now } ?? true)
         }
+        var machines = snapshot.machines ?? []
+        var items = active
+
+        if let live {
+            // Identity is preferred, not required. When the live snapshot names
+            // a machine we can also retire that machine's OTHER relay rows —
+            // sessions it no longer has. When it does not, we merge on session
+            // identity alone and leave the rest of the feed untouched.
+            //
+            // This used to bail out entirely on a missing `machineId`, which
+            // sounded conservative and was the bug: nothing ever populated that
+            // field, so EVERY refresh discarded the live rows and rendered the
+            // relay's stale copy. The Hub read the socket directly and showed
+            // four agents working while this sheet, at the same instant, showed
+            // none. Degrading to a narrower merge is always better than
+            // degrading to stale data.
+            let liveMachine = Self.liveMachine(from: live, knownTo: machines)
+            let liveItems = Self.accountItems(
+                from: live,
+                machine: liveMachine ?? Self.unidentifiedLiveMachine(from: live)
+            )
+            // Session identity is the net that always applies: the live
+            // projection ids rows `live:<sessionId>` while the relay ids the
+            // same chat `agent:<machineKey>:<sessionId>`, so without it one
+            // session renders twice under two id schemes.
+            let replacedSessions = Set(liveItems.compactMap(Self.sessionId))
+            let replacedKeys = liveMachine.map(Self.machineIdentity) ?? []
+
+            items = active.filter { item in
+                // PR rows are account-scoped GitHub state the paired host does
+                // not publish; dropping them would empty the Inbox every time
+                // the phone connected to a machine.
+                if item.kind == .pullRequest { return true }
+                if let session = Self.sessionId(item), replacedSessions.contains(session) {
+                    return false
+                }
+                guard !replacedKeys.isEmpty else { return true }
+                return Self.machineIdentity(item.machine).isDisjoint(with: replacedKeys)
+            } + liveItems
+
+            if let liveMachine {
+                machines = machines.filter {
+                    Self.machineIdentity($0).isDisjoint(with: replacedKeys)
+                } + [liveMachine]
+            }
+        }
+
         apply(
-            items: active,
-            machines: snapshot.machines ?? [],
+            items: items,
+            machines: machines,
             source: .account,
             truncated: snapshot.itemsTruncated ?? false,
+            // Rows we replaced with live ones DO own inline actions, but the
+            // flag is per-apply rather than per-row, and the account rows in
+            // the same list do not. Keeping it false is the safe direction: a
+            // missing Approve button is a smaller failure than one that fires
+            // at a machine which cannot service it.
             inlineActionsAllowed: false
+        )
+    }
+
+    /// The chat this row is about, when it is about one. Pull requests have no
+    /// session, and an unrecognised destination must not collapse into a shared
+    /// `nil` key that would dedupe unrelated rows against each other.
+    static func sessionId(_ item: AccountAttentionItem) -> String? {
+        guard case .session(let sessionId, _, _) = item.destination else { return nil }
+        let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Every identity string that may stand for one physical machine.
+    ///
+    /// A machine has two keys in this system — the push-registration
+    /// `machineKey` the publisher stamps on items, and the account-directory
+    /// `accountMachineKey` the sync layer knows it by — and they are not the
+    /// same value. Matching on either is what stops one Mac appearing twice.
+    static func machineIdentity(_ machine: AccountAttentionMachine) -> Set<String> {
+        var keys: Set<String> = []
+        if let key = nonEmpty(machine.machineKey) { keys.insert(key) }
+        if let key = nonEmpty(machine.accountMachineKey) { keys.insert(key) }
+        return keys
+    }
+
+    /// A stand-in for the machine a live snapshot could not name.
+    ///
+    /// Only used to give the projected rows a machine to hang presence and a
+    /// display name off. It is deliberately NOT added to the roster: an
+    /// invented key would draw an offline banner for a machine that does not
+    /// exist, and would not match any relay row anyway.
+    static func unidentifiedLiveMachine(from snapshot: WorkspaceSnapshot) -> AccountAttentionMachine {
+        AccountAttentionMachine(
+            machineKey: "live:unidentified",
+            name: nonEmpty(snapshot.machineName) ?? "This computer",
+            online: snapshot.connection.lowercased() != "disconnected",
+            lastSeenAt: snapshot.generatedAt
+        )
+    }
+
+    /// The live snapshot's machine, resolved against the account roster so it
+    /// carries the roster's presence and display name where one exists.
+    /// Returns nil when the live snapshot names no machine at all — without an
+    /// identity there is nothing to scope the replacement to, and replacing
+    /// "every machine" would delete the rest of the account's feed.
+    static func liveMachine(
+        from snapshot: WorkspaceSnapshot,
+        knownTo roster: [AccountAttentionMachine]
+    ) -> AccountAttentionMachine? {
+        guard let machineId = nonEmpty(snapshot.machineId) else { return nil }
+        let online = snapshot.connection.lowercased() != "disconnected"
+        let known = roster.first { machineIdentity($0).contains(machineId) }
+        return AccountAttentionMachine(
+            machineKey: known?.machineKey ?? machineId,
+            accountMachineKey: known?.accountMachineKey,
+            // Prefer the roster's name: the publisher resolves the OS display
+            // name ("Arul's Mac Studio"), which is what the user recognises.
+            name: known?.name
+                ?? nonEmpty(snapshot.machineName)
+                ?? "Connected computer",
+            online: online,
+            lastSeenAt: snapshot.generatedAt
         )
     }
 
@@ -191,31 +347,81 @@ public final class ActivityDrawerModel: ObservableObject {
         itemsTruncated = truncated
         pruneSeenItems(activeIDs: Set(rows.map(\.id)))
         recomputeUnreadCount()
+
+        // The drawer is where the account feed and the live paired-host view
+        // have already been merged and de-duplicated, which makes it the only
+        // place that holds the truth the Live Activity wants. Handing it
+        // straight over is what makes the island real-time: without this the
+        // island could only ever show what the relay last thought was worth an
+        // APNs push, which for a working count is "nothing".
+        LiveActivityService.shared.refreshLocalContent(items: items)
     }
 
     // MARK: - Derived views
 
-    /// Sessions grouped into the three priority bands, each carrying its
-    /// offline-machine dividers.
-    public var sessionSections: [ActivitySection] {
-        ActivityBand.allCases.compactMap { band in
-            let rows = sessions.filter { $0.band == band }
-            guard !rows.isEmpty else { return nil }
-            return ActivitySection(band: band, rows: rows, entries: Self.entries(for: rows))
+    /// One count per nonzero state group, in priority order — the drawer's
+    /// glyph strip, and the thing the filter chips are built from. Computed
+    /// from the UNFILTERED session list on purpose: a filter that hides its own
+    /// counts cannot be turned off again.
+    public var groupCounts: [ActivityGroupCount] {
+        var tally: [ActivityStateGroup: Int] = [:]
+        for row in sessions { tally[row.stateGroup, default: 0] += 1 }
+        return ActivityStateGroup.allCases
+            .sorted { $0.rank < $1.rank }
+            .compactMap { group in
+                guard let count = tally[group], count > 0 else { return nil }
+                return ActivityGroupCount(group: group, count: count)
+            }
+    }
+
+    /// What the strip renders: the nonzero groups, plus the selected one even
+    /// when it has emptied out.
+    ///
+    /// Without that second clause, filtering to "needs you" and then answering
+    /// the last question removes the only lit chip from the strip — leaving the
+    /// reader in a filtered empty state with no visible control to leave it.
+    public var stripCounts: [ActivityGroupCount] {
+        let counts = groupCounts
+        guard let stateFilter, !counts.contains(where: { $0.group == stateFilter }) else {
+            return counts
         }
+        return (counts + [ActivityGroupCount(group: stateFilter, count: 0)])
+            .sorted { $0.group.rank < $1.group.rank }
+    }
+
+    /// Sessions grouped by state, each carrying its offline-machine dividers.
+    ///
+    /// When a state filter is on, only that section is returned. When it is
+    /// off, the two resting bands collapse into one summary line unless the
+    /// reader has expanded them — on a real account idle and done are most of
+    /// the list, and letting them render inline is what buried the two rows
+    /// that actually wanted a human.
+    public var sessionSections: [ActivitySection] {
+        let ordered = ActivityStateGroup.allCases.sorted { $0.rank < $1.rank }
+        let visible = ordered.filter { group in
+            guard let stateFilter else {
+                return !group.isResting || restingExpanded
+            }
+            return group == stateFilter
+        }
+        return visible.compactMap { group in
+            let rows = sessions.filter { $0.stateGroup == group }
+            guard !rows.isEmpty else { return nil }
+            return ActivitySection(group: group, rows: rows, entries: Self.entries(for: rows))
+        }
+    }
+
+    /// The collapsed stand-in for the resting bands: "6 idle · 10 done".
+    /// `nil` when there is nothing resting, or when the reader has expanded
+    /// them, or while a filter is on (a filter already picked a single band).
+    public var restingSummary: [ActivityGroupCount]? {
+        guard stateFilter == nil, !restingExpanded else { return nil }
+        let resting = groupCounts.filter { $0.group.isResting }
+        return resting.isEmpty ? nil : resting
     }
 
     public var inboxEntries: [ActivityListEntry] {
         Self.entries(for: inbox)
-    }
-
-    /// Rows for the hub's "Live now" strip: work actually in flight across every
-    /// machine on the account, quietest tier excluded.
-    public var liveNow: [ActivityRowPresentation] {
-        sessions.filter { row in
-            guard row.tier != .idle else { return false }
-            return row.band == .needsYou || row.band == .working
-        }
     }
 
     public var isEmpty: Bool { sessions.isEmpty && inbox.isEmpty }
@@ -584,27 +790,28 @@ extension ActivityDrawerModel {
 
         let refresh: () -> Void = { [weak self, weak syncService] in
             guard let self, let syncService else { return }
-            if let account = ADESharedContainer.readAttentionSnapshot(),
-               Date().timeIntervalSince(account.generatedAt) <= 86_400 {
-                self.rebuild(from: account)
-                return
-            }
-            if let snapshot = ADESharedContainer.readWorkspaceSnapshot() {
-                self.rebuild(from: snapshot)
-                return
-            }
-            guard !syncService.activeSessions.isEmpty else {
-                self.clearAll()
-                return
-            }
-            self.rebuild(
-                from: WorkspaceSnapshot(
+
+            // The live view of the machine this phone is actually paired to.
+            // Preferred over anything the relay says about that same machine —
+            // see `rebuild(from:live:)`.
+            let live = ADESharedContainer.readWorkspaceSnapshot()
+                ?? (syncService.activeSessions.isEmpty ? nil : WorkspaceSnapshot(
                     generatedAt: Date(),
                     agents: syncService.activeSessions,
                     prs: [],
                     connection: "disconnected"
-                )
-            )
+                ))
+
+            if let account = ADESharedContainer.readAttentionSnapshot(),
+               Date().timeIntervalSince(account.generatedAt) <= 86_400 {
+                self.rebuild(from: account, live: live)
+                return
+            }
+            if let live {
+                self.rebuild(from: live)
+                return
+            }
+            self.clearAll()
         }
 
         syncService.$activeSessions

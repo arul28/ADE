@@ -31,6 +31,17 @@ public enum ActivityWidgetPresentation {
     /// `DeepLinkRouter`'s workspace route, which is the Activity surface's home.
     public static let activityURL = URL(string: "ade://activity") ?? URL(fileURLWithPath: "/")
 
+    /// Where one glyph in the state strip lands: the Activity sheet, already
+    /// filtered to that band.
+    ///
+    /// Without this the strip is a read-only readout, and tapping the amber "4"
+    /// drops the reader at the top of an unfiltered list to go find the four
+    /// rows they were just looking at. The filter exists in the sheet anyway,
+    /// so pointing at it costs one query parameter.
+    public static func activityURL(for group: ActivityStateGroup) -> URL {
+        URL(string: "ade://activity?state=\(group.wireValue)") ?? activityURL
+    }
+
     /// One rendered row. The same anatomy on every surface: state glyph in the
     /// phase's tone, then the title, then the phase word, with the scope line
     /// underneath wherever the family has the height for it.

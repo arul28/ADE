@@ -137,7 +137,7 @@ final class ActivityRowPresentationTests: XCTestCase {
     func testStateGroupsRankYourMoveFirstAndOutcomesLast() {
         XCTAssertEqual(
             ActivityStateGroup.allCases.sorted { $0.rank < $1.rank },
-            [.needsYou, .failed, .planning, .working, .done]
+            [.needsYou, .failed, .planning, .working, .idle, .done]
         )
         XCTAssertEqual(ActivityPhaseVocabulary.stateGroup(for: .needsYou), .needsYou)
         // Failure splits out of the needs-you *band* here: "2 failed" and
@@ -166,12 +166,14 @@ final class ActivityRowPresentationTests: XCTestCase {
     }
 
     /// Idle-tier rows are quiet roster history whatever phase they preserved,
-    /// so they all land in `done` — the canonical rule, which runs before the
-    /// phase switch rather than demoting one phase by one step.
-    func testIdleTierSendsEveryRowToDone() {
+    /// so they all land in `idle` — the canonical rule, which runs before the
+    /// phase switch rather than demoting one phase by one step. `idle` and not
+    /// `done`: a session that went quiet mid-work did not finish, and folding
+    /// the two together is what let week-old roster rows fill the Done band.
+    func testIdleTierSendsEveryRowToIdle() {
         for phase: AccountAttentionPhase in [.needsYou, .failed, .running, .checksFailing] {
             let row = ActivityRowPresentation(item: makeItem(phase: phase, activityTier: "idle"))
-            XCTAssertEqual(row.stateGroup, .done, "idle \(phase.rawValue)")
+            XCTAssertEqual(row.stateGroup, .idle, "idle \(phase.rawValue)")
         }
         XCTAssertEqual(ActivityRowPresentation(item: makeItem(phase: .needsYou)).stateGroup, .needsYou)
         XCTAssertEqual(ActivityRowPresentation(item: makeItem(phase: .failed)).stateGroup, .failed)
@@ -291,6 +293,7 @@ final class ActivityRowPresentationTests: XCTestCase {
         case "failed": return .failed
         case "planning": return .planning
         case "working": return .working
+        case "idle": return .idle
         case "done": return .done
         default: return nil
         }

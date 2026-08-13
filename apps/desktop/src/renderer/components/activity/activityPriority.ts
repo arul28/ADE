@@ -1,5 +1,4 @@
 import {
-  activityItemTier,
   attentionItemNeedsInbox,
   sortAttentionItems,
   type AttentionItem,
@@ -31,13 +30,16 @@ export const ACTIVITY_SECTION_DESCRIPTORS = ACTIVITY_STATE_GROUPS.map(
 
 /**
  * The sections the header popover is allowed to show: everything live or
- * actionable, and nothing settled. Done is the most final and by far the most
- * common state, and a dropdown that opens onto a wall of finished work buries
- * the two rows that wanted a human. It stays one click away in the full pane,
- * and the footer keeps counting it, so hiding it here costs no information.
+ * actionable, and nothing resting. Done and idle are the two most common
+ * states by far, and a dropdown that opens onto a wall of finished and
+ * gone-quiet work buries the two rows that wanted a human. Both stay one click
+ * away in the full pane, and the footer keeps counting them, so hiding them
+ * here costs no information.
  */
+const ACTIVITY_RESTING_SECTION_IDS: readonly ActivitySectionId[] = ["idle", "done"];
+
 export const ACTIVITY_POPOVER_SECTION_IDS: readonly ActivitySectionId[] =
-  ACTIVITY_STATE_GROUPS.filter((id) => id !== "done");
+  ACTIVITY_STATE_GROUPS.filter((id) => !ACTIVITY_RESTING_SECTION_IDS.includes(id));
 
 export type ActivitySection = ActivitySectionDescriptor & {
   items: AttentionItem[];
@@ -116,16 +118,13 @@ export function activitySections(
     grouped[activityStateGroup(item)].push(item);
   }
 
-  return ACTIVITY_SECTION_DESCRIPTORS.map((descriptor) => {
-    const sorted = sortAttentionItems(grouped[descriptor.id]);
-    if (descriptor.id !== "done") return { ...descriptor, items: sorted };
-
-    // Idle roster history is the ambient tail even when its preserved phase
-    // has a numerically higher priority than a fresh completed outcome.
-    const live = sorted.filter((item) => activityItemTier(item) !== "idle");
-    const idle = sorted.filter((item) => activityItemTier(item) === "idle");
-    return { ...descriptor, items: [...live, ...idle] };
-  });
+  // Idle-tier rows used to need re-sorting to the tail of `done`, because they
+  // shared that section with genuinely finished work. They have their own
+  // section now, so priority order alone is correct for every section.
+  return ACTIVITY_SECTION_DESCRIPTORS.map((descriptor) => ({
+    ...descriptor,
+    items: sortAttentionItems(grouped[descriptor.id]),
+  }));
 }
 
 /**
@@ -184,7 +183,7 @@ export function activityLeadingGroup(
  * be folded into "working" in the next — the fold was the drift, and the glyph
  * language names planning (violet notepad) as its own group, so it is named.
  */
-function activityCountPhrase(group: ActivitySectionId, count: number): string {
+export function activityCountPhrase(group: ActivitySectionId, count: number): string {
   switch (group) {
     case "needs-you":
       return `${count} need${count === 1 ? "s" : ""} you`;
@@ -194,6 +193,8 @@ function activityCountPhrase(group: ActivitySectionId, count: number): string {
       return `${count} planning`;
     case "working":
       return `${count} working`;
+    case "idle":
+      return `${count} idle`;
     case "done":
       return `${count} done`;
   }
@@ -267,6 +268,7 @@ export type ActivitySummary = {
   failedCount: number;
   planningCount: number;
   workingCount: number;
+  idleCount: number;
   doneCount: number;
   /** Live AGENT rows — the "N sessions" figure, and only sessions. */
   trackedCount: number;
@@ -325,6 +327,7 @@ export function summarizeActivity(
     failedCount: counts.failed,
     planningCount: counts.planning,
     workingCount: counts.working,
+    idleCount: counts.idle,
     doneCount: counts.done,
     trackedCount,
     notificationCount: activityNotificationItems(input, now).length,
@@ -337,12 +340,21 @@ export function summarizeActivity(
   };
 }
 
-/** Tooltip and accessible name for the Activity header trigger. */
-export function activityTriggerLabel(summary: ActivitySummary): string {
-  const { counts } = summary;
-  const parts = ACTIVITY_STATE_GROUPS
+/**
+ * Every populated group said out loud, in priority order. Callers choose the
+ * separator and nothing else, so the header trigger and the pane's state strip
+ * cannot end up naming the same account with two different vocabularies — the
+ * exact drift `activityCountPhrase` was extracted to stop, one caller ago.
+ */
+export function activityCountPhrases(counts: ActivitySectionCounts): string[] {
+  return ACTIVITY_STATE_GROUPS
     .filter((group) => counts[group] > 0)
     .map((group) => activityCountPhrase(group, counts[group]));
+}
+
+/** Tooltip and accessible name for the Activity header trigger. */
+export function activityTriggerLabel(summary: ActivitySummary): string {
+  const parts = activityCountPhrases(summary.counts);
   if (parts.length === 0) return "Activity · all agents idle";
   return `Activity · ${parts.join(" · ")}`;
 }

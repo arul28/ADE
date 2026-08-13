@@ -100,6 +100,9 @@ final class NotchStatusItemController {
         if (counts.failed ?? 0) > 0 { return .systemRed }
         if (counts.planning ?? 0) > 0 { return .systemPurple }
         if counts.working > 0 { return .systemBlue }
+        // Idle outranks done and is grey, not green: an account whose last live
+        // agent went quiet must not wear the same badge as one that finished.
+        if (counts.idle ?? 0) > 0 { return .systemGray }
         if counts.done > 0 { return .systemGreen }
         return .systemGray
     }
@@ -114,6 +117,7 @@ final class NotchStatusItemController {
         if let failed = counts.failed, failed > 0 { parts.append("\(failed) failed") }
         if let planning = counts.planning, planning > 0 { parts.append("\(planning) planning") }
         if counts.working > 0 { parts.append("\(counts.working) working") }
+        if let idle = counts.idle, idle > 0 { parts.append("\(idle) idle") }
         if counts.done > 0 { parts.append("\(counts.done) done") }
         guard parts.isEmpty else { return parts.joined(separator: " · ") }
         return model.statusPresentation?.message ?? "All agents idle"

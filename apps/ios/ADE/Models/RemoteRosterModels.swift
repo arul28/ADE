@@ -358,6 +358,23 @@ extension RemoteRosterChat {
     status == .running || status == .awaiting
   }
 
+  /// Host `runningCount` rule: live running, not snoozed. Awaiting is
+  /// attention (`needsAttention`), not a working tally. A snoozed running
+  /// chat is idle on every other Activity surface.
+  var countsTowardRunning: Bool {
+    status == .running
+      && !isSessionSnoozed(SessionSnoozeState(snoozedUntil: snoozedUntil, snoozedAt: snoozedAt))
+  }
+
+  /// Snooze is a visibility overlay and does not bump `lastActivityAt`, so the
+  /// overlay merge must copy it from local even when remote looks fresher.
+  mutating func applyLocalSnoozeOverlay(_ local: RemoteRosterChat) {
+    snoozedUntil = local.snoozedUntil
+    snoozedAt = local.snoozedAt
+    wokeAt = local.wokeAt
+    wokeReason = local.wokeReason
+  }
+
   /// Provider key for the glyph: prefer the sidecar provider, else derive from
   /// the tool type (e.g. `claude-chat` → `claude`).
   var providerKey: String? {

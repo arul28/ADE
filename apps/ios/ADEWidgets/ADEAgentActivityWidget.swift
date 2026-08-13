@@ -29,59 +29,29 @@ struct ADEAgentActivityWidget: Widget {
             // Long-press expansion is iOS's stand-in for the mac's hover
             // reveal; there is no mode UI here because island visibility is
             // the OS's decision, not ours. Agents | Events tabs do not fit in
-            // this height — events ride the single signal line at the bottom.
+            // this height — events ride the compact trailing wing instead.
+            //
+            // Every region here is height- or width-bounded by its own view,
+            // because the expanded island clips overflow with no visible tell:
+            // the symptom of a region that asked for too much is a line that
+            // simply is not on screen, which no amount of looking at the code
+            // reveals.
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     AgentRunsStateStrip(presentation: presentation)
+                        // The expanded island's corners are rounder than a
+                        // widget banner. Without this inset the leading glyph
+                        // loses its left edge to the capsule.
+                        .padding(.leading, 10)
+                        .padding(.vertical, 2)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    AgentRunsCountBadge(presentation: presentation)
+                    AgentRunsSecondStateBadge(presentation: presentation)
+                        .padding(.trailing, 10)
+                        .padding(.vertical, 2)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(presentation.expandedRuns) { run in
-                            AgentRunRow(
-                                run: run,
-                                compact: true,
-                                hideDetails: presentation.hideDetails
-                            )
-                        }
-                        if presentation.expandedRuns.isEmpty, let pr = presentation.primaryPr {
-                            PullRequestActivityRow(
-                                pr: pr,
-                                compact: true,
-                                hideDetails: presentation.hideDetails
-                            )
-                        }
-                        HStack(spacing: 6) {
-                            if presentation.overflowCount > 0 {
-                                Link(destination: AgentRunsPresentation.activityURL) {
-                                    Text(
-                                        presentation.overflowCount == 1
-                                            ? "1 more"
-                                            : "\(presentation.overflowCount) more"
-                                    )
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                }
-                            }
-                            if presentation.isStale {
-                                AgentRunsStaleHint()
-                            }
-                            Spacer(minLength: 0)
-                            if let machine = presentation.machineFooter {
-                                Text(machine)
-                                    .font(.system(size: 9.5, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                        if let signal = presentation.eventSignal {
-                            AgentRunsSignalLine(signal: signal)
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                    .privacySensitive()
+                    AgentRunsIslandBody(presentation: presentation)
                 }
             } compactLeading: {
                 // The mac notch's left wing, in the space of one glyph: the
@@ -96,11 +66,11 @@ struct ADEAgentActivityWidget: Widget {
             } minimal: {
                 Image(systemName: presentation.leadGlyph.systemImage)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(presentation.tint)
+                    .foregroundStyle(presentation.leadTint)
                     .accessibilityLabel(presentation.minimalAccessibilityLabel)
             }
             .widgetURL(presentation.destinationURL)
-            .keylineTint(presentation.tint)
+            .keylineTint(presentation.leadTint)
         }
     }
 }
@@ -114,11 +84,15 @@ struct AgentRunsPresentation {
     let waitingCount: Int
     let primary: ADEAgentRunsAttributes.Run?
     let primaryPr: ADEAgentRunsAttributes.PullRequest?
-    let secondaryRuns: [ADEAgentRunsAttributes.Run]
-    let overflowCount: Int
+    /// Every agent this activity knows about, roster rows plus the remainder
+    /// the roster could not carry. The denominator behind "N more".
+    let totalAgentCount: Int
+    /// Approvals dispatch to *this* device's paired host and the intent carries
+    /// no machine key, so an account-wide aggregate must not offer them — the
+    /// capsule would resolve against whichever host happens to answer.
+    let allowsInlineActions: Bool
     let isStale: Bool
     let machineName: String
-    let accountWide: Bool
     let ownershipAccepted: Bool
     let hideDetails: Bool
     /// Nonzero state buckets, in display order — the mac notch strip's content.
@@ -126,11 +100,29 @@ struct AgentRunsPresentation {
     /// from the visible roster (which undercounts, and says so by never
     /// claiming more than it can see).
     let groups: [ActivityWidgetPresentation.GroupCount]
-    /// Rows the expanded view renders. ~3 fit; the rest become "N more".
-    let expandedRuns: [ADEAgentRunsAttributes.Run]
+    /// Agent rows the lock-screen banner draws. Three is what the family's
+    /// height affords once the strip and the last line are paid for; a lead row
+    /// carrying Approve/Deny capsules costs another row's worth of space, so
+    /// the budget drops to two rather than pushing the last line off the
+    /// surface where nobody can see it went missing.
+    let bannerRuns: [ADEAgentRunsAttributes.Run]
+    /// Agent rows the expanded island draws. Two, not three — three plus a
+    /// footer overflowed the bottom region, and the region clips silently, so
+    /// the symptom was a footer that simply was not there.
+    let islandRuns: [ADEAgentRunsAttributes.Run]
+    /// How much this frame is allowed to claim, given how old it is.
+    ///
+    /// A Live Activity's content changes only when an APNs push arrives, and
+    /// the relay deliberately spends pushes only on transitions that matter —
+    /// so with nothing publishing, the island will happily sit on an
+    /// hours-old frame forever. It used to present those counts with total
+    /// confidence, which is worse than showing nothing: a status surface that
+    /// is silently wrong teaches people to stop reading it. The static widgets
+    /// already had this ladder; this shares it rather than inventing a second.
+    let freshness: ActivityWidgetPresentation.Freshness
 
-    /// Where "N more" and the minimal glyph go when there is no better target.
-    static let activityURL = URL(string: "ade://activity") ?? URL(fileURLWithPath: "/")
+    /// Whether the counts may still be stated as fact.
+    var assertsCounts: Bool { freshness.confidence != .untrusted }
 
     init(state: ADEAgentRunsAttributes.ContentState, attributes: ADEAgentRunsAttributes, isStale: Bool) {
         let accountWide = attributes.isAccountWide
@@ -200,11 +192,17 @@ struct AgentRunsPresentation {
         // Keep the chosen presentation values local until every dependent
         // value is resolved; closures that touch `self` here capture stored
         // properties that have not all been initialized yet.
-        let remainingRuns = sorted.filter { $0.id != primary?.id }
-        let secondaryRuns = Array(remainingRuns.prefix(2))
-        self.secondaryRuns = secondaryRuns
-        let expandedRuns = Array(sorted.prefix(3))
-        self.expandedRuns = expandedRuns
+        let allowsInlineActions = !accountWide
+        self.allowsInlineActions = allowsInlineActions
+        // Only the lead row can grow capsules, so it is the only row that can
+        // change the banner's budget — checked here rather than in the view so
+        // the row count and the count of rows the view iterates cannot drift.
+        let leadCarriesApproval = allowsInlineActions
+            && (sorted.first.map {
+                $0.resolvedPhase == .waitingForApproval && !($0.itemId ?? "").isEmpty
+            } ?? false)
+        self.bannerRuns = Array(sorted.prefix(leadCarriesApproval ? 2 : 3))
+        self.islandRuns = Array(sorted.prefix(2))
 
         // State buckets. Prefer the publisher's account-wide tally; it is the
         // only source that can see past the three-row roster cap.
@@ -226,19 +224,29 @@ struct AgentRunsPresentation {
                 .sorted { $0.group.rank < $1.group.rank }
         }
 
-        // Events are a signal line, never rows — so "N more" counts agent rows
-        // only. It used to add `prs.count` to `activeCount` and subtract the
-        // rendered rows, which promised chats that were actually pull requests.
+        // Events are a signal line, never rows — so the total counts agent rows
+        // only. It used to add `prs.count` to `activeCount`, which promised
+        // chats that were actually pull requests.
+        //
+        // Stored as a TOTAL rather than as a pre-subtracted overflow: the two
+        // surfaces draw different row counts, and one shared "N more" said
+        // "9 more" on the island while only two of the twelve rows were up.
         let totalRuns = max(safeState.runs.count + hiddenActiveCount, activeCount)
-        self.overflowCount = safeState.moreCount
-            ?? max(0, totalRuns - expandedRuns.count)
+        self.totalAgentCount = safeState.moreCount
+            .map { safeState.runs.count + $0 }
+            ?? totalRuns
         // ActivityKit push staleness only. A run whose *phase* is `.stale` used
         // to fold in here, which greyed the whole glance and showed
         // "Reconnecting" because a single agent had gone quiet — a silence, not
         // a transport failure. The stale run says so on its own row.
         self.isStale = ownershipAccepted && isStale
+        // Anchored on the relay's build time, which is the only timestamp a
+        // pushed frame carries. `fetchedAt` belongs to the App-Group snapshot
+        // path and has no meaning here.
+        self.freshness = ActivityWidgetPresentation.freshness(
+            generatedAt: safeState.updatedAtDate
+        )
         self.machineName = ownershipAccepted ? attributes.machineName : "ADE"
-        self.accountWide = accountWide
         self.ownershipAccepted = ownershipAccepted
         self.hideDetails = !ownershipAccepted || ADESharedContainer.hideAttentionDetails
     }
@@ -249,6 +257,11 @@ struct AgentRunsPresentation {
     /// Amber is checked first, and deliberately outranks staleness: "your move"
     /// is the one thing the glance may never swallow, and a late push does not
     /// make a raised hand less true.
+    ///
+    /// Compact island wings do **not** use this. `waitingCount` includes PRs
+    /// (`checksFailing` and friends), so a failed lead glyph was painting
+    /// amber whenever a PR was also asking. The lead bucket's own tone is
+    /// `leadTint`.
     var tint: Color {
         if waitingCount > 0 { return ADESharedTheme.warningAmber }
         // The lead bucket, which on a publisher-supplied tally can be
@@ -258,6 +271,14 @@ struct AgentRunsPresentation {
             return activityToneColor(leadGroup.group.tone)
         }
         if isStale { return ADESharedTheme.statusIdle }
+        if let leadGroup { return activityToneColor(leadGroup.group.tone) }
+        if let primaryPr, primary == nil { return primaryPr.resolvedPhase.tint }
+        return primary?.resolvedPhase.tint ?? ADESharedTheme.statusIdle
+    }
+
+    /// The compact leading / minimal / keyline color: the lead group's own
+    /// tone, never the glance tint. Failed is red. Needs-you is amber.
+    var leadTint: Color {
         if let leadGroup { return activityToneColor(leadGroup.group.tone) }
         if let primaryPr, primary == nil { return primaryPr.resolvedPhase.tint }
         return primary?.resolvedPhase.tint ?? ADESharedTheme.statusIdle
@@ -275,6 +296,19 @@ struct AgentRunsPresentation {
     /// The bucket the compact leading speaks for.
     var leadGroup: ActivityWidgetPresentation.GroupCount? { groups.first }
 
+    /// The bucket the compact TRAILING speaks for: the second-highest-priority
+    /// nonzero state.
+    ///
+    /// The pill is about two glyphs wide before the counts stop being legible
+    /// in motion, so it shows the two states that matter most right now rather
+    /// than a fixed pair or a single total. A bare "12" in the trailing slot —
+    /// which is what this used to be — answers a question nobody asks: the
+    /// useful second fact is "and one of them failed", not "twelve things
+    /// exist".
+    var secondGroup: ActivityWidgetPresentation.GroupCount? {
+        groups.count > 1 ? groups[1] : nil
+    }
+
     var leadGlyph: ActivityGlyph { leadGroup?.group.glyph ?? .working }
 
     /// One glyph plus one count. Together they say *what* and *how many*, which
@@ -290,7 +324,8 @@ struct AgentRunsPresentation {
     }
 
     /// The one event worth the right wing, mirroring the notch's signal slot.
-    struct EventSignal {
+    struct EventSignal: Identifiable {
+        let id: String
         let label: String
         let glyph: ActivityGlyph?
         let symbol: String
@@ -299,33 +334,74 @@ struct AgentRunsPresentation {
         let url: URL?
     }
 
-    var eventSignal: EventSignal? {
-        guard ownershipAccepted, let top = prs.first else { return nil }
-        let phase = top.resolvedPhase
-        let label = hideDetails
-            ? phase.label
-            : (top.prNumber > 0 ? "#\(top.prNumber) \(phase.label.lowercased())" : phase.label)
-        return EventSignal(
-            label: label,
-            glyph: phase.glyph,
-            symbol: phase.symbol,
-            tint: phase.tint,
-            moreCount: max(0, prs.count - 1),
-            url: top.deepLinkURL
-        )
+    var eventSignal: EventSignal? { eventSignals.first }
+
+    /// Recent PR/CI clauses for the lock-screen last line. Two fit; the rest
+    /// collapse into the trailing `+N` on the last one.
+    var eventSignals: [EventSignal] {
+        guard ownershipAccepted else { return [] }
+        let shown = Array(prs.prefix(2))
+        return shown.enumerated().map { index, pr in
+            let phase = pr.resolvedPhase
+            let label = hideDetails
+                ? phase.label
+                : (pr.prNumber > 0 ? "#\(pr.prNumber) \(phase.label.lowercased())" : phase.label)
+            return EventSignal(
+                id: pr.id,
+                label: label,
+                glyph: phase.glyph,
+                symbol: phase.symbol,
+                tint: phase.tint,
+                moreCount: index == shown.count - 1 ? max(0, prs.count - shown.count) : 0,
+                url: pr.deepLinkURL
+            )
+        }
     }
 
-    /// Footer only earns its space when there's more than one run or a machine
-    /// name worth showing.
-    var machineFooter: String? {
-        if !ownershipAccepted { return "ADE" }
-        if hideDetails { return "ADE" }
-        let trimmed = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if activeCount > runs.count {
-            return "\(trimmed) · \(activeCount) working"
+    /// Connected-machine count from the keys this frame actually carries.
+    /// Older payloads omit `accountMachineKey`; treat that as one host rather
+    /// than advertising "All machines" over a blank.
+    var connectedMachineCount: Int {
+        var keys = Set<String>()
+        for run in runs {
+            if let key = Self.nonEmpty(run.accountMachineKey) { keys.insert(key) }
         }
-        return trimmed
+        for pr in prs {
+            if let key = Self.nonEmpty(pr.accountMachineKey) { keys.insert(key) }
+        }
+        if keys.isEmpty {
+            return ownershipAccepted && (!runs.isEmpty || !prs.isEmpty) ? 1 : 0
+        }
+        return keys.count
+    }
+
+    var machineCountLabel: String? {
+        guard ownershipAccepted else { return nil }
+        let count = connectedMachineCount
+        guard count > 0 else { return nil }
+        if count == 1 {
+            let name = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty && name.lowercased() != "all machines" {
+                return name
+            }
+            return "1 machine"
+        }
+        return "\(count) machines"
+    }
+
+    /// "N more" for a surface that drew `shown` rows, or nil when it drew them
+    /// all. Takes the row count because the banner and the island have
+    /// different budgets and a shared constant would be wrong on one of them.
+    func overflowLabel(shown: Int) -> String? {
+        let remainder = max(0, totalAgentCount - shown)
+        guard remainder > 0 else { return nil }
+        return remainder == 1 ? "1 more" : "\(remainder) more"
+    }
+
+    /// What to say when there is nothing to list. The unaccepted-ownership case
+    /// is not "no runs" — it is a frame this device is not allowed to read yet.
+    var emptyStateLabel: String {
+        ownershipAccepted ? "No active runs" : "Refreshing account activity"
     }
 
     var destinationURL: URL {
@@ -375,138 +451,149 @@ struct AgentRunsPresentation {
         case .merged, .closed: return 4
         }
     }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
 }
 
 // MARK: - Lock screen / banner
 
+/// Three bands, top to bottom: counts, rows, remainder.
+///
+/// ```
+/// ◌4  ◷4  ✓4                          ● 2 machines
+/// ────────────────────────────────────────────────
+/// ● Should I force-push the rebase?             2m
+/// ◌ Explore innovative features…                9m
+/// ⚠ credential-store-hardening                 28m
+/// 9 more                     ⑂ #1078 merged  +2
+/// ```
+///
+/// Nothing here is nested in a card. The previous layout spent its first row on
+/// a prose headline restating the strip, its second on a boxed hero holding one
+/// run, and the hero's own title on the runtime's name — so a banner with room
+/// for four facts carried one, and every row after it was pushed into the
+/// clipped region.
 private struct AgentRunsLockScreenView: View {
     let presentation: AgentRunsPresentation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
+            // The one and only place a per-state count appears. The banner is
+            // the widest surface this activity has, so unlike the island's
+            // leading region it shows every nonzero band rather than the top
+            // three — "what is the whole account doing", on one line.
             HStack(spacing: 8) {
-                // The state strip, same language as the notch and the island's
-                // compact leading — not a generic app mark.
-                AgentRunsStateStrip(presentation: presentation)
-                Text(headline)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Spacer(minLength: 0)
-                if let footer = presentation.machineFooter {
-                    Text(footer)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                AgentRunsStateStrip(presentation: presentation, limit: 6)
+                Spacer(minLength: 6)
+                if let machines = presentation.machineCountLabel {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(ADESharedTheme.warningAmber)
+                            .frame(width: 6, height: 6)
+                        Text(machines)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .accessibilityLabel(machines)
                 }
             }
 
-            if presentation.primary == nil && presentation.primaryPr == nil {
-                Text(
-                    presentation.ownershipAccepted
-                        ? "No active runs"
-                        : "Refreshing account activity"
-                )
+            // A hairline, not a container. The rows below need separating from
+            // the tally above; a box around either would cost padding on four
+            // sides to say the same thing.
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(height: 0.5)
+                .accessibilityHidden(true)
+
+            if presentation.bannerRuns.isEmpty && presentation.primaryPr == nil {
+                Text(presentation.emptyStateLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let run = presentation.primary {
-                        AgentActivityRunHero(
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(presentation.bannerRuns) { run in
+                        AgentRunRow(
                             run: run,
                             compact: false,
-                            allowsInlineActions: !presentation.accountWide,
+                            allowsInlineActions: presentation.allowsInlineActions,
                             hideDetails: presentation.hideDetails
                         )
                     }
-                    // A PR only earns a card when there is no agent work at
-                    // all. Otherwise events are one line at the bottom — rows
-                    // are for agents (decision #11), and a PR mixed into the
-                    // roster is how "3 agents" came to mean "1 agent and 2
+                    // A PR earns a row only when there is no agent work at all.
+                    // Otherwise events are the one clause on the last line —
+                    // rows are for agents (decision #11), and a PR mixed into
+                    // the roster is how "3 agents" came to mean "1 agent and 2
                     // pull requests".
-                    if presentation.primary == nil, let pr = presentation.primaryPr {
-                        AgentActivityPullRequestHero(
+                    if presentation.bannerRuns.isEmpty, let pr = presentation.primaryPr {
+                        PullRequestActivityRow(
                             pr: pr,
                             compact: false,
                             hideDetails: presentation.hideDetails
                         )
                     }
-                    ForEach(presentation.secondaryRuns) { run in
-                        AgentRunRow(
-                            run: run,
-                            compact: true,
-                            hideDetails: presentation.hideDetails
-                        )
-                    }
-                    if presentation.overflowCount > 0 {
-                        Link(destination: AgentRunsPresentation.activityURL) {
-                            Text(
-                                presentation.overflowCount == 1
-                                    ? "1 more"
-                                    : "\(presentation.overflowCount) more"
-                            )
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(.leading, 24)
-                    }
                 }
             }
 
-            if let signal = presentation.eventSignal {
-                AgentRunsSignalLine(signal: signal)
-            }
-
-            if presentation.isStale {
-                AgentRunsStaleHint()
-            }
+            lastLine
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// One sentence for the lead state bucket. The strip beside it already
-    /// carries every other bucket's glyph and count, so the headline does not
-    /// have to be a summary of everything — it only has to name the loudest
-    /// thing, in the same words the rows use.
-    private var headline: String {
-        if !presentation.ownershipAccepted {
-            return "Updating ADE"
-        }
-        if let lead = presentation.leadGroup {
-            switch lead.group {
-            case .needsYou:
-                return lead.count == 1 ? "1 agent needs you" : "\(lead.count) agents need you"
-            case .failed:
-                return lead.count == 1 ? "1 agent failed" : "\(lead.count) agents failed"
-            case .planning:
-                return lead.count == 1 ? "1 agent planning" : "\(lead.count) agents planning"
-            // "working", not "running" — same word the row labels and the
-            // desktop sidebar use for the in-flight phase.
-            case .working:
-                return lead.count == 1 ? "1 agent working" : "\(lead.count) agents working"
-            case .done:
-                return lead.count == 1 ? "1 agent done" : "\(lead.count) agents done"
+    /// Everything that is not a row, on one line, and absent when there is
+    /// nothing to put on it. Overflow and age lead; the single event clause
+    /// trails. Each of these used to claim a line of its own, which is height a
+    /// surface capped near 160pt spends on an actual agent instead.
+    @ViewBuilder
+    private var lastLine: some View {
+        let more = presentation.overflowLabel(shown: presentation.bannerRuns.count)
+        let age = presentation.freshness.label
+        let signals = presentation.eventSignals
+        if more != nil || age != nil || presentation.isStale || !signals.isEmpty {
+            HStack(spacing: 8) {
+                if let more {
+                    Link(destination: ActivityWidgetPresentation.activityURL) {
+                        Text(more)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if presentation.isStale {
+                    AgentRunsStaleHint()
+                } else if let age {
+                    Text(age)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                HStack(spacing: 8) {
+                    ForEach(signals) { signal in
+                        AgentRunsSignalLine(signal: signal)
+                    }
+                }
             }
         }
-        if presentation.runs.isEmpty && !presentation.prs.isEmpty {
-            return presentation.prs.count == 1 ? "1 pull request updated" : "\(presentation.prs.count) pull requests updated"
-        }
-        return "No active runs"
     }
 }
 
-// MARK: - Focus cards
+// MARK: - Row mark
 
 /// The row's leading mark: the *state* glyph on a tone-tinted disc.
 ///
 /// This used to be the provider logo. Three identical Claude marks stacked in a
 /// column told the reader nothing they did not already know, while the one fact
 /// that differed between the rows — which state each was in — was left to a
-/// small word at the far right. The provider now rides the subtitle, where it
-/// belongs: it is metadata, not status.
+/// small word at the far right. The provider is not drawn at all now: it is
+/// metadata, and a row this narrow only has room for status and content.
 private struct ActivityStateMark: View {
     let symbol: String
     let tint: Color
@@ -527,164 +614,20 @@ private struct ActivityStateMark: View {
     }
 }
 
-private struct AgentActivityRunHero: View {
-    let run: ADEAgentRunsAttributes.Run
-    let compact: Bool
-    let allowsInlineActions: Bool
-    let hideDetails: Bool
-
-    private var phase: AgentRunPhase { run.resolvedPhase }
-    private var showsApprovalActions: Bool {
-        allowsInlineActions
-            && !compact
-            && phase == .waitingForApproval
-            && !(run.itemId ?? "").isEmpty
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: showsApprovalActions ? 7 : 0) {
-            if let url = run.deepLinkURL {
-                Link(destination: url) { content }
-                    .buttonStyle(.plain)
-            } else {
-                content
-            }
-
-            if showsApprovalActions {
-                HStack(spacing: 8) {
-                    Button(intent: ApproveSessionIntent(sessionId: run.id, itemId: run.itemId ?? "")) {
-                        heroAction("Approve", symbol: "checkmark", tint: phase.tint)
-                    }
-                    .buttonStyle(.plain)
-                    Button(intent: DenySessionIntent(sessionId: run.id, itemId: run.itemId ?? "")) {
-                        heroAction("Deny", symbol: "xmark", tint: .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, 27)
-            }
-        }
-        .padding(.horizontal, compact ? 5 : 8)
-        .padding(.vertical, compact ? 3 : 7)
-        .background(
-            // The stronger fill goes to the states that want a human — needs
-            // you, done, failed. In-flight work recedes, mirroring the desktop
-            // sidebar's rule that prominence is a request for attention, not a
-            // progress report.
-            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
-                .fill(phase.tint.opacity(phase.isProminent ? 0.16 : 0.1))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
-                .stroke(phase.tint.opacity(0.22), lineWidth: 0.6)
-        )
-    }
-
-    private var content: some View {
-        HStack(spacing: 8) {
-            ActivityStateMark(symbol: phase.symbol, tint: phase.tint, compact: compact)
-            VStack(alignment: .leading, spacing: compact ? 0 : 2) {
-                Text(hideDetails ? "Agent activity" : run.title)
-                    .font(compact ? .system(size: 11.5, weight: .semibold) : .footnote.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if !compact, let subtitle {
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 5)
-            Text(phase.label)
-                .font(compact ? .system(size: 9.5, weight: .bold) : .caption2.weight(.bold))
-                .foregroundStyle(phase.tint)
-                .lineLimit(1)
-        }
-        .contentShape(Rectangle())
-    }
-
-    private var subtitle: String? {
-        guard !hideDetails else { return nil }
-        let detail = run.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let detail, !detail.isEmpty { return detail }
-        return run.subtitle
-    }
-
-    private func heroAction(_ title: String, symbol: String, tint: Color) -> some View {
-        Label(title, systemImage: symbol)
-            .font(.system(size: 10.5, weight: .semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(tint.opacity(0.13), in: Capsule())
-    }
-}
-
-private struct AgentActivityPullRequestHero: View {
-    let pr: ADEAgentRunsAttributes.PullRequest
-    let compact: Bool
-    let hideDetails: Bool
-
-    private var phase: PullRequestPhase { pr.resolvedPhase }
-
-    var body: some View {
-        Group {
-            if let url = pr.deepLinkURL {
-                Link(destination: url) { content }
-                    .buttonStyle(.plain)
-            } else {
-                content
-            }
-        }
-        .padding(.horizontal, compact ? 5 : 8)
-        .padding(.vertical, compact ? 3 : 7)
-        .background(
-            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
-                .fill(phase.tint.opacity(0.14))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
-                .stroke(phase.tint.opacity(0.22), lineWidth: 0.6)
-        )
-    }
-
-    private var content: some View {
-        HStack(spacing: 8) {
-            Image(systemName: phase.symbol)
-                .font(.system(size: compact ? 11 : 14, weight: .semibold))
-                .foregroundStyle(phase.tint)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: compact ? 0 : 2) {
-                Text(hideDetails ? "Pull request update" : "#\(pr.prNumber) \(pr.title)")
-                    .font(compact ? .system(size: 11.5, weight: .semibold) : .footnote.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if !hideDetails, !compact, let subtitle = pr.subtitle {
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 5)
-            Text(phase.label)
-                .font(compact ? .system(size: 9.5, weight: .bold) : .caption2.weight(.bold))
-                .foregroundStyle(phase.tint)
-                .lineLimit(1)
-        }
-        .contentShape(Rectangle())
-    }
-}
-
 // MARK: - Shared row
 
+/// One agent, one line: state glyph, the chat title, compact elapsed.
+///
+/// The text used to prefer `run.detail` (the status note / preview), which is
+/// how a failed row whose note still said "phase 3 running" looked like live
+/// work. The publisher now ships the session title; this strips a duplicated
+/// `lane ·` prefix so the line can use the full remaining width.
 private struct AgentRunRow: View {
     let run: ADEAgentRunsAttributes.Run
     let compact: Bool
+    /// See `AgentRunsPresentation.allowsInlineActions` — the intent cannot name
+    /// a machine, so account-wide aggregates stay tap-to-open.
+    let allowsInlineActions: Bool
     let hideDetails: Bool
 
     private var phase: AgentRunPhase { run.resolvedPhase }
@@ -694,28 +637,32 @@ private struct AgentRunRow: View {
     /// pending `itemId` (older hosts omit it; a button dispatching an empty
     /// item id could not target the approval, so the row stays tap-to-open).
     /// The Dynamic Island (`compact`) stays glance-only.
+    ///
+    /// `AgentRunsPresentation.bannerRuns` predicts this exact condition to size
+    /// its row budget; the two must agree or the banner draws a row it has no
+    /// height for.
     private var showsApprovalActions: Bool {
-        !compact && phase == .waitingForApproval && !(run.itemId ?? "").isEmpty
+        allowsInlineActions
+            && !compact
+            && phase == .waitingForApproval
+            && !(run.itemId ?? "").isEmpty
     }
 
+    /// No tinted pill behind the needs-you row. It cost 6pt of height and 6pt
+    /// of leading inset, which knocked that row's glyph out of the column the
+    /// other rows' glyphs sit in — so the one row meant to stand out was the
+    /// one that looked misaligned. Needs-you already sorts to the top and wears
+    /// the only amber glyph on the surface; that is the prominence, and it
+    /// costs no space.
     var body: some View {
-        Group {
-            if showsApprovalActions {
-                VStack(alignment: .leading, spacing: 7) {
-                    linkedRowContent
-                    approvalActions
-                }
-            } else {
+        if showsApprovalActions {
+            VStack(alignment: .leading, spacing: 6) {
                 linkedRowContent
+                approvalActions
             }
+        } else {
+            linkedRowContent
         }
-        .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
-        .padding(.horizontal, phase.needsAttention && !compact ? 6 : 0)
-        .background(
-            phase.needsAttention && !compact
-                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(phase.tint.opacity(0.14))
-                : nil
-        )
     }
 
     @ViewBuilder
@@ -729,36 +676,66 @@ private struct AgentRunRow: View {
     }
 
     private var rowContent: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             ActivityStateMark(symbol: phase.symbol, tint: phase.tint, compact: true)
                 .frame(width: 16, alignment: .center)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(hideDetails ? "Agent activity" : run.title)
-                    .font(compact ? .system(size: 11, weight: .medium) : .caption.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                if let subtitle = subtitle {
-                    Text(subtitle)
-                        .font(compact ? .system(size: 9, weight: .regular) : .caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
-            }
-
-            Spacer(minLength: 4)
-
-            // Colour is reserved for the states that want a human: a failed or
-            // finished run keeps its hue, working / starting / stale recede to
-            // secondary so the few rows that matter stand out.
-            Text(phase.label)
-                .font(compact ? .system(size: 9, weight: .semibold) : .caption2.weight(.semibold))
-                .foregroundStyle(phase.isProminent ? phase.tint : .secondary)
+            Text(text)
+                .font(compact ? .system(size: 11, weight: .medium) : .caption.weight(.medium))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(0)
+
+            if let since = run.statusSinceDate,
+               let duration = ActivityRowPresentation.formatDuration(Date().timeIntervalSince(since)) {
+                Text(duration)
+                    .monospacedDigit()
+                    .font(compact ? .system(size: 9, weight: .semibold) : .caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 22, alignment: .trailing)
+                    .layoutPriority(1)
+            }
         }
         .contentShape(Rectangle())
+        // One rotor stop per row, carrying what the glyph, the text and the
+        // ticker say between them. Dropping the phase word from the row made
+        // this mandatory: without it VoiceOver reads a chat preview with no
+        // indication of what state the chat is in.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// The chat's own title. Status notes stay off this line — they are how a
+    /// failed session whose last note said "phase 3 running" looked live.
+    private var text: String {
+        guard !hideDetails else { return "Agent activity" }
+        return Self.displayTitle(run)
+    }
+
+    static func displayTitle(_ run: ADEAgentRunsAttributes.Run) -> String {
+        var title = run.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let lane = run.lane?.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
+            let prefix = "\(lane) · "
+            if title.hasPrefix(prefix) {
+                title = String(title.dropFirst(prefix.count))
+            }
+        }
+        if !title.isEmpty { return title }
+        let detail = run.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return detail.isEmpty ? "Agent run" : detail
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [phase.label, text]
+        if let since = run.statusSinceDate,
+           let duration = ActivityRowPresentation.formatDuration(Date().timeIntervalSince(since)) {
+            parts.append("\(duration) ago")
+        }
+        return parts.joined(separator: ", ")
     }
 
     /// Approve / Deny capsules, aligned under the title (past the status glyph).
@@ -794,16 +771,14 @@ private struct AgentRunRow: View {
         .background(tint.opacity(0.16), in: Capsule(style: .continuous))
         .overlay(Capsule(style: .continuous).stroke(tint.opacity(0.30), lineWidth: 0.6))
     }
-
-    /// Prefer the host-supplied detail line; fall back to "lane · model".
-    private var subtitle: String? {
-        guard !hideDetails else { return nil }
-        let detail = run.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let detail, !detail.isEmpty { return detail }
-        return run.subtitle
-    }
 }
 
+/// The PR fallback row, drawn only when there is no agent work at all.
+///
+/// Keeps its phase word where an agent row drops it: a PR carries no
+/// `statusSince`, so the trailing slot has no ticker to spend it on, and
+/// "merged" / "checks failing" is the news rather than a restatement of the
+/// glyph.
 private struct PullRequestActivityRow: View {
     let pr: ADEAgentRunsAttributes.PullRequest
     let compact: Bool
@@ -811,47 +786,32 @@ private struct PullRequestActivityRow: View {
 
     private var phase: PullRequestPhase { pr.resolvedPhase }
 
+    /// Unboxed, for the same reason `AgentRunRow` is: the glyph column has to
+    /// line up whichever kind of row lands in it.
+    @ViewBuilder
     var body: some View {
-        Group {
-            if let url = pr.deepLinkURL {
-                Link(destination: url) { rowContent }
-                    .buttonStyle(.plain)
-            } else {
-                rowContent
-            }
+        if let url = pr.deepLinkURL {
+            Link(destination: url) { rowContent }
+                .buttonStyle(.plain)
+        } else {
+            rowContent
         }
-        .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
-        .padding(.horizontal, phase.needsAttention && !compact ? 6 : 0)
-        .background(
-            phase.needsAttention && !compact
-                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(phase.tint.opacity(0.14))
-                : nil
-        )
     }
 
     private var rowContent: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             Image(systemName: phase.symbol)
                 .font(.system(size: compact ? 10 : 11, weight: .semibold))
                 .foregroundStyle(phase.tint)
-                .frame(width: 14, alignment: .center)
+                .frame(width: 16, alignment: .center)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(hideDetails ? "Pull request update" : "#\(pr.prNumber) \(pr.title)")
-                    .font(compact ? .system(size: 11, weight: .medium) : .caption.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                if !hideDetails, let subtitle = pr.subtitle {
-                    Text(subtitle)
-                        .font(compact ? .system(size: 9, weight: .regular) : .caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
-            }
+            Text(title)
+                .font(compact ? .system(size: 11, weight: .medium) : .caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 6)
 
             Text(phase.label)
                 .font(compact ? .system(size: 9, weight: .semibold) : .caption2.weight(.semibold))
@@ -859,6 +819,140 @@ private struct PullRequestActivityRow: View {
                 .lineLimit(1)
         }
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(phase.label), \(title)")
+    }
+
+    private var title: String {
+        hideDetails ? "Pull request update" : "#\(pr.prNumber) \(pr.title)"
+    }
+}
+
+// MARK: - Expanded island
+
+/// The expanded island's bottom region: at most two rows, then exactly one
+/// footer line.
+///
+/// The region is roughly 160pt tall and clips whatever overflows without any
+/// visible sign that it did — which is how three rows, a stale hint and an
+/// event line between them sheared the footer clean off and left "12" in the
+/// trailing region missing its top edge. Everything drawn here is counted
+/// against that budget, and the count lives in
+/// `AgentRunsPresentation.islandRuns` rather than in a `prefix` here so the
+/// footer's "N more" is computed from the same number.
+///
+/// Events get no line of their own: the compact trailing already carries the
+/// top one, and it is the region that survives the island being collapsed.
+private struct AgentRunsIslandBody: View {
+    let presentation: AgentRunsPresentation
+
+    private var runs: [ADEAgentRunsAttributes.Run] { presentation.islandRuns }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(runs) { run in
+                AgentRunRow(
+                    run: run,
+                    compact: true,
+                    allowsInlineActions: false,
+                    hideDetails: presentation.hideDetails
+                )
+            }
+            if runs.isEmpty {
+                if let pr = presentation.primaryPr {
+                    PullRequestActivityRow(
+                        pr: pr,
+                        compact: true,
+                        hideDetails: presentation.hideDetails
+                    )
+                } else {
+                    Text(presentation.emptyStateLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            footer
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
+        .privacySensitive()
+    }
+
+    /// Overflow only. Scope used to sit here ("All machines") and the rounded
+    /// island clipped it off the bottom edge. Machine count lives on the lock
+    /// screen header, where there is width for it.
+    @ViewBuilder
+    private var footer: some View {
+        if let more = presentation.overflowLabel(shown: runs.count) {
+            HStack {
+                Link(destination: ActivityWidgetPresentation.activityURL) {
+                    Text(more)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .lineLimit(1)
+            .padding(.top, 2)
+        } else if presentation.isStale {
+            Text("Reconnecting")
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.top, 2)
+        }
+    }
+}
+
+/// Expanded island, trailing region: the second-highest-priority state, so the
+/// two expanded wings say the two things that matter most rather than one thing
+/// and a grand total.
+///
+/// The region is narrow and clips silently — a 15pt bold "12" lost its top edge
+/// there. Three defences, because any one of them alone has a counterexample:
+/// two digits is the hard cap (an account with 100+ rows in one state does not
+/// need the exact figure to know it is a lot), the type is a size smaller than
+/// the leading strip's, and `minimumScaleFactor` absorbs whatever the first two
+/// did not anticipate.
+private struct AgentRunsSecondStateBadge: View {
+    let presentation: AgentRunsPresentation
+
+    @ViewBuilder
+    var body: some View {
+        if let second = presentation.secondGroup {
+            badge(
+                symbol: second.group.glyph.systemImage,
+                count: "\(min(second.count, 99))",
+                tint: activityToneColor(second.group.tone),
+                label: "\(second.count) \(second.group.label)"
+            )
+        } else if let signal = presentation.eventSignal {
+            // Only one state bucket is nonzero, so the second-most-important
+            // fact is the event feed rather than a repeat of the leading wing.
+            badge(
+                symbol: signal.symbol,
+                count: signal.moreCount > 0 ? "\(min(signal.moreCount + 1, 99))" : nil,
+                tint: signal.tint,
+                label: signal.label
+            )
+        }
+    }
+
+    private func badge(symbol: String, count: String?, tint: Color, label: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+            if let count {
+                Text(count)
+                    .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+            }
+        }
+        .foregroundStyle(tint)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
     }
 }
 
@@ -877,23 +971,40 @@ private struct AgentRunsCompactLeading: View {
                     .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
             }
         }
-        .foregroundStyle(presentation.tint)
+        .foregroundStyle(presentation.leadTint)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(presentation.minimalAccessibilityLabel)
     }
 }
 
-/// Compact trailing: the top event signal, or the total when there is none.
+/// Compact trailing: the SECOND state, then the top event signal, then the
+/// total.
+///
+/// The pill's two wings are the only thing visible when the island is
+/// collapsed, so between them they should say the two most important facts
+/// about the account — "4 need you" and "1 failed" — rather than one fact and
+/// a grand total. A PR signal still wins the slot when there are no two
+/// distinct agent states to show, because at that point it is the second fact.
 private struct AgentRunsCompactTrailing: View {
     let presentation: AgentRunsPresentation
 
     var body: some View {
-        if let signal = presentation.eventSignal {
+        if let second = presentation.secondGroup {
+            HStack(spacing: 3) {
+                Image(systemName: second.group.glyph.systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+                Text("\(min(second.count, 99))")
+                    .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
+            }
+            .foregroundStyle(activityToneColor(second.group.tone))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(second.count) \(second.group.label)")
+        } else if let signal = presentation.eventSignal {
             HStack(spacing: 2) {
                 Image(systemName: signal.symbol)
                     .font(.system(size: 11, weight: .semibold))
                 if signal.moreCount > 0 {
-                    Text("\(signal.moreCount + 1)")
+                    Text("\(min(signal.moreCount + 1, 99))")
                         .font(.system(size: 11, weight: .bold, design: .rounded).monospacedDigit())
                 }
             }
@@ -901,17 +1012,32 @@ private struct AgentRunsCompactTrailing: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(signal.label)
         } else {
-            Text("\(presentation.glanceCount)")
+            Text("\(min(presentation.glanceCount, 99))")
                 .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(presentation.tint)
         }
     }
 }
 
-/// The expanded view's leading strip: every nonzero bucket as glyph + count,
-/// the same language the mac notch's compact strip speaks.
+/// The state strip: every nonzero bucket as glyph + count, the same language
+/// the mac notch's compact strip and the in-app Activity sheet speak.
+///
+/// `limit` exists because the two surfaces that draw this have very different
+/// budgets — the island's expanded leading region is narrow, the lock screen
+/// banner is full width and can carry all six.
 private struct AgentRunsStateStrip: View {
     let presentation: AgentRunsPresentation
+    var limit: Int = 3
+
+    private var visible: [ActivityWidgetPresentation.GroupCount] {
+        Array(presentation.groups.prefix(limit))
+    }
+
+    private var summarySentence: String {
+        presentation.groups
+            .map { "\($0.count) \($0.group.label.lowercased())" }
+            .joined(separator: ", ")
+    }
 
     var body: some View {
         HStack(spacing: 7) {
@@ -920,29 +1046,55 @@ private struct AgentRunsStateStrip: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(presentation.tint)
             }
-            ForEach(presentation.groups.prefix(3)) { entry in
-                HStack(spacing: 2) {
-                    Image(systemName: entry.group.glyph.systemImage)
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("\(entry.count)")
-                        .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+            ForEach(visible) { entry in
+                // Each count is its own destination. The island's expanded
+                // region and the lock-screen banner both support per-element
+                // links, so the strip is navigation rather than a readout.
+                Link(destination: ActivityWidgetPresentation.activityURL(for: entry.group)) {
+                    HStack(spacing: 2) {
+                        Image(systemName: entry.group.glyph.systemImage)
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("\(entry.count)")
+                            .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+                    }
+                    .foregroundStyle(activityToneColor(entry.group.tone))
                 }
-                .foregroundStyle(activityToneColor(entry.group.tone))
-                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(entry.count) \(entry.group.label)")
             }
         }
+        // The island's leading region is narrow and clips without warning. Three
+        // glyph+count pairs fit at rest; a three-digit tally on any of them does
+        // not, so the strip shrinks rather than losing a bucket off the edge.
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        // Dimmed rather than hidden once the frame is too old to assert: the
+        // shape of the account is still probably right, but the numbers are
+        // no longer a claim. The headline says how old, in words.
+        .opacity(presentation.assertsCounts ? 1 : 0.45)
+        // One rotor stop for the whole strip. Six unlabelled glyph+number pairs
+        // made VoiceOver users assemble the sentence themselves.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            presentation.groups.isEmpty
+                ? "No agent activity"
+                : "Agent states: \(summarySentence)"
+        )
     }
 }
 
-/// One line for PR/CI traffic inside the agents activity — the island has no
-/// room for Agents | Events tabs, and events were never worth a second row.
+/// PR/CI traffic as one clause on the banner's trailing edge — never a row and
+/// no longer a line of its own. Events were never worth a whole line, and the
+/// line they had was taken from the third agent row.
+///
+/// No leading `Spacer` here: the clause is laid out by the last line's HStack,
+/// which needs it to size to its content so the overflow count keeps the
+/// leading edge.
 private struct AgentRunsSignalLine: View {
     let signal: AgentRunsPresentation.EventSignal
 
     var body: some View {
-        Link(destination: signal.url ?? AgentRunsPresentation.activityURL) {
-            HStack(spacing: 5) {
+        Link(destination: signal.url ?? ActivityWidgetPresentation.activityURL) {
+            HStack(spacing: 4) {
                 Image(systemName: signal.symbol)
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(signal.tint)
@@ -955,9 +1107,7 @@ private struct AgentRunsSignalLine: View {
                         .font(.system(size: 9.5, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.top, 3)
             .contentShape(Rectangle())
         }
         .accessibilityLabel(
@@ -965,23 +1115,6 @@ private struct AgentRunsSignalLine: View {
                 ? "\(signal.label), and \(signal.moreCount) more events"
                 : signal.label
         )
-    }
-}
-
-private struct AgentRunsCountBadge: View {
-    let presentation: AgentRunsPresentation
-
-    var body: some View {
-        if presentation.waitingCount > 0 {
-            Label("\(presentation.waitingCount)", systemImage: ActivityGlyph.needsYou.systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(ADESharedTheme.warningAmber)
-        } else {
-            Text("\(presentation.glanceCount)")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(presentation.tint)
-        }
     }
 }
 
@@ -1006,14 +1139,19 @@ private extension ADEAgentRunsAttributes {
 }
 
 private extension ADEAgentRunsAttributes.ContentState {
+    /// `statusSince` is populated on purpose: without it the trailing edge of
+    /// every row is empty, and a preview that never shows the ticker is how the
+    /// row's only time signal goes unreviewed.
     static var running: Self {
         .init(
             updatedAt: Date().timeIntervalSince1970,
-            activeCount: 2,
+            activeCount: 9,
             runs: [
-                .init(id: "a", title: "Refactor sync transport", phase: "running", model: "gpt-5-codex", lane: "Primary", detail: "editing SyncService.swift"),
-                .init(id: "b", title: "Audit pairing", phase: "running", model: "claude-sonnet-5", lane: "feat/pair"),
-            ]
+                .init(id: "a", title: "Claude is working", phase: "running", model: "gpt-5-codex", lane: "Primary", detail: "Explore innovative features for the sync transport", statusSince: Date().timeIntervalSince1970 - 540),
+                .init(id: "b", title: "Claude is working", phase: "running", model: "claude-sonnet-5", lane: "feat/pair", statusSince: Date().timeIntervalSince1970 - 120),
+                .init(id: "d", title: "credential-store-hardening", phase: "failed", model: "claude", lane: "creds", statusSince: Date().timeIntervalSince1970 - 1_680),
+            ],
+            moreCount: 6
         )
     }
 
@@ -1022,8 +1160,8 @@ private extension ADEAgentRunsAttributes.ContentState {
             updatedAt: Date().timeIntervalSince1970,
             activeCount: 3,
             runs: [
-                .init(id: "c", title: "Release checklist", phase: "waiting_for_approval", model: "claude", lane: "Primary", detail: "approve git push", itemId: "item_release_push"),
-                .init(id: "a", title: "Refactor sync transport", phase: "running", model: "gpt-5-codex", lane: "Primary"),
+                .init(id: "c", title: "Release checklist", phase: "waiting_for_approval", model: "claude", lane: "Primary", detail: "Should I force-push the rebase?", itemId: "item_release_push", statusSince: Date().timeIntervalSince1970 - 130),
+                .init(id: "a", title: "Refactor sync transport", phase: "running", model: "gpt-5-codex", lane: "Primary", statusSince: Date().timeIntervalSince1970 - 900),
             ]
         )
     }

@@ -241,29 +241,51 @@ final class NotchInteractionStateTests: XCTestCase {
     // MARK: - Activity sections
 
     /// The panel files a row exactly where the strip counts it — the same
-    /// five-way table, so Failed and Planning are sections of their own rather
-    /// than rows borrowing amber. Idle roster history stays the ambient tail of
-    /// Done no matter what phase it preserved.
-    func testSectionsUseTheSameFiveWayTableAsTheStrip() {
+    /// six-way table, so Failed and Planning are sections of their own rather
+    /// than rows borrowing amber, and Idle is a section of its own rather than
+    /// the tail of Done.
+    ///
+    /// Both routes into Idle are pinned: the idle TIER (disk-only roster
+    /// history, whatever phase it preserved) and the `stale` PHASE (went quiet
+    /// mid-work). Filing the first under Done is what let week-old roster rows
+    /// bury the runs that actually finished; filing the second under Working is
+    /// what let the panel claim an agent was working hours after it stopped.
+    func testSectionsUseTheSameSixWayTableAsTheStrip() {
         let needsYou = sectionFixture(id: "needs", phase: "needs_you")
         let failed = sectionFixture(id: "failed", phase: "failed")
         let planning = sectionFixture(id: "planning", phase: "running", mode: .planning)
         let running = sectionFixture(id: "running", phase: "running")
         let completed = sectionFixture(id: "completed", phase: "completed")
+        let stale = sectionFixture(id: "stale", phase: "stale")
         let idleButRunning = sectionFixture(id: "idle", phase: "running", tier: "idle")
 
         let sections = notchActivityGroupSections(
-            [completed, running, idleButRunning, planning, failed, needsYou]
+            [completed, running, idleButRunning, stale, planning, failed, needsYou]
         )
-        XCTAssertEqual(sections.map(\.id), ["needs-you", "failed", "planning", "working", "done"])
-        XCTAssertEqual(sections.map(\.title), ["Needs you", "Failed", "Planning", "Working", "Done"])
-        XCTAssertEqual(sections.map(\.tone), [.amber, .red, .violet, .blue, .emerald])
+        XCTAssertEqual(
+            sections.map(\.id),
+            ["needs-you", "failed", "planning", "working", "idle", "done"]
+        )
+        XCTAssertEqual(
+            sections.map(\.title),
+            ["Needs you", "Failed", "Planning", "Working", "Idle", "Done"]
+        )
+        // Idle is neutral: nobody is blocked on it, so it may borrow neither
+        // emerald's "finished cleanly" nor blue's "still going".
+        XCTAssertEqual(
+            sections.map(\.tone),
+            [.amber, .red, .violet, .blue, .neutral, .emerald]
+        )
         XCTAssertEqual(sections.map { $0.items.map(\.id) }, [
             ["needs"],
             ["failed"],
             ["planning"],
             ["running"],
-            ["completed", "idle"],
+            // Priority order alone, with no idle-tier re-sort: these rows no
+            // longer share a section with finished work, so nothing has to be
+            // pushed to a tail to stay out of its way.
+            ["idle", "stale"],
+            ["completed"],
         ])
         // An empty group is not drawn as a heading over nothing.
         XCTAssertEqual(

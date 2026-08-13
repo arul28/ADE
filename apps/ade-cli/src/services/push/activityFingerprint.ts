@@ -80,6 +80,28 @@ export function activityPublishFingerprint(item: AttentionItem): string {
   ].join("\u0000");
 }
 
+/**
+ * One hash over an entire built roster: the cheap "did anything change?" answer
+ * the 30 s heartbeat asks before it is allowed to write.
+ *
+ * Built from the same per-item `activityPublishFingerprint` the delta path
+ * already trusts, so a heartbeat and a delta can never disagree about whether
+ * the roster moved. Overflow rides along because a row crossing the machine cap
+ * is a tombstone the relay still has to be told about. Item `revision` is
+ * deliberately excluded: it is a timestamp that advances on republish, and
+ * hashing it would make every heartbeat look like a change — which is exactly
+ * the D1 write amplification the guard exists to prevent.
+ */
+export function activityRosterFingerprint(
+  selected: readonly AttentionItem[],
+  overflow: readonly AttentionItem[],
+): string {
+  return sha256({
+    selected: selected.map((item) => [item.id, activityPublishFingerprint(item)]),
+    overflow: overflow.map((item) => [item.id, activityPublishFingerprint(item)]),
+  });
+}
+
 /** Populate the split fingerprints while preserving the legacy field. */
 export function withActivityFingerprints(item: AttentionItem): AttentionItem {
   const contentFingerprint = activityContentFingerprint(item);
