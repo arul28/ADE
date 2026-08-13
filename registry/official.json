@@ -70,7 +70,9 @@
     },
     "ade-voice": {
       "repo": "https://github.com/arul28/ade-voice",
-      "checksums": {}
+      "checksums": {
+        "1.0.0": "9ee7d9e5a7e9a05046f25d31d1b663778c745eb5c963d80e1d40f10875be295b"
+      }
     },
     "ade-theme-paper": {
       "repo": "https://github.com/arul28/ade-theme-paper",
