@@ -115,6 +115,83 @@ describe("manifest sockets → contributions", () => {
   });
 });
 
+describe("composer actions", () => {
+  it("maps a manifest composer-action to a renderable contribution", () => {
+    const contributions = contributionsFromSource(source("ade-voice", [
+      { socket: "composer-action", surface: "work", id: "dictate", label: "Dictate", icon: "Microphone", actionId: "dictate", order: 1 },
+    ]));
+
+    expect(contributions).toEqual([{
+      pluginId: "ade-voice",
+      socket: "composer-action",
+      surface: "work",
+      id: "dictate",
+      order: 1,
+      payload: { label: "Dictate", icon: "Microphone", actionId: "dictate" },
+    }]);
+  });
+
+  // The composer's own selection: it passes a composer context, which keys on
+  // the chat, so a plugin can publish a per-session row for its button.
+  it("selects for the chat the composer sends to", () => {
+    const set = buildContributionSet(
+      [source("ade-voice", [
+        { socket: "composer-action", surface: "work", id: "dictate", label: "Dictate", actionId: "dictate" },
+      ])],
+      [{
+        entityKind: "session",
+        entityId: "chat-1",
+        pluginId: "ade-voice",
+        socket: "composer-action",
+        socketId: "dictate",
+        payload: { label: "Stop", actionId: "dictate" },
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      }],
+      "work",
+    );
+
+    const composer: PluginSurfaceContext = {
+      kind: "composer",
+      sessionId: "chat-1",
+      projectKey: null,
+      projectRoot: null,
+      laneId: null,
+      draft: "half a prompt",
+      cursor: 4,
+    };
+    // The published row replaces the manifest declaration it fills, so the
+    // button reads "Stop" in this chat and "Dictate" everywhere else.
+    expect(selectContributions(set, "composer-action", composer).map((entry) => entry.payload))
+      .toEqual([{ label: "Stop", actionId: "dictate" }]);
+
+    const otherChat = { ...composer, sessionId: "chat-2" };
+    expect(selectContributions(set, "composer-action", otherChat).map((entry) => entry.payload))
+      .toEqual([{ label: "Dictate", actionId: "dictate" }]);
+  });
+
+  // Before the chat exists there is no entity to key on; the declaration is all
+  // there is, and it must still render.
+  it("falls back to the declaration on a composer with no chat yet", () => {
+    const set = buildContributionSet(
+      [source("ade-voice", [
+        { socket: "composer-action", surface: "work", id: "dictate", label: "Dictate", actionId: "dictate" },
+      ])],
+      [],
+      "work",
+    );
+
+    expect(selectContributions(set, "composer-action", {
+      kind: "composer",
+      sessionId: null,
+      projectKey: null,
+      projectRoot: null,
+      laneId: null,
+      draft: "",
+      cursor: null,
+    }).map((entry) => entry.payload)).toEqual([{ label: "Dictate", actionId: "dictate" }]);
+  });
+});
+
 describe("static and dynamic merge", () => {
   it("lets a dynamic row replace the plugin's static badge for that entity", () => {
     const set = buildContributionSet(

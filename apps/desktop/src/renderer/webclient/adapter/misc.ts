@@ -33,7 +33,7 @@ export type MiscNamespaces = {
   cto: NonNullable<Window["ade"]["cto"]>;
   orchestration: Partial<Window["ade"]["orchestration"]>;
   projectSecrets: AdeNamespace<"projectSecrets">;
-  transcription: AdeNamespace<"transcription">;
+  audio: AdeNamespace<"audio">;
   agentTools: AdeNamespace<"agentTools">;
   adeCli: AdeNamespace<"adeCli">;
   devTools: AdeNamespace<"devTools">;
@@ -586,7 +586,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     cto: createCtoNamespace(call, localState),
     orchestration: createOrchestrationNamespace(call),
     projectSecrets: createProjectSecretsNamespace(),
-    transcription: createTranscriptionNamespace(),
+    audio: createAudioNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
     adeCli: ({
       getStatus: async () => ({ installed: false, path: null, version: null }),
@@ -762,22 +762,22 @@ function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
   } as unknown as AdeNamespace<"projectSecrets">;
 }
 
-function createTranscriptionNamespace(): AdeNamespace<"transcription"> {
-  const status = {
-    installed: false,
-    binaryInstalled: false,
-    modelInstalled: false,
-    downloading: false,
-    binaryPath: null,
-    modelPath: null,
+/**
+ * A browser tab has no ADE scratch directory to write a clip into and no
+ * Electron microphone permission to ask for, so capture is refused rather than
+ * stubbed to a fake success: a plugin that got an empty clip path would treat
+ * silence as a recording.
+ */
+function createAudioNamespace(): AdeNamespace<"audio"> {
+  const unavailable = async (): Promise<never> => {
+    throw new Error("capture_failed: Audio capture needs the ADE desktop app.");
   };
   return {
-    transcribe: async () => ({ raw: "", cleaned: "" }),
-    status: async () => status,
-    downloadModel: async () => status,
-    onModelDownloadProgress: () => () => {},
+    writeClip: unavailable,
+    discardClip: async () => {},
     requestMicAccess: async () => ({ status: "unknown" }),
-  } as AdeNamespace<"transcription">;
+    onCaptureRequest: () => () => {},
+  } as AdeNamespace<"audio">;
 }
 
 function createTestStubs(): Record<string, unknown> {

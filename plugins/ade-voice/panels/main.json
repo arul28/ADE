@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Voice",
+  "fallback": {
+    "title": "Voice",
+    "text": "Dictation runs on the Mac that holds this plugin, and adds a Dictate button to the composer there. On iPhone, use the keyboard's own dictation key instead — it is the same idea, built into the OS.",
+    "deeplink": "ade://plugin/ade-voice/main"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Dictation lives in the composer",
+      "description": "This plugin adds a Dictate button beside the chat composer on the Mac it is installed on. Press it, speak, and the words are typed into your draft — transcribed on that computer, with no audio leaving it. Open ADE there to see whether the speech model is downloaded and ready.",
+      "icon": "microphone"
+    }
+  ]
+}

@@ -171,6 +171,38 @@ const LOG_VIEWER = manifest({
 });
 
 /**
+ * Voice, which gates nothing.
+ *
+ * The other entries above are gates: a compiled surface that appears when the
+ * plugin is installed. This one is the opposite demonstration, and it is worth
+ * being explicit about because it is the more important of the two. Dictation
+ * is a `composer-action` socket, a `captureClip` SDK call and an
+ * `{composer:{insertText}}` response — three public primitives, no `builtin`
+ * binding, nothing an author outside this repository could not have written.
+ * If that ever stops being true, the extraction it proves has regressed.
+ */
+const VOICE = manifest({
+  name: "ade-voice",
+  version: "1.0.0",
+  displayName: "Voice",
+  description: "Voice dictation for the composer, on-device. Downloads a 141 MB speech model on first use.",
+  icon: "microphone",
+  accent: "#C2508B",
+  entry: "index.js",
+  panels: [{ id: "main", schemaFile: "panels/main.json", title: "Voice" }],
+  sockets: [
+    {
+      socket: "composer-action",
+      surface: "work",
+      id: "dictate",
+      label: "Dictate",
+      icon: "microphone",
+      actionId: "dictate",
+    },
+  ],
+});
+
+/**
  * The starter themes.
  *
  * Each ships both palettes, because a theme that only defines dark tokens
@@ -963,6 +995,42 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "",
       "- **Lines to show** — how many of the most recent lines the panel lists, up to",
       "  100.",
+    ].join("\n"),
+  }),
+  listing(VOICE, {
+    author: "ADE",
+    featured: true,
+    readme: [
+      "## Voice",
+      "",
+      "Dictate into the composer instead of typing. Press the microphone, speak, and",
+      "the words arrive as text — transcribed on this computer, so no audio is",
+      "uploaded anywhere and dictation keeps working with the network off.",
+      "",
+      "Dictation was part of ADE itself until plugins existed. All of it moved out —",
+      "the microphone button, the recording, the speech model and the transcribing —",
+      "and it moved out through the same doors any plugin has: a composer button, an",
+      "SDK call for the recording, and a response that types into your draft.",
+      "",
+      "### The one-time download",
+      "",
+      "The speech model is about 141 MB and is fetched the first time you dictate,",
+      "then kept in ADE's application-support folder — not in the plugin, so",
+      "updating it never downloads the model again. If you dictated in ADE before",
+      "voice became a plugin, it is already there.",
+      "",
+      "A download that size cannot finish inside one request, so the first recording",
+      "starts it and says so; every recording after that is immediate. An interrupted",
+      "download resumes, and the file is only used once its checksum matches.",
+      "",
+      "### Notes",
+      "",
+      "- macOS only. The engine is a universal build, so both Apple Silicon and Intel",
+      "  Macs work; there is no Linux or Windows build in this package, and on those",
+      "  the plugin says so rather than failing quietly.",
+      "- English. The bundled model is `base.en`.",
+      "- On iPhone, use the keyboard's own dictation key — iOS has it built in, so",
+      "  this plugin does not ship a mobile surface.",
     ].join("\n"),
   }),
   listing(PAPER, {

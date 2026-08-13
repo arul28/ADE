@@ -151,6 +151,7 @@ import {
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
+import { createDesktopAudioCaptureBridge } from "./services/audio/desktopAudioBridgeClient";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
@@ -1229,6 +1230,17 @@ export async function createAdeRuntime(args: {
         projectRoot,
         logger,
       });
+  // The same socket, the same credential, one more capability: plugin children
+  // run HERE, and `ade.audio.captureClip` needs a microphone only a desktop
+  // renderer has. A chat-only runtime never gets one, so it is left without the
+  // dependency entirely and the SDK's own "no microphone here" refusal stands.
+  const desktopAudioCaptureBridge = chatOnlyRuntime
+    ? null
+    : createDesktopAudioCaptureBridge({
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
+        logger,
+      });
 
   const headlessLinearServices = createHeadlessLinearServices({
     projectRoot,
@@ -1621,6 +1633,20 @@ export async function createAdeRuntime(args: {
       headlessLinearServices.linearCredentialService.clearToken();
       logger.info("plugin.linear_disconnected_on_uninstall", { pluginId });
     },
+    // The microphone is the desktop's, and the label is the plugin's own
+    // display name as the SDK server resolved it — the pill has to say who is
+    // recording, and a plugin that could choose that string could name someone
+    // else. The bridge answers a typed refusal when no desktop is attached, so
+    // a capture asked for on a headless machine fails rather than hangs.
+    ...(desktopAudioCaptureBridge
+      ? {
+          captureAudioClip: (capture: { pluginId: string; label: string; maxDurationMs?: number }) =>
+            desktopAudioCaptureBridge.captureClip({
+              label: capture.label,
+              ...(capture.maxDurationMs != null ? { maxDurationMs: capture.maxDurationMs } : {}),
+            }),
+        }
+      : {}),
   });
   const syncDeviceIdPath = path.join(
     resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
@@ -2168,6 +2194,17 @@ export async function createAdeRuntime(args: {
           throw new PluginSdkError(
             "not_permitted",
             `Action '${domain}.${action}' is not available to plugins.`,
+          );
+        }
+        // `session.requestSessionAttention` pushes an arbitrary message to
+        // every paired phone. Until plugins get an attributed, rate-limited
+        // notifications capability, an installed package cannot borrow it: its
+        // push would arrive unlabelled, unlimited, and indistinguishable from
+        // ADE's own.
+        if (actionDomain === "session" && action === "requestSessionAttention") {
+          throw new PluginSdkError(
+            "not_permitted",
+            "Plugins can't send phone notifications yet.",
           );
         }
         // A plugin asking for another plugin's domain gets the same refusal a

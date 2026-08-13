@@ -14,10 +14,14 @@ import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
 import { installLayoutSettleResizeObserver } from "./lib/layoutSettle";
+import { installAudioCaptureRequestHandler } from "./services/audioCaptureRequestHandler";
 
 // Must run before anything constructs a ResizeObserver — react-resizable-panels
 // reads `ownerDocument.defaultView.ResizeObserver` when a pane group mounts.
 installLayoutSettleResizeObserver();
+// Serve microphone requests from plugins. Installed outside React so a capture
+// survives whatever the user navigates to while it runs.
+installAudioCaptureRequestHandler();
 
 document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
 

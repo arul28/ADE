@@ -211,6 +211,58 @@ describe("registry entry parsing", () => {
     expect(bare.entry.links.repository).toBe("https://github.com/ade-plugins/graph");
   });
 
+  it("reads a download size and the extra downloads a plugin declares", () => {
+    const parsed = parsePluginRegistryEntry(entry({
+      sizeBytes: 4_404_019.6,
+      extraDownloads: [{ label: "Speech model", bytes: 147_800_000 }],
+    }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.sizeBytes).toBe(4_404_020);
+    expect(parsed.entry.extraDownloads).toEqual([{ label: "Speech model", bytes: 147_800_000 }]);
+  });
+
+  it("treats an unmeasured, impossible or malformed size as no size at all", () => {
+    // Absent is the common case and must not become a number. Zero is the
+    // interesting one: the crawler derives sizes from an API that reports 0 for
+    // a repository it has not sized, and "0 B" on the page is a confident wrong
+    // answer where nothing is the true one.
+    for (const value of [undefined, 0, -1, "4 MB", Number.NaN, Number.POSITIVE_INFINITY, 1e30]) {
+      const parsed = parsePluginRegistryEntry(entry({ sizeBytes: value }));
+      if ("reason" in parsed) throw new Error(parsed.reason);
+      expect(parsed.entry.sizeBytes, `sizeBytes ${String(value)}`).toBeNull();
+    }
+  });
+
+  it("drops an unreadable extra download without dropping the entry", () => {
+    const parsed = parsePluginRegistryEntry(entry({
+      extraDownloads: [
+        { label: "Speech model", bytes: 147_800_000 },
+        { label: "", bytes: 10 },
+        { label: "No size" },
+        { label: "Negative", bytes: -5 },
+        { label: "x".repeat(PLUGIN_REGISTRY_LIMITS.maxDownloadLabelChars + 1), bytes: 10 },
+        "not an object",
+      ],
+    }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.extraDownloads).toEqual([{ label: "Speech model", bytes: 147_800_000 }]);
+
+    const notAList = parsePluginRegistryEntry(entry({ extraDownloads: { label: "Speech model", bytes: 10 } }));
+    if ("reason" in notAList) throw new Error(notAList.reason);
+    expect(notAList.entry.extraDownloads).toEqual([]);
+  });
+
+  it("caps the number of extra downloads an entry may publish", () => {
+    const parsed = parsePluginRegistryEntry(entry({
+      extraDownloads: Array.from({ length: PLUGIN_REGISTRY_LIMITS.maxExtraDownloads + 3 }, (_unused, index) => ({
+        label: `Asset ${index}`,
+        bytes: 1024,
+      })),
+    }));
+    if ("reason" in parsed) throw new Error(parsed.reason);
+    expect(parsed.entry.extraDownloads).toHaveLength(PLUGIN_REGISTRY_LIMITS.maxExtraDownloads);
+  });
+
   it("drops checksums that are not a version mapped to a sha256", () => {
     const parsed = parsePluginRegistryEntry(entry({
       checksums: { "1.0.0": DIGEST_A, "not-a-version": DIGEST_B, "1.1.0": "short" },

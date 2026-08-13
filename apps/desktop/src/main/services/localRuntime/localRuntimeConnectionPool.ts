@@ -1772,7 +1772,9 @@ export class LocalRuntimeConnectionPool {
       }
       const tConnect = Date.now();
       const actionCallOptions = {
-        timeoutMs: localRuntimeActionTimeoutMs(request.domain, request.action),
+        // Args included so an action may name its own budget — `plugin.invoke`
+        // does, for contributed buttons that record or transcribe for minutes.
+        timeoutMs: localRuntimeActionTimeoutMs(request.domain, request.action, request.args),
       };
       let value: unknown = undefined;
       let callError: Error | null = null;

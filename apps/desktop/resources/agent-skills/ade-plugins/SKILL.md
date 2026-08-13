@@ -1,6 +1,6 @@
 ---
 name: ade-plugins
-description: Use this skill to build, extend, debug, or publish an ADE plugin — whenever the task is to add a tab, panel, row badge, toolbar action, row menu item, filter chip, empty state, file viewer, theme, or `ade` CLI command to ADE; to write or fix a `plugin.json` manifest; to author a panel schema in ADE's declarative UI vocabulary; to build a desktop-only custom UI page (a `webview` surface) against the `window.adePlugin` bridge; to link to a plugin panel or hand it a context; to call the plugin SDK (collections, secrets, contributions, config, actions, panels, events); to run `ade plugin create|install|dev|logs|list`; or to make something a plugin renders show up on desktop, web, iOS, and the `ade code` TUI at once. Also use it to answer what a plugin can and cannot do — what its code is allowed to reach, which surfaces it may claim, and which budgets and reserved bindings will refuse it.
+description: Use this skill to build, extend, debug, or publish an ADE plugin — whenever the task is to add a tab, panel, row badge, toolbar action, row menu item, filter chip, empty state, file viewer, chat composer button, theme, or `ade` CLI command to ADE; to write or fix a `plugin.json` manifest; to author a panel schema in ADE's declarative UI vocabulary; to build a desktop-only custom UI page (a `webview` surface) against the `window.adePlugin` bridge; to link to a plugin panel or hand it a context; to call the plugin SDK (collections, secrets, contributions, config, actions, panels, events); to run `ade plugin create|install|dev|logs|list`; or to make something a plugin renders show up on desktop, web, iOS, and the `ade code` TUI at once. Also use it to answer what a plugin can and cannot do — what its code is allowed to reach, which surfaces it may claim, and which budgets and reserved bindings will refuse it.
 ---
 
 # Authoring ADE plugins
@@ -29,8 +29,8 @@ Say the consequence out loud when you ship one: **installing a plugin is trustin
 
 - **Whole surfaces** — a `tab` or a `pane` rendering a panel schema, and on the desktop a `webview` drawing your own HTML page.
 - **Declarative panels**, which desktop, web, iOS and the `ade code` TUI each render with their own native widgets from one JSON document.
-- **Sockets on the six core surfaces** — `work`, `lanes`, `files`, `prs`, `automations`, `cto` — in seven shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
-- **Themes** (token sets, no code at all), **`ade` CLI subcommands**, **agent skills** that load only where the plugin is installed, **deeplinks** into your own panels, and **cross-surface navigation** — an action returns `{navigate: {…}}` and the client moves the user to another of your panels.
+- **Sockets on the six core surfaces** — `work`, `lanes`, `files`, `prs`, `automations`, `cto` — in eight shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`, `composer-action`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
+- **Themes** (token sets, no code at all), **`ade` CLI subcommands**, **agent skills** that load only where the plugin is installed, **deeplinks** into your own panels, **cross-surface navigation** — an action returns `{navigate: {…}}` and the client moves the user to another of your panels — and **draft edits**, where an action returns `{composer: {…}}` and writes into the chat prompt the user is typing.
 
 Three shapes that fit the platform well:
 
@@ -56,11 +56,11 @@ Three shapes that fit the platform well:
 
 **You cannot declare yourself Official.** The directory decides: an entry is official only when ADE's curated `official.json` lists it *and* both its repo and its install source sit in ADE's own GitHub organizations — otherwise it lists as community with a warning. Official entries carry a per-version sha256 the installer checks against the fetched tree; community plugins are not checksummed by the directory and install as unverified. Being listed in the Marketplace is not an endorsement.
 
-**Sockets and action domains are closed sets.** You fill the seven slots above on those six surfaces; there is no way to inject UI anywhere else, and placement is host-controlled and always after core content, so a contribution never reorders or interleaves with the product's own rows. `ade.actions.invoke` reaches ADE's existing action domains at **agent** role — CTO-only actions are refused — and a plugin cannot define a domain of its own.
+**Sockets and action domains are closed sets.** You fill the eight slots above on those six surfaces; there is no way to inject UI anywhere else, and placement is host-controlled and always after core content, so a contribution never reorders or interleaves with the product's own rows. `ade.actions.invoke` reaches ADE's existing action domains at **agent** role — CTO-only actions are refused — and a plugin cannot define a domain of its own.
 
 **Plugins cannot see each other.** The SDK server is constructed per plugin and answers every call against that plugin's id; the child never puts an id on the wire. Collections must be declared in your own manifest (an undeclared name is refused, not created), secrets are namespaced `plugin:<id>:<NAME>`, and `config.get()` returns your own settings. There is no cross-plugin read of any kind.
 
-One limit that is not about sharing, because it will bite you anyway: the *process* may work for as long as it likes, but the *host round-trip* is supervised. The child has 20s to send `ready` after it is spawned, one `invoke` is capped at 60s and then fails with `plugin_timeout`, and after 5 crashes in a row inside the first minute of life the host stops reviving it until someone reloads. Long work belongs in `activate` or an event handler, with the result stored — never inside the action the user is waiting on.
+One limit that is not about sharing, because it will bite you anyway: the *process* may work for as long as it likes, but the *host round-trip* is supervised. The child has 20s to send `ready` after it is spawned, one `invoke` is capped at 60s and then fails with `plugin_timeout`, and after 5 crashes in a row inside the first minute of life the host stops reviving it until someone reloads. Long work belongs in `activate` or an event handler, with the result stored — never inside the action the user is waiting on. The single exception is a `composer-action`, which gets 15 minutes because the user watches it work the whole time (*Long-running composer actions*).
 
 ## Scaffold and run one
 
@@ -150,7 +150,7 @@ Every path in a manifest (`entry`, `schemaFile`, `skills[]`) must be relative, i
 Manifest-level rules the parser enforces (a violation drops that entry, not the plugin):
 
 - `detail-section` and `file-viewer` sockets require `panelId`.
-- `toolbar-action` and `row-menu-item` sockets require `actionId`.
+- `toolbar-action`, `row-menu-item` and `composer-action` sockets require `actionId`.
 - `file-viewer` requires at least one `".ext"` extension.
 - A `webview` surface requires `entryHtml`, and it must name an `.html` (or `.htm`) file inside the plugin. A `webview` with no page is dropped, not warned about. `entryHtml` on any other kind is ignored.
 
@@ -372,7 +372,7 @@ ade plugin dev board                 # watch + reload on every save
 
 ## Sockets — appearing on core surfaces
 
-Six core surfaces: `work`, `lanes`, `files`, `prs`, `automations`, `cto`. Seven socket kinds. Both sets are closed — a plugin fills a slot, it never invents one. Placement is **host-controlled and always after core content** — a contribution never reorders, replaces, or interleaves with the product's own rows. `order` sorts plugins against each other and nothing more.
+Six core surfaces: `work`, `lanes`, `files`, `prs`, `automations`, `cto`. Eight socket kinds. Both sets are closed — a plugin fills a slot, it never invents one. Placement is **host-controlled and always after core content** — a contribution never reorders, replaces, or interleaves with the product's own rows. `order` sorts plugins against each other and nothing more.
 
 | Socket kind | Payload | What it draws |
 |---|---|---|
@@ -383,6 +383,7 @@ Six core surfaces: `work`, `lanes`, `files`, `prs`, `automations`, `cto`. Seven 
 | `empty-state` | `{title, body?, actionId?, actionLabel?}` | Extra content on a surface's empty state |
 | `filter-chip` | `{label, filterKey, count?}` | A chip in a surface's filter row |
 | `file-viewer` | `{panelId, extensions[]}` | A viewer for matching files in the Files tab |
+| `composer-action` | `{label, actionId, icon?, disabled?}` | A button in the chat composer's accessory row (`work`). The one socket whose handler may run for minutes — see *Long-running composer actions* |
 
 Two sources, deliberately different:
 
@@ -391,7 +392,7 @@ Two sources, deliberately different:
 
 A payload that fails validation renders nothing at all rather than a half-built row, so a missing `label` or `actionId` shows up as an absence, not as a blank button.
 
-Entity kinds for `publish`: `lane`, `pr`, `session`, `file`, `automation`, `surface`. Row badges cap at **2 visible** per row with the rest behind a "+N"; a single plugin may place at most **8** contributions in one socket slot.
+Entity kinds for `publish`: `lane`, `pr`, `session`, `file`, `automation`, `surface`. A composer belongs to its chat, so publish a `composer-action` row against `session` to change what your button says for one conversation. Row badges cap at **2 visible** per row with the rest behind a "+N", and composer buttons do the same in the accessory row; a single plugin may place at most **8** contributions in one socket slot.
 
 Your action receives a typed, read-only context object — a projection, not a handle:
 
@@ -401,9 +402,13 @@ Your action receives a typed, read-only context object — a projection, not a h
 | `lane` | `id`, `name`, `branch`, `machineKey`, `dirty` |
 | `session` | `id`, `title`, `provider`, `status` |
 | `file` | `path`, `size`, `extension`, `workspaceId` |
+| `automation` | `id`, `name`, `enabled` |
+| `composer` | `sessionId`, `projectKey`, `projectRoot`, `laneId`, `draft`, `cursor` |
 | `surface` | `surface` (for toolbar actions, empty states, chips — no per-entity subject) |
 
 You cannot reach the lane's worktree, the PR's token, or the session's transcript from a context. Widening one is a platform change, not something a plugin arranges.
+
+**The `composer` context is the exception, and deliberately so.** `draft` is the user's full unsent prompt, verbatim, and `cursor` is where their caret sits in it — a button that rewrites, translates, or expands a prompt cannot do its job from a session id, and one that asked the user to paste their draft somewhere else would not be a composer button. Installing a plugin grants it, the same grant that already lets the plugin's child process read any file the user can. `sessionId` is null on a composer that has not started a chat yet (the hero composer, a fresh Work pane), and `cursor` is null when the composer holds no live caret — append, in that case. The draft is read when the button is PRESSED, not when it rendered, so what you receive is the text on screen at that moment.
 
 ### Per-surface socket support
 
@@ -411,8 +416,60 @@ You cannot reach the lane's worktree, the PR's token, or the session's transcrip
 |---|---|---|---|
 | `row-badge`, `row-menu-item` | yes | yes | no |
 | `toolbar-action`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer` | yes | decoded, not drawn — a later iOS build adds the arm with no wire change | no |
+| `composer-action` | yes | no — dropped where the row decodes, so it is simply absent | no |
 
 The TUI surfaces plugins through `/plugin-view [plugin]`, which opens a panel in the right pane; it renders no sockets. Design so a badge is an enhancement, never the only way to learn something.
+
+### Writing into the draft
+
+An action can return `{composer: {…}}` the way it can return `{navigate: {…}}`, and the client applies it to the chat composer:
+
+| Verb | Effect |
+|---|---|
+| `{composer: {insertText: "…"}}` | Insert at the caret, leaving the rest of the draft alone. An empty string does nothing |
+| `{composer: {replaceText: "…"}}` | Replace the whole draft. An empty string clears it |
+
+Four things worth knowing before you rely on it:
+
+- **The verb belongs to the response, not to the socket kind.** Any action invoked from a composer- or chat-scoped socket can carry one — a `row-menu-item` on a chat row that returns `{composer: {insertText}}` writes into that chat's composer. Invoked from somewhere with no composer at all (a Lanes toolbar, a PR row), the edit is dropped with a console warning rather than queued: a draft that surfaced under an unrelated chat minutes later would be worse than nothing happening.
+- **`replaceText` wins if you send both.** "Replace, then insert into the replacement" is not what either verb means.
+- **32 KiB is the ceiling**, in UTF-8 bytes. Over it the edit is dropped, never truncated — a prompt cut off mid-sentence and then sent is worse than one that never arrived.
+- **You cannot send the message.** Composing and sending stay the user's; the verbs write text and stop there.
+
+### Long-running composer actions
+
+Every other socket's handler is capped at **60s**, and the guidance everywhere else in this skill stands: do slow work in `activate` or an event handler and store the result. A `composer-action` is the deliberate exception, capped at **15 minutes**, because its canonical uses are open-ended by nature — record until I stop, transcribe this, draft that.
+
+The reason is the busy state, not the socket. A composer button is the one contribution the user watches for its whole duration:
+
+- **It stays visibly active for the entire run** — accent-tinted, label intact, still focusable. It is *not* greyed out, because a control that looks disabled for three minutes reads as broken.
+- **A second press while it runs is a no-op.** You will never be re-entered for a click the user made while your handler was still working, so a "start/stop" button must be driven by your own state, not by two invocations.
+- **The user keeps typing the whole time.** Which is the next rule, and the one that actually bites.
+
+**Insert against the draft as it reads when you RESPOND, not when you were called.** ADE splices `insertText` at the caret's *current* position in the *current* draft, so an insert is always correct on ADE's side. What is on you is your own arithmetic: if your handler captured `context.draft` at the start of a three-minute recording and returns `{composer: {replaceText: draft + transcript}}`, you have just deleted everything the user typed while you were listening. Prefer `insertText` for anything that took real time, and reserve `replaceText` for actions that answer immediately or genuinely own the whole prompt.
+
+Worked example — a prompt-template button. Declare the socket:
+
+```json
+{ "socket": "composer-action", "surface": "work", "id": "bug",
+  "label": "Bug report", "icon": "Bug", "actionId": "bugTemplate" }
+```
+
+Then answer with the edit:
+
+```js
+exports.actions = {
+  async bugTemplate(args) {
+    const { draft } = args.context;                 // the live prompt, verbatim
+    const template = "Steps to reproduce:\n1. \n\nExpected:\n\nActual:\n";
+    // Nothing typed yet: lay the template down. Otherwise slot it in at the
+    // caret so the sentence they were writing survives.
+    return draft.trim().length === 0
+      ? { composer: { replaceText: template } }
+      : { composer: { insertText: `\n\n${template}` } };
+  },
+};
+```
 
 ## The SDK your code gets
 
@@ -593,7 +650,7 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 1. **Data, never code.** No expressions, no conditionals, no formatting strings, no callbacks in a schema. Compute on your machine, store the result. A `webview` is the one exception, and it buys unlimited UI by giving up three of the four clients.
 2. **Every panel declares `fallback` with a `title` and `text`.** A panel without one is fatal on every client. Add a `deeplink` too.
 3. **Secrets go through `ade.secrets`, never through the environment.** The child's env is denylisted, and a secret in a collection value is a secret in the sync layer.
-4. **Never assume a socket renders.** iOS draws two of the seven kinds today, and the TUI draws none. A contribution is an enhancement; the panel and the fallback are the floor.
+4. **Never assume a socket renders.** iOS draws two of the eight kinds today, `composer-action` is desktop and web only, and the TUI draws none. A contribution is an enhancement; the panel and the fallback are the floor.
 5. **The `plugin_*` SQL shapes are frozen.** A plugin never gets its own table or its own column on an ADE entity — collections and contributions are the two storage shapes there are.
 6. **Budgets are refusals, not warnings.** Catch `plugin_budget_exceeded` on every `put`, prune, and carry on — a full store must never stall a plugin (*Never stall*). Budgets bound what leaves the machine, never what the plugin's own process may do (*What you can build*).
 7. **`"official": true` in your manifest buys no trust.** Official is a statement the registry makes about a plugin, never one the plugin makes about itself. The one thing the field does locally is unlock the reserved `builtin` binding, which still gates nothing unless the compiled owner table already names your plugin id.
@@ -605,7 +662,8 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 |---|---|
 | Plugin shows as `crashed` | The child exited. `ade plugin logs <id> --text` — the crash line carries the exit status and the tail of stderr. It restarts automatically with backoff `min(30s, 1s × 2ⁿ)`; a child that stays up 60s resets the counter. After 5 fast failures in a row the host stops reviving it and the status stays `crashed` — `ade plugin reload <id>` (or the Restart button) clears the counter and tries again |
 | Status stuck at `starting` | The child never sent `ready` within 20s. Usually a top-level throw in the entry module or a `require` of something not installed — check the logs |
-| An action hangs then fails | `plugin_timeout`: one `invoke` round-trip is capped at 60s. Do slow work in `activate` or an event handler and store the result |
+| An action hangs then fails | `plugin_timeout`: one `invoke` round-trip is capped at 60s — 15 minutes for a `composer-action`. Do slow work in `activate` or an event handler and store the result |
+| A long composer action's insert wipes what the user typed | Your handler splices against the `context.draft` it captured at the start. Return `insertText` and let ADE place it at the live caret, rather than rebuilding the whole prompt with `replaceText` — see *Long-running composer actions* |
 | A write fails with `plugin_budget_exceeded` | Working as designed. Read `detail.budget`, `detail.limit`, `detail.actual`, prune with `ade.collections.delete`, retry once, then skip the item. Deletes always succeed, so recovery never needs the user — if the plugin stalled here, fix it against *Never stall* |
 | Panel renders as a fallback card | Panel-fatal: bad JSON, `v` mismatch, missing `fallback`, or over 200 nodes / depth 8 / 64 KiB. Compare against the limits above |
 | One component shows a marker, rest renders fine | Node-local. Either the component is malformed, or that surface does not draw it (see the support matrix) |
@@ -616,6 +674,8 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 | The webview surface shows a panel instead of the page | You are not on the desktop. iOS, the web client, and the TUI render the surface's `panelId` — that is the design, so make that panel say something useful |
 | `adePlugin.collections.put` fails with `plugins_unavailable` | A page can only write where the plugin host runs in the same process. Call your own action with `adePlugin.invoke(...)` and write from the child instead |
 | Contribution never appears | Check `manifest.sockets` declares the kind on that surface, the payload validates for that kind, and you published from the machine that owns the entity |
+| Composer button is there but nothing lands in the draft | Look for `[plugin composer]` in the renderer console. "no composer on screen" means the action was invoked from a surface with no composer; "malformed" means the verb was not a string, was an empty `insertText`, or was over the 32 KiB ceiling |
+| Composer button never appears on the phone or in the TUI | Expected — `composer-action` is desktop and web only (see the support table). Give the same action a `row-menu-item` or a panel button if it has to be reachable everywhere |
 | `ade plugin <cmd>` says it needs the brain | `install`/`remove`/`enable`/`disable`/`reload`/`logs`/`dev` are daemon-backed. Start ADE or run `ade brain start`. `list` and `create` never need it |
 | `ade <pluginId> <word>` says unknown command | The plugin must be installed, **enabled**, and declare that exact word in `cli` — otherwise the CLI treats it as a typo, which is what you want |
 | A directory in `~/.ade/plugins/` is ignored | `state.json` is the only source of truth for "installed". A stray clone is a leftover, not a plugin. Install it properly |

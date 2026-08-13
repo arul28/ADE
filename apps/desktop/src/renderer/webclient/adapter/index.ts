@@ -133,7 +133,7 @@ export function createAdeWebAdapter(
     keybindings: misc.keybindings,
     projectSecrets: misc.projectSecrets,
     ai: misc.ai,
-    transcription: misc.transcription,
+    audio: misc.audio,
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
     adeCli: misc.adeCli,

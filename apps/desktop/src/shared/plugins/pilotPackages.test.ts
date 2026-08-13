@@ -36,6 +36,7 @@ const PACKAGE_DIRS = [
   "ade-ios-sim",
   "ade-app-control",
   "ade-log-viewer",
+  "ade-voice",
   "themes/ade-theme-paper",
   "themes/ade-theme-ink",
   "themes/ade-theme-contrast",

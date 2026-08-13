@@ -16,6 +16,17 @@ import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
   isBuiltInBrowserDesktopBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import {
+  encodeDesktopAudioCaptureError,
+  DESKTOP_AUDIO_BRIDGE_METHOD,
+  DESKTOP_AUDIO_REQUESTER_LABEL_MAX_CHARS,
+  type DesktopAudioCaptureRequest,
+  type DesktopAudioCaptureResponse,
+} from "../../../../../ade-cli/src/services/audio/desktopAudioBridge";
+import {
+  isPluginAudioCaptureErrorCode,
+  type PluginAudioCaptureErrorCode,
+} from "../../../shared/plugins/sdk";
 import type { Logger } from "../logging/logger";
 import { resolveBuiltInBrowserActorCapability } from "./builtInBrowserActorCapabilities";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
@@ -42,6 +53,14 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   socketPath: string;
   service: BuiltInBrowserService;
   logger: Logger;
+  /**
+   * Record a clip on a daemon caller's behalf, if this desktop can.
+   *
+   * Optional so the bridge still starts on a build wired without audio; absent
+   * reads as "this desktop has no microphone to lend", which is a refusal the
+   * calling plugin can act on rather than a socket that never answers.
+   */
+  captureAudioClip?: (input: DesktopAudioCaptureRequest) => Promise<DesktopAudioCaptureResponse>;
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -135,15 +154,50 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     throw error;
   }
 
-  async function handleRequest(request: JsonRpcRequest): Promise<unknown> {
-    const method = request.method ?? "";
-    if (!method.startsWith("built_in_browser.")) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*`,
+  /**
+   * Serve one capture for the daemon's plugin host.
+   *
+   * No actor capability here, unlike every browser method below: a plugin child
+   * has no chat session to be issued one from, and the consent this call needs
+   * is not a token — it is the pill the user is looking at while it records.
+   * The bridge token is the whole gate, and it is the same one that lets a
+   * caller drive the browser.
+   *
+   * Concurrency is NOT re-checked here. The broker already refuses a second
+   * capture (`audio_capture_busy`) because it owns the one microphone and the
+   * one pill; a gate here as well could only disagree with it.
+   */
+  async function handleAudioCapture(rawParams: Record<string, unknown>): Promise<unknown> {
+    if (!args.captureAudioClip) {
+      throw audioCaptureRefusal("audio_capture_mic_unavailable", "This copy of ADE cannot record audio.");
+    }
+    const maxDurationMs = typeof rawParams.maxDurationMs === "number"
+      && Number.isFinite(rawParams.maxDurationMs)
+      && rawParams.maxDurationMs > 0
+      ? Math.trunc(rawParams.maxDurationMs)
+      : undefined;
+    const requesterLabel = normalizedString(rawParams.requesterLabel)
+      ?.slice(0, DESKTOP_AUDIO_REQUESTER_LABEL_MAX_CHARS)
+      .trim();
+    try {
+      return await args.captureAudioClip({
+        ...(maxDurationMs != null ? { maxDurationMs } : {}),
+        ...(requesterLabel ? { requesterLabel } : {}),
+      });
+    } catch (error) {
+      // The recorder's own vocabulary is what the plugin branches on, so a code
+      // it named survives; anything else is this process failing and says so.
+      const code = (error as { code?: unknown } | null)?.code;
+      const message = error instanceof Error ? error.message : String(error);
+      throw audioCaptureRefusal(
+        isPluginAudioCaptureErrorCode(code) ? code : "audio_capture_failed",
+        message || "The recording failed.",
       );
     }
-    const name = method.slice("built_in_browser.".length);
+  }
+
+  async function handleRequest(request: JsonRpcRequest): Promise<unknown> {
+    const method = request.method ?? "";
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
     const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
       ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
@@ -154,6 +208,15 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         "Built-in browser bridge authentication failed.",
       );
     }
+    delete rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM];
+    if (method === DESKTOP_AUDIO_BRIDGE_METHOD) return await handleAudioCapture(rawParams);
+    if (!method.startsWith("built_in_browser.")) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.* and ${DESKTOP_AUDIO_BRIDGE_METHOD}`,
+      );
+    }
+    const name = method.slice("built_in_browser.".length);
     if (name === "authenticate") {
       return { authenticated: true };
     }
@@ -173,7 +236,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         `Action 'built_in_browser.${name}' is not exposed by the desktop bridge.`,
       );
     }
-    delete rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM];
     const chatSessionId = normalizedString(rawParams.chatSessionId);
     const actorToken = normalizedString(rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM]);
     delete rawParams[BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM];
@@ -248,6 +310,21 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
     },
   };
+}
+
+/**
+ * A refused capture, addressed to the plugin rather than to the bridge.
+ *
+ * The code rides in the message because that is the only part of a JSON-RPC
+ * error that survives `JsonRpcClient`, which rebuilds a rejection from
+ * `error.message` alone — see `encodeDesktopAudioCaptureError`. The daemon
+ * decodes it back into the code the plugin branches on.
+ */
+function audioCaptureRefusal(code: PluginAudioCaptureErrorCode, message: string): JsonRpcError {
+  return new JsonRpcError(
+    JsonRpcErrorCode.internalError,
+    encodeDesktopAudioCaptureError(code, message),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

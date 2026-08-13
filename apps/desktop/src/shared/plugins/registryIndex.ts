@@ -54,6 +54,19 @@ export const PLUGIN_REGISTRY_LIMITS = {
    */
   maxMedia: 8,
   maxCaptionChars: 160,
+  /**
+   * Extra downloads per entry, and how long each one's label may be. A plugin
+   * that fetches things at runtime is describing a handful of assets, not
+   * publishing a file list.
+   */
+  maxExtraDownloads: 4,
+  maxDownloadLabelChars: 60,
+  /**
+   * The largest figure read as a measurement rather than a typo. 64 GiB is far
+   * past anything a plugin could plausibly ship or fetch, and the ceiling is
+   * what stops a directory entry printing "8.4 EB" on ADE's own page.
+   */
+  maxDownloadBytes: 64 * 1024 * 1024 * 1024,
 } as const;
 
 /**
@@ -95,6 +108,21 @@ export type PluginRegistryLinks = {
 };
 
 const PLUGIN_REGISTRY_LINK_KEYS = ["repository", "homepage", "changelog", "license", "docs"] as const;
+
+/**
+ * Something the plugin fetches for itself after it is installed.
+ *
+ * Published because the package size stops being the honest answer the moment a
+ * plugin pulls a model down on first run: a 300 KB package that then fetches
+ * 141 MB is a 141 MB decision, and a Marketplace that quoted only the package
+ * would be technically right and useless. The label is the plugin's own words
+ * for what it fetches, shown in parentheses beside the figure — bounded, and
+ * never rendered anywhere it could pass for something ADE said.
+ */
+export type PluginRegistryExtraDownload = {
+  label: string;
+  bytes: number;
+};
 
 export type PluginRegistryEntry = {
   pluginId: string;
@@ -144,6 +172,14 @@ export type PluginRegistryEntry = {
   /** Measured by the directory. Null when it has never measured them. */
   installs: number | null;
   stars: number | null;
+  /**
+   * What installing this costs to download, in bytes. Null when the directory
+   * has never measured it, and null is rendered as NOTHING — a plugin whose
+   * size nobody knows must not read as a plugin that weighs nothing.
+   */
+  sizeBytes: number | null;
+  /** What it fetches for itself later. Empty for nearly every plugin. */
+  extraDownloads: PluginRegistryExtraDownload[];
   publishedAt: string | null;
   updatedAt: string | null;
   changelogUrl: string | null;
@@ -181,6 +217,43 @@ export type PluginRegistryParseResult = {
 function count(value: unknown): number | null {
   const raw = finite(value);
   return raw !== null && raw >= 0 ? Math.round(raw) : null;
+}
+
+/**
+ * A byte figure the app is willing to print, or null.
+ *
+ * Stricter than {@link count} in both directions, and each end earns its place.
+ * Zero is refused rather than kept: the crawler derives sizes from an API that
+ * reports `0` for a repository it has not measured yet, and "0 B" on the page
+ * is a confident wrong answer where nothing at all is the true one. The ceiling
+ * refuses a figure too large to be a measurement — the alternative is a
+ * third-party entry choosing what magnitude ADE's own rail displays.
+ */
+function byteCount(value: unknown): number | null {
+  const raw = finite(value);
+  if (raw === null || raw <= 0 || raw > PLUGIN_REGISTRY_LIMITS.maxDownloadBytes) return null;
+  return Math.round(raw);
+}
+
+/**
+ * The downloads a plugin says it will fetch later, item by item.
+ *
+ * Same rule as the gallery: one unreadable item costs itself and nothing else.
+ * An entry with no readable items ends up with an empty array, which the UI
+ * renders as no line — never as "downloads 0 B".
+ */
+function parseExtraDownloads(raw: unknown): PluginRegistryExtraDownload[] {
+  if (!Array.isArray(raw)) return [];
+  const downloads: PluginRegistryExtraDownload[] = [];
+  for (const value of raw) {
+    if (downloads.length >= PLUGIN_REGISTRY_LIMITS.maxExtraDownloads) break;
+    if (!isRecord(value)) continue;
+    const label = bounded(value.label, PLUGIN_REGISTRY_LIMITS.maxDownloadLabelChars);
+    const bytes = byteCount(value.bytes);
+    if (!label || bytes === null) continue;
+    downloads.push({ label, bytes });
+  }
+  return downloads;
 }
 
 /**
@@ -431,6 +504,8 @@ export function parsePluginRegistryEntry(
       adds: parseStringList(raw.adds, PLUGIN_REGISTRY_LIMITS.maxAddsLines, 120),
       installs: count(raw.installs),
       stars: count(raw.stars),
+      sizeBytes: byteCount(raw.sizeBytes),
+      extraDownloads: parseExtraDownloads(raw.extraDownloads),
       publishedAt: isoDate(raw.publishedAt),
       updatedAt: isoDate(raw.updatedAt),
       changelogUrl: changelogUrl && isSafeRegistryUrl(changelogUrl) ? changelogUrl : null,

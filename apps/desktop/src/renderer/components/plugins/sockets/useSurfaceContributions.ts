@@ -3,12 +3,17 @@ import React from "react";
 import { showToast } from "../../app/toast/toastStore";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { subscribeToPluginChanges } from "../../../lib/pluginRuntimeBridge";
-import { readPluginActionNavigation } from "../../../../shared/plugins/sdk";
+import {
+  hasPluginActionComposerRequest,
+  readPluginActionComposerEdit,
+  readPluginActionNavigation,
+} from "../../../../shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
-import type {
-  PluginContribution,
-  PluginSocketKind,
-  PluginSurfaceId,
+import {
+  pluginSocketInvokeTimeoutMs,
+  type PluginContribution,
+  type PluginSocketKind,
+  type PluginSurfaceId,
 } from "../../../../shared/plugins/sockets";
 import {
   clearPluginManifestCache,
@@ -19,6 +24,7 @@ import {
   type PluginContributionRow,
   type PluginSocketSource,
 } from "./contributionBridge";
+import { applyPluginComposerEdit } from "./composerTarget";
 import {
   buildContributionSet,
   pluginChangeAffects,
@@ -281,15 +287,40 @@ export function usePluginFileViewers(active = true): PluginViewerRegistration[] 
  * Failures surface as a toast rather than a console line: a plugin button that
  * appears to do nothing is indistinguishable from a plugin that is broken, and
  * the person clicking it is the one who can act on the difference.
+ *
+ * The returned promise settles when the action and its response verbs are done,
+ * so a caller that draws a busy state knows when to stop. It never rejects —
+ * the toast is the error path — which is why callers may ignore it entirely.
+ *
+ * Naming the `socket` the click came from sets the round-trip budget for it: a
+ * `composer-action` that records or transcribes runs for minutes by design,
+ * while a button on a row keeps the 60s default. A caller that names nothing
+ * gets the default, which is what every socket had before this existed.
  */
 export function usePluginSocketInvoke(): (
   pluginId: string,
   actionId: string,
   context: PluginSurfaceContext,
-) => void {
-  return React.useCallback((pluginId, actionId, context) => {
-    void invokePluginSocketAction(pluginId, actionId, { context })
+  options?: { socket?: PluginSocketKind },
+) => Promise<void> {
+  return React.useCallback((pluginId, actionId, context, options) => (
+    invokePluginSocketAction(
+      pluginId,
+      actionId,
+      { context },
+      { timeoutMs: pluginSocketInvokeTimeoutMs(options?.socket) },
+    )
       .then((result) => {
+        // Applied before navigation, which may take the composer off screen:
+        // an action that writes a draft and then opens its own panel should do
+        // both, in the order the plugin can predict.
+        const edit = readPluginActionComposerEdit(result);
+        if (edit) applyPluginComposerEdit(edit, { context, pluginId, actionId });
+        else if (hasPluginActionComposerRequest(result)) {
+          // The plugin asked and this client refused: a non-string verb, an
+          // empty insert, or text over PLUGIN_COMPOSER_TEXT_MAX_BYTES.
+          console.warn("[plugin composer] ignored a malformed composer edit", pluginId, actionId);
+        }
         // An action may ask to be followed: "I filed the issue, here it is."
         // Routed through the ordinary navigation target rather than a direct
         // `navigate`, so it passes the same installed-and-enabled gate a
@@ -309,6 +340,6 @@ export function usePluginSocketInvoke(): (
           message: cause instanceof Error ? cause.message : `${pluginId} couldn’t run ${actionId}.`,
           tone: "error",
         });
-      });
-  }, []);
+      })
+  ), []);
 }

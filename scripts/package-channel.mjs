@@ -343,7 +343,7 @@ const AZURE_SIGNING_ENV = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_S
  *
  * Unlike the macOS path this does not drive electron-builder directly. The
  * Windows packaging chain (`dist:win`) also materializes and validates runtime
- * and whisper resources, runs the artifact preflight, and runs the release
+ * resources, runs the artifact preflight, and runs the release
  * validator afterwards — reimplementing that here would mean maintaining a
  * second copy of a contract the release path depends on. So the channel is
  * expressed purely as environment, and the maintained script does the work.

@@ -378,6 +378,36 @@ install registry into the set to refuse. Graph, Review and History list nothing:
 they are views over state other domains already own, so there is nothing of
 theirs to refuse.
 
+### Recording audio: `ade.audio.captureClip`
+
+Speech used to be compiled into ADE — a whisper binary and a 141 MB model. It is
+gone: there is no speech model, no transcriber and no dictation setting left in
+core, and no built-in surface for voice. What replaced it is a **generic
+capability any plugin can use**, because the one thing a plugin child genuinely
+cannot do is reach a microphone.
+
+```
+ade.audio.captureClip({ maxDurationMs? }) -> { audioPath, durationMs }
+```
+
+The clip is a plain WAV on the same machine, deliberately outside any sandbox,
+read with ordinary `fs`. A path rather than the bytes: both processes are local
+and a two-minute clip would otherwise be encoded and decoded twice through the
+RPC envelope. ADE never interprets the audio — whether it becomes a transcript,
+a memo or a classification is the plugin's business, and the host never learns
+which.
+
+The user is always in control and always told who is asking. A capture puts an
+**attributed pill** in ADE's chrome carrying the plugin's *manifest* display
+name — never a string the plugin passes in, because a requester that could name
+itself could name someone else. The recording ends when the user stops it or
+`maxDurationMs` elapses; dismissing the pill rejects with
+`audio_capture_cancelled`. There is one microphone, so a capture requested while
+another runs is refused with `audio_capture_busy` rather than queued: a plugin
+that waited its turn would start recording at a moment the user has no reason to
+associate with it. Clips are caller-owned once handed over, and ADE sweeps
+whatever a crash left behind on its next start.
+
 The refusal is **policy, never a missing method**. A client that reads
 `methodNotFound` concludes the host is too old and silently takes a legacy path,
 which is how a scope denial once turned into a wrong fallback here. A gated

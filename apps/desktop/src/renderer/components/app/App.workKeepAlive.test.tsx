@@ -47,7 +47,6 @@ const appStoreState = vi.hoisted(() => ({
   launchPromptClipboardEnabled: true,
   launchPromptClipboardNoticeEnabled: true,
   promptStashButtonEnabled: true,
-  voiceInputEnabled: true,
   workViewByProject: {} as Record<string, Record<string, unknown>>,
   setWorkViewState: vi.fn((projectRoot: string | null | undefined, next: Record<string, unknown>) => {
     if (!projectRoot) return;
@@ -299,7 +298,6 @@ describe("App Work route keep-alive", () => {
     appStoreState.launchPromptClipboardEnabled = true;
     appStoreState.launchPromptClipboardNoticeEnabled = true;
     appStoreState.promptStashButtonEnabled = true;
-    appStoreState.voiceInputEnabled = true;
     appStoreState.workViewByProject = {};
     appStoreState.setWorkViewState.mockClear();
     appStoreState.openRemoteProjectTabs = [];
@@ -480,7 +478,6 @@ describe("App Work route keep-alive", () => {
   it("hydrates project stores with root user preferences", async () => {
     appStoreState.launchPromptClipboardNoticeEnabled = false;
     appStoreState.promptStashButtonEnabled = false;
-    appStoreState.voiceInputEnabled = false;
     const { hydrateProjectAppStore } = await import("../../state/appStore");
     const { App } = await import("./App");
 
@@ -494,7 +491,6 @@ describe("App Work route keep-alive", () => {
           launchPromptClipboardEnabled: true,
           launchPromptClipboardNoticeEnabled: false,
           promptStashButtonEnabled: false,
-          voiceInputEnabled: false,
         }),
       );
     });

@@ -1,4 +1,5 @@
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { clampPluginInvokeTimeoutMs } from "../../../shared/plugins/sockets";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -102,11 +103,36 @@ export function longRunningLocalRuntimeActionTimeoutMs(
   return LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS.get(actionKey) ?? null;
 }
 
+/**
+ * `plugin.invoke`'s budget when the call names one of its own.
+ *
+ * A contributed `composer-action` may record or transcribe for minutes by
+ * design, and the desktop's plugin calls take THIS route whenever a project
+ * runtime is bound — so a fixed entry here would cut a recording off however
+ * generous the direct IPC channel was. The hint is clamped (it crossed the
+ * preload boundary) and keeps the same headroom over the child's budget that
+ * the fixed entry had, so the supervisor's typed `plugin_timeout` still wins
+ * the race and the user learns which half was slow.
+ */
+function pluginInvokeActionTimeoutMs(args: unknown): number | null {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+  const hint = clampPluginInvokeTimeoutMs((args as Record<string, unknown>).timeoutMs);
+  return hint === null ? null : hint + PLUGIN_INVOKE_ACTION_HEADROOM_MS;
+}
+
+/** Spawn grace plus delivery margin — see the `plugin.invoke` entry above. */
+const PLUGIN_INVOKE_ACTION_HEADROOM_MS = 30_000;
+
 export function localRuntimeActionTimeoutMs(
   domain: string,
   action: string,
+  args?: unknown,
 ): number {
   const actionKey = `${domain}.${action}`;
+  if (actionKey === "plugin.invoke") {
+    const named = pluginInvokeActionTimeoutMs(args);
+    if (named !== null) return named;
+  }
   return longRunningLocalRuntimeActionTimeoutMs(actionKey)
     ?? (domain === "file"
       ? LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS
@@ -119,6 +145,7 @@ export function localRuntimeActionTimeoutMs(
 export function localRuntimeActionIpcTimeoutMs(
   domain: string,
   action: string,
+  args?: unknown,
 ): number {
-  return localRuntimeCallIpcTimeoutMs(localRuntimeActionTimeoutMs(domain, action));
+  return localRuntimeCallIpcTimeoutMs(localRuntimeActionTimeoutMs(domain, action, args));
 }

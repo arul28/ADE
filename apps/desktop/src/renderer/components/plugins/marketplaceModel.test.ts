@@ -6,6 +6,7 @@ import {
   deriveMachineCoverage,
   deriveSurfaceFacets,
   describePluginAdds,
+  describePluginDownload,
   describePluginResources,
   describePluginSource,
   pluginAuthorUrl,
@@ -100,6 +101,7 @@ describe("parseMarketplaceEntry", () => {
       repo,
       installs: "lots",
       stars: -4,
+      sizeBytes: "4 MB",
       publishedAt: "not a date",
       surfaces: ["lanes", "nowhere"],
     });
@@ -107,6 +109,8 @@ describe("parseMarketplaceEntry", () => {
     expect(parsed).not.toBeNull();
     expect(parsed?.installs).toBeNull();
     expect(parsed?.stars).toBeNull();
+    expect(parsed?.sizeBytes).toBeNull();
+    expect(parsed?.extraDownloads).toEqual([]);
     expect(parsed?.publishedAt).toBeNull();
     expect(parsed?.surfaces).toEqual(["lanes"]);
     expect(parsed?.source).toBe(repo);
@@ -135,6 +139,46 @@ describe("parseMarketplaceEntry", () => {
     expect(parsed?.manifest).toBeNull();
     expect(parsed?.isTheme).toBe(true);
     expect(describePluginAdds(parsed!)).toEqual(["A colour theme"]);
+  });
+});
+
+describe("describePluginDownload", () => {
+  it("quotes the package and anything the plugin fetches later, separately", () => {
+    const report = describePluginDownload(listing({
+      sizeBytes: 4_404_019,
+      extraDownloads: [{ label: "Speech model", bytes: 147_800_000 }],
+    }));
+
+    expect(report.size).toBe("4.2 MB");
+    // Not summed with the package: the second download happens later and only
+    // for people who use the feature, and one combined figure would say
+    // neither of those things.
+    expect(report.extras).toEqual([
+      "Downloads a further 141 MB (Speech model) the first time you use it.",
+    ]);
+  });
+
+  it("renders nothing at all for a size nobody measured", () => {
+    // The whole point of the null: "0 B" is a measurement, and an unmeasured
+    // plugin has not been measured as weighing nothing.
+    for (const value of [undefined, null, 0]) {
+      expect(describePluginDownload(listing({ sizeBytes: value })).size).toBeNull();
+    }
+    expect(describePluginDownload(listing()).extras).toEqual([]);
+  });
+
+  it("describes each extra download a plugin declares", () => {
+    const report = describePluginDownload(listing({
+      extraDownloads: [
+        { label: "Speech model", bytes: 147_800_000 },
+        { label: "Language pack", bytes: 8 * 1024 * 1024 },
+      ],
+    }));
+    expect(report.size).toBeNull();
+    expect(report.extras).toEqual([
+      "Downloads a further 141 MB (Speech model) the first time you use it.",
+      "Downloads a further 8.0 MB (Language pack) the first time you use it.",
+    ]);
   });
 });
 
@@ -526,6 +570,9 @@ describe("the bundled index", () => {
     for (const entry of MARKETPLACE_LOCAL_INDEX) {
       expect(entry.installs).toBeNull();
       expect(entry.stars).toBeNull();
+      // And no download size: these ship inside the app, so there is nothing to
+      // fetch and no number that would mean anything if there were.
+      expect(describePluginDownload(entry).size).toBeNull();
     }
   });
 

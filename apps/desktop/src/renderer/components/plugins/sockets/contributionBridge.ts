@@ -205,8 +205,9 @@ export async function invokePluginSocketAction(
   pluginId: string,
   action: string,
   args: Record<string, unknown>,
+  options?: { timeoutMs?: number },
 ): Promise<unknown> {
-  return invokePluginAction(pluginId, action, args);
+  return invokePluginAction(pluginId, action, args, options);
 }
 
 /** Narrowing helper shared by the model; kept here so the manifest cast is in one place. */

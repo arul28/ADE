@@ -16,6 +16,7 @@ import {
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS } from "../../../shared/plugins/sockets";
 
 describe("ipcInvokeTimeoutMs", () => {
   it("gives a Pi sign-in longer than the flow it waits on, on every transport", () => {
@@ -200,15 +201,44 @@ describe("ipcInvokeTimeoutMs", () => {
     }
   });
 
+  /**
+   * A contributed `composer-action` may record or transcribe for minutes, so it
+   * names its own budget. Every transport has to honour it: the desktop's
+   * plugin calls take the local-runtime route whenever a project runtime is
+   * bound, and fall back to the direct channel only when none is.
+   */
+  it("honours a per-call plugin invoke budget on every transport", () => {
+    const named = PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS;
+    const args = { pluginId: "voice", action: "dictate", timeoutMs: named };
+
+    expect(ipcInvokeTimeoutMs(IPC.pluginInvoke, [args])).toBeGreaterThan(named);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "plugin", action: "invoke", args },
+    }])).toBeGreaterThan(named);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "plugin", action: "invoke", args },
+    }])).toBeGreaterThan(named);
+  });
+
+  // Raising the ceiling for EVERY plugin call would let an ordinary contributed
+  // button wedge for a quarter of an hour. A call that names nothing keeps the
+  // budget it always had.
+  it("leaves a plugin invoke that names no budget exactly where it was", () => {
+    expect(ipcInvokeTimeoutMs(IPC.pluginInvoke, [{ pluginId: "graph", action: "sync" }])).toBe(90_000);
+    // Nonsense is not a budget: it reads as absent, never as unbounded.
+    for (const timeoutMs of [0, -1, "600000", null, Number.POSITIVE_INFINITY]) {
+      expect(ipcInvokeTimeoutMs(IPC.pluginInvoke, [{ pluginId: "graph", action: "sync", timeoutMs }]))
+        .toBe(90_000);
+    }
+  });
+
   it("leaves the rest of the plugin domain on the default action budget", () => {
     // Only the two slow ones are exceptions; list/get/usageSummary are reads.
     for (const action of ["list", "get", "usageSummary", "setConfig"]) {
       expect(longRunningLocalRuntimeActionTimeoutMs(`plugin.${action}`)).toBeNull();
     }
-  });
-
-  it("lets transcription run longer than the default invoke ceiling", () => {
-    expect(ipcInvokeTimeoutMs(IPC.transcriptionTranscribe)).toBe(6 * 60_000);
   });
 
   it("extends iOS Preview Lab matching and workspace readiness timeouts", () => {

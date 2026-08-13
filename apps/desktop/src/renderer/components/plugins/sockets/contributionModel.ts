@@ -97,6 +97,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown {
   switch (socket.socket) {
     case "toolbar-action":
+    case "composer-action":
       return { label: socket.label, icon: socket.icon, actionId: socket.actionId };
     case "row-badge":
       // A manifest badge has no value of its own — it is the declaration a

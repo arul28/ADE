@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Logger } from "../logging/logger";
+import { parsePluginManifestJson } from "../../../shared/plugins/manifest";
 import { parsePluginPanel } from "../../../shared/plugins/vocabulary";
 import {
   createPluginInstallService,
@@ -593,5 +594,72 @@ describe("bundled plugin packages", () => {
   it("does nothing when there are no bundled packages", () => {
     const pluginsRoot = scratchPluginsRoot();
     expect(service(pluginsRoot, null).list()).toEqual([]);
+  });
+});
+
+/**
+ * The shipped `ade-voice` manifest, through the real parser.
+ *
+ * Voice is the package that proves the plugin platform is enough on its own:
+ * dictation left the app entirely, and it left through doors any author has —
+ * a `composer-action` socket, an SDK call, a response verb. The assertions
+ * below are that claim written down. A `builtin` binding appearing here, or a
+ * warning from the parser, means the extraction quietly regressed into
+ * something only ADE's own plugins could have done.
+ */
+describe("the ade-voice package as shipped", () => {
+  const voiceRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../../../../../plugins/ade-voice",
+  );
+
+  const parsed = parsePluginManifestJson(
+    fs.readFileSync(path.join(voiceRoot, "plugin.json"), "utf8"),
+  );
+
+  it("parses with no errors and no warnings", () => {
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.manifest?.name).toBe("ade-voice");
+  });
+
+  it("gates nothing: no surface carries a builtin binding", () => {
+    for (const surface of parsed.manifest?.surfaces ?? []) {
+      expect(surface.builtin).toBeUndefined();
+    }
+  });
+
+  it("contributes the composer button, which is all the UI it claims", () => {
+    expect(parsed.manifest?.sockets).toEqual([
+      {
+        socket: "composer-action",
+        surface: "work",
+        id: "dictate",
+        label: "Dictate",
+        icon: "microphone",
+        actionId: "dictate",
+      },
+    ]);
+  });
+
+  it("ships the entry, the panel and the glossary the engine reads", () => {
+    expect(fs.existsSync(path.join(voiceRoot, parsed.manifest!.entry!))).toBe(true);
+    expect(fs.existsSync(path.join(voiceRoot, "voice-glossary.json"))).toBe(true);
+
+    const panel = parsed.manifest!.panels[0]!;
+    const schema = parsePluginPanel(
+      JSON.parse(fs.readFileSync(path.join(voiceRoot, panel.schemaFile!), "utf8")),
+    );
+    // Every surface that cannot draw the socket renders this instead, so it is
+    // the floor rather than a nicety.
+    expect(schema.ok).toBe(true);
+  });
+
+  it("ships a speech engine that is executable", () => {
+    const binary = path.join(voiceRoot, "bin", "whisper-cli-darwin-universal");
+    expect(fs.existsSync(binary)).toBe(true);
+    // A binary that loses its executable bit in a copy is a plugin that
+    // installs fine and then cannot transcribe anything.
+    expect(fs.statSync(binary).mode & 0o111).not.toBe(0);
   });
 });

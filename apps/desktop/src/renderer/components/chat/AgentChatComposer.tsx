@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -98,17 +98,20 @@ import {
   type SmartLinkPreview,
 } from "../../../shared/smartLinks";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
-import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
+import {
+  PluginComposerActions,
+  registerPluginComposerTarget,
+  type PluginComposerTarget,
+} from "../plugins/sockets";
 import {
   ComposerPromptStash,
   type ComposerPromptStashHandle,
 } from "./ComposerPromptStash";
-import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { insertAtComposerCaret } from "./composerTextEdits";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
@@ -136,20 +139,20 @@ const SMART_LINK_ICON_MARK_CLASS =
 const SMART_LINK_ICON_GLYPH_CLASS =
   "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
 
-const voiceShimmerStyleId = "ade-voice-shimmer-effects";
+const insertShimmerStyleId = "ade-composer-insert-shimmer-effects";
 
-/** Inject the dictation insert-shimmer keyframes once; reduce-motion disables it. */
-function ensureVoiceShimmerStyles(): void {
+/** Inject the composer insert-shimmer keyframes once; reduce-motion disables it. */
+function ensureInsertShimmerStyles(): void {
   if (typeof document === "undefined") return;
-  if (document.getElementById(voiceShimmerStyleId)) return;
+  if (document.getElementById(insertShimmerStyleId)) return;
   const sheet = document.createElement("style");
-  sheet.id = voiceShimmerStyleId;
+  sheet.id = insertShimmerStyleId;
   sheet.textContent = `
-    @keyframes ade-voice-shimmer-sweep {
+    @keyframes ade-composer-insert-shimmer-sweep {
       0% { background-position: -150% 0; }
       100% { background-position: 250% 0; }
     }
-    .ade-voice-shimmer::after {
+    .ade-composer-insert-shimmer::after {
       content: "";
       position: absolute;
       inset: 0;
@@ -157,10 +160,10 @@ function ensureVoiceShimmerStyles(): void {
       border-radius: inherit;
       background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--chat-accent) 22%, transparent) 50%, transparent 70%);
       background-size: 200% 100%;
-      animation: ade-voice-shimmer-sweep 1s ease-out 1;
+      animation: ade-composer-insert-shimmer-sweep 1s ease-out 1;
     }
     @media (prefers-reduced-motion: reduce) {
-      .ade-voice-shimmer::after { animation: none; background: none; }
+      .ade-composer-insert-shimmer::after { animation: none; background: none; }
     }
   `;
   document.head.appendChild(sheet);
@@ -1880,6 +1883,18 @@ export function AgentChatComposer({
   }, [mentionLabels]);
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
+  /**
+   * The draft as it reads RIGHT NOW, for the paths that write into it long
+   * after they were asked to.
+   *
+   * A plugin `composer-action` can land a string minutes after
+   * the click that started them — a recording runs for as long as the user
+   * talks. Splicing that string into a `draft` captured in a closure would
+   * silently discard everything typed in the meantime, so both read the live
+   * value from here and the caret from `lastPlainSelectionRef` instead.
+   */
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const fileAddInProgressRef = useRef(false);
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
@@ -2040,11 +2055,10 @@ export function AgentChatComposer({
     && !composerInputLocked
     && draft.trim().length > 0;
 
-  // ── Voice dictation ──────────────────────────────────────────────────────
-  const voiceInputEnabled = useAppStore((s) => s.voiceInputEnabled);
-  const voiceModelInstalled = useVoiceModelInstalled(voiceInputEnabled);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [voiceShimmer, setVoiceShimmer] = useState(false);
+  // Identity for the plugin composer context; null outside a lane, which is the
+  // honest answer on a projectless chat rather than a guess at the last one.
+  const composerLaneId = useAppStore((s) => s.selectedLaneId);
+  const [insertShimmer, setInsertShimmer] = useState(false);
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -3045,92 +3059,137 @@ export function AgentChatComposer({
 
   // Brief shimmer over the composer (CSS honors prefers-reduced-motion). Fired
   // both on the optimistic mic-down (recording start) and on transcript insert.
-  const voiceShimmerTimerRef = useRef<number | null>(null);
-  const triggerVoiceShimmer = useCallback(() => {
-    ensureVoiceShimmerStyles();
-    setVoiceShimmer(false);
+  const insertShimmerTimerRef = useRef<number | null>(null);
+  const triggerInsertShimmer = useCallback(() => {
+    ensureInsertShimmerStyles();
+    setInsertShimmer(false);
     // Re-arm on the next frame so a back-to-back trigger restarts the sweep.
     requestAnimationFrame(() => {
-      setVoiceShimmer(true);
-      if (voiceShimmerTimerRef.current != null) {
-        window.clearTimeout(voiceShimmerTimerRef.current);
+      setInsertShimmer(true);
+      if (insertShimmerTimerRef.current != null) {
+        window.clearTimeout(insertShimmerTimerRef.current);
       }
-      voiceShimmerTimerRef.current = window.setTimeout(() => setVoiceShimmer(false), 1000);
+      insertShimmerTimerRef.current = window.setTimeout(() => setInsertShimmer(false), 1000);
     });
   }, []);
   useEffect(() => () => {
-    if (voiceShimmerTimerRef.current != null) {
-      window.clearTimeout(voiceShimmerTimerRef.current);
+    if (insertShimmerTimerRef.current != null) {
+      window.clearTimeout(insertShimmerTimerRef.current);
     }
   }, []);
 
-  // Insert dictated text at the current caret without destroying existing text.
-  // Handles both the plain textarea and the contenteditable rich editor.
-  const insertDictatedText = useCallback((text: string) => {
+  // Insert text at the current caret without destroying existing text. Handles
+  // both the plain textarea and the contenteditable rich editor, and is shared
+  // by plugin composer-action responses — the path that
+  // write into a draft the user is in the middle of.
+  const insertTextAtCaret = useCallback((text: string) => {
     const insertion = text.trim();
     if (!insertion) return;
-    setVoiceError(null);
     if (useRichComposer) {
       // Rich editor: insert at the saved selection range (or end), then sync draft.
       insertTextIntoRichEditor(insertion);
     } else {
-      const current = draft;
-      const caret = lastPlainSelectionRef.current ?? current.length;
-      const start = Math.max(0, Math.min(caret, current.length));
-      const before = current.slice(0, start);
-      const after = current.slice(start);
-      // Add a separating space when butting up against existing words.
-      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
-      const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
-      const piece = `${needsLeadingSpace ? " " : ""}${insertion}${needsTrailingSpace ? " " : ""}`;
-      const next = `${before}${piece}${after}`;
-      onDraftChange(next);
-      const nextCaret = before.length + piece.length;
-      lastPlainSelectionRef.current = nextCaret;
+      // Both read LIVE, never captured: this may run minutes after the click
+      // that asked for it, and the user has been typing the whole time. The
+      // splice itself is `insertAtComposerCaret`, which is a pure function of
+      // what it is handed — passing the current values is the whole guarantee.
+      const edit = insertAtComposerCaret(draftRef.current, insertion, lastPlainSelectionRef.current);
+      if (!edit) return;
+      onDraftChange(edit.text);
+      lastPlainSelectionRef.current = edit.caret;
       // Restore focus + caret after React applies the new value.
       requestAnimationFrame(() => {
         const node = textareaRef.current;
         if (!node) return;
         node.focus({ preventScroll: true });
         try {
-          node.setSelectionRange(nextCaret, nextCaret);
+          node.setSelectionRange(edit.caret, edit.caret);
         } catch {
           // selection may not apply if the node is detached; ignore
         }
         resizeTextarea();
       });
     }
-    // Brief shimmer over the insert (CSS honors prefers-reduced-motion).
-    triggerVoiceShimmer();
-  }, [draft, insertTextIntoRichEditor, onDraftChange, resizeTextarea, triggerVoiceShimmer, useRichComposer]);
+  }, [insertTextIntoRichEditor, onDraftChange, resizeTextarea, useRichComposer]);
 
-  // ── App-global dictation target registration ─────────────────────────────
-  // Register this composer as the active dictation target so the app-global
-  // recorder (which writes to the ROOT store and survives this component
-  // unmounting / navigation) inserts the cleaned transcript here. We keep the
-  // registered functions in refs so a single stable target object can be
-  // (re)registered on focus without re-running on every callback identity change.
-  const dictationTargetId = useId();
-  const insertDictatedTextRef = useRef(insertDictatedText);
-  const focusComposerInputRef = useRef(focusComposerInput);
-  insertDictatedTextRef.current = insertDictatedText;
-  focusComposerInputRef.current = focusComposerInput;
-  const registerAsDictationTarget = useCallback(() => {
-    rootAppStoreApi.getState().registerDictationTarget({
-      id: dictationTargetId,
-      insertText: (text: string) => insertDictatedTextRef.current(text),
-      focus: () => focusComposerInputRef.current(),
+  /**
+   * Insert text that arrived from somewhere other than the keyboard.
+   *
+   * Text a plugin action returns lands in the draft with no keystroke behind
+   * it, so it gets a brief shimmer over the insert — otherwise a draft can
+   * change under the reader with nothing to mark that it did. The CSS honors
+   * prefers-reduced-motion.
+   */
+  const insertTextWithShimmer = useCallback((text: string) => {
+    insertTextAtCaret(text);
+    triggerInsertShimmer();
+  }, [insertTextAtCaret, triggerInsertShimmer]);
+
+  /**
+   * Replace the whole draft, leaving the caret at the end.
+   *
+   * Goes through the same two writes `handleSlashSelect` uses — the rich editor
+   * holds the DOM the user sees, `onDraftChange` holds the value everything
+   * else reads — because setting only one of them leaves the two disagreeing
+   * about what is about to be sent.
+   */
+  const replaceComposerText = useCallback((text: string) => {
+    if (useRichComposer) setRichEditorText(text);
+    onDraftChange(text);
+    lastPlainSelectionRef.current = text.length;
+    requestAnimationFrame(() => {
+      if (useRichComposer) {
+        richEditorRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      const node = textareaRef.current;
+      if (!node) return;
+      node.focus({ preventScroll: true });
+      try {
+        node.setSelectionRange(text.length, text.length);
+      } catch {
+        // selection may not apply if the node is detached; ignore
+      }
+      resizeTextarea();
     });
-  }, [dictationTargetId]);
+  }, [onDraftChange, resizeTextarea, setRichEditorText, useRichComposer]);
+
+  // ── Plugin composer-action target ────────────────────────────────────────
+  // A `{composer: {insertText|replaceText}}` action response lands here. Kept in
+  // refs and re-registered when this composer becomes active, for the same
+  // reason: the registry routes by session and falls back to the
+  // most recently registered composer, so a split pane must be able to claim it.
+  const composerTargetId = useId();
+  const composerTargetRef = useRef<PluginComposerTarget>({
+    sessionId: sessionId ?? null,
+    insertText: insertTextWithShimmer,
+    replaceText: replaceComposerText,
+  });
+  composerTargetRef.current = {
+    sessionId: sessionId ?? null,
+    insertText: insertTextWithShimmer,
+    replaceText: replaceComposerText,
+  };
   useEffect(() => {
-    // Claim the target on mount (and whenever the composer becomes active), and
-    // release it on unmount ONLY if we're still the registered target — a newer
-    // composer that focused after us must not be clobbered by our teardown.
-    if (isActive) registerAsDictationTarget();
-    return () => {
-      rootAppStoreApi.getState().unregisterDictationTarget(dictationTargetId);
-    };
-  }, [dictationTargetId, isActive, registerAsDictationTarget]);
+    if (!isActive) return undefined;
+    return registerPluginComposerTarget(composerTargetId, {
+      sessionId: sessionId ?? null,
+      insertText: (text) => composerTargetRef.current.insertText(text),
+      replaceText: (text) => composerTargetRef.current.replaceText(text),
+    });
+  }, [composerTargetId, isActive, sessionId]);
+
+  /**
+   * The live draft and caret, read when a contributed button is pressed.
+   *
+   * Refs rather than values so the plugin button row does not re-render on
+   * every keystroke, and so what a plugin receives is the text on screen at the
+   * moment of the click rather than at the last render.
+   */
+  const readComposerDraft = useCallback(() => ({
+    draft: draftRef.current,
+    cursor: useRichComposer ? getRichCursorTextOffset() : lastPlainSelectionRef.current,
+  }), [getRichCursorTextOffset, useRichComposer]);
 
   const insertNodeAtTextOffset = useCallback((editor: HTMLElement, node: Node, offset: number) => {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
@@ -4612,21 +4671,6 @@ export function AgentChatComposer({
           </button>
         </div>
       ) : null}
-      {voiceError ? (
-        <div
-          role="status"
-          className="mx-auto mb-1.5 flex w-full max-w-[var(--chat-column,52rem)] items-center justify-between gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-amber-300/80"
-        >
-          <span>{voiceError}</span>
-          <button
-            type="button"
-            className="text-amber-200/60 underline decoration-amber-200/20 underline-offset-2 transition-colors hover:text-amber-100"
-            onClick={() => setVoiceError(null)}
-          >
-            Dismiss
-          </button>
-        </div>
-      ) : null}
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -5425,40 +5469,20 @@ export function AgentChatComposer({
               ]}
             />
 
-            {/* Voice dictation — paired just left of the send control. */}
-            {voiceInputEnabled && !composerInputLocked && !parallelChatMode ? (
-              voiceModelInstalled === false ? (
-                <SmartTooltip
-                  forceEnabled
-                  content={{
-                    label: "Voice model not installed",
-                    description: "Tap to download the on-device voice model in Settings → General.",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // HashRouter deep-link to the voice-input card under General.
-                      window.location.hash = `#${settingsRouteFor("agents.dictation")}`;
-                    }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-fg/30 transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)] active:scale-[0.97]"
-                    aria-label="Set up voice input"
-                  >
-                    <MicrophoneSlash size={14} weight="regular" />
-                  </button>
-                </SmartTooltip>
-              ) : voiceModelInstalled ? (
-                <VoiceDictationButton
-                  onOptimisticStart={() => {
-                    // This composer is the one being dictated into: claim the
-                    // target and shimmer immediately, before getUserMedia.
-                    registerAsDictationTarget();
-                    triggerVoiceShimmer();
-                  }}
-                  onError={(message) => setVoiceError(message)}
-                />
-              ) : null
+            {/* Contributed plugin buttons, after every control ADE owns and
+                before the send control the user reaches for by muscle
+                memory. Renders nothing when no plugin contributes. */}
+            {!parallelChatMode ? (
+              <PluginComposerActions
+                sessionId={sessionId ?? null}
+                projectKey={composerMachineBinding?.key ?? null}
+                projectRoot={composerMachineBinding?.rootPath ?? null}
+                laneId={composerLaneId}
+                readDraft={readComposerDraft}
+                active={isActive}
+              />
             ) : null}
+
 
             {turnActive ? (
               <>
@@ -5646,14 +5670,7 @@ export function AgentChatComposer({
           </div>
         ) : null}
 
-        <div
-          className={cn("relative", voiceShimmer ? "ade-voice-shimmer" : "")}
-          onFocusCapture={() => {
-            // Focusing this composer makes it the dictation insertion target so
-            // a transcript lands in whichever composer the user is typing into.
-            registerAsDictationTarget();
-          }}
-        >
+        <div className={cn("relative", insertShimmer ? "ade-composer-insert-shimmer" : "")}>
           <ChatCommandMenu
             ref={commandMenuRef}
             trigger={commandMenuTrigger}

@@ -115,7 +115,17 @@ export type PluginSdkErrorCode =
   | typeof PLUGIN_BUDGET_EXCEEDED_CODE
   | "not_permitted"
   | "unsupported_method"
-  | "internal_error";
+  | "internal_error"
+  /**
+   * A refused microphone capture, as its own vocabulary.
+   *
+   * Part of this union rather than a code smuggled in the message, because
+   * `code` is the only field that survives the child boundary intact
+   * (`pluginChildSupervisor` rebuilds a rejection from `PluginSdkError`'s code)
+   * and a plugin has to tell "the user dismissed the pill" from "the recording
+   * failed" — one is a quiet no-op, the other is worth a sentence.
+   */
+  | PluginAudioCaptureErrorCode;
 
 /**
  * How an error crosses the child boundary. Structural, never a stack string:
@@ -355,6 +365,17 @@ export type AdePluginSdk = {
     get(): Promise<Record<string, string | number | boolean | null>>;
   };
 
+  audio: {
+    /**
+     * Record a clip through ADE's microphone. See {@link PluginAudioClip}.
+     *
+     * Rejects with a {@link PluginAudioCaptureErrorCode} as the error's `code`
+     * when the user cancels, another capture is running, or there is no
+     * microphone — so a plugin branches on it rather than reading a sentence.
+     */
+    captureClip(options?: PluginAudioCaptureOptions): Promise<PluginAudioClip>;
+  };
+
   log(level: PluginLogLevel, message: string, fields?: Record<string, unknown>): void;
 };
 
@@ -423,6 +444,78 @@ export function readPluginActionNavigation(result: unknown): PluginActionNavigat
   return { panelId, context };
 }
 
+// ---------------------------------------------------------------------------
+// Action-response composer edits
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest draft text an action may write into the composer.
+ *
+ * A liveness bound, not a permission: the string lands in a contenteditable
+ * that re-renders and re-tokenizes on every change, and a plugin returning a
+ * megabyte would wedge the renderer rather than fill a prompt. 32 KiB is an
+ * enormous chat message and a small DOM edit. Over it, the edit is dropped and
+ * the client says so — never truncated, because a prompt cut off mid-sentence
+ * and then sent is worse than a prompt that never arrived.
+ */
+export const PLUGIN_COMPOSER_TEXT_MAX_BYTES = 32 * 1024;
+
+/**
+ * What a plugin action asks the composer to do with the draft when it finishes.
+ *
+ * The second piece of control flow a plugin has over ADE's own UI, alongside
+ * {@link PluginActionNavigation}, and bounded the same way: it writes into the
+ * one text box the user was already typing in, on the surface they just pressed
+ * a button on. It cannot send the message — composing and sending stay the
+ * user's.
+ */
+export type PluginActionComposerEdit =
+  /** Insert at the caret, leaving the rest of the draft alone. */
+  | { mode: "insert"; text: string }
+  /** Replace the whole draft. An empty string clears it. */
+  | { mode: "replace"; text: string };
+
+/**
+ * Read a composer edit out of whatever an action returned.
+ *
+ * Tolerant in the same way as {@link readPluginActionNavigation}: an action's
+ * return value is the plugin's own shape, most carry no edit at all, and
+ * anything unrecognizable is `null` rather than an error.
+ *
+ * `replaceText` wins when a plugin sends both. "Replace, then insert into the
+ * replacement" is not what either verb means, and picking the more total one
+ * makes the result a plugin can predict from its own payload.
+ */
+export function readPluginActionComposerEdit(result: unknown): PluginActionComposerEdit | null {
+  if (!isRecord(result)) return null;
+  const composer = result.composer;
+  if (!isRecord(composer)) return null;
+  const withinBudget = (text: string): boolean =>
+    pluginUtf8ByteLength(text) <= PLUGIN_COMPOSER_TEXT_MAX_BYTES;
+  // Empty is meaningful for replace (clear the draft) and a no-op for insert,
+  // so only replace accepts it.
+  if (typeof composer.replaceText === "string") {
+    return withinBudget(composer.replaceText) ? { mode: "replace", text: composer.replaceText } : null;
+  }
+  if (typeof composer.insertText === "string" && composer.insertText.length > 0) {
+    return withinBudget(composer.insertText) ? { mode: "insert", text: composer.insertText } : null;
+  }
+  return null;
+}
+
+/**
+ * Whether an action's result asked for a composer edit at all, however
+ * malformed.
+ *
+ * Separate from the reader because "the plugin said nothing about the composer"
+ * and "the plugin asked for something this client refused" are different
+ * events, and only the second is worth a warning in the console of the person
+ * wondering why the button did nothing.
+ */
+export function hasPluginActionComposerRequest(result: unknown): boolean {
+  return isRecord(result) && isRecord(result.composer);
+}
+
 /**
  * What a plugin's entry module may export. Both hooks are optional: a plugin
  * that only registers CLI commands and panels needs neither.
@@ -454,6 +547,57 @@ export type PluginHostFrame =
   | { type: "sdkResult"; requestId: string; result?: unknown; error?: PluginStructuralError }
   | { type: "shutdown" };
 
+/**
+ * Record a clip through ADE's microphone.
+ *
+ * A plugin child is a separate process with no audio device, so the app records
+ * on its behalf and answers with a FILE PATH — a plain path on the same
+ * machine, readable with `fs`, deliberately not inside any sandbox. Passing the
+ * path rather than the bytes keeps a multi-megabyte clip out of the RPC
+ * envelope, which would otherwise encode and decode it twice.
+ *
+ * ADE never interprets the audio. What the clip is for — a transcript, a memo,
+ * a classifier — is entirely the plugin's business, and the host never learns
+ * which it was.
+ *
+ * The user is always in control and always told who is asking: a capture puts
+ * an attributed pill in ADE's chrome with the plugin's display name on it, and
+ * the recording ends when the user stops it (or `maxDurationMs` elapses).
+ * Dismissing the pill rejects the call with `audio_capture_cancelled`. There is
+ * one microphone, so a capture requested while another is running is refused
+ * with `audio_capture_busy` rather than queued — a plugin that waited its turn
+ * would start recording at a moment the user has no reason to associate with it.
+ *
+ * The clip is CALLER-OWNED once handed over: read it, and it is yours. ADE
+ * sweeps clips left behind by a crash on its next start, so a plugin that dies
+ * mid-read does not leak audio onto the disk forever.
+ */
+export type PluginAudioCaptureOptions = {
+  /** Stop and return what was captured after this long. */
+  maxDurationMs?: number;
+};
+
+export type PluginAudioClip = {
+  /** Absolute path to a 16 kHz mono 16-bit PCM WAV on this machine. */
+  audioPath: string;
+  durationMs: number;
+};
+
+/** Rejection codes `audio.captureClip` can answer with. */
+export const PLUGIN_AUDIO_CAPTURE_ERROR_CODES = [
+  "audio_capture_cancelled",
+  "audio_capture_busy",
+  "audio_capture_mic_unavailable",
+  "audio_capture_empty",
+  "audio_capture_failed",
+] as const;
+
+export type PluginAudioCaptureErrorCode = (typeof PLUGIN_AUDIO_CAPTURE_ERROR_CODES)[number];
+
+export function isPluginAudioCaptureErrorCode(value: unknown): value is PluginAudioCaptureErrorCode {
+  return PLUGIN_AUDIO_CAPTURE_ERROR_CODES.some((code) => code === value);
+}
+
 /** The SDK calls a child can make back into the host. */
 export type PluginSdkMethod =
   | "actions.invoke"
@@ -466,7 +610,8 @@ export type PluginSdkMethod =
   | "secrets.delete"
   | "contributions.publish"
   | "panels.update"
-  | "config.get";
+  | "config.get"
+  | "audio.captureClip";
 
 /** Child → host. */
 export type PluginChildFrame =
@@ -714,8 +859,22 @@ export type PluginUsageSummary = {
  * See D1 in the plugin platform design.
  */
 export type PluginDomainService = {
-  /** Call a plugin's own named handler. Treated as MUTATING by the renderer. */
-  invoke(args: { pluginId: string; action: string; args?: Record<string, unknown>; argv?: string[] }): Promise<unknown>;
+  /**
+   * Call a plugin's own named handler. Treated as MUTATING by the renderer.
+   *
+   * `timeoutMs` overrides the child supervisor's default round-trip budget for
+   * this one call, clamped by `clampPluginInvokeTimeoutMs`. It is a SIBLING of
+   * `args` rather than a key inside it: `args` is the plugin's own namespace,
+   * and a host field hidden in there would collide with a plugin that happened
+   * to name a parameter the same thing.
+   */
+  invoke(args: {
+    pluginId: string;
+    action: string;
+    args?: Record<string, unknown>;
+    argv?: string[];
+    timeoutMs?: number;
+  }): Promise<unknown>;
   list(args?: { includeDisabled?: boolean }): Promise<PluginSummary[]>;
   get(args: { pluginId: string }): Promise<PluginDetail | null>;
   /**

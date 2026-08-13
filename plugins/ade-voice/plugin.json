@@ -1,0 +1,28 @@
+{
+  "name": "ade-voice",
+  "version": "1.0.0",
+  "displayName": "Voice",
+  "description": "Voice dictation for the composer, on-device. Downloads a 141 MB speech model on first use.",
+  "icon": "microphone",
+  "accent": "#C2508B",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "surfaces": [],
+  "panels": [
+    { "id": "main", "schemaFile": "panels/main.json", "title": "Voice" }
+  ],
+  "sockets": [
+    {
+      "socket": "composer-action",
+      "surface": "work",
+      "id": "dictate",
+      "label": "Dictate",
+      "icon": "microphone",
+      "actionId": "dictate"
+    }
+  ],
+  "extraDownloads": [
+    { "label": "Speech model", "bytes": 147964211 }
+  ],
+  "official": true
+}

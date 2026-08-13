@@ -40,7 +40,6 @@ vi.mock("../settings/AboutSection", () => ({
 vi.mock("../settings/AppearanceSection", () => ({ AppearanceSection: stubSection(["theme", "chat-font-size"]) }));
 vi.mock("../settings/ProvidersSection", () => ({ ProvidersSection: stubSection(["ai-providers"]) }));
 vi.mock("../settings/AiFeaturesSection", () => ({ AiFeaturesSection: stubSection(["background-jobs"]) }));
-vi.mock("../settings/DictationSection", () => ({ DictationSection: stubSection(["voice-input"]) }));
 vi.mock("../settings/LaneBehaviorSection", () => ({ LaneBehaviorSection: stubSection(["auto-rebase", "rebase-suggestions"]) }));
 vi.mock("../settings/LaneTemplatesSection", () => ({ LaneTemplatesSection: stubSection(["lane-templates"]) }));
 vi.mock("../settings/PrChatTranscriptsSection", () => ({ PrChatTranscriptsSection: stubSection(["pr-chat-transcripts"]) }));

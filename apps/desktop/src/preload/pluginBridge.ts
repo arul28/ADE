@@ -235,6 +235,8 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
       pluginId: string;
       action: string;
       args?: Record<string, unknown>;
+      /** Per-call round-trip budget; the host clamps it. See `sockets.ts`. */
+      timeoutMs?: number;
     }): Promise<unknown> =>
       callStrictOr("invoke", args, () => invoke(IPC.pluginInvoke, args)),
     restart: async (args: { pluginId: string }): Promise<void> => {

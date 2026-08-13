@@ -33,6 +33,8 @@ function repository(fullName, index) {
     owner: { login: fullName.split("/")[0] },
     description: "repo blurb",
     stargazers_count: 10 - index,
+    // GitHub reports repository size in KILOBYTES.
+    size: 4301,
     created_at: "2026-01-01T00:00:00.000Z",
     pushed_at: "2026-08-01T00:00:00.000Z",
   };
@@ -42,7 +44,7 @@ function repository(fullName, index) {
  * Run the crawler in a scratch registry and return the index it wrote, or the
  * failure it refused with.
  */
-function crawl({ manifests, official, featured = [], installs = [] }) {
+function crawl({ manifests, official, featured = [], installs = [], repositories = {} }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-registry-crawl-"));
   try {
     fs.cpSync(path.join(REGISTRY, "scripts"), path.join(dir, "scripts"), { recursive: true });
@@ -53,7 +55,11 @@ function crawl({ manifests, official, featured = [], installs = [] }) {
       path.join(dir, "run.mjs"),
       `const manifests = ${JSON.stringify(manifests)};
 const installs = ${JSON.stringify(installs)};
-const repos = Object.keys(manifests).map((fullName, index) => (${repository.toString()})(fullName, index));
+const overrides = ${JSON.stringify(repositories)};
+const repos = Object.keys(manifests).map((fullName, index) => ({
+  ...(${repository.toString()})(fullName, index),
+  ...(overrides[fullName] ?? {}),
+}));
 globalThis.fetch = async (url) => {
   const target = String(url);
   if (target.includes("/search/repositories")) return new Response(JSON.stringify({ items: repos }));
@@ -164,6 +170,54 @@ test("publishes facts, not the install modal's copy", () => {
   assert.deepEqual(entry.sockets, ["row-menu-item"]);
   // Never measured is absent, not zero: a zero renders as a measurement.
   assert.equal(entry.installs, undefined);
+});
+
+test("publishes the repository size as bytes, and omits a size nobody measured", () => {
+  const { index } = crawl({
+    manifests: {
+      "ade-plugins/graph": GRAPH,
+      "someone/timer": { name: "timer", version: "0.2.0", displayName: "Timer", description: "d" },
+      "someone/fresh": { name: "fresh", version: "0.1.0", displayName: "Fresh", description: "d" },
+    },
+    official: {},
+    // GitHub answers 0 for a repository it has not sized yet, and omits the
+    // field entirely on some responses. Neither is "this weighs nothing".
+    repositories: {
+      "someone/timer": { size: 0 },
+      "someone/fresh": { size: null },
+    },
+  });
+  const byId = Object.fromEntries((index?.entries ?? []).map((entry) => [entry.pluginId, entry]));
+  assert.equal(byId.graph.sizeBytes, 4301 * 1024);
+  assert.equal(byId.timer.sizeBytes, undefined);
+  assert.equal(byId.fresh.sizeBytes, undefined);
+});
+
+test("passes through the extra downloads a plugin declares, dropping what it cannot read", () => {
+  const { index } = crawl({
+    manifests: {
+      "ade-plugins/graph": {
+        ...GRAPH,
+        extraDownloads: [
+          { label: "Speech model", bytes: 147_800_000 },
+          // Each of these fails a different half of the contract, and each must
+          // cost itself rather than the entry: a plugin whose manifest carries
+          // one bad row still has a size worth publishing.
+          { label: "No size" },
+          { label: "", bytes: 10 },
+          { label: "Impossible", bytes: 1e30 },
+          "not an object",
+        ],
+      },
+      "someone/timer": { name: "timer", version: "0.2.0", displayName: "Timer", description: "d" },
+    },
+    official: {},
+  });
+  const byId = Object.fromEntries((index?.entries ?? []).map((entry) => [entry.pluginId, entry]));
+  assert.deepEqual(byId.graph.extraDownloads, [{ label: "Speech model", bytes: 147_800_000 }]);
+  // Nearly every plugin fetches nothing, and an empty array published on every
+  // entry is bytes every install pays for to learn nothing.
+  assert.equal(byId.timer.extraDownloads, undefined);
 });
 
 test("refuses to publish a document that does not match the schema", () => {

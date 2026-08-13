@@ -21,7 +21,7 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.builtInBrowserNavigate]: new Set(["url"]),
   [IPC.builtInBrowserCreateTab]: new Set(["url"]),
   [IPC.builtInBrowserShowPanel]: new Set(["url"]),
-  [IPC.transcriptionTranscribe]: new Set(["pcm"]),
+  [IPC.audioWriteClip]: new Set(["pcm"]),
   [IPC.accountPollLogin]: new Set(["sessionId"]),
   [IPC.accountCancelLogin]: new Set(["sessionId"]),
   [IPC.accountPairMachine]: new Set(["machineKey"]),

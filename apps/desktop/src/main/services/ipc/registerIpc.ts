@@ -678,12 +678,12 @@ import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
 import {
-  type createTranscriptionService,
-  type TranscriptionResult,
-  type TranscriptionStatus,
-  TranscriptionError,
-} from "../transcription/transcriptionService";
-import { requestMicrophoneAccess } from "../transcription/microphoneAccess";
+  type createAudioCaptureService,
+  type AudioClip,
+  AudioCaptureError,
+} from "../audio/audioCaptureService";
+import { requestMicrophoneAccess } from "../audio/microphoneAccess";
+import type { AudioCaptureBroker, AudioCaptureOutcome } from "../audio/audioCaptureBroker";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
 import { createAccountBridge, createBrainAccountActionCaller } from "../account/accountBridge";
@@ -694,6 +694,7 @@ import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import type { PluginHostService } from "../plugins/pluginHostService";
+import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
 import { handleDeeplinkUrl } from "../deeplinks/protocolHandler";
 import {
   isValidPluginId,
@@ -706,7 +707,11 @@ import {
   type PluginWebviewDomain,
 } from "../plugins/pluginWebviewBridgeServer";
 import type { PluginWebviewGuest } from "../plugins/pluginWebviewGuests";
-import { PLUGIN_ENTITY_KINDS, PLUGIN_SURFACE_IDS } from "../../../shared/plugins/sockets";
+import {
+  clampPluginInvokeTimeoutMs,
+  PLUGIN_ENTITY_KINDS,
+  PLUGIN_SURFACE_IDS,
+} from "../../../shared/plugins/sockets";
 import {
   assertPluginCollectionName,
   PluginSdkError,
@@ -1053,7 +1058,8 @@ export type AppContext = {
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
-  transcriptionService?: ReturnType<typeof createTranscriptionService> | null;
+  audioCaptureService?: ReturnType<typeof createAudioCaptureService> | null;
+  audioCaptureBroker?: AudioCaptureBroker | null;
 };
 
 type AppContextWith<K extends keyof AppContext> = AppContext & {
@@ -2032,14 +2038,6 @@ export function registerIpc({
   });
 
   const redactIpcResultForChannel = (channel: string, result: unknown): unknown => {
-    if (channel === IPC.transcriptionTranscribe) {
-      if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
-      return {
-        ...(result as Record<string, unknown>),
-        raw: "[redacted]",
-        cleaned: "[redacted]",
-      };
-    }
     if (!result || typeof result !== "object" || Array.isArray(result)) return result;
     const record = result as Record<string, unknown>;
     if (channel === IPC.accountStartLogin) {
@@ -5825,6 +5823,7 @@ export function registerIpc({
     action: string;
     args?: Record<string, unknown>;
     argv?: string[];
+    timeoutMs?: number;
   } => {
     if (!isRecord(arg)) throw new Error("plugin invoke expects an object payload.");
     const action = typeof arg.action === "string" ? arg.action.trim() : "";
@@ -5832,11 +5831,16 @@ export function registerIpc({
     const argv = Array.isArray(arg.argv)
       ? arg.argv.filter((entry): entry is string => typeof entry === "string")
       : null;
+    // Clamped here rather than trusted: this crossed the preload boundary, and
+    // an unbounded budget turns a wedged plugin child into a promise that never
+    // settles. `null` means "no hint" and the supervisor's default applies.
+    const timeoutMs = clampPluginInvokeTimeoutMs(arg.timeoutMs);
     return {
       pluginId: requirePluginId(arg),
       action,
       ...(isRecord(arg.args) ? { args: arg.args } : {}),
       ...(argv ? { argv } : {}),
+      ...(timeoutMs ? { timeoutMs } : {}),
     };
   };
 
@@ -7508,41 +7512,47 @@ export function registerIpc({
     return ctx.sessionDeltaService?.getSessionDelta(arg.sessionId) ?? null;
   });
 
-  // ── Voice-to-text dictation ──────────────────────────────────────────────
-  // The transcription service is project-independent (no DB / lane deps): it
-  // only needs the bundled whisper binary + model + the shared glossary. It is
-  // resolved from the active context, where it is threaded as a shared
-  // singleton (see main.ts).
-  type TranscriptionPcmFormat = "int16" | "float32";
-  const DEFAULT_TRANSCRIPTION_SAMPLE_RATE = 16_000;
-  const MIN_TRANSCRIPTION_SAMPLE_RATE = 8_000;
-  const MAX_TRANSCRIPTION_SAMPLE_RATE = 48_000;
-  const MAX_TRANSCRIPTION_SECONDS = 5 * 60;
+  // ── Audio capture ────────────────────────────────────────────────────────
+  // ADE records clips on a plugin's behalf and never interprets them. The
+  // renderer owns the microphone, so it does the recording; this process owns
+  // the disk, so it writes the WAV and hands back a path. Nothing here knows
+  // what a clip is for, and nothing here names a plugin.
+  type AudioPcmFormat = "int16" | "float32";
+  const DEFAULT_AUDIO_SAMPLE_RATE = 16_000;
+  const MIN_AUDIO_SAMPLE_RATE = 8_000;
+  const MAX_AUDIO_SAMPLE_RATE = 48_000;
+  // A runaway-buffer guard, NOT a product limit: how long a recording may run
+  // is the caller's `maxDurationMs`, and this has to sit clear of it. It was 5
+  // minutes back when the only caller was capped there; callers now ask
+  // for 10, and a ceiling below the requested duration is the worst possible
+  // shape — the clip is recorded, the user waits, and it is thrown away at the
+  // last step with nothing recoverable.
+  const MAX_AUDIO_SECONDS = 15 * 60;
 
-  const normalizeTranscriptionFormat = (format: unknown): TranscriptionPcmFormat => {
+  const normalizeAudioFormat = (format: unknown): AudioPcmFormat => {
     if (format == null) return "int16";
     if (format === "int16" || format === "float32") return format;
-    throw new Error("transcribe_failed: Unsupported audio format.");
+    throw new Error("capture_failed: Unsupported audio format.");
   };
 
-  const normalizeTranscriptionSampleRate = (sampleRate: unknown): number => {
-    if (sampleRate == null) return DEFAULT_TRANSCRIPTION_SAMPLE_RATE;
+  const normalizeAudioSampleRate = (sampleRate: unknown): number => {
+    if (sampleRate == null) return DEFAULT_AUDIO_SAMPLE_RATE;
     if (
       typeof sampleRate !== "number"
       || !Number.isFinite(sampleRate)
-      || sampleRate < MIN_TRANSCRIPTION_SAMPLE_RATE
-      || sampleRate > MAX_TRANSCRIPTION_SAMPLE_RATE
+      || sampleRate < MIN_AUDIO_SAMPLE_RATE
+      || sampleRate > MAX_AUDIO_SAMPLE_RATE
     ) {
       throw new Error(
-        `transcribe_failed: Invalid audio sample rate; expected ${MIN_TRANSCRIPTION_SAMPLE_RATE}-${MAX_TRANSCRIPTION_SAMPLE_RATE} Hz.`,
+        `capture_failed: Invalid audio sample rate; expected ${MIN_AUDIO_SAMPLE_RATE}-${MAX_AUDIO_SAMPLE_RATE} Hz.`,
       );
     }
     return Math.round(sampleRate);
   };
 
-  const normalizeTranscriptionBuffer = (
+  const normalizeAudioBuffer = (
     pcmValue: unknown,
-    format: TranscriptionPcmFormat,
+    format: AudioPcmFormat,
     sampleRate: number,
   ): ArrayBuffer => {
     let buffer: ArrayBuffer | null = null;
@@ -7558,41 +7568,37 @@ export function registerIpc({
 
     const bytesPerSample = format === "float32" ? 4 : 2;
     if (buffer.byteLength % bytesPerSample !== 0) {
-      throw new Error("transcribe_failed: Invalid audio buffer alignment.");
+      throw new Error("capture_failed: Invalid audio buffer alignment.");
     }
 
     const sampleCount = buffer.byteLength / bytesPerSample;
-    if (sampleCount / sampleRate > MAX_TRANSCRIPTION_SECONDS) {
-      throw new Error(`transcribe_failed: Dictation is limited to ${Math.round(MAX_TRANSCRIPTION_SECONDS / 60)} minutes.`);
+    if (sampleCount / sampleRate > MAX_AUDIO_SECONDS) {
+      throw new Error(`capture_failed: A recording is limited to ${Math.round(MAX_AUDIO_SECONDS / 60)} minutes.`);
     }
 
     return buffer;
   };
 
   ipcMain.handle(
-    IPC.transcriptionTranscribe,
+    IPC.audioWriteClip,
     async (
       _event,
       arg: { pcm: ArrayBuffer | Int16Array; sampleRate?: number; format?: "int16" | "float32" },
-    ): Promise<TranscriptionResult> => {
-      const service = getCtx().transcriptionService;
-      if (!service) {
-        throw new Error("model_not_installed: Voice model not installed");
-      }
+    ): Promise<AudioClip> => {
+      const service = getCtx().audioCaptureService;
+      if (!service) throw new Error("capture_failed: Audio capture is unavailable.");
       // PCM arrives as a transferable ArrayBuffer (or a typed array when called
       // in-process from tests). Validate before constructing a typed view so a
       // malformed renderer-controlled payload cannot reach WAV encoding.
-      const format = normalizeTranscriptionFormat(arg?.format);
-      const sampleRate = normalizeTranscriptionSampleRate(arg?.sampleRate);
-      const buffer = normalizeTranscriptionBuffer(arg?.pcm, format, sampleRate);
-      const pcm = format === "float32"
-        ? new Float32Array(buffer)
-        : new Int16Array(buffer);
+      const format = normalizeAudioFormat(arg?.format);
+      const sampleRate = normalizeAudioSampleRate(arg?.sampleRate);
+      const buffer = normalizeAudioBuffer(arg?.pcm, format, sampleRate);
+      const pcm = format === "float32" ? new Float32Array(buffer) : new Int16Array(buffer);
       try {
-        return await service.transcribe(pcm, { sampleRate });
+        return service.writeClip(pcm, { sampleRate });
       } catch (error) {
-        if (error instanceof TranscriptionError) {
-          // Surface the typed code via the message prefix the renderer matches on.
+        if (error instanceof AudioCaptureError) {
+          // Surface the typed code via the message prefix the caller matches on.
           throw new Error(`${error.code}: ${error.message}`);
         }
         throw error;
@@ -7600,45 +7606,39 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.transcriptionStatus, async (): Promise<TranscriptionStatus> => {
-    const service = getCtx().transcriptionService;
-    if (!service) {
-      return {
-        installed: false,
-        binaryInstalled: false,
-        modelInstalled: false,
-        downloading: false,
-        binaryPath: null,
-        modelPath: null,
-      };
+  // The renderer's answer to a capture request main routed to it. The broker
+  // ignores an id it is not waiting on, so a late or duplicated reply — a window
+  // that answered twice, a reply that raced a window close — settles nothing.
+  ipcMain.handle(IPC.audioCaptureResult, async (_event, arg: unknown): Promise<void> => {
+    if (!isRecord(arg) || typeof arg.requestId !== "string") return;
+    const broker = getCtx().audioCaptureBroker;
+    if (!broker) return;
+    if (arg.ok === true && isRecord(arg.clip) && typeof arg.clip.audioPath === "string") {
+      broker.settle({
+        requestId: arg.requestId,
+        ok: true,
+        clip: {
+          audioPath: arg.clip.audioPath,
+          durationMs: typeof arg.clip.durationMs === "number" ? arg.clip.durationMs : 0,
+        },
+      } satisfies AudioCaptureOutcome);
+      return;
     }
-    return service.getStatus();
+    broker.settle({
+      requestId: arg.requestId,
+      ok: false,
+      code: typeof arg.code === "string" ? arg.code : "audio_capture_failed",
+      message: typeof arg.message === "string" ? arg.message : "The recording failed.",
+    } satisfies AudioCaptureOutcome);
   });
 
-  // Download the ~141 MB speech model on demand (first dictation). Streams to
-  // disk in the main process; progress is pushed to the requesting renderer.
-  ipcMain.handle(
-    IPC.transcriptionDownloadModel,
-    async (event): Promise<TranscriptionStatus> => {
-      const service = getCtx().transcriptionService;
-      if (!service) {
-        throw new Error("model_not_installed: Voice model not installed");
-      }
-      let lastEmit = 0;
-      await service.downloadModel((progress) => {
-        // Throttle progress pushes to ~10/s so we don't flood IPC for a 141 MB file.
-        const nowMs = Date.now();
-        if (nowMs - lastEmit < 100 && progress.receivedBytes < (progress.totalBytes ?? Infinity)) {
-          return;
-        }
-        lastEmit = nowMs;
-        if (!event.sender.isDestroyed()) {
-          event.sender.send(IPC.transcriptionModelDownloadProgress, progress);
-        }
-      });
-      return service.getStatus();
-    },
-  );
+  ipcMain.handle(IPC.audioDiscardClip, async (_event, arg: { audioPath?: unknown }): Promise<void> => {
+    const audioPath = typeof arg?.audioPath === "string" ? arg.audioPath : "";
+    if (!audioPath) return;
+    // The service ignores any path it did not mint, so a renderer cannot turn
+    // this into a file-delete primitive by inventing one.
+    getCtx().audioCaptureService?.discardClip(audioPath);
+  });
 
   // Check OS-level microphone access before the renderer calls getUserMedia.
   // Electron on macOS returns a silent (all-zero) audio track instead of
@@ -7647,7 +7647,7 @@ export function registerIpc({
   // Windows exposes the global Win32 microphone privacy switch through
   // getMediaAccessStatus; Chromium owns any per-origin prompt.
   ipcMain.handle(
-    IPC.transcriptionRequestMicAccess,
+    IPC.audioRequestMicAccess,
     async (): Promise<{ status: "granted" | "denied" | "not-determined" | "restricted" | "unknown" }> => {
       return requestMicrophoneAccess(process.platform, systemPreferences);
     },

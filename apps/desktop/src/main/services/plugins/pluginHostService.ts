@@ -31,6 +31,7 @@ import {
   assertPluginCollectionKey,
   assertPluginCollectionName,
   PluginSdkError,
+  type PluginAudioClip,
   type PluginCollectionRow,
   type PluginContributionRecord,
   type PluginDetail,
@@ -45,6 +46,7 @@ import {
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
 import {
+  clampPluginInvokeTimeoutMs,
   isPluginEntityKind,
   isPluginSocketKind,
   isPluginSurfaceId,
@@ -54,7 +56,7 @@ import { createPluginChildSupervisor, type PluginChildSupervisor } from "./plugi
 import { subscribeToPluginChanges } from "./pluginEvents";
 import { createPluginInstallService, type PluginInstalledPlugin, type PluginInstallService } from "./pluginInstallService";
 import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./pluginInstallServiceAdapter";
-import { createPluginSdkServer } from "./pluginSdkServer";
+import { createPluginSdkServer, pluginAudioCaptureUnavailable } from "./pluginSdkServer";
 import { createPluginSecretStore, type PluginSecretStore } from "./pluginSecretStore";
 
 /**
@@ -122,6 +124,20 @@ export type PluginMachineContext = {
    * are built well after the host.
    */
   disconnectAccountsForPlugin?: (pluginId: string) => void | Promise<void>;
+  /**
+   * Record a clip through ADE's microphone, for `ade.audio.captureClip`.
+   *
+   * In this bag rather than in the constructor because the host is machine-
+   * scoped and built early, while the capability arrives from a desktop that
+   * may attach later, or never: a daemon on a headless machine has no window
+   * to record from, and a plugin asking there gets
+   * {@link pluginAudioCaptureUnavailable} instead of a call that hangs.
+   */
+  captureAudioClip?: (args: {
+    pluginId: string;
+    label: string;
+    maxDurationMs?: number;
+  }) => Promise<PluginAudioClip>;
 };
 
 export type PluginHostService = {
@@ -594,6 +610,15 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       invokeAdeAction: (domain, action, actionArgs) =>
         requireProject(pluginId).binding.invokeAdeAction(domain, action, actionArgs),
       readConfig: () => configFor(pluginId, manifest),
+      // Read through `machine` at call time rather than captured here: a
+      // supervisor outlives the desktop that lends it a microphone, and a
+      // captured `undefined` would keep refusing captures long after one
+      // attached.
+      captureAudioClip: (captureArgs) => {
+        const capture = machine.captureAudioClip;
+        if (!capture) return Promise.reject(pluginAudioCaptureUnavailable());
+        return capture(captureArgs);
+      },
     });
     const supervisor = buildSupervisor({
       pluginId,
@@ -845,10 +870,18 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         }
         if (projectId) activeProjectByPlugin.set(pluginId, projectId);
         const supervisor = ensureSupervisor(installed);
-        return await supervisor.invoke(action, {
-          ...(invokeArgs.args ?? {}),
-          ...(invokeArgs.argv ? { argv: invokeArgs.argv } : {}),
-        });
+        // Clamped again rather than trusted from the caller: this service is
+        // also reached from the phone and the CLI, which do not go through the
+        // desktop's preload normalizer.
+        const timeoutMs = clampPluginInvokeTimeoutMs(invokeArgs.timeoutMs);
+        return await supervisor.invoke(
+          action,
+          {
+            ...(invokeArgs.args ?? {}),
+            ...(invokeArgs.argv ? { argv: invokeArgs.argv } : {}),
+          },
+          timeoutMs ? { timeoutMs } : undefined,
+        );
       },
 
       async list(listArgs) {

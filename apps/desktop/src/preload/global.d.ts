@@ -1095,33 +1095,23 @@ declare global {
           args: CursorCloudOpenChatRequest,
         ) => Promise<CursorCloudOpenChatResult>;
       };
-      transcription: {
-        transcribe: (
+      audio: {
+        writeClip: (
           pcm: ArrayBuffer,
           options?: { sampleRate?: number; format?: "int16" | "float32" },
-        ) => Promise<{ raw: string; cleaned: string }>;
-        status: () => Promise<{
-          installed: boolean;
-          binaryInstalled: boolean;
-          modelInstalled: boolean;
-          downloading: boolean;
-          binaryPath: string | null;
-          modelPath: string | null;
-        }>;
-        downloadModel: () => Promise<{
-          installed: boolean;
-          binaryInstalled: boolean;
-          modelInstalled: boolean;
-          downloading: boolean;
-          binaryPath: string | null;
-          modelPath: string | null;
-        }>;
-        onModelDownloadProgress: (
-          handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
-        ) => () => void;
+        ) => Promise<{ audioPath: string; durationMs: number }>;
+        discardClip: (audioPath: string) => Promise<void>;
         requestMicAccess: () => Promise<{
           status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
         }>;
+        onCaptureRequest: (
+          handler: (request: { requestId: string; label: string; maxDurationMs?: number }) => void,
+        ) => () => void;
+        settleCaptureRequest: (
+          outcome:
+            | { requestId: string; ok: true; clip: { audioPath: string; durationMs: number } }
+            | { requestId: string; ok: false; code: string; message: string },
+        ) => Promise<void>;
       };
       modelPicker: {
         getFavorites: () => Promise<{ favorites: string[] }>;

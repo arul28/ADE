@@ -9,6 +9,7 @@
 
 export { PluginRowBadges } from "./PluginRowBadges";
 export { PluginToolbarActions } from "./PluginToolbarActions";
+export { PluginComposerActions } from "./PluginComposerActions";
 export { PluginFilterChips } from "./PluginFilterChips";
 export { PluginEmptyStateExtra } from "./PluginEmptyStateExtra";
 export { PluginDetailSections } from "./PluginDetailSections";
@@ -22,6 +23,11 @@ export {
   usePluginSurfaceContributions,
   useSurfaceContributions,
 } from "./useSurfaceContributions";
+export {
+  registerPluginComposerTarget,
+  unregisterPluginComposerTarget,
+  type PluginComposerTarget,
+} from "./composerTarget";
 export {
   pluginAutomationContext,
   pluginLaneContext,

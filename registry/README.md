@@ -62,6 +62,41 @@ directory.
 Being listed is not an endorsement, and the UI says so: community entries carry
 their author and no Official mark.
 
+## Download size
+
+Each entry carries a `sizeBytes`, and the Marketplace shows it on the plugin's
+page. The crawler derives it from GitHub's own `size` for the repository, which
+is reported in kilobytes and measures the packed repository rather than a
+release artefact — so it is an **estimate**, deliberately. The alternative is
+cloning every repository in the topic on every crawl to weigh it exactly, and
+the question a reader is actually asking ("a few hundred KB, or enormous?") is
+answered fine by an estimate. A repository GitHub has not sized yet reports `0`,
+and `0` is omitted rather than published: readers render an absent size as
+nothing, so a published zero would say "this weighs nothing" on ADE's own page.
+
+A plugin that downloads something for **itself** on first use — a model, a
+runtime, a data pack — should say so in its `plugin.json`:
+
+```json
+{
+  "name": "ade-voice",
+  "extraDownloads": [{ "label": "Speech model", "bytes": 147800000 }]
+}
+```
+
+The crawler passes that through to the entry (up to four items, labels up to 60
+characters, each with a positive byte count; anything else is dropped), and the
+Marketplace shows it as its own line — "Downloads a further 141 MB (Speech
+model) the first time you use it." It is a separate figure rather than part of
+the package size on purpose: the second download happens later and only for
+people who use the feature, and one combined number would say neither of those
+things.
+
+Note that `extraDownloads` is read by the **crawler**, not by ADE's manifest
+parser: the app's `manifest.ts` does not model the field, because the registry
+entry is what the Marketplace reads. Declaring it changes what the directory
+publishes, not how the plugin runs.
+
 ## Official
 
 `official` is set from `official.json` and from nowhere else. A plugin's own
@@ -219,8 +254,8 @@ plugins will be published; today the packages live in this repository under
 a directory of ids and descriptions, not a set of working install sources — an
 install driven from this file would have nothing to clone.
 
-That is also why it carries no `installs`, `stars`, `publishedAt` or
-`updatedAt`. Those are things the crawler measures, and inventing them would put
+That is also why it carries no `installs`, `stars`, `sizeBytes`, `publishedAt`
+or `updatedAt`. Those are things the crawler measures, and inventing them would put
 numbers in front of a reader that nobody measured. An omitted count renders as
 nothing; a zero would render as a measurement.
 

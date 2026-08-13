@@ -78,7 +78,7 @@ import {
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
-import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
+import { GlobalAudioCaptureIndicator } from "../audio/GlobalAudioCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
 import { StoragePressureIndicator } from "./StoragePressureIndicator";
@@ -2826,8 +2826,8 @@ export function TopBar({
               reachable from every tab and project without a nav detour. */}
           <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
-          {/* App-global voice capture — visible from any tab while recording. */}
-          <GlobalVoiceCaptureIndicator />
+          {/* App-global audio capture — visible from any tab while a plugin records. */}
+          <GlobalAudioCaptureIndicator />
 
           <ResourcePressureIndicator usage={resourceUsage} />
           <StoragePressureIndicator enabled={workspaceProjectOpen} />

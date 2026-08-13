@@ -7,5 +7,5 @@
     "The crawler copies `featured: true` onto matching index entries and ignores ids",
     "it cannot find, so removing a plugin from the registry cannot leave a dead hero card."
   ],
-  "featured": ["ade-graph", "ade-log-viewer", "ade-theme-paper"]
+  "featured": ["ade-graph", "ade-voice", "ade-log-viewer", "ade-theme-paper"]
 }

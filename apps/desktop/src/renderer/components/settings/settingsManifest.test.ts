@@ -67,7 +67,6 @@ describe("settings manifest", () => {
       "integrations.linear",
       "agents.providers",
       "agents.background-jobs",
-      "agents.dictation",
       "appearance.launch-prompt",
       "lanes-git.lane-templates",
       "storage.usage",

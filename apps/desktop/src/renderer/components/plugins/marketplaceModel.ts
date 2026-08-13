@@ -34,6 +34,7 @@ import {
 import {
   parsePluginRegistryEntry,
   type PluginRegistryEntry,
+  type PluginRegistryExtraDownload,
   type PluginRegistryLinks,
   type PluginRegistryMedia,
 } from "../../../shared/plugins/registryIndex";
@@ -76,6 +77,20 @@ export type MarketplaceListing = {
   isTheme: boolean;
   installs: number | null;
   stars: number | null;
+  /**
+   * What installing costs to download, in bytes, when the catalogue measured
+   * it.
+   *
+   * Optional rather than `number | null`, and that is about who has an answer
+   * rather than about convenience: a directory entry can carry a size, and a
+   * plugin that ships INSIDE ADE downloads nothing at all, so the bundled index
+   * has no field to fill. Both cases render the same — nothing — because a
+   * plugin whose size is unknown and a plugin that costs nothing to fetch are
+   * equally badly served by the string "0 B".
+   */
+  sizeBytes?: number | null;
+  /** What the plugin fetches for itself later. Absent for nearly every plugin. */
+  extraDownloads?: readonly PluginRegistryExtraDownload[];
   /** ISO. Sorts "New"; null sorts last. */
   publishedAt: string | null;
   /** Git URL or local path. Empty for a listing with no installable source. */
@@ -149,6 +164,8 @@ export function listingFromRegistryEntry(entry: PluginRegistryEntry): Marketplac
     isTheme: entry.isTheme,
     installs: entry.installs,
     stars: entry.stars,
+    sizeBytes: entry.sizeBytes,
+    extraDownloads: entry.extraDownloads,
     publishedAt: entry.publishedAt ?? entry.updatedAt,
     source: entry.source,
     changelogUrl: entry.changelogUrl,
@@ -252,6 +269,9 @@ export function listingFromInstalled(plugin: InstalledPlugin): MarketplaceListin
     isTheme: plugin.theme !== null,
     installs: null,
     stars: null,
+    // Already on this machine, and nothing here knows what it weighed on the
+    // way in. Absent, not zero.
+    sizeBytes: null,
     publishedAt: null,
     source: "",
     changelogUrl: null,
@@ -290,6 +310,9 @@ export function listingFromManifest(manifest: PluginManifest, source: string): M
     isTheme: manifest.theme !== undefined,
     installs: null,
     stars: null,
+    // A manifest read off a source says what the plugin does, not what it
+    // weighs — only the directory measures that.
+    sizeBytes: null,
     publishedAt: null,
     source,
     changelogUrl: null,
@@ -891,8 +914,54 @@ export function formatCount(value: number | null): string | null {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
+/**
+ * Bytes, at the precision the figure deserves.
+ *
+ * The decimal is dropped past 100 and a GB tier exists because plugin downloads
+ * put numbers through here that storage budgets never did: "141.0 MB" reads as
+ * a precision nobody has about a repository size that is an estimate anyway,
+ * and a speech model quoted as "2048.0 MB" reads as a bug.
+ */
 export function formatBytes(value: number): string {
   if (value < 1024) return `${Math.max(0, Math.round(value))} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(0)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  const megabytes = value / (1024 * 1024);
+  if (megabytes < 1024) return `${megabytes.toFixed(megabytes < 100 ? 1 : 0)} MB`;
+  return `${(megabytes / 1024).toFixed(1)} GB`;
+}
+
+/* ── Download size ──────────────────────────────────────────────────────── */
+
+export type PluginDownloadReport = {
+  /** `"4.2 MB"`, or null when nothing measured it. Never `"0 B"`. */
+  size: string | null;
+  /** One sentence per thing the plugin fetches later. Usually empty. */
+  extras: string[];
+};
+
+/**
+ * What installing this actually costs to fetch.
+ *
+ * Two figures rather than one total, and the split is the whole point: adding
+ * them would produce a single honest-looking number that is wrong for everyone
+ * who never triggers the feature that pulls the model down, and it would hide
+ * the fact that the second download happens LATER — which is the part that
+ * surprises people. So the package is quoted as the package, and anything the
+ * plugin fetches for itself is quoted separately, in a sentence that says when.
+ *
+ * Both halves render as nothing when unknown. A Marketplace that prints "0 B"
+ * for every plugin the directory has not measured teaches its readers that the
+ * number means nothing, which costs the number on the entries that do have one.
+ */
+export function describePluginDownload(
+  listing: Pick<MarketplaceListing, "sizeBytes" | "extraDownloads">,
+): PluginDownloadReport {
+  const bytes = listing.sizeBytes ?? null;
+  return {
+    size: bytes !== null && bytes > 0 ? formatBytes(bytes) : null,
+    extras: (listing.extraDownloads ?? [])
+      .filter((download) => download.bytes > 0)
+      .map((download) =>
+        `Downloads a further ${formatBytes(download.bytes)} (${download.label}) the first time you use it.`),
+  };
 }

@@ -50,6 +50,7 @@ import {
 import {
   deriveMachineCoverage,
   describePluginAdds,
+  describePluginDownload,
   describePluginResources,
   describePluginSource,
   installStateFor,
@@ -176,6 +177,7 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   // gets a fact row instead of a button that would go nowhere.
   const source = describePluginSource(listing.source);
   const resources = describePluginResources(listing);
+  const download = describePluginDownload(listing);
   // The catalogue flags themes it knows about; the installed manifest is the
   // answer for one it does not.
   const isTheme = listing.isTheme || manifest?.theme !== undefined;
@@ -276,12 +278,34 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
             <dl style={{ margin: 0, display: "grid", gap: 7 }}>
               <FactRow label="Version" value={state.kind === "available" ? listing.version : state.version} />
               {state.kind === "update" ? <FactRow label="Available" value={state.available} /> : null}
+              {/* Absent for anything the directory never measured, and for
+                  everything that ships inside ADE — a row reading "0 B" would
+                  be a measurement nobody took. */}
+              {download.size ? <FactRow label="Download" value={download.size} /> : null}
               <FactRow label="Author" value={listing.author} />
               {listing.publishedAt ? (
                 <FactRow label="Updated" value={new Date(listing.publishedAt).toLocaleDateString()} />
               ) : null}
               {source && !source.url ? <FactRow label="From" value={source.text} /> : null}
             </dl>
+            {/* Its own sentence rather than a second figure in the list above:
+                a plugin that fetches a model dwarfing its own package is not
+                describing a size, it is describing something that happens
+                later, and the row format has nowhere to say "later". */}
+            {download.extras.map((line) => (
+              <p
+                key={line}
+                style={{
+                  margin: 0,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: COLORS.textDim,
+                }}
+              >
+                {line}
+              </p>
+            ))}
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <ListingStats
                 installs={listing.installs}

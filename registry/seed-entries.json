@@ -167,6 +167,34 @@
       ]
     },
     {
+      "pluginId": "ade-voice",
+      "displayName": "Voice",
+      "description": "Voice dictation for the composer, on-device. Downloads a 141 MB speech model on first use.",
+      "author": "ADE",
+      "version": "1.0.0",
+      "repo": "https://github.com/arul28/ade-voice",
+      "changelogUrl": "https://github.com/arul28/ade-voice/releases",
+      "iconGlyph": "microphone",
+      "icon": "microphone",
+      "iconColor": "#C2508B",
+      "accent": "#C2508B",
+      "official": true,
+      "featured": true,
+      "isTheme": false,
+      "surfaces": [
+        "work"
+      ],
+      "sockets": [
+        "composer-action"
+      ],
+      "extraDownloads": [
+        {
+          "label": "Speech model",
+          "bytes": 147964211
+        }
+      ]
+    },
+    {
       "pluginId": "ade-theme-paper",
       "displayName": "Paper",
       "description": "Warm paper and ink, with a clay accent. For working in daylight.",

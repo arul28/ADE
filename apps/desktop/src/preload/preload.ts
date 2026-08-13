@@ -4457,52 +4457,48 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
       ),
   },
-  transcription: {
-    // Hand the captured 16 kHz mono PCM to the main process as a transferable
-    // ArrayBuffer. Returns the raw + deterministically-cleaned transcript.
-    transcribe: async (
+  audio: {
+    // Hand captured mono PCM to the main process as a transferable ArrayBuffer;
+    // it lands as a WAV under the ADE home and comes back as a path any process
+    // on this machine can read.
+    writeClip: async (
       pcm: ArrayBuffer,
       options?: { sampleRate?: number; format?: "int16" | "float32" },
-    ): Promise<{ raw: string; cleaned: string }> =>
-      ipcRenderer.invoke(IPC.transcriptionTranscribe, {
+    ): Promise<{ audioPath: string; durationMs: number }> =>
+      ipcRenderer.invoke(IPC.audioWriteClip, {
         pcm,
         sampleRate: options?.sampleRate,
         format: options?.format ?? "int16",
       }),
-    status: async (): Promise<{
-      installed: boolean;
-      binaryInstalled: boolean;
-      modelInstalled: boolean;
-      downloading: boolean;
-      binaryPath: string | null;
-      modelPath: string | null;
-    }> => ipcRenderer.invoke(IPC.transcriptionStatus),
-    // Download the ~141 MB speech model on demand (first dictation). Resolves
-    // with the post-download status. Subscribe to progress via onModelDownloadProgress.
-    downloadModel: async (): Promise<{
-      installed: boolean;
-      binaryInstalled: boolean;
-      modelInstalled: boolean;
-      downloading: boolean;
-      binaryPath: string | null;
-      modelPath: string | null;
-    }> => ipcRenderer.invoke(IPC.transcriptionDownloadModel),
-    onModelDownloadProgress: (
-      handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
-    ): (() => void) => {
-      const listener = (
-        _event: unknown,
-        progress: { receivedBytes: number; totalBytes: number | null },
-      ) => handler(progress);
-      ipcRenderer.on(IPC.transcriptionModelDownloadProgress, listener);
-      return () => ipcRenderer.removeListener(IPC.transcriptionModelDownloadProgress, listener);
-    },
+    /** Drop a clip the requester never consumed. */
+    discardClip: async (audioPath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.audioDiscardClip, { audioPath }),
     // Check/request macOS microphone permission before capturing. Electron
     // returns a silent track instead of throwing when access is missing, so the
     // renderer must gate getUserMedia on this.
     requestMicAccess: async (): Promise<{
       status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
-    }> => ipcRenderer.invoke(IPC.transcriptionRequestMicAccess),
+    }> => ipcRenderer.invoke(IPC.audioRequestMicAccess),
+    /**
+     * Serve capture requests from main. The handler records and answers; its
+     * resolution or rejection is relayed back to whoever asked.
+     */
+    onCaptureRequest: (
+      handler: (request: { requestId: string; label: string; maxDurationMs?: number }) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: unknown,
+        request: { requestId: string; label: string; maxDurationMs?: number },
+      ) => handler(request);
+      ipcRenderer.on(IPC.audioCaptureRequest, listener);
+      return () => ipcRenderer.removeListener(IPC.audioCaptureRequest, listener);
+    },
+    /** Report how a served capture request ended. */
+    settleCaptureRequest: async (
+      outcome:
+        | { requestId: string; ok: true; clip: { audioPath: string; durationMs: number } }
+        | { requestId: string; ok: false; code: string; message: string },
+    ): Promise<void> => ipcRenderer.invoke(IPC.audioCaptureResult, outcome),
   },
   modelPicker: {
     getFavorites: async (): Promise<{ favorites: string[] }> =>

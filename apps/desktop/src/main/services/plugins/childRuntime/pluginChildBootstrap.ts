@@ -26,6 +26,7 @@ import {
   PluginSdkError,
   toPluginStructuralError,
   type AdePluginSdk,
+  type PluginAudioClip,
   type PluginChildFrame,
   type PluginCollectionRow,
   type PluginEventName,
@@ -208,6 +209,11 @@ export function runPluginChild(): void {
     },
     config: {
       get: async () => (await callHost("config.get", {})) as Record<string, string | number | boolean | null>,
+    },
+    audio: {
+      captureClip: async (options) => (
+        await callHost("audio.captureClip", { options: options ?? {} })
+      ) as PluginAudioClip,
     },
     log: emitLog,
   });

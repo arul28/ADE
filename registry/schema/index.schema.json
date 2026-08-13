@@ -58,6 +58,16 @@
         "caption": { "type": "string", "maxLength": 160 }
       }
     },
+    "extraDownload": {
+      "description": "One asset the plugin fetches on first use. The label is the plugin's own words for it and is shown beside the figure, so it is bounded like every other piece of third-party text on the page.",
+      "type": "object",
+      "required": ["label", "bytes"],
+      "additionalProperties": true,
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
     "surface": {
       "enum": ["work", "lanes", "files", "prs", "automations", "cto"]
     },
@@ -69,7 +79,8 @@
         "detail-section",
         "empty-state",
         "filter-chip",
-        "file-viewer"
+        "file-viewer",
+        "composer-action"
       ]
     },
     "entry": {
@@ -164,6 +175,17 @@
           "minimum": 0
         },
         "stars": { "type": "integer", "minimum": 0 },
+        "sizeBytes": {
+          "description": "What installing the plugin costs to download, in bytes. Approximate — the crawler derives it from the GitHub repository size, which counts the packed repository rather than a release artefact. Omit when unmeasured: readers render an omitted size as nothing, and a published 0 would read as a measured zero, so 0 is refused here too.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "extraDownloads": {
+          "description": "What the plugin fetches for ITSELF after installing — a speech model, a runtime, a data pack. Declared by the plugin in its own plugin.json and passed through by the crawler. Published because a small package that then pulls down a large asset is a large decision, and quoting only the package size would be honest about the wrong number.",
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/extraDownload" }
+        },
         "publishedAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "readme": { "type": "string", "maxLength": 32768 },

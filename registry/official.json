@@ -68,6 +68,10 @@
         "1.0.1": "034471c94f16063522e04740ce3779448dac3b26c5daf632cee6943ec921f6da"
       }
     },
+    "ade-voice": {
+      "repo": "https://github.com/arul28/ade-voice",
+      "checksums": {}
+    },
     "ade-theme-paper": {
       "repo": "https://github.com/arul28/ade-theme-paper",
       "checksums": {

@@ -96,6 +96,8 @@ type PluginBridge = {
     pluginId: string;
     action: string;
     args?: Record<string, unknown>;
+    /** Per-call round-trip budget. A host too old to read it ignores the key. */
+    timeoutMs?: number;
   }) => Promise<unknown>;
   restart?: (input: { pluginId: string }) => Promise<void>;
   openLogs?: (input: { pluginId: string }) => Promise<void>;
@@ -271,10 +273,19 @@ export async function invokePluginAction(
   pluginId: string,
   action: string,
   args?: Record<string, unknown>,
+  options?: { timeoutMs?: number },
 ): Promise<unknown> {
   const invoke = bridge()?.invoke;
   if (!invoke) throw new Error("This build has no plugin support.");
-  return invoke({ pluginId, action, ...(args ? { args } : {}) });
+  // `timeoutMs` rides beside `args`, never inside it — see `PluginDomainService`.
+  // Omitted entirely when unset, so a host too old to read it receives byte-for
+  // -byte what it always did rather than an extra key it has to decide about.
+  return invoke({
+    pluginId,
+    action,
+    ...(args ? { args } : {}),
+    ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+  });
 }
 
 export async function restartPlugin(pluginId: string): Promise<void> {

@@ -71,6 +71,44 @@ export type PluginAutomationContext = {
   enabled: boolean;
 };
 
+/**
+ * The live chat composer, for the `composer-action` socket.
+ *
+ * The one context that carries the user's own unsent words. That is deliberate
+ * and it is the whole point of the socket: a button that rewrites, translates,
+ * or expands a prompt cannot do its job from a session id, and a plugin that
+ * had to ask the user to paste their draft somewhere else would not be a
+ * composer button at all. Installing a plugin grants it — the same grant that
+ * already lets its child process read any file the user can.
+ *
+ * `draft` is read at INVOKE time, never at render time: the button is pressed
+ * against the text on screen at that moment, not the text that was there when
+ * the row last rendered.
+ */
+export type PluginComposerContext = {
+  kind: "composer";
+  /**
+   * The chat this composer sends to. Null on a composer that has not started
+   * one yet (the hero composer, a fresh Work pane) — which is also why a
+   * composer-action carries no dynamic per-entity contribution there.
+   */
+  sessionId: string | null;
+  /** The open project binding's stable key. Null on a projectless composer. */
+  projectKey: string | null;
+  /** Absolute checkout root the composer sends into, when there is one. */
+  projectRoot: string | null;
+  /** The lane selected in this window, when the composer sits inside one. */
+  laneId: string | null;
+  /** The full unsent draft, verbatim. */
+  draft: string;
+  /**
+   * Caret offset into `draft`. Null when the composer holds no live caret —
+   * an action that inserts then appends, which is what a plugin should want
+   * when the user has not put their cursor anywhere in particular.
+   */
+  cursor: number | null;
+};
+
 /** A surface with no per-entity subject (toolbar actions, empty states, chips). */
 export type PluginSurfaceOnlyContext = {
   kind: "surface";
@@ -83,6 +121,7 @@ export type PluginSurfaceContext =
   | PluginSessionContext
   | PluginFileContext
   | PluginAutomationContext
+  | PluginComposerContext
   | PluginSurfaceOnlyContext;
 
 /** Lowercase extension including the dot, derived from a path. */
@@ -111,6 +150,12 @@ export function pluginContributionKeyForContext(
       return { entityKind: "file", entityId: context.path };
     case "automation":
       return { entityKind: "automation", entityId: context.id };
+    // A composer belongs to its chat, so a plugin publishes per-session rows to
+    // change what its composer button says for one conversation. Before the
+    // chat exists there is nothing to key on, and the composer then shows the
+    // plugin's manifest declaration only.
+    case "composer":
+      return context.sessionId ? { entityKind: "session", entityId: context.sessionId } : null;
     case "surface":
       return null;
   }

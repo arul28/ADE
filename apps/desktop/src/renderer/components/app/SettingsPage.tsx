@@ -20,7 +20,6 @@ import { AboutSection } from "../settings/AboutSection";
 import { AdeCliSection } from "../settings/AdeCliSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
-import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
@@ -165,9 +164,6 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
           </WebSettingsSection>
           <WebSettingsSection entryIds={["agents.background-jobs", "agents.scheduled-work", "agents.budget"]}>
             <AiFeaturesSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["agents.dictation"]}>
-            <DictationSection />
           </WebSettingsSection>
         </>
       );

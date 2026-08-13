@@ -112,7 +112,9 @@ import type { SearchService } from "./services/search/searchService";
 import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
-import { createTranscriptionService } from "./services/transcription/transcriptionService";
+import { createAudioCaptureService } from "./services/audio/audioCaptureService";
+import { purgeLegacyAudioArtifacts } from "./services/audio/legacyAudioArtifacts";
+import { createAudioCaptureBroker, type AudioCaptureBroker } from "./services/audio/audioCaptureBroker";
 import { installEditableContextMenu } from "./editorContextMenu";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
@@ -622,23 +624,64 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   return legacyStore;
 }
 
-// Voice-to-text transcription is a project-independent capability (it only needs
-// the bundled whisper binary + model + shared glossary), so it lives as a single
-// shared instance threaded into every project/dormant context. Constructed lazily
-// on first context build.
-let sharedTranscriptionService: ReturnType<typeof createTranscriptionService> | null = null;
-function getSharedTranscriptionService(logger: Logger): ReturnType<typeof createTranscriptionService> {
-  if (!sharedTranscriptionService) {
-    sharedTranscriptionService = createTranscriptionService({
+// Audio capture is a project-independent capability (it only needs a scratch
+// directory), so it lives as a single shared instance threaded into every
+// project/dormant context. Constructed lazily on first context build.
+let sharedAudioCaptureService: ReturnType<typeof createAudioCaptureService> | null = null;
+
+/**
+ * Scratch for staged clips.
+ *
+ * The OS temp dir, not the ADE home: a clip is handed to a plugin that reads it
+ * and is expected to delete it, and consumers reasonably refuse to unlink paths
+ * outside `os.tmpdir()` — deleting a file somewhere else on the user's disk is
+ * not a thing a plugin should do on a guess. Putting clips where that cleanup
+ * can fire means they live for seconds rather than until ADE next starts. The
+ * startup sweep stays as the backstop for whatever a crash leaves behind.
+ */
+function audioCaptureDir(): string {
+  return path.join(os.tmpdir(), "ade-audio-captures");
+}
+
+function getSharedAudioCaptureService(logger: Logger): ReturnType<typeof createAudioCaptureService> {
+  if (!sharedAudioCaptureService) {
+    sharedAudioCaptureService = createAudioCaptureService({
       logger,
-      isPackaged: app.isPackaged,
-      resourcesPath: process.resourcesPath,
-      // The ~141 MB model is downloaded at runtime (not bundled) into userData
-      // so it never bloats the auto-update zip. See whisperModelStore.
-      modelDir: path.join(app.getPath("userData"), "whisper"),
+      captureDir: audioCaptureDir(),
     });
   }
-  return sharedTranscriptionService;
+  return sharedAudioCaptureService;
+}
+
+/**
+ * Routes plugin capture requests to a window with a microphone.
+ *
+ * The focused window serves, falling back to the first open one: a capture is
+ * consented to by whoever is looking at the pill, so it belongs in front of the
+ * person actually at the machine.
+ */
+let sharedAudioCaptureBroker: AudioCaptureBroker | null = null;
+function getSharedAudioCaptureBroker(logger: Logger): AudioCaptureBroker {
+  if (!sharedAudioCaptureBroker) {
+    sharedAudioCaptureBroker = createAudioCaptureBroker({
+      logger,
+      requestChannel: IPC.audioCaptureRequest,
+      resolveSender: () => {
+        const win = BrowserWindow.getFocusedWindow()
+          ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+          ?? null;
+        if (!win || win.isDestroyed()) return null;
+        const contents = win.webContents;
+        return {
+          isDestroyed: () => contents.isDestroyed(),
+          send: (channel, payload) => {
+            if (!contents.isDestroyed()) contents.send(channel, payload);
+          },
+        };
+      },
+    });
+  }
+  return sharedAudioCaptureBroker;
 }
 
 function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
@@ -1296,6 +1339,19 @@ app.whenReady().then(async () => {
     return;
   }
 
+  // Speech left the app: wipe what the compiled-in version kept for itself (the
+  // 141 MB downloaded model, the old clip staging dir) on every start, and
+  // sweep stale clips out of the live scratch dir. A plugin keeps its own data
+  // under the plugins root, so this never touches it. See legacyAudioArtifacts.
+  try {
+    purgeLegacyAudioArtifacts({
+      userDataPath: app.getPath("userData"),
+      captureDir: audioCaptureDir(),
+    });
+  } catch {
+    // Disk housekeeping must never stop a launch.
+  }
+
   /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
   let adeArtifactAllowedDir: string | null = null;
 
@@ -1698,6 +1754,17 @@ app.whenReady().then(async () => {
       socketPath: builtInBrowserBridgeSocketPath,
       service: builtInBrowserService,
       logger: builtInBrowserBridgeLogger,
+      // The same socket carries `audio.captureClip`: a plugin child runs in the
+      // daemon, and the microphone is a renderer's. The broker picks the window
+      // that serves and shows the pill; the label it puts on that pill is the
+      // requesting plugin's display name, forwarded from the daemon.
+      captureAudioClip: async ({ maxDurationMs, requesterLabel }) => {
+        const clip = await getSharedAudioCaptureBroker(builtInBrowserBridgeLogger).requestCapture({
+          label: requesterLabel?.trim() || "A plugin",
+          ...(maxDurationMs != null ? { maxDurationMs } : {}),
+        });
+        return { audioPath: clip.audioPath, durationMs: clip.durationMs };
+      },
     });
   } catch (error) {
     builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
@@ -4911,7 +4978,8 @@ app.whenReady().then(async () => {
       searchService,
       externalSessionsService,
       jobEngine,
-      transcriptionService: getSharedTranscriptionService(logger),
+      audioCaptureService: getSharedAudioCaptureService(logger),
+      audioCaptureBroker: getSharedAudioCaptureBroker(logger),
       automationService,
       automationPlannerService,
       automationIngressService,
@@ -5117,7 +5185,8 @@ app.whenReady().then(async () => {
       prSummaryService: null,
       reviewService: null,
       jobEngine: null,
-      transcriptionService: getSharedTranscriptionService(logger),
+      audioCaptureService: getSharedAudioCaptureService(logger),
+      audioCaptureBroker: getSharedAudioCaptureBroker(logger),
       automationService: null,
       automationPlannerService: null,
       automationIngressService: null,
@@ -6143,13 +6212,22 @@ app.whenReady().then(async () => {
     }
   };
 
-  const disposeSharedTranscriptionService = (): void => {
+  const disposeSharedAudioCaptureService = (): void => {
     try {
-      sharedTranscriptionService?.dispose();
+      // Fail any in-flight capture first: a plugin awaiting a clip has no
+      // timeout of its own, so a shutdown that stayed silent would leave it
+      // waiting on a window that is already gone.
+      sharedAudioCaptureBroker?.dispose();
     } catch {
       // ignore
     }
-    sharedTranscriptionService = null;
+    sharedAudioCaptureBroker = null;
+    try {
+      sharedAudioCaptureService?.dispose();
+    } catch {
+      // ignore
+    }
+    sharedAudioCaptureService = null;
   };
 
   const runImmediateProcessCleanup = (reason: string): void => {
@@ -6164,7 +6242,7 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
-    disposeSharedTranscriptionService();
+    disposeSharedAudioCaptureService();
     try {
       localRuntimePool.dispose();
     } catch {
@@ -6653,7 +6731,7 @@ app.whenReady().then(async () => {
   app.on("will-quit", () => {
     autoUpdateService.notifyQuitHandoffStarted();
     runImmediateProcessCleanup("will_quit");
-    disposeSharedTranscriptionService();
+    disposeSharedAudioCaptureService();
   });
 
   try {

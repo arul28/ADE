@@ -1,4 +1,8 @@
 import { IPC } from "../../../shared/ipc";
+import {
+  clampPluginInvokeTimeoutMs,
+  PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS,
+} from "../../../shared/plugins/sockets";
 import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
 import {
   localRuntimeActionIpcTimeoutMs,
@@ -57,7 +61,11 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
   if (typeof request?.domain !== "string" || typeof request.action !== "string") return null;
   const channel = RUNTIME_ACTION_CHANNEL[request.domain]?.[request.action];
-  return channel ? ipcInvokeTimeoutMs(channel) : null;
+  // The action's own args ride along so a per-call budget survives the remote
+  // path too: a plugin installed on another machine runs its handler there, and
+  // a composer action that records for minutes must not be cut off at the
+  // default just because the request took the remote route.
+  return channel ? ipcInvokeTimeoutMs(channel, [request.args]) : null;
 }
 
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
@@ -71,12 +79,40 @@ function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null
     : null;
 }
 
+/**
+ * Headroom the renderer's IPC budget keeps over the child's own.
+ *
+ * The two must not expire together. The child supervisor answers a blown budget
+ * with a typed `plugin_timeout` naming the plugin and the action; an IPC
+ * timeout that fired first would replace that with an opaque channel error, and
+ * the person looking at it would have no way to tell a wedged plugin from a
+ * wedged app.
+ */
+const PLUGIN_INVOKE_IPC_HEADROOM_MS = 30_000;
+
+/**
+ * A plugin invocation may name its own budget — a `composer-action` that
+ * records or transcribes runs for minutes by design (see
+ * `PLUGIN_SOCKET_INVOKE_TIMEOUT_MS` in `shared/plugins/sockets.ts`). Read the
+ * hint off the payload and clamp it, rather than raising the ceiling for every
+ * plugin call: an ordinary contributed button that wedges should still fail
+ * while the user remembers pressing it.
+ */
+function pluginInvokeTimeoutMs(args: readonly unknown[]): number {
+  const payload = args[0];
+  const hint = isRecord(payload) ? clampPluginInvokeTimeoutMs(payload.timeoutMs) : null;
+  return (hint ?? PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS) + PLUGIN_INVOKE_IPC_HEADROOM_MS;
+}
+
 export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = []): number {
   if (channel === IPC.localRuntimeCallAction) {
     const payload = args[0];
     const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
     if (typeof request?.domain === "string" && typeof request.action === "string") {
-      return localRuntimeActionIpcTimeoutMs(request.domain, request.action);
+      // The action's own args ride along so `plugin.invoke` can honour a
+      // per-call budget: this is the route the desktop's plugin calls take
+      // whenever a project runtime is bound.
+      return localRuntimeActionIpcTimeoutMs(request.domain, request.action, request.args);
     }
     return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
   }
@@ -146,17 +182,15 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.usageRefreshHistory:
       return USAGE_REFRESH_HISTORY_TIMEOUT_MS;
     // Installing a plugin is a `git clone`; invoking one runs third-party code
-    // behind the child supervisor's own 20s spawn + 60s handler budgets. Both
-    // must outlive the daemon work or the renderer reports a failure for an
-    // install that lands anyway. See localRuntimeTimeoutPolicy for the pair.
+    // behind the child supervisor's own 20s spawn + per-call handler budgets.
+    // Both must outlive the daemon work or the renderer reports a failure for
+    // an install that lands anyway. See localRuntimeTimeoutPolicy for the pair.
     case IPC.pluginInstall:
       return 4 * 60_000;
     case IPC.pluginInvoke:
-      return 90_000;
+      return pluginInvokeTimeoutMs(args);
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
-    case IPC.transcriptionTranscribe:
-      return 6 * 60_000;
     case IPC.iosSimulatorListLaunchTargets:
     case IPC.iosSimulatorGetScreenSnapshot:
     case IPC.iosSimulatorInspectPoint:

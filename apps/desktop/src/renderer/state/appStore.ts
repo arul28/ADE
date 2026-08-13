@@ -779,7 +779,6 @@ type PersistedUserPreferences = {
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
-  voiceInputEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -847,32 +846,35 @@ function normalizePluginThemeId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-// ── Voice dictation (ephemeral, app-global) ────────────────────────────────
+// ── Audio capture (ephemeral, app-global) ──────────────────────────────────
 //
-// These fields back the app-global voice-capture lifecycle that lives in
-// `services/globalVoiceRecorder.ts`. They are deliberately EPHEMERAL — never
-// persisted and never copied into per-project stores — because they describe a
-// single live recording session, not a saved preference. The recorder writes
-// them on the ROOT store only, so the always-mounted header indicator and the
-// (project-scoped) composer pill both read the same live state.
+// These fields back the app-global capture lifecycle in
+// `services/audioCaptureRecorder.ts`, which records a clip on a plugin's
+// behalf. They are deliberately EPHEMERAL — never persisted and never copied
+// into per-project stores — because they describe a single live recording, not
+// a saved preference. The recorder writes them on the ROOT store only, so the
+// always-mounted header indicator shows the session from anywhere in the app.
+//
+// Nothing here knows what the clip is FOR. ADE records and hands over a file;
+// whether that becomes a transcript, a voice memo or something else is the
+// requesting plugin's business.
 
 /** Number of waveform bars the recorder keeps in its rolling level buffer. */
-export const DICTATION_WAVEFORM_BARS = 9;
+export const AUDIO_CAPTURE_WAVEFORM_BARS = 9;
 
-export type DictationPhase = "idle" | "recording" | "transcribing";
+export type AudioCapturePhase = "idle" | "recording" | "saving";
 
 /**
- * A composer that has registered itself as the insertion target for dictated
- * text. The recorder calls `insertText(cleaned)` on `finish()` if a target is
- * registered; otherwise the transcript is only copied to the clipboard.
+ * Who asked for the recording, for the pill to name.
+ *
+ * A microphone that opens with no attribution is the kind of thing a user is
+ * right to be alarmed by, so the pill always says which plugin is listening.
  */
-export type ActiveDictationTarget = {
-  /** Stable id for the registering composer (used for safe deregistration). */
-  id: string;
-  /** Insert the cleaned transcript at the composer's caret. */
-  insertText: (text: string) => void;
-  /** Best-effort focus of the composer's input (called before insertion). */
-  focus: () => void;
+export type AudioCaptureRequester = {
+  /** Stable id of the in-flight capture request. */
+  requestId: string;
+  /** The requesting plugin's display name, as the pill shows it. */
+  label: string;
 };
 
 function coerceTheme(value: unknown): ThemeId | null {
@@ -899,7 +901,6 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       promptStashButtonEnabled: parsed.promptStashButtonEnabled !== false,
-      voiceInputEnabled: parsed.voiceInputEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
@@ -947,7 +948,6 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
     promptStashButtonEnabled: true,
-    voiceInputEnabled: true,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
@@ -981,7 +981,6 @@ function persistUserPreferencesFrom(state: {
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
-  voiceInputEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -1004,7 +1003,6 @@ function persistUserPreferencesFrom(state: {
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: state.promptStashButtonEnabled,
-    voiceInputEnabled: state.voiceInputEnabled,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
@@ -1174,7 +1172,6 @@ export type AppState = {
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
-  voiceInputEnabled: boolean;
   // ── Plugin registry (ROOT store only) ──
   //
   // The tab rail renders above `AppStoreProvider`, so it resolves the root store
@@ -1196,11 +1193,11 @@ export type AppState = {
   pluginAdapterGeneration: number;
   pluginThemeId: string | null;
   pluginViewState: PluginViewState;
-  // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
-  dictationPhase: DictationPhase;
-  dictationElapsed: number;
-  dictationLevels: number[];
-  activeDictationTarget: ActiveDictationTarget | null;
+  // ── Ephemeral audio-capture session state (root store only; not persisted) ──
+  audioCapturePhase: AudioCapturePhase;
+  audioCaptureElapsed: number;
+  audioCaptureLevels: number[];
+  audioCaptureRequester: AudioCaptureRequester | null;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
   draftLaunchJobsByScope: Record<string, DraftLaunchJob[]>;
@@ -1347,7 +1344,6 @@ export type AppState = {
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setPromptStashButtonEnabled: (enabled: boolean) => void;
-  setVoiceInputEnabled: (enabled: boolean) => void;
   /** Replace the registry from a host snapshot. Root store only. */
   setInstalledPlugins: (plugins: InstalledPlugin[]) => void;
   /** Pull the registry from the host. Resolves even when the host has no plugin surface. */
@@ -1357,14 +1353,12 @@ export type AppState = {
   setPluginThemeId: (pluginId: string | null) => void;
   /** Remember which panel a plugin tab was last showing. */
   setLastPluginPanel: (pluginId: string, panelId: string) => void;
-  // ── Voice-dictation session setters (ephemeral; never persisted) ──
-  setDictationPhase: (phase: DictationPhase) => void;
-  setDictationElapsed: (seconds: number) => void;
-  setDictationLevels: (levels: number[]) => void;
-  resetDictationSession: () => void;
-  registerDictationTarget: (target: ActiveDictationTarget) => void;
-  /** Clear the active target only if `id` matches the currently-registered one. */
-  unregisterDictationTarget: (id: string) => void;
+  // ── Audio-capture session setters (ephemeral; never persisted) ──
+  setAudioCapturePhase: (phase: AudioCapturePhase) => void;
+  setAudioCaptureElapsed: (seconds: number) => void;
+  setAudioCaptureLevels: (levels: number[]) => void;
+  setAudioCaptureRequester: (requester: AudioCaptureRequester | null) => void;
+  resetAudioCaptureSession: () => void;
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
     projectRoot: string | null | undefined,
@@ -1614,16 +1608,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
-  voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   installedPlugins: [],
   pluginsLoaded: false,
   pluginAdapterGeneration: 0,
   pluginThemeId: initialUserPreferences.pluginThemeId,
   pluginViewState: initialUserPreferences.pluginViewState,
-  dictationPhase: "idle",
-  dictationElapsed: 0,
-  dictationLevels: new Array(DICTATION_WAVEFORM_BARS).fill(0.05),
-  activeDictationTarget: null,
+  audioCapturePhase: "idle",
+  audioCaptureElapsed: 0,
+  audioCaptureLevels: new Array(AUDIO_CAPTURE_WAVEFORM_BARS).fill(0.05),
+  audioCaptureRequester: null,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
   draftLaunchJobsByScope: {},
@@ -2137,11 +2130,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, promptStashButtonEnabled: enabled });
       return { promptStashButtonEnabled: enabled };
     }),
-  setVoiceInputEnabled: (enabled) =>
-    set((prev) => {
-      persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });
-      return { voiceInputEnabled: enabled };
-    }),
   setInstalledPlugins: (plugins) => set({ installedPlugins: plugins, pluginsLoaded: true }),
   refreshInstalledPlugins: async () => {
     // `listInstalledPlugins` already absorbs a missing namespace and a rejected
@@ -2169,24 +2157,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, pluginViewState });
       return { pluginViewState };
     }),
-  // Ephemeral dictation setters: NO persistUserPreferencesFrom — these describe
-  // a live capture session, not a saved preference.
-  setDictationPhase: (phase) => set({ dictationPhase: phase }),
-  setDictationElapsed: (seconds) => set({ dictationElapsed: seconds }),
-  setDictationLevels: (levels) => set({ dictationLevels: levels }),
-  resetDictationSession: () =>
+  // Ephemeral capture setters: NO persistUserPreferencesFrom — these describe
+  // a live recording, not a saved preference.
+  setAudioCapturePhase: (phase) => set({ audioCapturePhase: phase }),
+  setAudioCaptureElapsed: (seconds) => set({ audioCaptureElapsed: seconds }),
+  setAudioCaptureLevels: (levels) => set({ audioCaptureLevels: levels }),
+  setAudioCaptureRequester: (requester) => set({ audioCaptureRequester: requester }),
+  resetAudioCaptureSession: () =>
     set({
-      dictationPhase: "idle",
-      dictationElapsed: 0,
-      dictationLevels: new Array(DICTATION_WAVEFORM_BARS).fill(0.05),
+      audioCapturePhase: "idle",
+      audioCaptureElapsed: 0,
+      audioCaptureLevels: new Array(AUDIO_CAPTURE_WAVEFORM_BARS).fill(0.05),
+      audioCaptureRequester: null,
     }),
-  registerDictationTarget: (target) => set({ activeDictationTarget: target }),
-  unregisterDictationTarget: (id) =>
-    set((prev) =>
-      prev.activeDictationTarget?.id === id
-        ? { activeDictationTarget: null }
-        : prev,
-    ),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
@@ -3040,7 +3023,6 @@ export function createProjectAppStore(
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: rootState.promptStashButtonEnabled,
-    voiceInputEnabled: rootState.voiceInputEnabled,
     setTheme: rootState.setTheme,
     setTerminalPreferences: rootState.setTerminalPreferences,
     setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
@@ -3059,7 +3041,6 @@ export function createProjectAppStore(
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
     setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,
-    setVoiceInputEnabled: rootState.setVoiceInputEnabled,
     // Plugin PREFS are copied like every other appearance pref. The plugin
     // REGISTRY deliberately is not: it changes whenever a plugin is installed
     // or enabled, and a per-project copy would be stale from that moment on.
@@ -3232,17 +3213,16 @@ export const useAppStore = Object.assign(
 );
 
 /**
- * The single root app store. The app-global voice recorder writes the ephemeral
- * dictation slice here so the always-mounted header indicator and the
- * project-scoped composer pill share one live capture session, regardless of
- * which project-scoped store the composer's own `useAppStore` resolves to.
+ * The single root app store. The app-global audio recorder writes the ephemeral
+ * capture slice here so the always-mounted header indicator shows the live
+ * recording regardless of which project-scoped store is mounted around it.
  */
 export const rootAppStoreApi: AppStoreApi = rootAppStore;
 
 /**
  * Reactively read from the ROOT store, bypassing any `AppStoreProvider` context.
- * Components rendered inside a project-scoped store (e.g. the chat composer) use
- * this for dictation state so they observe the same session the recorder drives.
+ * Components rendered inside a project-scoped store use this for capture state
+ * so they observe the same session the recorder drives.
  */
 export function useRootAppStore<T>(selector: (state: AppState) => T): T {
   return useStore(rootAppStore, selector);

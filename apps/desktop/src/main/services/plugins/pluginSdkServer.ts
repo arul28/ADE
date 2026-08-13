@@ -17,6 +17,8 @@ import {
   PLUGIN_COLLECTION_IF_FULL_MODES,
   PLUGIN_PANELS_MAX_PER_PLUGIN,
   PLUGIN_PANEL_SCHEMA_MAX_BYTES,
+  isPluginAudioCaptureErrorCode,
+  type PluginAudioClip,
   type PluginCollectionPutOptions,
   type PluginSdkMethod,
 } from "../../../shared/plugins/sdk";
@@ -61,6 +63,47 @@ function readPutOptions(value: unknown): PluginCollectionPutOptions | undefined 
   return { ifFull };
 }
 
+/**
+ * The refusal a host answers `audio.captureClip` with when nothing on this
+ * machine can record.
+ *
+ * One sentence, two callers: a host built without the capability at all (a
+ * headless daemon, a CLI-only machine) and the daemon's own bridge, which
+ * cannot know whether a desktop is attached until it tries. Both are the same
+ * fact to the plugin — there is no microphone here — and it should not be able
+ * to tell which layer said so.
+ */
+export function pluginAudioCaptureUnavailable(): PluginSdkError {
+  return new PluginSdkError(
+    "audio_capture_mic_unavailable",
+    "This machine has no microphone ADE can record from.",
+  );
+}
+
+/**
+ * Carry a capture refusal's `code` across the child boundary.
+ *
+ * Everything between the microphone and here rejects with its own error class
+ * — the renderer's `AudioCaptureFailure`, the broker's `AudioCaptureRefused`,
+ * whatever the daemon bridge throws — and none of them are `PluginSdkError`,
+ * which is the only shape the supervisor preserves a code from. Rather than
+ * make every layer import a plugin type it has no other use for, the codes are
+ * a shared vocabulary and this reads whichever one arrived.
+ *
+ * An unrecognized error is passed through untouched: a genuine crash should
+ * reach the plugin as `internal_error`, not be dressed up as a capture outcome
+ * the user never caused.
+ */
+export function asPluginAudioCaptureError(error: unknown): unknown {
+  if (error instanceof PluginSdkError) return error;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (!isPluginAudioCaptureErrorCode(code)) return error;
+  const message = error instanceof Error && error.message
+    ? error.message
+    : "The recording could not be completed.";
+  return new PluginSdkError(code, message);
+}
+
 export function createPluginSdkServer(deps: {
   pluginId: string;
   manifest: PluginManifest;
@@ -69,6 +112,20 @@ export function createPluginSdkServer(deps: {
   secrets: PluginSecretStore;
   invokeAdeAction: (domain: string, action: string, args: Record<string, unknown>) => Promise<unknown>;
   readConfig: () => Record<string, string | number | boolean | null>;
+  /**
+   * Record a clip through ADE's microphone, on this plugin's behalf.
+   *
+   * Optional because the microphone belongs to the desktop renderer and this
+   * host may be running without one — a headless daemon, a CLI-only machine.
+   * Absent reads as "no microphone here", which is a refusal the plugin can act
+   * on, not a crash.
+   */
+  captureAudioClip?: (args: {
+    pluginId: string;
+    /** What the pill calls the requester. */
+    label: string;
+    maxDurationMs?: number;
+  }) => Promise<PluginAudioClip>;
 }): { handle(method: PluginSdkMethod, params: Record<string, unknown>): Promise<unknown> } {
   const { pluginId, manifest } = deps;
 
@@ -213,6 +270,38 @@ export function createPluginSdkServer(deps: {
 
         case "config.get":
           return deps.readConfig();
+
+        case "audio.captureClip": {
+          if (!deps.captureAudioClip) throw pluginAudioCaptureUnavailable();
+          const options = optionalRecord(params.options, "options");
+          const maxDurationMs = typeof options.maxDurationMs === "number"
+            && Number.isFinite(options.maxDurationMs)
+            && options.maxDurationMs > 0
+            ? Math.trunc(options.maxDurationMs)
+            : undefined;
+          try {
+            // The label is the manifest's display name, never something the
+            // plugin passes in: the pill attributes the microphone, and a
+            // requester that could name itself could name someone else.
+            return await deps.captureAudioClip({
+              pluginId,
+              label: manifest.displayName || pluginId,
+              ...(maxDurationMs != null ? { maxDurationMs } : {}),
+            });
+          } catch (error) {
+            // Re-throw as a typed refusal, because `code` is the ONLY field
+            // that survives the child boundary: `pluginChildSupervisor`
+            // rebuilds a rejection from `PluginSdkError`'s code and flattens
+            // everything else to `internal_error`. The layers below this one
+            // reject with their own error classes carrying a `code` property —
+            // the broker's cancel/busy, the bridge's no-desktop — and without
+            // this they all arrive at the plugin indistinguishable from a
+            // crash. Cancel is the common case, not an edge one: it fires
+            // every time somebody dismisses the pill, and a plugin that reads
+            // that as a failure would report an error for a deliberate act.
+            throw asPluginAudioCaptureError(error);
+          }
+        }
 
         default:
           throw new PluginSdkError("unsupported_method", `Unsupported plugin SDK method: ${String(method)}`);

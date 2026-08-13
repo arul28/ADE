@@ -21,7 +21,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
  * actions the sync host registers, so a setting either travels to that machine,
  * syncs through the ADE account, never leaves the browser tab — or has nowhere
  * to go at all. `hidden` is that last case, and it is why Secrets, providers,
- * GitHub credentials, dictation, the CLI installer, auto-updates, storage,
+ * GitHub credentials, the CLI installer, auto-updates, storage,
  * session lifecycle, and lane templates stay off the web nav: their reads land
  * but their writes would resolve against a missing descriptor and vanish.
  *
@@ -315,16 +315,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     showScopeChip: true,
     group: "Budget",
-  },
-  {
-    id: "agents.dictation",
-    label: "Voice input",
-    keywords: ["dictation", "microphone", "speech", "whisper", "transcribe"],
-    tab: "agents",
-    anchor: "voice-input",
-    scope: "machine",
-    web: "hidden",
-    group: "Input",
   },
 
   // ── Lanes ────────────────────────────────────────────────────────────────
@@ -701,7 +691,6 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   secrets: "secrets.secrets",
   diagnostics: "storage.diagnostics",
   "agent-completion-sound": "notifications.completion-sound",
-  "voice-input": "agents.dictation",
   "chat-launch-clipboard": "appearance.launch-prompt",
   "github-connection": "integrations.github",
   "linear-connection": "integrations.linear",

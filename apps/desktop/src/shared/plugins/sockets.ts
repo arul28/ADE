@@ -4,11 +4,18 @@
  * Pure types and pure helpers, shared by the daemon, the desktop renderer, the
  * `ade code` TUI and (transcribed) iOS. No React, no Electron, no Node.
  *
- * The taxonomy is deliberately CLOSED and small. Six kinds × six surfaces is
- * the whole vocabulary, and every core surface implements the same six, so a
- * plugin author learns the shape once and iOS can implement it exhaustively at
- * compile time. Adding a seventh kind is a platform change with a parity cost
- * on four clients — not something a plugin can invent at runtime.
+ * The taxonomy is deliberately CLOSED and small. Eight kinds across six
+ * surfaces is the whole vocabulary, and a plugin author learns the shape once
+ * while iOS implements it exhaustively at compile time. Adding a ninth kind is
+ * a platform change with a parity cost on four clients — not something a plugin
+ * can invent at runtime.
+ *
+ * A kind does not have to reach every client on the day it lands. A client that
+ * has not grown an arm for one drops it where it decodes (iOS maps an unknown
+ * `socket` string to `.unsupported` and returns nil), so the contribution is
+ * simply absent there rather than half-drawn — which is what lets a kind ship on
+ * desktop and web first. `composer-action` is that case today; the skill's
+ * per-surface table is where the honest current answer lives.
  *
  * Two invariants the host enforces and clients rely on:
  *
@@ -35,6 +42,7 @@ export const PLUGIN_SOCKET_KINDS = [
   "empty-state",
   "filter-chip",
   "file-viewer",
+  "composer-action",
 ] as const;
 
 export type PluginSocketKind = (typeof PLUGIN_SOCKET_KINDS)[number];
@@ -94,6 +102,7 @@ export const PLUGIN_SOCKET_REQUIREMENTS: Record<PluginSocketKind, PluginSocketRe
   // `filterKey` falls back to the socket id, so the manifest need not carry it.
   "filter-chip": { manifest: ["label"], payload: ["label", "filterKey"] },
   "file-viewer": { manifest: ["panelId", "extensions"], payload: ["panelId", "extensions"] },
+  "composer-action": { manifest: ["label", "actionId"], payload: ["label", "actionId"] },
 };
 
 /**
@@ -115,6 +124,58 @@ export const PLUGIN_ROW_BADGE_VISIBLE_LIMIT = 2;
 
 /** Hard ceiling on contributions a single plugin may place in one socket slot. */
 export const PLUGIN_CONTRIBUTIONS_PER_SLOT_LIMIT = 8;
+
+/**
+ * The host round-trip budget one socket invocation gets, per kind.
+ *
+ * 60s is the platform default and the right answer for a button on a row: it
+ * fires with no visible progress anywhere, so a plugin that wedges must fail
+ * while the user still remembers pressing it.
+ *
+ * `composer-action` is the deliberate exception, and the reason is the busy
+ * state rather than the socket. A composer button is the one contribution the
+ * user watches for its whole duration — it stays visibly active, refuses a
+ * second press, and sits under a caret they are waiting on. Its canonical uses
+ * are open-ended by nature: record until I stop, transcribe this, draft that.
+ * A 60s cap would cut a dictation off mid-sentence and report it as a plugin
+ * fault. So the budget follows the feedback: a kind that shows the user it is
+ * working gets minutes, and a kind that shows nothing keeps seconds.
+ *
+ * These bound the HOST round trip, never the plugin's own process — a plugin
+ * may still work for as long as it likes in `activate` or an event handler.
+ */
+export const PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS = 60_000;
+
+export const PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * The largest budget any socket may ask for, and the clamp every layer applies.
+ *
+ * The timeout crosses three trust boundaries (renderer → preload → host), so
+ * the number that arrives is untrusted input. Without a ceiling a caller could
+ * ask for a budget that outlives the app and turn a wedged plugin child into a
+ * promise that never settles.
+ */
+export const PLUGIN_SOCKET_INVOKE_TIMEOUT_MAX_MS = PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS;
+
+/** The budget a socket kind's invocations get. Unknown kinds get the default. */
+export function pluginSocketInvokeTimeoutMs(socket: PluginSocketKind | null | undefined): number {
+  return socket === "composer-action"
+    ? PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS
+    : PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS;
+}
+
+/**
+ * Narrow an untrusted timeout hint, or `null` for "no hint, use the default".
+ *
+ * Below the default is accepted — a caller asking for LESS patience than the
+ * platform gives is not a risk, and refusing it would make the field
+ * one-directional for no reason.
+ */
+export function clampPluginInvokeTimeoutMs(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return Math.min(Math.trunc(value), PLUGIN_SOCKET_INVOKE_TIMEOUT_MAX_MS);
+}
 
 export type PluginToolbarActionPayload = {
   label: string;
@@ -160,6 +221,22 @@ export type PluginFileViewerPayload = {
   extensions: string[];
 };
 
+/**
+ * A button in the chat composer's accessory row.
+ *
+ * Structurally a toolbar action, and deliberately not folded into one: a
+ * toolbar action's context is the surface or the row it sits on, while this
+ * one's is the live composer — its session and its unsent draft. Two kinds
+ * sharing a payload shape is cheap; one kind carrying two different contexts
+ * would mean every action handler had to guess which it received.
+ */
+export type PluginComposerActionPayload = {
+  label: string;
+  icon?: string;
+  actionId: string;
+  disabled?: boolean;
+};
+
 export type PluginContributionPayloadByKind = {
   "toolbar-action": PluginToolbarActionPayload;
   "row-badge": PluginRowBadgePayload;
@@ -168,6 +245,7 @@ export type PluginContributionPayloadByKind = {
   "empty-state": PluginEmptyStatePayload;
   "filter-chip": PluginFilterChipPayload;
   "file-viewer": PluginFileViewerPayload;
+  "composer-action": PluginComposerActionPayload;
 };
 
 export type PluginContribution<K extends PluginSocketKind = PluginSocketKind> = {
@@ -201,7 +279,10 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
   if (!isRecord(raw)) return null;
   const result = ((): PluginContributionPayloadByKind[PluginSocketKind] | null => {
     switch (socket) {
-      case "toolbar-action": {
+      // Same payload, two contexts — see PluginComposerActionPayload. Sharing
+      // the arm is what keeps the two from drifting into different ceilings.
+      case "toolbar-action":
+      case "composer-action": {
         const label = bounded(raw.label, 40);
         const actionId = bounded(raw.actionId, 64);
         if (!label || !actionId) return null;

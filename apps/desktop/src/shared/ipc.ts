@@ -873,11 +873,17 @@ export const IPC = {
   updateCancelAutoApply: "ade.update.cancelAutoApply",
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateEvent: "ade.update.event",
-  transcriptionTranscribe: "ade.transcription.transcribe",
-  transcriptionStatus: "ade.transcription.status",
-  transcriptionRequestMicAccess: "ade.transcription.requestMicAccess",
-  transcriptionDownloadModel: "ade.transcription.downloadModel",
-  transcriptionModelDownloadProgress: "ade.transcription.modelDownloadProgress",
+  // Audio capture. ADE records clips on a plugin's behalf and never interprets
+  // them, so there is no model, no transcript and no status here — only the
+  // clip, the microphone permission that produced it, and the request the
+  // renderer is being asked to serve.
+  audioWriteClip: "ade.audio.writeClip",
+  audioDiscardClip: "ade.audio.discardClip",
+  audioRequestMicAccess: "ade.audio.requestMicAccess",
+  /** Main → renderer: please record a clip for this plugin. */
+  audioCaptureRequest: "ade.audio.captureRequest",
+  /** Renderer → main: how that recording ended. */
+  audioCaptureResult: "ade.audio.captureResult",
   perfGetConfig: "ade.perf.getConfig",
   perfRecordEvent: "ade.perf.recordEvent",
   perfFinalize: "ade.perf.finalize",

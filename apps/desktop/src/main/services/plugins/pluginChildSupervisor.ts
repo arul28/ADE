@@ -22,6 +22,7 @@ import {
   type PluginRuntimeStatus,
   type PluginSdkMethod,
 } from "../../../shared/plugins/sdk";
+import { PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS } from "../../../shared/plugins/sockets";
 
 /**
  * Environment the plugin child must never see.
@@ -61,8 +62,16 @@ const PLUGIN_CHILD_DISPOSE_GRACE_MS = 3_000;
 /** How long `start()` waits for the child's `ready` frame. */
 export const PLUGIN_CHILD_READY_TIMEOUT_MS = 20_000;
 
-/** Default ceiling on one `invoke` round-trip. */
-const PLUGIN_CHILD_INVOKE_TIMEOUT_MS = 60_000;
+/**
+ * Default ceiling on one `invoke` round-trip.
+ *
+ * Re-exported from the socket taxonomy rather than spelled again here: the
+ * renderer sizes its IPC budget from that same number, and two spellings would
+ * let the channel expire before the child does — which replaces the typed
+ * `plugin_timeout` with an opaque IPC error. A caller may name its own budget
+ * per call; see `pluginSocketInvokeTimeoutMs`.
+ */
+const PLUGIN_CHILD_INVOKE_TIMEOUT_MS = PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS;
 
 /** Bytes of stderr retained for crash messages. */
 const PLUGIN_CHILD_STDERR_RING_BYTES = 4_000;
