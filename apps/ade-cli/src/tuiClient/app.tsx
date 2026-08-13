@@ -6582,6 +6582,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     });
     if (!next) return;
     setWorkSelectedKey(next.selectedKey);
+    const row = workListModel.rows.find((entry) => entry.key === next.selectedKey) ?? null;
+    if (row?.kind === "session") {
+      setSelectedDrawerChatId(row.sessionId);
+      setSelectedWorkChatAction(null);
+      if (row.laneId) {
+        setDrawerLaneId(row.laneId);
+        setSelectedDrawerLaneId(row.laneId);
+      }
+    } else if (row?.kind === "lane-header" && row.laneId) {
+      setSelectedDrawerLaneId(row.laneId);
+    }
   }, [activeLaneId, activeSessionId, addMode, draftChatActive, drawerLaneId, workListModel.rows, workSelectedKey]);
 
   useEffect(() => {
@@ -14047,6 +14058,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const lane = lanesRef.current.find((entry) => entry.id === row.laneId) ?? null;
       if (lane) {
         setWorkSelectedKey(row.key);
+        setSelectedDrawerChatId(row.sessionId);
+        setSelectedWorkChatAction(null);
         openLaneDetailsPane(lane);
         return;
       }

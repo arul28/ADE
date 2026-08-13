@@ -51,7 +51,7 @@ import {
 import { ACTIVITY_STATE_GLYPHS, activityStateGroup } from "../../../desktop/src/renderer/components/activity/activityPresentation";
 import type { TuiChatSessionSummary } from "./adeApi";
 import type { AdeCodeProvider } from "./types";
-import { getPreviewLine, partitionQuietSessions, toWorkSessionSummary, type SessionPreviewLine } from "./workRow";
+import { getPreviewLine, toWorkSessionSummary, type SessionPreviewLine } from "./workRow";
 
 export type WorkListShelfKind = "snoozed" | "settled";
 
@@ -525,7 +525,10 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     const localLane = row.laneName ? laneNameIndex.get(row.laneName.toLowerCase()) ?? null : null;
     if (localLane) {
       const list = foreignByLaneId.get(localLane.id) ?? [];
-      list.push(row);
+      // Identity click and `/lane details` look up `lanes` by this id. The
+      // publisher's lane UUID is local to that machine, so keep the local twin
+      // here and let `row.machine` carry the hop target.
+      list.push({ ...row, laneId: localLane.id });
       foreignByLaneId.set(localLane.id, list);
     } else {
       const key = row.machine!.machineKey;

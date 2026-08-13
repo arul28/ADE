@@ -503,10 +503,38 @@ describe("cross-machine rows", () => {
       "session:chat-a",
       "foreign:mac-b:remote-orphan",
     ]);
+    const joined = model.rows.find((row) => row.key === "foreign:mac-b:remote-matched");
+    expect(joined?.kind === "session" && joined.laneId).toBe("lane-1");
     const machineHeader = model.groups[1]!.header;
     expect(machineHeader.label).toBe("Studio");
     expect(machineHeader.lastSeenLabel).toBeNull();
     expect(model.rows.some((row) => row.kind === "new-chat")).toBe(false);
+  });
+
+  it("stamps the local lane id on a name-matched foreign singleton", () => {
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [],
+      activeSessionId: null,
+      foreign: foreignRowsFromAttention({
+        items: [
+          attentionItem({
+            id: "matched",
+            laneId: "remote-uuid",
+            laneName: "Feature",
+            destination: { kind: "session", sessionId: "remote-only" },
+          }),
+        ],
+        projectCanonicalId: "project_abc",
+        localSessionIds: new Set(),
+      }),
+    });
+
+    expect(model.rows.map((row) => row.key)).toEqual(["foreign:mac-b:remote-only"]);
+    const [row] = sessionRows(model);
+    expect(row?.showLaneIdentity).toBe(true);
+    expect(row?.laneId).toBe("lane-1");
+    expect(row?.machine?.machineKey).toBe("mac-b");
   });
 
   it("dims an offline machine group and keeps its last-known status", () => {
