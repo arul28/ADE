@@ -189,12 +189,15 @@ public final class ActivityDrawerModel: ObservableObject {
             // same chat `agent:<machineKey>:<sessionId>`, so without it one
             // session renders twice under two id schemes.
             let replacedSessions = Set(liveItems.compactMap(Self.sessionId))
+            let replacedPullRequests = Set(liveItems.compactMap(Self.pullRequestId))
             let replacedKeys = liveMachine.map(Self.machineIdentity) ?? []
 
             items = active.filter { item in
-                // PR rows are account-scoped GitHub state the paired host does
-                // not publish; dropping them would empty the Inbox every time
-                // the phone connected to a machine.
+                // Live PRs replace the relay copy of the same GitHub identity.
+                // Keeping both would double every open PR in Inbox.
+                if let prId = Self.pullRequestId(item), replacedPullRequests.contains(prId) {
+                    return false
+                }
                 if item.kind == .pullRequest { return true }
                 if let session = Self.sessionId(item), replacedSessions.contains(session) {
                     return false
@@ -231,6 +234,15 @@ public final class ActivityDrawerModel: ObservableObject {
         guard case .session(let sessionId, _, _) = item.destination else { return nil }
         let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// GitHub PR identity, when this row is about one. Used to drop the relay
+    /// copy once the live snapshot already projected that pull request.
+    static func pullRequestId(_ item: AccountAttentionItem) -> String? {
+        guard case .pullRequest(let prId, _, _, _, _, _) = item.destination,
+              let prId,
+              !prId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return prId.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Every identity string that may stand for one physical machine.
@@ -799,7 +811,13 @@ extension ActivityDrawerModel {
                     generatedAt: Date(),
                     agents: syncService.activeSessions,
                     prs: [],
-                    connection: "disconnected"
+                    connection: {
+                        switch syncService.connectionState {
+                        case .connected: return "connected"
+                        case .connecting: return "syncing"
+                        case .disconnected, .error: return "disconnected"
+                        }
+                    }()
                 ))
 
             if let account = ADESharedContainer.readAttentionSnapshot(),

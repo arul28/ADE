@@ -259,6 +259,17 @@ final class NotchPanelBehaviorTests: XCTestCase {
         XCTAssertEqual(model.focusedRowId, "working-1")
     }
 
+    func testStripGroupBadgeWithNoMatchingRowFocusesAnExistingRow() {
+        let model = enabledModel()
+        model.apply(snapshot(revision: 1, items: [workingItem(), needsYouItem()]))
+
+        model.revealGroup(.idle)
+
+        XCTAssertEqual(model.interaction.presentation, .expanded)
+        XCTAssertNotEqual(model.focusedRowId, "section:idle")
+        XCTAssertNotNil(model.focusedRowId)
+    }
+
     /// The trailing wing names one update. Tapping it opens that row rather
     /// than the generic panel.
     func testTrailingSignalOpensTheNamedItem() {

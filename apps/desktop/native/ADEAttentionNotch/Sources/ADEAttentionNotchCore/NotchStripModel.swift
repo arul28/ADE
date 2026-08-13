@@ -395,7 +395,7 @@ public func notchStripMetrics(
         leading = NotchStripTypeMetrics.emptyIdentity
     } else {
         for group in groups {
-            let digits = Double(max(1, String(group.count).count))
+            let digits = Double(max(1, notchStripCountLabel(group.count).count))
             leading += NotchStripTypeMetrics.glyph
                 + NotchStripTypeMetrics.glyphGap
                 + digits * NotchStripTypeMetrics.digit
@@ -410,6 +410,12 @@ public func notchStripMetrics(
             + Double(signal.text.count) * NotchStripTypeMetrics.character
     }
     return NotchStripMetrics(leadingWidth: leading, trailingWidth: trailing)
+}
+
+/// Caps a strip count so measurement and rendering stay on the same string.
+/// Three-digit totals would overflow the compact ear and clip the last group.
+public func notchStripCountLabel(_ count: Int) -> String {
+    String(min(max(0, count), 99))
 }
 
 /// The widest the glyph wing can honestly get: every state group on screen at

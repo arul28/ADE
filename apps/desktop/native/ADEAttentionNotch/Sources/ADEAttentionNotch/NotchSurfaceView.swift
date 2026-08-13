@@ -853,7 +853,7 @@ private struct StripGroupBadge: View {
                     .foregroundStyle(tone)
                     .shadow(color: tone.opacity(0.55), radius: 0.8 + pulse * 2)
             }
-            Text("\(group.count)")
+            Text(notchStripCountLabel(group.count))
                 .font(.system(size: ADE.fs2xs, weight: .semibold))
                 .foregroundStyle(tone)
                 .monospacedDigit()

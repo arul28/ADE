@@ -401,6 +401,39 @@ final class ActivityDrawerModelTests: XCTestCase {
         XCTAssertTrue(model.sessions.map(\.id).contains("laptop-row"))
     }
 
+    func testLivePullRequestsReplaceTheRelayCopyOfTheSamePR() {
+        let model = ActivityDrawerModel(defaults: defaults)
+        let now = Date()
+
+        model.rebuild(
+            from: snapshot(items: [
+                pullRequest(id: "pr-99", phase: .checksFailing, number: 99, now: now),
+            ]),
+            live: WorkspaceSnapshot(
+                generatedAt: now,
+                agents: [],
+                prs: [
+                    PrSnapshot(
+                        id: "pr-99",
+                        number: 99,
+                        title: "Fix the island",
+                        checks: "failing",
+                        review: "pending",
+                        state: "open",
+                        mergeReady: false,
+                        updatedAt: now
+                    ),
+                ],
+                connection: "connected",
+                machineId: "studio",
+                machineName: "Studio Mac"
+            )
+        )
+
+        let inboxIds = model.inbox.map(\.id)
+        XCTAssertEqual(inboxIds.filter { $0.contains("pr-99") }.count, 1)
+    }
+
     /// The regression that shipped.
     ///
     /// This test previously asserted the OPPOSITE — that a live snapshot with

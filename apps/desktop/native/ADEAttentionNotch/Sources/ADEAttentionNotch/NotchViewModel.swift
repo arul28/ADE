@@ -473,10 +473,10 @@ final class NotchViewModel: ObservableObject {
         selectedTab = .agents
         collapsedSectionIds.remove(kind.sectionId)
         let match = notchItems(items, in: .agents).first { notchStripGroupKind(for: $0) == kind }
+        // Empty host counts can name a group `panelRows` omitted. Focusing a
+        // nonexistent `section:` id leaves the panel with nowhere to scroll;
+        // `openPanel(revealing: nil)` already lands on the first real row.
         _ = openPanel(revealing: match)
-        if match == nil {
-            focusedRowId = "section:\(kind.sectionId)"
-        }
     }
 
     /// Compact trailing signal: open the row it names, or expand the panel

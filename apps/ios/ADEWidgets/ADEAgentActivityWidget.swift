@@ -207,9 +207,13 @@ struct AgentRunsPresentation {
         // State buckets. Prefer the publisher's account-wide tally; it is the
         // only source that can see past the three-row roster cap.
         if let published = safeState.resolvedGroups {
-            self.groups = published.map {
-                ActivityWidgetPresentation.GroupCount(group: $0.group, count: $0.count)
+            var tally: [ActivityStateGroup: Int] = [:]
+            for entry in published {
+                tally[entry.group, default: 0] += entry.count
             }
+            self.groups = tally
+                .map { ActivityWidgetPresentation.GroupCount(group: $0.key, count: $0.value) }
+                .sorted { $0.group.rank < $1.group.rank }
         } else {
             var tally: [ActivityStateGroup: Int] = [:]
             for run in sorted {
@@ -518,12 +522,13 @@ private struct AgentRunsLockScreenView: View {
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 5) {
-                    ForEach(presentation.bannerRuns) { run in
+                    ForEach(Array(presentation.bannerRuns.enumerated()), id: \.element.id) { index, run in
                         AgentRunRow(
                             run: run,
                             compact: false,
                             allowsInlineActions: presentation.allowsInlineActions,
-                            hideDetails: presentation.hideDetails
+                            hideDetails: presentation.hideDetails,
+                            isLead: index == 0
                         )
                     }
                     // A PR earns a row only when there is no agent work at all.
@@ -629,6 +634,10 @@ private struct AgentRunRow: View {
     /// a machine, so account-wide aggregates stay tap-to-open.
     let allowsInlineActions: Bool
     let hideDetails: Bool
+    /// Only the lead lock-screen row may grow Approve/Deny capsules. The banner
+    /// budget is computed from that same rule; a second approval row drawing
+    /// capsules would overflow the clipped region.
+    var isLead: Bool = false
 
     private var phase: AgentRunPhase { run.resolvedPhase }
 
@@ -642,7 +651,8 @@ private struct AgentRunRow: View {
     /// its row budget; the two must agree or the banner draws a row it has no
     /// height for.
     private var showsApprovalActions: Bool {
-        allowsInlineActions
+        isLead
+            && allowsInlineActions
             && !compact
             && phase == .waitingForApproval
             && !(run.itemId ?? "").isEmpty
@@ -707,6 +717,7 @@ private struct AgentRunRow: View {
         // indication of what state the chat is in.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(accessibilityValue)
     }
 
     /// The chat's own title. Status notes stay off this line — they are how a
@@ -730,12 +741,16 @@ private struct AgentRunRow: View {
     }
 
     private var accessibilityLabel: String {
-        var parts = [phase.label, text]
-        if let since = run.statusSinceDate,
-           let duration = ActivityRowPresentation.formatDuration(Date().timeIntervalSince(since)) {
-            parts.append("\(duration) ago")
+        [phase.label, text].joined(separator: ", ")
+    }
+
+    /// Live Activity `Date()` is frozen between pushes. Keep the compact
+    /// `s`/`m`/`h` visual ticker, and expose a system timer for VoiceOver.
+    private var accessibilityValue: Text {
+        if let since = run.statusSinceDate {
+            return Text(since, style: .timer)
         }
-        return parts.joined(separator: ", ")
+        return Text("")
     }
 
     /// Approve / Deny capsules, aligned under the title (past the status glyph).
@@ -1071,9 +1086,10 @@ private struct AgentRunsStateStrip: View {
         // shape of the account is still probably right, but the numbers are
         // no longer a claim. The headline says how old, in words.
         .opacity(presentation.assertsCounts ? 1 : 0.45)
-        // One rotor stop for the whole strip. Six unlabelled glyph+number pairs
-        // made VoiceOver users assemble the sentence themselves.
-        .accessibilityElement(children: .ignore)
+        // Group the strip so VoiceOver can enter each state's link. Flattening
+        // with `.ignore` discarded those destinations after the strip became
+        // navigation rather than a readout.
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(
             presentation.groups.isEmpty
                 ? "No agent activity"

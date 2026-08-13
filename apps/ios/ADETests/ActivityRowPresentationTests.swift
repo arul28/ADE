@@ -111,6 +111,7 @@ final class ActivityRowPresentationTests: XCTestCase {
             (.failed, "Failed", .red),
             (.planning, "Planning", .violet),
             (.working, "Working", .blue),
+            (.idle, "Idle", .neutral),
             (.done, "Done", .emerald),
         ]
 

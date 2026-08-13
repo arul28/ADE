@@ -353,6 +353,7 @@ struct ActivityDrawerSheet: View {
     private func follow(_ row: ActivityRowPresentation) {
         guard let url = row.deepLink else { return }
         drawer.markSeen(row.id)
+        connectFailureRowId = nil
 
         guard let machineKey = row.accountMachineKey,
               !syncService.accountMachineIsCurrent(machineKey) else {
@@ -442,7 +443,14 @@ struct ActivityStateStrip: View {
 
     private var visible: [ActivityGroupCount] {
         guard dynamicTypeSize.isAccessibilitySize else { return counts }
-        return Array(counts.prefix(3))
+        let capped = Array(counts.prefix(3))
+        guard let selection, !capped.contains(where: { $0.group == selection }) else {
+            return capped
+        }
+        guard let selected = counts.first(where: { $0.group == selection }) else {
+            return capped
+        }
+        return Array(capped.dropLast()) + [selected]
     }
 
     private var summarySentence: String {

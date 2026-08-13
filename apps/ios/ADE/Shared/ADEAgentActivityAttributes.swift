@@ -171,7 +171,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             let events = ActivityWidgetPresentation.ranked(
                 ActivityWidgetPresentation.eventItems(visible)
             )
-            let runs = agents.prefix(3).compactMap { item -> Run? in
+            let runs = agents.compactMap { item -> Run? in
                 guard case .session(let sessionId, let itemId, _) = item.destination else {
                     return nil
                 }
@@ -186,7 +186,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
                     accountMachineKey: item.machine.accountMachineKey,
                     statusSince: (item.statusSince ?? item.occurredAt).timeIntervalSince1970
                 )
-            }
+            }.prefix(3)
             let groups = ActivityWidgetPresentation
                 .groupCounts(for: visible, now: now)
                 .map { StateGroupCount(group: $0.group.wireValue, count: $0.count) }
@@ -196,7 +196,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
                 ActivityPhaseVocabulary.stateGroup(for: $0) != .idle
                     && ActivityPhaseVocabulary.presentation(for: $0.phase).active
             }.count
-            let prs = events.prefix(2).compactMap { item -> PullRequest? in
+            let prs = events.compactMap { item -> PullRequest? in
                 guard case .pullRequest(_, _, _, let number, _, _) = item.destination,
                       number > 0 else { return nil }
                 return PullRequest(
@@ -208,7 +208,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
                     accountMachineKey: item.machine.accountMachineKey,
                     updatedAt: item.updatedAt.timeIntervalSince1970
                 )
-            }
+            }.prefix(2)
             return ContentState(
                 updatedAt: now.timeIntervalSince1970,
                 activeCount: activeCount,

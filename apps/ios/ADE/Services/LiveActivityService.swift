@@ -613,8 +613,11 @@ final class LiveActivityService {
     /// the frame. The relay push remains the backstop for a suspended app.
     ///
     /// Safe to call on every feed change: writes are hash-deduped and floored.
-    func refreshLocalContent(items: [AccountAttentionItem]) {
-        guard started, !items.isEmpty || lastLocalContentHash != nil else { return }
+        func refreshLocalContent(items: [AccountAttentionItem]) {
+        // Empty is a real frame. After restart the hash is nil, and an empty
+        // account feed must replace persisted Live Activity rows rather than
+        // leave last session's lock screen up until a non-empty update arrives.
+        guard started else { return }
         // Latest-wins: an older pending set is worthless the moment a newer one
         // arrives, so it is replaced rather than queued.
         pendingLocalItems = items

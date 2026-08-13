@@ -133,6 +133,19 @@ final class HubProjectPresentationTests: XCTestCase {
         XCTAssertEqual(hubChatStateGroup(merged), .idle)
     }
 
+    func testRemoteSnoozeOverlaySurvivesLocalRowWithoutOverlay() {
+        var remote = chat(id: "c-1", status: .running, awaitingInput: false)
+        remote.snoozedUntil = "2126-07-10T00:00:00Z"
+        remote.snoozedAt = "2026-07-27T00:00:00Z"
+        let local = chat(id: "c-1", status: .running, awaitingInput: false)
+        var merged = remote
+        merged.applyLocalSnoozeOverlay(local)
+
+        XCTAssertEqual(merged.snoozedUntil, remote.snoozedUntil)
+        XCTAssertFalse(merged.countsTowardRunning)
+        XCTAssertEqual(hubChatStateGroup(merged), .idle)
+    }
+
     // MARK: - Fixtures
 
     private func project() -> MobileProjectSummary {

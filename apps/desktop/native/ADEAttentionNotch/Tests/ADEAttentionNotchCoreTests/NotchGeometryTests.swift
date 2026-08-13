@@ -164,6 +164,15 @@ final class NotchGeometryTests: XCTestCase {
         let metrics = notchStripMetrics(groups: crowded, signal: nil)
         XCTAssertEqual(metrics.leadingWidth, notchStripWidestGlyphWingWidth, accuracy: 0.001)
 
+        // Three-digit totals render as `99`, so they still fit the two-digit ear.
+        let overflowing = NotchStripGroupKind.allCases.map {
+            NotchStripGroup(kind: $0, count: 100)
+        }
+        let overflowMetrics = notchStripMetrics(groups: overflowing, signal: nil)
+        XCTAssertEqual(overflowMetrics.leadingWidth, notchStripWidestGlyphWingWidth, accuracy: 0.001)
+        XCTAssertEqual(notchStripCountLabel(100), "99")
+        XCTAssertEqual(notchStripCountLabel(99), "99")
+
         // Nothing is clipped: the ear holds the whole wing, plus its padding.
         let ear = notchCompactEarWidth(metrics)
         XCTAssertGreaterThan(ear, metrics.leadingWidth)
