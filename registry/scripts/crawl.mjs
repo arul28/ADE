@@ -68,6 +68,7 @@ const SOCKET_KINDS = [
   "empty-state",
   "filter-chip",
   "file-viewer",
+  "composer-action",
 ];
 
 const token = process.env.GITHUB_TOKEN?.trim() || "";
