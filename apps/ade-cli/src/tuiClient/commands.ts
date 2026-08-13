@@ -326,7 +326,7 @@ export function paletteCommands(
     }
     return a.name.localeCompare(b.name);
   });
-  return filtered.slice(0, 100);
+  return queryToken ? filtered.slice(0, 100) : filtered;
 }
 
 export function commandPlacement(command: ParsedCommand): CommandPlacement {
