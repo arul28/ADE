@@ -505,6 +505,12 @@ function computeCliEntrypointBuildHash(): string | null {
   }
 }
 
+function shouldSkipRuntimeCompatibilityCheck(remote?: boolean): boolean {
+  if (remote === true) return true;
+  const raw = process.env.ADE_CODE_SKIP_RUNTIME_CHECK?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
 function attachedRuntimeMismatchReason(
   result: InitializeResult,
   project: ProjectLaunchContext,
@@ -861,6 +867,7 @@ export async function connectToAde(args: {
     args.preferServiceRepair === true
     && !explicitSocketPath
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  const skipRuntimeCompatibilityCheck = shouldSkipRuntimeCompatibilityCheck(args.remote);
 
   if (args.forceEmbedded && args.requireSocket) {
     throw new Error("Cannot use embedded mode when an ADE socket is required.");
@@ -873,7 +880,7 @@ export async function connectToAde(args: {
         project: args.project,
         attempts: 1,
         delayMs: 0,
-        skipRuntimeCompatibilityCheck: args.remote === true,
+        skipRuntimeCompatibilityCheck,
         projectRegistration,
       });
     } catch (error) {
@@ -906,7 +913,8 @@ export async function connectToAde(args: {
         project: args.project,
         attempts,
         delayMs: DAEMON_CONNECT_RETRY_INITIAL_DELAY_MS,
-        shutdownOnStale: true,
+        shutdownOnStale: !skipRuntimeCompatibilityCheck,
+        skipRuntimeCompatibilityCheck,
         projectRegistration,
       });
     const repairService = async (): Promise<AdeCodeConnection | null> => {
@@ -963,6 +971,7 @@ export async function connectToAde(args: {
             project: args.project,
             attempts: 1,
             delayMs: 0,
+            skipRuntimeCompatibilityCheck,
             projectRegistration,
           });
         } catch (projectError) {

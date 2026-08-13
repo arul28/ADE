@@ -19,6 +19,7 @@ import { DEFAULT_CODEX_REASONING_EFFORT, type CliTerminalProvider } from "./adeA
 import { theme } from "./theme";
 import type { AdeCodeInterfaceMode, AdeCodeModelState, AdeCodeProvider, SetupPaneRow, SetupPaneRowKind } from "./types";
 import { normalizeProvider, providerLabel } from "./providerMetadata";
+import type { AdeCodeModelMemory, AdeCodeProviderSettingsMemory } from "./state";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 export const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-toml"] as const;
@@ -50,6 +51,96 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
     cursorAvailableModeIds: [],
     cursorConfigValues: {},
   };
+}
+
+/**
+ * Project-scoped model memory (state.ts) ↔ live model state.
+ *
+ * The persisted shape stores every mode as a bare string so a value written by
+ * a newer build survives an older one untouched; these two helpers are the ONE
+ * place that crosses between that and the typed unions.
+ */
+export function modelMemoryFromState(state: AdeCodeModelState): AdeCodeModelMemory {
+  return {
+    provider: state.provider,
+    modelId: state.modelId,
+    model: state.model,
+    displayName: state.displayName,
+    ...providerSettingsMemoryFromState(state),
+  };
+}
+
+export function providerSettingsMemoryFromState(state: AdeCodeModelState): AdeCodeProviderSettingsMemory {
+  return {
+    reasoningEffort: state.reasoningEffort,
+    fastMode: state.fastMode,
+    interfaceMode: state.interfaceMode,
+    permissionMode: state.permissionMode,
+    interactionMode: state.interactionMode,
+    claudePermissionMode: state.claudePermissionMode,
+    codexApprovalPolicy: state.codexApprovalPolicy,
+    codexSandbox: state.codexSandbox,
+    codexConfigSource: state.codexConfigSource,
+    opencodePermissionMode: state.opencodePermissionMode,
+    droidPermissionMode: state.droidPermissionMode,
+    cursorModeId: state.cursorModeId,
+  };
+}
+
+/**
+ * Settings-only patch (no model identity): what wizard step 4 pre-fills with
+ * when a provider is picked, and what a new chat inherits for that provider.
+ * Unknown persisted values are cast rather than dropped — the provider CLIs own
+ * the vocabulary and reject anything they do not understand.
+ */
+export function providerSettingsPatchFromMemory(
+  memory: AdeCodeProviderSettingsMemory,
+): Partial<AdeCodeModelState> {
+  return {
+    reasoningEffort: memory.reasoningEffort,
+    fastMode: memory.fastMode,
+    interfaceMode: memory.interfaceMode,
+    permissionMode: memory.permissionMode as AdeCodeModelState["permissionMode"],
+    interactionMode: memory.interactionMode as AdeCodeModelState["interactionMode"],
+    claudePermissionMode: memory.claudePermissionMode as AdeCodeModelState["claudePermissionMode"],
+    codexApprovalPolicy: memory.codexApprovalPolicy as AdeCodeModelState["codexApprovalPolicy"],
+    codexSandbox: memory.codexSandbox as AdeCodeModelState["codexSandbox"],
+    codexConfigSource: memory.codexConfigSource as AdeCodeModelState["codexConfigSource"],
+    opencodePermissionMode: memory.opencodePermissionMode as AdeCodeModelState["opencodePermissionMode"],
+    droidPermissionMode: memory.droidPermissionMode as AdeCodeModelState["droidPermissionMode"],
+    cursorModeId: memory.cursorModeId,
+  };
+}
+
+/**
+ * Full patch (model identity + settings) used to seed a project's next chat.
+ * A memory whose model identity is blank (written by a build that only knew the
+ * provider) still contributes its settings — the registry default supplies the
+ * model.
+ */
+export function modelStatePatchFromMemory(memory: AdeCodeModelMemory): Partial<AdeCodeModelState> {
+  const provider = normalizeProvider(memory.provider);
+  const hasModelIdentity = Boolean(memory.modelId?.trim() || memory.model.trim());
+  return {
+    ...providerSettingsPatchFromMemory(memory),
+    provider,
+    ...(hasModelIdentity
+      ? {
+          modelId: memory.modelId,
+          model: memory.model,
+          displayName: memory.displayName || memory.model,
+        }
+      : fallbackModelStatePatch(provider)),
+  };
+}
+
+/** Apply a project's remembered model to a freshly built model state. */
+export function seedModelStateFromMemory(
+  base: AdeCodeModelState,
+  memory: AdeCodeModelMemory | null | undefined,
+): AdeCodeModelState {
+  if (!memory) return base;
+  return { ...base, ...modelStatePatchFromMemory(memory) };
 }
 
 export function runtimeProviderForUiProvider(provider: AdeCodeProvider): ModelProviderGroup {
@@ -475,9 +566,6 @@ export function buildSetupRows(args: {
   models: AgentChatModelInfo[];
   includeRefresh: boolean;
   includeApply: boolean;
-  includeImportSession?: boolean;
-  importSessionEnabled?: boolean;
-  importSessionDetail?: string | null;
   outputStyle?: string | null;
   outputStyleEditable?: boolean;
   /** Draft/next-chat interface (Chat = SDK chat, CLI = tracked terminal). */
@@ -510,15 +598,6 @@ export function buildSetupRows(args: {
       disabled: !args.interfaceEditable,
       cyclable: args.interfaceEditable,
     },
-    ...(args.includeImportSession
-      ? [{
-          kind: "import-session" as const,
-          label: "Import session",
-          value: args.importSessionEnabled === false ? "unavailable" : "open",
-          detail: args.importSessionDetail ?? "external CLI history",
-          disabled: args.importSessionEnabled === false,
-        }]
-      : []),
     {
       kind: "model",
       label: "Model",

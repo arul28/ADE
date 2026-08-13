@@ -34,6 +34,17 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
   });
 
+  it("registers /import as an ADE-owned right-pane command", () => {
+    const parsed = parseCommand("/import");
+    expect(parsed).toMatchObject({ name: "/import", args: "" });
+    expect(parsed && commandPlacement(parsed)).toBe("right");
+    // ADE owns the name even when a runtime advertises its own /import.
+    const shadowed = parseCommand("/import", [{ name: "/import", description: "runtime import" } as never]);
+    expect(shadowed?.spec?.name).toBe("/import");
+    expect(shadowed?.userCommand).toBeNull();
+    expect(paletteCommands("import").some((command) => command.name === "/import")).toBe(true);
+  });
+
   it("routes PR comments to the right pane", () => {
     const parsed = parseCommand("/pr comments");
     expect(parsed?.name).toBe("/pr comments");
@@ -186,6 +197,26 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /project and /machines to the ADE Code right pane", () => {
+    expect(parseCommand("/project")).toMatchObject({
+      name: "/project",
+      spec: { placement: "right" },
+    });
+    expect(parseCommand("/machines studio")).toMatchObject({
+      name: "/machines",
+      args: "studio",
+      spec: { placement: "right" },
+    });
+    expect(paletteCommands("/mach")).toContainEqual(expect.objectContaining({
+      name: "/machines",
+      source: "ade",
+    }));
+    expect(paletteCommands("/proj")).toContainEqual(expect.objectContaining({
+      name: "/project",
+      source: "ade",
+    }));
+  });
+
   it("routes /secrets to the ADE Code right pane", () => {
     const parsed = parseCommand("/secrets");
     expect(parsed?.spec?.name).toBe("/secrets");
@@ -256,6 +287,17 @@ describe("commands", () => {
     expect(parsed?.name).toBe("/new lane");
     expect(parsed?.args).toBe("perf-pass");
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+  });
+
+  it("aliases /new to /new chat without stealing /new lane", () => {
+    expect(parseCommand("/new")?.name).toBe("/new");
+    expect(parseCommand("/new Fix the pane")?.name).toBe("/new");
+    expect(parseCommand("/new Fix the pane")?.args).toBe("Fix the pane");
+    expect(parseCommand("/new chat")?.name).toBe("/new chat");
+    expect(parseCommand("/new lane")?.name).toBe("/new lane");
+    expect(parseCommand("/new", [
+      { name: "/new", description: "Start a new runtime chat", source: "sdk" },
+    ])?.spec?.name).toBe("/new");
   });
 
   it("tags built-ins and user commands in the palette", () => {
@@ -469,6 +511,15 @@ describe("commands", () => {
 
     const parsed = parseCommand("/subagents");
     expect(parsed?.spec).toBeNull();
+  });
+
+  it("registers /lane details as a right-pane lane command", () => {
+    const parsed = parseCommand("/lane details");
+    expect(parsed?.spec?.name).toBe("/lane details");
+    expect(parsed?.spec?.placement).toBe("right");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(parseCommand("/lane details Primary")?.args).toBe("Primary");
+    expect(paletteCommands("lane det").some((row) => row.name === "/lane details")).toBe(true);
   });
 
   it("surfaces active ADE Code panes in the palette and not removed aliases", () => {

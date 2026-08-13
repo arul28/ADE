@@ -260,6 +260,28 @@ describe("renderChatLines", () => {
     expect(lines.map((line) => line.header)).toEqual([undefined, undefined]);
   });
 
+  it("shows compact image chips for user messages that only carry attachments", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "user_message",
+            text: "look at this",
+            displayText: "look at this",
+            attachments: [{ type: "image", path: "/tmp/pasted-screenshot-1.png" }],
+          },
+        },
+      ],
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.body).toBe("look at this\n⟦image:png⟧");
+  });
+
   it("orders local notices and chat events by timestamp", () => {
     const lines = renderChatLines({
       activeSession: null,

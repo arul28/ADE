@@ -119,6 +119,8 @@ export type SubagentPaneViewState = {
   showAll?: Partial<Record<SubagentPaneViewSection, boolean>>;
   cleared?: Partial<Record<SubagentPaneViewSection, readonly string[] | ReadonlySet<string>>>;
   pinnedIds?: readonly string[] | ReadonlySet<string>;
+  /** TUI chat-info: omit the ghost "main" row; selection 0 still means the parent chat. */
+  hideMain?: boolean;
 };
 
 export type SubagentPaneRow =
@@ -969,7 +971,9 @@ export function buildSubagentPaneRows(
     ];
   }
 
-  const rows: SubagentPaneRow[] = [{ kind: "main", key: "main", section: "main", label: "main" }];
+  const rows: SubagentPaneRow[] = viewState.hideMain
+    ? []
+    : [{ kind: "main", key: "main", section: "main", label: "main" }];
   const pinnedIds = new Set(viewState.pinnedIds ?? []);
   const sections: Array<{
     section: SubagentPaneDisclosureSection;
@@ -1157,7 +1161,7 @@ export function subagentIndexForPaneLine(
     ? { visibleRows: rows.filter((row) => row.kind !== "main"), hiddenBefore: 0, hiddenAfter: 0 }
     : windowSubagentPaneRows(rows, selectedIndex, windowCapacity);
   const visibleRows: Array<SubagentPaneRow | null> = [
-    rows.find((row) => row.kind === "main") ?? null,
+    ...(rows.find((row) => row.kind === "main") ? [rows.find((row) => row.kind === "main")!] : []),
     ...(windowed.hiddenBefore > 0 ? [null] : []),
     ...windowed.visibleRows,
     ...(windowed.hiddenAfter > 0 ? [null] : []),

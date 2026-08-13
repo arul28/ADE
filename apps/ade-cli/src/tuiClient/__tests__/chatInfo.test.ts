@@ -431,4 +431,24 @@ describe("deriveChatInfoSnapshot", () => {
 
     expect(snapshot.snapshots.map((item) => item.id)).toEqual(["real"]);
   });
+
+  it("uses the session title and keeps runtime subagents that events missed", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session({ title: "Subagent Takeover Ownership UX" }),
+      provider: "cursor",
+      modelLabel: "grok-4.6",
+      laneLabel: "ADE-138",
+      laneIcon: "star",
+      snapshots: [
+        { id: "a", name: "Quality track A review", kind: "subagent", status: "completed", summary: "done" },
+      ],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+    expect(snapshot.title).toBe("Subagent Takeover Ownership UX");
+    expect(snapshot.laneIcon).toBe("star");
+    expect(snapshot.snapshots).toHaveLength(1);
+  });
 });

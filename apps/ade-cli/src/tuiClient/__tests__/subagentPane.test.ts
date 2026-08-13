@@ -46,6 +46,7 @@ function rosterContent(): Extract<RightPaneContent, { kind: "chat-info" }> {
 	      scheduledWork: [],
 	      backgroundWork: [],
 	      pr: null,
+      title: "Roster chat",
       streaming: false,
       inspectedSubagentId: null,
       capability: resolveSubagentCapability("codex"),
