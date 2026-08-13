@@ -633,16 +633,22 @@ function syncPortRow(input: DoctorInput): DoctorRow {
     key: "sync_port",
     label: "Sync port",
     status: "warn",
-    detail: `bound on ${input.syncPort} instead of 8787${
+    // Sticky lastPort used to keep a replacement brain on 8788 forever.
+    // Bind order now retries 8787 first, and a live listener migrates back
+    // when 8787 frees. `ade brain restart` is still the explicit hammer.
+    detail: [
+      `bound on ${input.syncPort} instead of 8787`,
       holders.length
-        ? ` · base holders: ${holders.join("; ")}`
+        ? `base holders: ${holders.join("; ")}`
         // "No visible holders" reads as "the ports are free", which is exactly
         // the wrong conclusion: the holder is usually tailscaled, and it runs
         // as root so this probe cannot see it. Point at the check that can.
-        : " · no holders visible to this user (a root-owned holder such as"
+        : "no holders visible to this user (a root-owned holder such as"
           + " tailscaled is invisible here — check `tailscale serve status`"
-          + " and `netstat -an -p tcp`)"
-    } · ADE retries 8787 first and migrates back when it is free; `ade brain restart` also returns it to 8787`,
+          + " and `netstat -an -p tcp`)",
+      "ADE retries 8787 first and migrates back when it is free;"
+        + " `ade brain restart` also returns it to 8787",
+    ].join(" · "),
   };
 }
 
