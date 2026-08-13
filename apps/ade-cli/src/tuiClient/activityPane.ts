@@ -293,9 +293,50 @@ export const ACTIVITY_PANE_GROUP_BY_STATE_GROUP = {
   failed: "failing",
   planning: "live",
   working: "live",
+  // Idle is quiet history, so it files with the ambient tail — the same
+  // heading idle-TIER rows already reach via the split below. What it must
+  // never do again is file with `live`: a `stale` row used to be counted as
+  // LIVE NOW, which is how this pane claimed working agents hours after they
+  // stopped. It is deliberately not `done` either; nothing here finished.
+  idle: "recent",
   // `done` splits below on seen/idle; this is the band, not the final heading.
   done: "done",
 } as const satisfies Record<ActivityStateGroup, ActivityPaneGroupId>;
+
+/**
+ * Terminal mark for one Activity row, keyed off the same six-state table the
+ * grouping uses. The view used to switch on raw phase, which is how `stale`
+ * (idle, including a snoozed overlay) painted as a red failure diamond and a
+ * failed overlay that still carried `running` on an older publisher would have
+ * kept the working spinner. Tone names are TUI tokens, not desktop hues.
+ */
+export type ActivityPaneMarkTone =
+  | "attention"
+  | "error"
+  | "violet"
+  | "running"
+  | "neutral"
+  | "done";
+
+export type ActivityPaneMark = {
+  group: ActivityStateGroup;
+  glyph: string;
+  tone: ActivityPaneMarkTone;
+};
+
+export const ACTIVITY_PANE_MARK_BY_STATE_GROUP = {
+  "needs-you": { glyph: "!", tone: "attention" },
+  failed: { glyph: "×", tone: "error" },
+  planning: { glyph: "◐", tone: "violet" },
+  working: { glyph: "●", tone: "running" },
+  idle: { glyph: "○", tone: "neutral" },
+  done: { glyph: "✓", tone: "done" },
+} as const satisfies Record<ActivityStateGroup, Omit<ActivityPaneMark, "group">>;
+
+export function activityItemMark(item: AttentionItem): ActivityPaneMark {
+  const group = activityStateGroup(item);
+  return { group, ...ACTIVITY_PANE_MARK_BY_STATE_GROUP[group] };
+}
 
 export function groupForItem(item: AttentionItem): ActivityPaneGroupId {
   const group = ACTIVITY_PANE_GROUP_BY_STATE_GROUP[activityStateGroup(item)];

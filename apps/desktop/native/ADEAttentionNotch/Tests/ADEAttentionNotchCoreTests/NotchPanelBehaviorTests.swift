@@ -238,6 +238,66 @@ final class NotchPanelBehaviorTests: XCTestCase {
         XCTAssertEqual(outputs.map(\.type), ["open_center"])
     }
 
+    /// Compact group badges are links, not readouts: tapping Failed opens the
+    /// panel already showing that band, the way an iOS island count filters
+    /// Activity.
+    func testStripGroupBadgeOpensTheMatchingAgentSection() {
+        let model = enabledModel()
+        let failed = agentItem(id: "failed-1", phase: "failed")
+        model.apply(snapshot(revision: 1, items: [workingItem(), failed, needsYouItem()]))
+
+        model.revealGroup(.failed)
+
+        XCTAssertEqual(model.interaction.presentation, .expanded)
+        XCTAssertEqual(model.selectedTab, .agents)
+        XCTAssertFalse(model.collapsedSectionIds.contains("failed"))
+        XCTAssertEqual(model.focusedRowId, "failed-1")
+
+        // A second badge tap must not close the panel it just opened.
+        model.revealGroup(.working)
+        XCTAssertEqual(model.interaction.presentation, .expanded)
+        XCTAssertEqual(model.focusedRowId, "working-1")
+    }
+
+    func testStripGroupBadgeWithNoMatchingRowFocusesAnExistingRow() {
+        let model = enabledModel()
+        model.apply(snapshot(revision: 1, items: [workingItem(), needsYouItem()]))
+
+        model.revealGroup(.idle)
+
+        XCTAssertEqual(model.interaction.presentation, .expanded)
+        XCTAssertNotEqual(model.focusedRowId, "section:idle")
+        XCTAssertNotNil(model.focusedRowId)
+    }
+
+    /// The trailing wing names one update. Tapping it opens that row rather
+    /// than the generic panel.
+    func testTrailingSignalOpensTheNamedItem() {
+        let model = enabledModel()
+        let check = checkItem(id: "check-1", phase: "checks_failing")
+        model.apply(snapshot(revision: 1, items: [workingItem(), check]))
+        XCTAssertEqual(model.topSignal.itemId, "check-1")
+
+        model.revealTopSignal()
+
+        XCTAssertEqual(model.interaction.presentation, .expanded)
+        XCTAssertEqual(model.selectedTab, .events)
+        XCTAssertEqual(model.focusedRowId, "cluster:pr:ade/desktop#466")
+    }
+
+    /// A compact badge still has to go somewhere when the tall panel is off.
+    func testStripGroupBadgeWithPanelDisabledOpensActivityInADE() {
+        let model = enabledModel(expandedPanelEnabled: false)
+        var outputs: [NotchOutput] = []
+        model.emit = { outputs.append($0) }
+        model.apply(snapshot(revision: 1, items: [workingItem()]))
+
+        model.revealGroup(.working)
+
+        XCTAssertEqual(model.interaction.presentation, .compact)
+        XCTAssertEqual(outputs.map(\.type), ["open_center"])
+    }
+
     /// The strip is the same in both modes; only whether it rests on screen
     /// differs, and the pointer is what decides that.
     func testDormancyFollowsThePointerInHoverModeOnly() {

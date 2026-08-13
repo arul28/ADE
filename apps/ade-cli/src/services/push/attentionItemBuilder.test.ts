@@ -86,10 +86,10 @@ function context(
 }
 
 describe("attention item vocabulary", () => {
-  it("titles a phase the same way on the live-run and roster paths", async () => {
-    // The two paths used to spell the same ladder out twice and had drifted:
-    // the run path called a `stale` session "is working" while the roster path
-    // and the desktop's "Stale" label called it idle. One table, one answer.
+  it("titles the session, not the provider-phase sentence", async () => {
+    // Privacy-safe copy stays generic; the row the user reads is the chat
+    // name. Both paths used to say "Codex is idle" and every in-flight row
+    // on the island collapsed to "Cursor is working".
     const live = await buildAttentionItems(context({
       runs: new Map([["s-1", run({ phase: "stale" })]]),
     }));
@@ -100,10 +100,27 @@ describe("attention item vocabulary", () => {
 
     expect(live[0]?.phase).toBe("stale");
     expect(roster[0]?.phase).toBe("stale");
-    expect(live[0]?.title).toBe("Codex is idle");
-    expect(roster[0]?.title).toBe("Codex is idle");
-    expect(live[0]?.privacyPreview).toBe("An ADE agent session is idle.");
-    expect(roster[0]?.privacyPreview).toBe("An ADE agent session is idle.");
+    expect(live[0]?.title).toBe("Fix login");
+    expect(roster[0]?.title).toBe("Disk session");
+    expect(live[0]?.privacyPreview).toBe("An ADE agent is idle.");
+    expect(roster[0]?.privacyPreview).toBe("An ADE agent is idle.");
+  });
+
+  it("says 'idle' and never 'stale' or 'quiet' for the resting state", async () => {
+    // Regression: one state, three words. The title said "is idle", the
+    // privacy preview said "An ADE agent SESSION is idle", the row label said
+    // "Stale" and the desktop sheet said "has gone quiet". `idle` is now a
+    // first-class state group (`ACTIVITY_STATE_GLYPHS.idle`, label "Idle",
+    // `activityStateSentence` → "<Agent> is idle"), so every string the
+    // publisher emits for it uses that one word.
+    const [item] = await buildAttentionItems(context({
+      runs: new Map([["s-1", run({ phase: "stale" })]]),
+    }));
+
+    expect(item?.privacyPreview).toBe("An ADE agent is idle.");
+    for (const copy of [item?.title ?? "", item?.privacyPreview ?? ""]) {
+      expect(copy.toLowerCase()).not.toMatch(/stale|quiet/);
+    }
   });
 
   it("derives one event kind per published phase for both paths", () => {
@@ -195,5 +212,51 @@ describe("buildAttentionItems", () => {
     expect(items.map((item) => item.destination)).toEqual([
       expect.objectContaining({ sessionId: "chat-1" }),
     ]);
+  });
+
+  it("does not let a stuck live run bury a roster failure", async () => {
+    const items = await buildAttentionItems(context({
+      includeRoster: true,
+      machineKey: "machine-1",
+      runs: new Map([["disk-session-1", run({
+        sessionId: "disk-session-1",
+        phase: "running",
+        title: "phase 3 running; will hold before phase 4",
+      })]]),
+      loadRoster: async () => [rosterProject({
+        status: "failed",
+        lastTurnFailedAt: "2026-08-01T11:00:00.000Z",
+        title: "Align ADE Code With Work Tab",
+      })],
+    }));
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.phase).toBe("failed");
+    expect(items[0]?.title).toBe("Align ADE Code With Work Tab");
+  });
+
+  it("publishes a snoozed running chat as idle, even if a live run is still open", async () => {
+    const snoozedUntil = "2126-07-10T00:00:00.000Z";
+    const items = await buildAttentionItems(context({
+      includeRoster: true,
+      machineKey: "machine-1",
+      nowMs: Date.parse("2026-08-12T00:00:00.000Z"),
+      runs: new Map([["disk-session-1", run({
+        sessionId: "disk-session-1",
+        phase: "running",
+        title: "ADE-121 Prototype",
+      })]]),
+      loadRoster: async () => [rosterProject({
+        status: "running",
+        title: "ADE-121 Prototype",
+        snoozedUntil,
+        snoozedAt: "2026-07-27T00:00:00.000Z",
+      })],
+    }));
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.phase).toBe("stale");
+    expect(items[0]?.activityTier).toBe("idle");
+    expect(items[0]?.title).toBe("ADE-121 Prototype");
   });
 });

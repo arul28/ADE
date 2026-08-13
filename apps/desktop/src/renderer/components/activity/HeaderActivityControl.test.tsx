@@ -248,14 +248,16 @@ describe("HeaderActivityControl", () => {
   });
 
   it("gives every row a way out, and clears it with one call", async () => {
-    seedItems([item("quiet", "stale")]);
+    // A live phase on purpose: the popover only lists the non-resting bands,
+    // so a `stale` row is filed under `idle` and never rendered here.
+    seedItems([item("live", "running")]);
     renderControl();
     openPanel();
 
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss Task quiet" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Task live" }));
 
     await waitFor(() => expect(acknowledge).toHaveBeenCalledWith(
-      expect.objectContaining({ itemIds: ["quiet"] }),
+      expect.objectContaining({ itemIds: ["live"] }),
     ));
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });

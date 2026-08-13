@@ -134,6 +134,107 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         public var updatedAtDate: Date {
             Date(timeIntervalSince1970: updatedAt)
         }
+
+        /// Build a content state on-device from the account feed the app
+        /// already holds.
+        ///
+        /// **Why this exists.** A Live Activity's content is normally mutable
+        /// only by an APNs push, and the relay deliberately spends pushes only
+        /// on transitions worth the ActivityKit budget — exact counts for
+        /// `needs_you` and `failed`, presence only for the rest. That is the
+        /// right rule for a suspended app, but it means work ticking 3 → 7
+        /// never reaches the island, and with nothing publishing at all the
+        /// island can sit on an hours-old frame indefinitely.
+        ///
+        /// A LOCAL `Activity.update(_:)` costs no push budget. So whenever the
+        /// app is alive and holds fresher truth than the last push delivered —
+        /// which is most of the time, since it polls every 20s and merges the
+        /// live paired-host socket on top — it can simply write the frame
+        /// itself. The relay push stays as the backstop for when the app is
+        /// not running.
+        ///
+        /// The projection rules deliberately reuse `ActivityWidgetPresentation`
+        /// (`ranked`, `groupCounts`, `agentItems`, `eventItems`) rather than
+        /// restating them, because those are the same rules the relay applies
+        /// and a second copy here is exactly how the four mirrors drifted
+        /// before. The caps match the wire's: 3 runs, 2 PRs.
+        public static func local(
+            items: [AccountAttentionItem],
+            ownershipEpoch: Int?,
+            hideDetails: Bool,
+            now: Date = Date()
+        ) -> ContentState {
+            let visible = ActivityWidgetPresentation.visibleItems(items, now: now)
+            let agents = ActivityWidgetPresentation.ranked(
+                ActivityWidgetPresentation.agentItems(visible)
+            )
+            let events = ActivityWidgetPresentation.ranked(
+                ActivityWidgetPresentation.eventItems(visible)
+            )
+            let runs = agents.compactMap { item -> Run? in
+                guard case .session(let sessionId, let itemId, _) = item.destination else {
+                    return nil
+                }
+                return Run(
+                    id: sessionId,
+                    title: hideDetails ? item.privacyPreview : item.title,
+                    phase: Self.runPhaseSlug(for: item),
+                    model: hideDetails ? nil : item.model,
+                    lane: hideDetails ? nil : item.laneName,
+                    detail: hideDetails ? nil : item.preview,
+                    itemId: itemId,
+                    accountMachineKey: item.machine.accountMachineKey,
+                    statusSince: (item.statusSince ?? item.occurredAt).timeIntervalSince1970
+                )
+            }.prefix(3)
+            let groups = ActivityWidgetPresentation
+                .groupCounts(for: visible, now: now)
+                .map { StateGroupCount(group: $0.group.wireValue, count: $0.count) }
+            // Same rule the relay applies: an idle-tier row is never active,
+            // whatever phase it froze at.
+            let activeCount = agents.filter {
+                ActivityPhaseVocabulary.stateGroup(for: $0) != .idle
+                    && ActivityPhaseVocabulary.presentation(for: $0.phase).active
+            }.count
+            let prs = events.compactMap { item -> PullRequest? in
+                guard case .pullRequest(_, _, _, let number, _, _) = item.destination,
+                      number > 0 else { return nil }
+                return PullRequest(
+                    id: item.id,
+                    prNumber: number,
+                    title: hideDetails ? item.privacyPreview : item.title,
+                    phase: item.phase == .open ? "opened" : item.phase.rawValue,
+                    lane: hideDetails ? nil : item.laneName,
+                    accountMachineKey: item.machine.accountMachineKey,
+                    updatedAt: item.updatedAt.timeIntervalSince1970
+                )
+            }.prefix(2)
+            return ContentState(
+                updatedAt: now.timeIntervalSince1970,
+                activeCount: activeCount,
+                runs: Array(runs),
+                prs: Array(prs),
+                ownershipEpoch: ownershipEpoch,
+                groups: groups.isEmpty ? nil : groups,
+                moreCount: max(0, agents.count - runs.count)
+            )
+        }
+
+        /// `AccountAttentionPhase` → the `AgentRunPhase` slug the Live Activity
+        /// wire speaks, mirroring the relay's own projection: a raised hand
+        /// splits into `waiting_for_approval` or `waiting_for_input` depending
+        /// on whether the item carries an approve action, because those two
+        /// render different inline buttons.
+        private static func runPhaseSlug(for item: AccountAttentionItem) -> String {
+            switch item.phase {
+            case .needsYou, .blocked:
+                return item.actions.contains { $0.kind == .approve }
+                    ? AgentRunPhase.waitingForApproval.rawValue
+                    : AgentRunPhase.waitingForInput.rawValue
+            default:
+                return item.phase.rawValue
+            }
+        }
     }
 
     /// One `{group, count}` tally on the Live Activity wire.
@@ -279,6 +380,17 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         public let itemId: String?
         /// Canonical Relay machine identity for account-wide activities.
         public let accountMachineKey: String?
+        /// Unix seconds at which this run entered its current phase.
+        ///
+        /// Exists so the row can render a SwiftUI date view that the SYSTEM
+        /// ticks, rather than a string frozen at push time. A Live Activity's
+        /// content only changes when an APNs push arrives, and the relay
+        /// deliberately spends pushes only on state transitions — so a static
+        /// "2m" stays "2m" for an hour. A system-rendered relative date costs
+        /// no push budget at all and is the cheapest honesty this surface can
+        /// buy. Optional and additive: older payloads decode to `nil` and fall
+        /// back to the phase word alone.
+        public let statusSince: Double?
 
         public init(
             id: String,
@@ -288,7 +400,8 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             lane: String? = nil,
             detail: String? = nil,
             itemId: String? = nil,
-            accountMachineKey: String? = nil
+            accountMachineKey: String? = nil,
+            statusSince: Double? = nil
         ) {
             self.id = id
             self.title = title
@@ -298,10 +411,12 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.detail = detail
             self.itemId = itemId
             self.accountMachineKey = accountMachineKey
+            self.statusSince = statusSince
         }
 
         private enum CodingKeys: String, CodingKey {
             case id, title, phase, model, lane, detail, itemId, accountMachineKey
+            case statusSince
         }
 
         public init(from decoder: Decoder) throws {
@@ -314,10 +429,20 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.detail = try? c.decodeIfPresent(String.self, forKey: .detail)
             self.itemId = try? c.decodeIfPresent(String.self, forKey: .itemId)
             self.accountMachineKey = try? c.decodeIfPresent(String.self, forKey: .accountMachineKey)
+            self.statusSince = try? c.decodeIfPresent(Double.self, forKey: .statusSince)
         }
 
         public var resolvedPhase: AgentRunPhase {
             AgentRunPhase(rawValue: phase.lowercased()) ?? .running
+        }
+
+        /// `statusSince` as a date, rejecting values that are absent, zero, or
+        /// in the future — a skewed publisher clock must not make a row render
+        /// a countdown.
+        public var statusSinceDate: Date? {
+            guard let statusSince, statusSince > 0 else { return nil }
+            let date = Date(timeIntervalSince1970: statusSince)
+            return date <= Date() ? date : nil
         }
 
         /// "lane · model" subtitle, dropping whichever half is missing.
@@ -534,4 +659,10 @@ public enum AgentRunPhase: String, CaseIterable, Sendable {
     public var symbol: String { presentation.glyph?.systemImage ?? "circle.dotted" }
 
     public var label: String { presentation.label }
+
+    /// Whether the row should replace the phase word with a live-ticking
+    /// elapsed time. The shared vocabulary already decides which states have a
+    /// meaningful duration — a finished run's age is trivia, a working run's
+    /// is the whole point — so this reads that flag rather than re-deciding it.
+    public var ticksElapsed: Bool { presentation.showsElapsed }
 }

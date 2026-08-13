@@ -1259,7 +1259,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `running`). `attentionCount` (which drives hub badges and attention-first
   project sorting) counts only chat rows and shells attached to a chat — a
   standalone CLI session that exited non-zero must not pin its project to
-  the top forever, since mobile has no way to clear it. Previews
+  the top forever, since mobile has no way to clear it. `runningCount` counts
+  chats whose status is `running` and that are **not snoozed**; a snoozed
+  running chat is idle on Activity, so including it would disagree with the
+  Hub tree and the island. Each chat carries optional `snoozedUntil` /
+  `snoozedAt` so older hosts omit them and older phones ignore them. Previews
   are hard-truncated (~120 chars). Also exports
   `createForeignChatTranscriptResolver({ projectRegistry })` — the resolver
   behind cross-project chat quick-look and its security boundary: it maps a
@@ -1780,13 +1784,17 @@ Account Activity and push:
   the brain: run/PR/session-removal tracking, the protocol-2 publish, the
   signed-out/degraded machine-snapshot fallback, and the durable machine-revoked
   gate (`getMachineRevocation` / `clearMachineRevocation`) that a removed machine
-  latches so it stops delivering across restarts.
+  latches so it stops delivering across restarts. The 30 s heartbeat rebuilds
+  the roster and skips the write via `activityRosterFingerprint` when nothing
+  moved; after four unchanged rebuilds the rebuild backs off to at most every
+  two minutes while presence posts stay on cadence.
 - `apps/ade-cli/src/services/push/attentionItemBuilder.ts` — the Activity
   projection itself, lifted out of the publisher's closure so it can be
   exercised with a plain context record instead of a booted publisher.
   `(runs, recentRuns, prActivities, roster) → AttentionItem[]`: identity-chat and
   child-shell filtering, phase derivation (including holding a completed turn at
-  `running` while background subagents live), the title/preview tables, the
+  `running` while background subagents live, and demoting a snoozed running chat
+  to `stale`/`idle` unless it is failed or needs-you), the title/preview tables, the
   2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
   delivery, machine-revocation, and machine-acknowledgment state. Machine
@@ -1823,7 +1831,10 @@ Account Activity and push:
   already heard about it. `chatActivityMode` is in the content fingerprint (it is
   a visible distinction) and deliberately out of the alert fingerprint, because
   planning and working flip several times a turn and neither flip is a new phase
-  worth notifying about.
+  worth notifying about. `activityRosterFingerprint` hashes the selected and
+  overflow ids plus those per-item publish fingerprints so a heartbeat can skip
+  the D1 write when the roster did not move; item `revision` is excluded because
+  it is a republish timestamp.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
   destination, availability, preference, and native-presentation contract.
   `ATTENTION_CONTRACT_VERSION` is the *item* contract; the publish protocol
@@ -1834,13 +1845,15 @@ Account Activity and push:
   the abort-on-first-failing-chunk policy), and
   `AttentionAcknowledgmentOutcome`.
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  cross-language conformance fixture for the five-group state table. The mapping
+  cross-language conformance fixture for the six-group state table. The mapping
   is implemented four times (renderer TypeScript, native notch Swift, iOS Swift,
   and the hermetic relay Worker) because the surfaces cannot share code, and
   documentation alone did not keep them in step. Every implementation runs these
   cases through its own mapper. Canonical source of truth:
   `activityStateGroup` in
   `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
+  There are six groups, not five: `idle` was split out of `done` because a
+  session that went quiet mid-work is not a session that finished.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
   Activity event: its group (agents / pull requests), its icon key, and its
   default delivery policy. Desktop settings, the Activity columns, and the
@@ -1858,14 +1871,16 @@ Account Activity and push:
   toast stream.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
   the global-header count (the `needs-you` group and nothing else) and its
-  popover preview, which shows every state section except `done`.
+  popover preview, which shows every state section except the two resting bands
+  (`idle` and `done`).
 - `apps/desktop/src/renderer/components/activity/ActivityPane.tsx` — the
   `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (the agent feed,
   one section per state group, split per machine and divided where an offline
   machine's rows become last-known state), `ActivityInboxColumn.tsx` (the
   Notifications column: PR/CI and review outcomes grouped by project),
-  `ActivityFilters.tsx` (machine / chat type / model, every option derived from
-  the snapshot on screen), and `ActivityDetailSheet.tsx`.
+  `ActivityFilters.tsx` (machine / project / chat type / model, plus a
+  single-select state-group glyph strip whose counts come from the unfiltered
+  snapshot), and `ActivityDetailSheet.tsx`.
 - `apps/desktop/src/renderer/components/activity/ActivitySectionHeader.tsx`,
   `activitySectionCollapse.ts`, `ActivityStateGlyphMark.tsx`,
   `ActivityAllClear.tsx`, and `useAllClearBeat.ts` — the shared section header

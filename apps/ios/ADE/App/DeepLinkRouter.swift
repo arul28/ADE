@@ -133,15 +133,28 @@ final class DeepLinkRouter {
       else { return }
       routeLinearIssue(identifier: identifier, url: url)
     case "activity":
-      // `ade://activity` — the lock-screen widget's fallback when nothing in
-      // particular is asking for you. It opens the drawer rather than picking a
-      // row on the user's behalf, which is the honest answer to "show me
-      // everything". Takes no path or query, so there is nothing to validate.
+      // `ade://activity[?state=<group>]` — the lock-screen widget's fallback
+      // when nothing in particular is asking for you. Bare, it opens the drawer
+      // rather than picking a row on the user's behalf, which is the honest
+      // answer to "show me everything".
+      //
+      // With `state`, it opens pre-filtered to that band. That is what makes
+      // the glyph strip on the widget and the island real navigation: tapping
+      // the amber "4" should land on those four, not at the top of an
+      // unfiltered list the reader then has to search. An unrecognised value
+      // is ignored rather than rejected — a newer widget must never fail to
+      // open the drawer at all.
+      let requestedState = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?
+        .first { $0.name == "state" }?
+        .value
+        .flatMap { ActivityStateGroup(wireValue: $0) }
+      SyncService.shared?.attentionDrawer.stateFilter = requestedState
       SyncService.shared?.attentionDrawerPresented = true
       NotificationCenter.default.post(
         name: .adeDeepLinkRequested,
         object: nil,
-        userInfo: ["kind": "activity", "identifier": ""]
+        userInfo: ["kind": "activity", "identifier": requestedState?.wireValue ?? ""]
       )
     default:
       return

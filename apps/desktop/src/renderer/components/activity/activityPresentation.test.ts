@@ -215,6 +215,7 @@ describe("Activity state glyphs", () => {
       "failed",
       "planning",
       "working",
+      "idle",
       "done",
     ]);
     expect(ACTIVITY_STATE_GROUPS.map((group) => [
@@ -226,8 +227,22 @@ describe("Activity state glyphs", () => {
       ["failed", "red", "failed"],
       ["planning", "violet", "planning"],
       ["working", "blue", "working"],
+      ["idle", "neutral", "stale"],
       ["done", "emerald", "done"],
     ]);
+  });
+
+  /**
+   * The split that made this six states. `idle` must stay neutral: giving the
+   * gone-quiet band a live hue is how the island came to claim agents were
+   * working hours after they stopped.
+   */
+  it("keeps idle neutral and distinct from done", () => {
+    expect(ACTIVITY_STATE_GLYPHS.idle.tone).toBe("neutral");
+    expect(ACTIVITY_STATE_GLYPHS.idle.tone).not.toBe(ACTIVITY_STATE_GLYPHS.done.tone);
+    expect(ACTIVITY_STATE_GROUPS.indexOf("idle")).toBeLessThan(
+      ACTIVITY_STATE_GROUPS.indexOf("done"),
+    );
   });
 
   it("spends amber on the raised hand and nothing else", () => {
@@ -247,7 +262,7 @@ describe("Activity state glyphs", () => {
     expect(new Set(tones).size).toBe(tones.length);
   });
 
-  it("files every phase into a state group, and idle rows into done", () => {
+  it("files every phase into a state group, and idle rows into idle", () => {
     const group = (phase: AttentionPhase, patch: Partial<AttentionItem> = {}) =>
       activityStateGroup({ phase, kind: "agent", ...patch } as AttentionItem);
 
@@ -255,11 +270,15 @@ describe("Activity state glyphs", () => {
     expect(group("failed")).toBe("failed");
     expect(group("checks_failing")).toBe("failed");
     expect(group("running")).toBe("working");
-    expect(group("stale")).toBe("working");
+    // Went quiet mid-work: neither live nor finished.
+    expect(group("stale")).toBe("idle");
     expect(group("completed")).toBe("done");
     expect(group("running", { chatActivityMode: "planning" })).toBe("planning");
-    // A preserved phase does not rescue a row from the quiet tail.
-    expect(group("running", { activityTier: "idle" })).toBe("done");
+    // A preserved phase does not rescue a row from the quiet tail — and the
+    // quiet tail is `idle`, not `done`, so week-old roster rows can never be
+    // mistaken for work that actually finished.
+    expect(group("running", { activityTier: "idle" })).toBe("idle");
+    expect(group("completed", { activityTier: "idle" })).toBe("idle");
     // Nobody else's move may borrow the amber heading.
     expect(group("review_requested")).toBe("working");
   });
@@ -334,7 +353,7 @@ describe("Activity state glyphs", () => {
     expect(sentence("running")).toBe("Claude is working");
     expect(sentence("running", { chatActivityMode: "planning" })).toBe("Claude is planning");
     expect(sentence("failed")).toBe("Claude stopped on an error");
-    expect(sentence("stale")).toBe("Claude has gone quiet");
+    expect(sentence("stale")).toBe("Claude is idle");
     expect(sentence("completed")).toBe("Claude is done");
     // A pull request has no agent to name, so it says what it is instead.
     expect(activityStateSentence({

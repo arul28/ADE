@@ -89,7 +89,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"], category: "Model" },
   { name: "/plugin", description: "List, reload, or manage Claude plugins", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"], category: "Model" },
   { name: "/status", description: "Show project, lane, and runtime state", placement: "right", category: "Nav" },
-  { name: "/activity", description: "Show account-wide work that needs you", placement: "right", category: "Nav" },
+  { name: "/activity", description: "Show account-wide Activity across machines", placement: "right", category: "Nav" },
   { name: "/project", description: "Switch project on this machine", placement: "right", argumentHint: "[name|path]", category: "Nav" },
   { name: "/machines", description: "Hop to another paired ADE machine", placement: "right", argumentHint: "[name]", category: "Nav" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },

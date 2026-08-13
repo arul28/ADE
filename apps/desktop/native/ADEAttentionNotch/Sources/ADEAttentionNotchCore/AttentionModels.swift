@@ -251,7 +251,9 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
     public var tier: String? { activityTier }
 
     /// Idle rows are disk-only roster history: quiet, never alerting, always
-    /// filed under Done no matter what phase they preserved.
+    /// filed under Idle no matter what phase they preserved. Not Done — done
+    /// means finished, and folding these two together is what let week-old
+    /// roster rows bury the runs that actually completed.
     public var isIdleTier: Bool { activityTier == "idle" }
 
     /// Only signal-tier rows may interrupt. Legacy items without a tier fall
@@ -673,14 +675,21 @@ public struct AttentionAvailability: Codable, Equatable, Sendable {
 /// can only be honest if the totals travel separately from the rows.
 public struct AttentionCounts: Codable, Equatable, Sendable {
     public let needsYou: Int
-    /// Optional because they are the two newest counts on the wire: a host that
+    /// Optional because they are the newest counts on the wire: a host that
     /// predates them sends nothing, and `nil` means "this frame carries no
     /// account-wide figure for that group", which is not the same claim as `0`.
     /// Readers floor with them only when present, so an older host keeps
     /// exactly the behaviour it has today instead of being told it has none.
+    ///
+    /// `idle` is the newest of the three, added when the state vocabulary split
+    /// `idle` out of `done`. Until the host publishes it, that group stays
+    /// row-derived and can only count the rows that survived the 48-row
+    /// projection — the same known gap `failed` and `planning` had mid-rollout,
+    /// and the reason none of them may ever become required.
     public let failed: Int?
     public let planning: Int?
     public let working: Int
+    public let idle: Int?
     public let done: Int
     public let total: Int
     public let machinesOnline: Int
@@ -691,6 +700,7 @@ public struct AttentionCounts: Codable, Equatable, Sendable {
         failed: Int? = nil,
         planning: Int? = nil,
         working: Int = 0,
+        idle: Int? = nil,
         done: Int = 0,
         total: Int = 0,
         machinesOnline: Int = 0,
@@ -700,6 +710,7 @@ public struct AttentionCounts: Codable, Equatable, Sendable {
         self.failed = failed.map { max(0, $0) }
         self.planning = planning.map { max(0, $0) }
         self.working = working
+        self.idle = idle.map { max(0, $0) }
         self.done = done
         self.total = total
         self.machinesOnline = machinesOnline
@@ -707,7 +718,8 @@ public struct AttentionCounts: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case needsYou, failed, planning, working, done, total, machinesOnline, machinesTotal
+        case needsYou, failed, planning, working, idle, done, total
+        case machinesOnline, machinesTotal
     }
 
     /// Totally decoding, like every other advisory block: a host that learns to
@@ -727,6 +739,7 @@ public struct AttentionCounts: Codable, Equatable, Sendable {
         failed = optionalCount(.failed)
         planning = optionalCount(.planning)
         working = count(.working)
+        idle = optionalCount(.idle)
         done = count(.done)
         total = count(.total)
         machinesOnline = count(.machinesOnline)
@@ -877,7 +890,7 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
     /// The counts the host sent, or an honest tally of the rows on hand when it
     /// sent none. Never invents an overflow it cannot see.
     ///
-    /// Tallied through the same five-way table the strip and the panel file
+    /// Tallied through the same six-way table the strip and the panel file
     /// rows under, and agent-only for the same reason the host's block is: a
     /// pull request is not "planning", and its `total` is the session figure.
     /// A group with no rows stays absent rather than becoming a `0` the strip
@@ -896,6 +909,7 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
             failed: tally[.failed],
             planning: tally[.planning],
             working: tally[.working] ?? 0,
+            idle: tally[.idle],
             done: tally[.done] ?? 0,
             total: tally.values.reduce(0, +),
             machinesOnline: online.count,

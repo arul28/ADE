@@ -25,7 +25,6 @@
 		AA1100000000000000000014 /* ActivityRowPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000004 /* ActivityRowPresentation.swift */; };
 		AA1100000000000000000015 /* ActivityWidgetPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000005 /* ActivityWidgetPresentation.swift */; };
 		D3000000000000000000002A /* ActivityRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000001A /* ActivityRow.swift */; };
-		E200000000000000000000A2 /* HubLiveStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000A2 /* HubLiveStrip.swift */; };
 		AC7600000000000000000001 /* ActivityRowPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000001 /* ActivityRowPresentationTests.swift */; };
 		AC7600000000000000000003 /* WorkSessionGroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000003 /* WorkSessionGroupingTests.swift */; };
 		AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */; };
@@ -146,6 +145,7 @@
 		E2000000000000000000004F /* RemoteRosterModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004F /* RemoteRosterModels.swift */; };
 		E20000000000000000000050 /* HubScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000050 /* HubScreen.swift */; };
 		E20000000000000000000051 /* HubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000051 /* HubComponents.swift */; };
+		E20000000000000000000054 /* HubActivityState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000054 /* HubActivityState.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
 		E20000000000000000000053 /* HubComposerDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000053 /* HubComposerDrawer.swift */; };
 		E200000000000000000000A1 /* HubQuickConnect.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000A1 /* HubQuickConnect.swift */; };
@@ -334,7 +334,6 @@
 		AA1000000000000000000004 /* ActivityRowPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRowPresentation.swift; path = ADE/Shared/ActivityRowPresentation.swift; sourceTree = "<group>"; };
 		AA1000000000000000000005 /* ActivityWidgetPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityWidgetPresentation.swift; path = ADE/Shared/ActivityWidgetPresentation.swift; sourceTree = "<group>"; };
 		D3000000000000000000001A /* ActivityRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRow.swift; path = ADE/Views/Activity/ActivityRow.swift; sourceTree = "<group>"; };
-		D200000000000000000000A2 /* HubLiveStrip.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubLiveStrip.swift; path = ADE/Views/Hub/HubLiveStrip.swift; sourceTree = "<group>"; };
 		AC7500000000000000000001 /* ActivityRowPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRowPresentationTests.swift; path = ADETests/ActivityRowPresentationTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000003 /* WorkSessionGroupingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGroupingTests.swift; path = ADETests/WorkSessionGroupingTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityWidgetPresentationTests.swift; path = ADETests/ActivityWidgetPresentationTests.swift; sourceTree = "<group>"; };
@@ -449,6 +448,7 @@
 		D2000000000000000000004F /* RemoteRosterModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteRosterModels.swift; path = ADE/Models/RemoteRosterModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000050 /* HubScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubScreen.swift; path = ADE/Views/Hub/HubScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000051 /* HubComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComponents.swift; path = ADE/Views/Hub/HubComponents.swift; sourceTree = "<group>"; };
+		D20000000000000000000054 /* HubActivityState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubActivityState.swift; path = ADE/Views/Hub/HubActivityState.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
 		D20000000000000000000053 /* HubComposerDrawer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerDrawer.swift; path = ADE/Views/Hub/HubComposerDrawer.swift; sourceTree = "<group>"; };
 		D200000000000000000000A1 /* HubQuickConnect.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubQuickConnect.swift; path = ADE/Views/Hub/HubQuickConnect.swift; sourceTree = "<group>"; };
@@ -732,10 +732,10 @@
 			children = (
 				D20000000000000000000050 /* HubScreen.swift */,
 				D20000000000000000000051 /* HubComponents.swift */,
+				D20000000000000000000054 /* HubActivityState.swift */,
 				D20000000000000000000052 /* HubScreen+ChatNavigation.swift */,
 				D20000000000000000000053 /* HubComposerDrawer.swift */,
 				D200000000000000000000A1 /* HubQuickConnect.swift */,
-				D200000000000000000000A2 /* HubLiveStrip.swift */,
 			);
 			name = Hub;
 			sourceTree = "<group>";
@@ -1467,10 +1467,10 @@
 				E2000000000000000000004F /* RemoteRosterModels.swift in Sources */,
 				E20000000000000000000050 /* HubScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
+				E20000000000000000000054 /* HubActivityState.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
 				E20000000000000000000053 /* HubComposerDrawer.swift in Sources */,
 				E200000000000000000000A1 /* HubQuickConnect.swift in Sources */,
-				E200000000000000000000A2 /* HubLiveStrip.swift in Sources */,
 				F40000000000000000000001 /* PersonalChatsScreen.swift in Sources */,
 				B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */,
 				B10000000000000000000004 /* LaneChatLaunchSheet.swift in Sources */,

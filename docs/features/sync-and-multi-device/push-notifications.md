@@ -36,7 +36,7 @@ persistence fields, analytics/log identifiers, and the native helper product.
 
 ## The state glyph language
 
-Every surface that summarizes Activity reads from one five-group table. The
+Every surface that summarizes Activity reads from one six-group table. The
 canonical implementation is `activityStateGroup` plus `ACTIVITY_STATE_GLYPHS` in
 `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
 
@@ -46,13 +46,19 @@ canonical implementation is `activityStateGroup` plus `ACTIVITY_STATE_GLYPHS` in
 | `failed` | red | warning triangle | it stopped on an error, or checks/review failed |
 | `planning` | violet | note-pencil | the agent is deliberating |
 | `working` | blue | dashed circle | live work, plus someone else's move (review requested, merge ready, blocked) |
-| `done` | emerald | check circle | settled history |
+| `idle` | neutral | clock | went quiet mid-work, including the `stale` phase and a snoozed running chat |
+| `done` | emerald | check circle | finished, and nobody has looked yet |
 
 The array order above is also the priority order (`ACTIVITY_STATE_GROUPS`), so
 "which state does this surface lead with" is a lookup rather than a ladder. Two
-rules matter more than the table itself: an `idle`-tier item is `done` no matter
-which phase it preserved, and `planning` is never derived from a phase — it
-comes only from `chatActivityMode`.
+rules matter more than the table itself: an `idle`-tier item is `idle` no matter
+which phase it preserved — never `done`, because a session that went quiet
+mid-work is not a session that finished — and `planning` is never derived from a
+phase; it comes only from `chatActivityMode`. The desktop header popover omits
+the two resting bands `idle` and `done` so a dropdown does not open onto quiet
+work. The island compact pill shows only the one or two highest-priority groups
+that fit. The Mac notch compact strip, Hub tree headers, and the full Activity
+list keep every nonzero group, including resting bands.
 
 Section headings, glyph counts, the notch strip, the iOS rows, and the Live
 Activity all mirror this table, and the mirrors cannot share code — the renderer
@@ -420,8 +426,12 @@ The publisher:
 
 - observes chat approvals/questions/failures/completions, tracked CLI session
   state, session removals, and PR notification transitions;
-- republishes a full bounded machine snapshot on changes and a 30-second
-  heartbeat so presence and long-running state recover after disconnects;
+- republishes on changes, and on a 30-second heartbeat rebuilds the roster,
+  hashes it with `activityRosterFingerprint`, and posts `presence` only when
+  that hash matches the last accepted roster — so a machine that went quiet
+  still corrects idle/working decay instead of waiting for the 30-minute
+  reconcile. After four unchanged rebuilds the rebuild itself backs off to at
+  most every two minutes; presence posts stay on the 30 s cadence;
 - uses unchanged heartbeats to retry a failed or missed account Live Activity
   start; successful starts remain deduplicated by durable state and content
   fingerprint;
@@ -477,6 +487,10 @@ What it filters and how:
 - **Roster wins over a frozen run.** When the roster says `running` and the live
   run says `completed`/`stale`, the run item is skipped: a stale publisher view
   must not bury a session the booted runtime says is working.
+- **Snooze demotes a running row to idle.** A snoozed roster chat that is not
+  `failed` or `needs_you` publishes as phase `stale` / tier `idle`, and a live
+  run for that id is not allowed to revive it as working. Failed and needs-you
+  stay visible. The same overlay is what Hub `runningCount` excludes.
 
 `canonicalProjectId` memoizes `deriveProjectId(rootPath)` per root and stamps
 `project.canonicalId`, returning `null` rather than a fabricated id when no root
@@ -497,7 +511,7 @@ whole machine" with three modes on `POST /machines/:machineKey/attention`:
 | --- | --- | --- |
 | `reconcile` | first publish after start, after an account change, and after any cap shrink | the full roster, paged, with `final: true` on the last page |
 | `delta` | ordinary changes | only the items that changed, paged if they exceed one wire page |
-| `presence` | the 30 s heartbeat with nothing to say | no items — it exists to hold presence and to let a due alert retry |
+| `presence` | heartbeat skip when `activityRosterFingerprint` matches the last accepted roster, or when rebuild backoff is in effect | no items — it holds `last_seen_at` and lets a due alert retry without rewriting the feed |
 
 Each publish stamps a monotonic `rosterEpoch`. A `reconcile` run bumps the
 epoch, and its `final` page seals it: anything still carrying an older epoch for
@@ -611,7 +625,7 @@ Both surfaces are built from `activityPriority.ts`, which projects the snapshot
 into agent sections and a notification tail:
 
 - `activityFeedItems` — live, non-dismissed `kind: "agent"` rows.
-- `activitySections` — those rows grouped by state, always returning all five
+- `activitySections` — those rows grouped by state, always returning all six
   descriptors (including empty ones) so the popover, pane, and notch share
   headings without re-declaring order. A section **is** a state group;
   they were separate vocabularies once, and the drift showed up as a
@@ -623,10 +637,16 @@ into agent sections and a notification tail:
   notification tail. The notch projects from this so its Agents and Events views
   read one ordering instead of re-deriving priority in Swift.
 
-The keyboard-accessible header popover shows every section except `done`: it is
-the most final and by far the most common state, and a dropdown that opens onto
-a wall of finished work buries the two rows that wanted a human. It stays one
-click away in the pane, and the footer keeps counting it.
+The keyboard-accessible header popover shows every section except the two
+resting bands (`idle` and `done`): those are the most common states, and a
+dropdown that opens onto a wall of finished and gone-quiet work buries the two
+rows that wanted a human. Both stay one click away in the pane, and the footer
+keeps counting them.
+
+The `/activity` pane's filter row includes a **state strip**: one glyph and
+count per populated group, single-select, AND-ed with machine / project / chat
+type / model. Counts come from the unfiltered item set so the strip cannot hide
+its own escape routes. Pressing the lit glyph clears the filter.
 
 The full `/activity` route provides:
 
@@ -724,16 +744,17 @@ changing lanes or projects does not change the account source. Enter opens the
 exact ADE destination first and only then sends the owner-fenced seen mutation.
 `/attention` remains an unadvertised compatibility alias.
 
-Its headings are a projection of the shared five-group table rather than a
+Its headings are a projection of the shared six-group table rather than a
 second phase ladder: `activityPane.ts` maps each state group onto a pane group
 through `ACTIVITY_PANE_GROUP_BY_STATE_GROUP` (`failed` → failing, `planning` and
-`working` → live), then splits the `done` band into `DONE, UNREVIEWED` versus
-`RECENT` on seen state and idle tier. The TUI has no separate planning heading,
-so planning rows sit under `LIVE NOW`. Because the table is now the single
-source, `review_requested`, `merge_ready`, and `blocked` file under `LIVE NOW`
-as someone else's move rather than borrowing an amber heading, and `stale` and
-`open` are live rather than recent. `activityPane.test.ts` runs the shared
-conformance fixture.
+`working` → live, `idle` → recent), then splits the `done` band into
+`DONE, UNREVIEWED` versus `RECENT` on seen state and idle tier. The TUI has no
+separate planning or idle heading, so planning rows sit under `LIVE NOW` and
+idle/stale rows sit under `RECENT` rather than claiming live agents hours after
+they stopped. Because the table is now the single source, `review_requested`,
+`merge_ready`, and `blocked` file under `LIVE NOW` as someone else's move rather
+than borrowing an amber heading, and `open` is live rather than recent.
+`activityPane.test.ts` runs the shared conformance fixture.
 
 When signed out, ADE Code asks the connected host for its real machine snapshot
 and labels the subset. Account failure may degrade to that same connected-host
@@ -780,7 +801,7 @@ On a MacBook with a physical notch:
 On a display without a physical notch, ADE uses a menu-bar status item as the
 persistent entry rather than pretending the display has hardware it does not.
 The status item uses the shipped ADE app icon plus a small state badge whose
-tint follows the same five-group table. Hover or click opens a transient,
+tint follows the same six-group table. Hover or click opens a transient,
 screen-edge-safe panel anchored under that icon; the resting top-center
 imitation notch is absent. Right-click uses the same icon as the anchor for
 controls.
@@ -813,22 +834,32 @@ ignored.
 `NotchStripModel.swift` models two wings around the cutout. The leading wing is
 `notchStripGroups` — every non-zero state group as a glyph plus a count, in
 priority order. The tally is agent-only and skips dismissed rows, then floors
-itself against the host's `AttentionCounts` (using `failed` and `planning` only
-when the host actually sent them; a missing count is not zero). The trailing wing
+itself against the host's `AttentionCounts` (using `failed`, `planning`, and
+`idle` only when the host actually sent them; a missing count is not zero). The
+trailing wing
 is `notchTopSignal`: a stream problem outranks rows, then the top notable row —
 needs-you, failed, planning, or an unseen merged/completed PR — then a
 machines-online line, then "All clear".
 
 The strip replaced a row of repeated provider logos, which said "three Claudes"
 when the useful sentence was "one is asking you something and two are working".
-Width is computed from the groups and the signal and clamped, rather than fixed,
-so the ears stay inside the visible area on either side of the camera housing.
+Panel rows use the same state glyph in a quiet disc (`NotchStateGlyph`), not a
+provider logo plus a status dot. Width is computed from the groups and the
+signal and clamped, rather than fixed, so the ears stay inside the visible area
+on either side of the camera housing.
 
-`AttentionCounts` gained optional `failed` and `planning` for the same reason.
-They are optional rather than defaulted because an older publisher cannot send
-them, and a reader that has them floors its own groups from them instead of
-inventing a residual — which is what the deleted unattributed-count fudge was
-doing to paper over the gap.
+Each compact-strip control is a click target: a group badge opens the Agents
+panel already showing that band, the trailing signal opens the row it names (or
+expands the panel for a quiet machine summary), and "+N more" opens Activity in
+ADE. The rest of the strip still toggles the panel.
+
+`AttentionCounts` gained optional `failed`, `planning`, and `idle` for the same
+reason. They are optional rather than defaulted because an older publisher
+cannot send them, and a reader that has them floors its own groups from them
+instead of inventing a residual — which is what the deleted unattributed-count
+fudge was doing to paper over the gap. A reader that does not get `idle` falls
+back to counting the rows it can see, and the projection is capped, so a machine
+with fifty resting sessions under-reports until both sides ship together.
 
 ### Panel, tabs, and cards
 
@@ -837,7 +868,8 @@ exactly when it is a pull request. Events cluster by repo and PR number, so six
 rows from one PR read as one fact. The panel's rows are one flattened draw order
 that doubles as the keyboard model — arrows move focus and collapse/expand, Tab
 cycles tabs, Return acts, Escape closes — so what is drawn and what is navigable
-cannot disagree. `Done` starts collapsed. The whole projection comes from the
+cannot disagree. The two resting bands, Idle and Done, start collapsed — the
+same pair the desktop header popover leaves out. The whole projection comes from the
 renderer's `activityFeedOrder`, so priority is not re-derived in Swift.
 
 A needs-you **flash card** appears for about ten seconds and ends on any of four
@@ -889,7 +921,7 @@ inboxes. Tapping an item follows its exact destination. Remote items expose only
 actions that are safe without assuming the currently paired host owns them.
 
 Rows are unified across the drawer, the widgets, and the Live Activity through
-`ActivityRowPresentation.swift`, which owns iOS's copy of the five-group table
+`ActivityRowPresentation.swift`, which owns iOS's copy of the six-group table
 (`ActivityStateGroup`, with its wire spelling kept separate from the Swift case
 name and lenient aliases on decode) and is pinned by the shared conformance
 fixture. A row leads with a state mark — the group's glyph on a tone-tinted disc,
@@ -935,10 +967,27 @@ The Lock Screen and Dynamic Island lead with one focused item and show a small
 overflow count instead of presenting a miniature monitoring dashboard. The
 Dynamic Island's compact leading is the leading group's glyph and count and its
 compact trailing is the top event signal, so the island says "one needs you, two
-working" at a glance; the expanded view adds a state strip, up to three rows, and
-a link for the remainder. A PR only earns its own card when there are no agent
+working" at a glance. Each compact-strip glyph is a `Link` to
+`ade://activity?state=<group>`, so tapping the amber "4" opens the Activity
+drawer already filtered to that band. The expanded island adds a state strip,
+up to two agent rows, and a footer for the remainder: three rows plus a footer
+silently clip, because the expanded island clips overflow with no visible tell.
+The expanded leading/trailing regions inset 10pt horizontally and 2pt vertically
+so the corner glyphs keep their edges inside the island's rounder capsule. The
+lock-screen banner still budgets three agent rows (two when a lead row carries
+Approve/Deny capsules). A PR only earns its own card when there are no agent
 rows at all. Each secondary row owns an element-level `Link`, so tapping a PR or
 agent opens that row rather than one activity-wide fallback URL.
+
+When the app is foreground, `LiveActivityService.refreshLocalContent` writes the
+merged account+live feed into the running Activity with a local
+`Activity.update` (hash-deduped, 1 s floor). The relay spends APNs pushes only
+on transitions worth the ActivityKit budget — exact counts for `needs_you` and
+`failed`, presence for the rest — so a working count going 3 → 7 never reached
+the island from a push. The local write is the real-time path; the relay push
+stays the backstop for a suspended app. `Run.statusSince` is additive so a
+working row can render a system-ticking relative date instead of a string frozen
+at push time.
 
 `chatActivityMode` never spends a push on its own. It is excluded from the alert
 fingerprint and from the relay's APNs transition gate, because planning and

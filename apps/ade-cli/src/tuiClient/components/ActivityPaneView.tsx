@@ -5,7 +5,9 @@ import type { AttentionItem } from "../../../../desktop/src/shared/types/attenti
 import {
   activityItemContext,
   activityItemElapsed,
+  activityItemMark,
   activityPaneEntries,
+  type ActivityPaneMarkTone,
 } from "../activityPane";
 import { theme } from "../theme";
 import type { RightPaneContent } from "../types";
@@ -16,32 +18,33 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, max - 1)}…`;
 }
 
+function activityToneColor(tone: ActivityPaneMarkTone): string {
+  switch (tone) {
+    case "attention":
+      return theme.color.attention;
+    case "error":
+      return theme.color.error;
+    case "violet":
+      return theme.color.violet;
+    case "running":
+      return theme.color.running;
+    case "done":
+      return theme.color.done;
+    case "neutral":
+      return theme.color.t2;
+    default: {
+      const _exhaustive: never = tone;
+      return _exhaustive;
+    }
+  }
+}
+
 function activityTone(item: AttentionItem): string {
-  if (item.phase === "needs_you" || item.phase === "review_requested" || item.phase === "merge_ready") {
-    return theme.color.attention;
-  }
-  if (
-    item.phase === "failed"
-    || item.phase === "blocked"
-    || item.phase === "stale"
-    || item.phase === "checks_failing"
-    || item.phase === "changes_requested"
-  ) {
-    return theme.color.error;
-  }
-  if (item.phase === "starting" || item.phase === "running") {
-    return theme.color.running;
-  }
-  return theme.color.t2;
+  return activityToneColor(activityItemMark(item).tone);
 }
 
 function activityGlyph(item: AttentionItem): string {
-  if (item.phase === "needs_you" || item.phase === "review_requested" || item.phase === "merge_ready") return "!";
-  if (item.phase === "failed" || item.phase === "checks_failing" || item.phase === "changes_requested") return "×";
-  if (item.phase === "blocked" || item.phase === "stale") return "◆";
-  if (item.phase === "starting" || item.phase === "running") return "●";
-  if (item.phase === "completed" || item.phase === "merged") return "✓";
-  return "·";
+  return activityItemMark(item).glyph;
 }
 
 export function ActivityPaneView({

@@ -215,7 +215,7 @@ export function activityPhaseIsSessionDerived(
 }
 
 /* ── The state glyph language ──────────────────────────────────────────────
-   Five states, one glyph and one hue each. This is the canonical table; the
+   Six states, one glyph and one hue each. This is the canonical table; the
    notch strip, the iOS widget rows and the Live Activity all mirror it, so a
    change here is a change everywhere and must be made here first.
 
@@ -228,13 +228,22 @@ export function activityPhaseIsSessionDerived(
    "your move" and is spent nowhere else, and `cyan` is never handed to a
    session state (see the tone doc in `shared/types/attention.ts`). `planning`
    takes violet, which it shares with an outstanding review: both mean "someone
-   is deliberating", neither means the reader must act. ────────────────────── */
+   is deliberating", neither means the reader must act.
+
+   `idle` is its own band rather than a corner of `done`. A session that went
+   quiet mid-work and a session that finished are not the same fact, and
+   folding the first into the second made `done` a bucket that filled with
+   week-old roster rows — the Activity sheet's single loudest complaint. Idle
+   is neutral because nobody is blocked on it, and it sorts above `done`
+   because "stopped without finishing" is likelier to want you than "finished".
+   ────────────────────────────────────────────────────────────────────────── */
 
 export type ActivityStateGroup =
   | "needs-you"
   | "failed"
   | "planning"
   | "working"
+  | "idle"
   | "done";
 
 export type ActivityStateGlyph = {
@@ -256,6 +265,7 @@ export const ACTIVITY_STATE_GLYPHS = {
   failed: { label: "Failed", tone: "red", glyph: "failed" },
   planning: { label: "Planning", tone: "violet", glyph: "planning" },
   working: { label: "Working", tone: "blue", glyph: "working" },
+  idle: { label: "Idle", tone: "neutral", glyph: "stale" },
   done: { label: "Done", tone: "emerald", glyph: "done" },
 } as const satisfies Record<ActivityStateGroup, ActivityStateGlyph>;
 
@@ -265,17 +275,19 @@ export const ACTIVITY_STATE_GROUPS = [
   "failed",
   "planning",
   "working",
+  "idle",
   "done",
 ] as const satisfies readonly ActivityStateGroup[];
 
 /**
  * Which state group an item belongs to. Idle-tier rows are quiet history no
- * matter what phase they preserved, so they land in `done`. This is the only
- * place the rule is written: section headings, glyph counts, and the notch all
- * call it, so "what is this row" has exactly one answer.
+ * matter what phase they preserved, so they land in `idle` — NOT `done`, which
+ * is reserved for work that actually finished. This is the only place the rule
+ * is written: section headings, glyph counts, and the notch all call it, so
+ * "what is this row" has exactly one answer.
  */
 export function activityStateGroup(item: AttentionItem): ActivityStateGroup {
-  if (activityItemTier(item) === "idle") return "done";
+  if (activityItemTier(item) === "idle") return "idle";
   switch (item.phase) {
     case "needs_you":
       return "needs-you";
@@ -287,6 +299,10 @@ export function activityStateGroup(item: AttentionItem): ActivityStateGroup {
     case "running":
       return activityChatMode(item) === "planning" ? "planning" : "working";
     case "stale":
+      // Went quiet mid-work. Not live, not finished — the exact gap `idle`
+      // exists to name. It used to file with `working`, which is why the
+      // island could claim agents were working hours after they stopped.
+      return "idle";
     case "open":
       return "working";
     case "review_requested":
@@ -319,9 +335,9 @@ export function activityStateSentence(item: AttentionItem): string {
     case "planning":
       return `${who} is planning`;
     case "working":
-      return item.phase === "stale"
-        ? `${who} has gone quiet`
-        : `${who} is working`;
+      return `${who} is working`;
+    case "idle":
+      return `${who} is idle`;
     case "done":
       return `${who} is done`;
   }

@@ -10,7 +10,7 @@ describe("commands", () => {
     expect(paletteCommands("/act")).toContainEqual(expect.objectContaining({
       name: "/activity",
       source: "ade",
-      description: "Show account-wide work that needs you",
+      description: "Show account-wide Activity across machines",
     }));
   });
 

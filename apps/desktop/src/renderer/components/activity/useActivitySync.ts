@@ -240,6 +240,7 @@ function activityNotchCounts(items: readonly AttentionItem[]): AttentionCounts {
     failed: summary.failedCount,
     planning: summary.planningCount,
     working: summary.workingCount,
+    idle: summary.idleCount,
     done: summary.doneCount,
     total: summary.trackedCount,
     machinesOnline: summary.machinesOnline,
