@@ -9,6 +9,10 @@ import {
   PLUGIN_PANELS_MAX_PER_PLUGIN,
 } from "../../../../desktop/src/main/services/state/dbMaintenanceApi";
 import { codedError } from "../../../../desktop/src/shared/codedError";
+import {
+  PLUGIN_COLLECTION_MAX_EVICTIONS_PER_PUT,
+  type PluginCollectionIfFull,
+} from "../../../../desktop/src/shared/plugins/sdk";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 
 /**
@@ -104,6 +108,11 @@ export type PutPluginCollectionValueArgs = {
   key: string;
   /** Already-serialized JSON. The caller owns the shape; the writer owns the size. */
   valueJson: string;
+  /**
+   * What to do when the write would exceed a budget. Omitted means `"fail"`,
+   * which is the behavior every caller had before the option existed.
+   */
+  ifFull?: PluginCollectionIfFull;
   nowIso: string;
 };
 
@@ -115,9 +124,21 @@ export type PutPluginCollectionValueArgs = {
  * existing 60 KiB value with a 1 KiB one must always be allowed even when the
  * plugin is at its byte ceiling, or a plugin that fills its budget can never
  * shrink itself again and is permanently stuck.
+ *
+ * With `ifFull: "evictOldest"` a write that does not fit frees room first, by
+ * deleting the oldest rows of the SAME collection until it does. Same
+ * collection and same plugin, always: a collection is the unit the plugin
+ * declared and reasons about, so a cache growing without bound must never be
+ * able to consume the plugin's own saved-items collection to keep itself
+ * writable, and nothing here ever touches another plugin's rows. The eviction
+ * and the insert share this function's transaction, so a crash between them
+ * cannot leave a plugin having paid the deletes without gaining the write.
  */
 export function putPluginCollectionValue(db: PluginWriterDb, args: PutPluginCollectionValueArgs): void {
   const valueBytes = byteLength(args.valueJson);
+  // Checked before the transaction and before any eviction: no number of
+  // deletions makes an oversized single value fit, so evicting rows here would
+  // be pure loss on the way to the same refusal.
   if (valueBytes > PLUGIN_COLLECTION_VALUE_MAX_BYTES) {
     throw budgetExceeded(
       `A single plugin value may be at most ${PLUGIN_COLLECTION_VALUE_MAX_BYTES} bytes (this one is ${valueBytes}).`,
@@ -132,17 +153,55 @@ export function putPluginCollectionValue(db: PluginWriterDb, args: PutPluginColl
     );
     const usage = readPluginCollectionUsage(db, args.pluginId);
     const existingBytes = existing ? Number(existing.bytes ?? 0) : 0;
-    const nextRows = existing ? usage.rows : usage.rows + 1;
-    const nextBytes = usage.bytes - existingBytes + valueBytes;
-    if (nextRows > PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN) {
-      throw budgetExceeded(
-        `This plugin already holds ${usage.rows} stored values, the maximum is ${PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN}.`,
+    let nextRows = existing ? usage.rows : usage.rows + 1;
+    let nextBytes = usage.bytes - existingBytes + valueBytes;
+
+    const overBudget = (rows: number, bytes: number): Error | null => {
+      if (rows > PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN) {
+        return budgetExceeded(
+          `This plugin already holds ${usage.rows} stored values, the maximum is ${PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN}.`,
+        );
+      }
+      if (bytes > PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN) {
+        return budgetExceeded(
+          `This plugin's stored data would reach ${bytes} bytes, the maximum is ${PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN}.`,
+        );
+      }
+      return null;
+    };
+
+    // Captured once, before anything is deleted, and re-thrown unchanged if
+    // eviction fails to make room: the plugin should read the same refusal
+    // whether or not the host tried to heal it, rather than a message describing
+    // a post-eviction state it never asked about.
+    const refusal = overBudget(nextRows, nextBytes);
+    if (refusal) {
+      if (args.ifFull !== "evictOldest") throw refusal;
+      // `key <> ?` is what keeps a put from evicting the very row it is about to
+      // write — deleting it would free its bytes and then immediately re-spend
+      // them, and on a replacement it would turn an update into a delete+insert
+      // for no gain.
+      const candidates = db.all<{ key: string; bytes: number }>(
+        `select key, length(cast(value_json as blob)) as bytes
+           from plugin_collections
+          where plugin_id = ? and collection = ? and key <> ?
+          order by updated_at asc, key asc
+          limit ?`,
+        [args.pluginId, args.collection, args.key, PLUGIN_COLLECTION_MAX_EVICTIONS_PER_PUT],
       );
-    }
-    if (nextBytes > PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN) {
-      throw budgetExceeded(
-        `This plugin's stored data would reach ${nextBytes} bytes, the maximum is ${PLUGIN_COLLECTIONS_MAX_BYTES_PER_PLUGIN}.`,
-      );
+      for (const candidate of candidates) {
+        if (!overBudget(nextRows, nextBytes)) break;
+        db.run(
+          "delete from plugin_collections where plugin_id = ? and collection = ? and key = ?",
+          [args.pluginId, args.collection, candidate.key],
+        );
+        nextRows -= 1;
+        nextBytes -= Number(candidate.bytes ?? 0);
+      }
+      // Still over after emptying what it was allowed to: the value is bigger
+      // than the whole budget, or the rows in the way live in other collections.
+      // Throwing rolls the evictions back with it.
+      if (overBudget(nextRows, nextBytes)) throw refusal;
     }
     db.run(
       `insert into plugin_collections (plugin_id, collection, key, value_json, updated_at)

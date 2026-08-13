@@ -330,66 +330,6 @@ export function CoverageGlyph({ state }: { state: CoverageState }) {
   return <Glyph size={13} weight={state === "installed" ? "fill" : "regular"} color={color} aria-hidden />;
 }
 
-/* ── Meter ──────────────────────────────────────────────────────────────── */
-
-/**
- * A used-against-budget bar.
- *
- * Not `ChatCardMeter`: that one divides a fixed total into pass/fail/run/queue
- * buckets and is sized in `--chat-*` tokens, so it neither means nor measures
- * the right thing outside a transcript. This is the two-value form — used, and
- * what is left — and it turns amber near the ceiling because the writer starts
- * rejecting rows there rather than growing.
- */
-export function BudgetMeter({
-  used,
-  budget,
-  label,
-  valueText,
-}: {
-  used: number;
-  budget: number;
-  label: string;
-  valueText: string;
-}) {
-  const ratio = budget > 0 ? Math.min(1, Math.max(0, used / budget)) : 0;
-  const near = ratio >= 0.85;
-  return (
-    <div style={{ display: "grid", gap: 5 }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{label}</span>
-        <span
-          style={{
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            color: near ? COLORS.warning : COLORS.textDim,
-          }}
-        >
-          {valueText}
-        </span>
-      </div>
-      <div
-        role="presentation"
-        style={{
-          height: 4,
-          borderRadius: 999,
-          background: "color-mix(in srgb, var(--color-fg) 8%, transparent)",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            width: `${Math.round(ratio * 100)}%`,
-            height: "100%",
-            background: near ? COLORS.warning : COLORS.accent,
-            borderRadius: 999,
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
 /* ── States ─────────────────────────────────────────────────────────────── */
 
 export function MarketplaceEmpty({

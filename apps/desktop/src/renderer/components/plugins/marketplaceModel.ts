@@ -39,7 +39,7 @@ import {
 } from "../../../shared/plugins/registryIndex";
 import { PLUGIN_SURFACE_IDS, type PluginSurfaceId } from "../../../shared/plugins/sockets";
 import type { PluginThemeTokens } from "../../lib/pluginTheme";
-import type { InstalledPlugin, PluginPresenceRow } from "../../lib/pluginRuntimeBridge";
+import type { InstalledPlugin, PluginPresenceRow, PluginUsageRow } from "../../lib/pluginRuntimeBridge";
 
 /* ── Listing ────────────────────────────────────────────────────────────── */
 
@@ -770,6 +770,115 @@ export function describePluginResources(listing: MarketplaceListing): PluginReso
   add("Licence", links?.license);
   add("Install source", describePluginSource(listing.source)?.url ?? null);
   return rail;
+}
+
+/* ── Storage ────────────────────────────────────────────────────────────── */
+
+/**
+ * Whether a plugin has anywhere to put data — the gate on the storage section.
+ *
+ * Most plugins store nothing: a theme, a static panel, a manifest-only package
+ * declares no collections and never will. A section reporting zeroes for those
+ * is page furniture, and the reader has to work out that the zeroes are
+ * structural rather than a plugin that has simply not written anything yet.
+ *
+ * The declaration is the real answer: `collections`, or a panel bound to a
+ * vocabulary schema, which is how a panel-only plugin gets rows. Nonzero usage
+ * is the belt — a plugin already holding data is described whatever its
+ * manifest says, because the bytes exist and hiding them would be worse.
+ */
+export function pluginStoresData(
+  manifest: PluginManifest | null,
+  usage: PluginUsageRow | null,
+): boolean {
+  if (usage && (usage.collectionBytes > 0 || usage.rows > 0 || (usage.syncBytesTotal ?? 0) > 0)) {
+    return true;
+  }
+  if (!manifest) return false;
+  if (Object.keys(manifest.collections).length > 0) return true;
+  return manifest.panels.some((panel) => Boolean(panel.schemaFile));
+}
+
+export type PluginStorageLevel = "healthy" | "nearly-full" | "full";
+
+export type PluginStorageDetail = { label: string; value: string };
+
+export type PluginStorageReport = {
+  level: PluginStorageLevel;
+  /** The one line shown before anything is expanded. */
+  summary: string;
+  /** The numbers, for the reader who went looking for them. */
+  details: PluginStorageDetail[];
+};
+
+/** The share of a budget at which the section stops being quiet. */
+const NEARLY_FULL_AT = 0.7;
+
+/**
+ * What the reader is told when the plugin is nowhere near its ceiling — which
+ * is nearly always, so this is the line that has to earn its place. It says
+ * what the plugin does with the space rather than how much is left, because a
+ * number nobody needs to act on is a number that trains people to ignore the
+ * section entirely.
+ */
+export const PLUGIN_STORAGE_REASSURANCE =
+  "If it fills up, the plugin keeps working — it just can't save new synced data until it tidies up.";
+
+function fillRatio(used: number, budget: number): number {
+  // An unknown ceiling is not a full one: a host that reports no budget must
+  // not paint every plugin red.
+  return budget > 0 ? used / budget : 0;
+}
+
+/** `4,000` — grouped, because these are counts a person reads, not ids. */
+function formatItems(value: number): string {
+  return Math.max(0, Math.round(value)).toLocaleString("en-US");
+}
+
+/**
+ * Storage, described rather than metered.
+ *
+ * Two budgets can each fill independently, so the level is the worse of them —
+ * and, crucially, so is the number quoted when it starts to matter. Quoting
+ * bytes while the item count is the thing running out would be a comfortable
+ * number in place of the true one, which is the specific way a status line
+ * loses the reader's trust. The healthy state names no number at all.
+ */
+export function describePluginStorage(usage: PluginUsageRow): PluginStorageReport {
+  const bytes = fillRatio(usage.collectionBytes, usage.collectionBudgetBytes);
+  const items = fillRatio(usage.rows, usage.rowBudget);
+  const worst = Math.max(bytes, items);
+
+  const pressure = bytes >= items
+    ? `${formatBytes(usage.collectionBytes)} of ${formatBytes(usage.collectionBudgetBytes)}`
+    : `${formatItems(usage.rows)} of ${formatItems(usage.rowBudget)} saved items`;
+
+  const level: PluginStorageLevel = worst >= 1
+    ? "full"
+    : worst >= NEARLY_FULL_AT ? "nearly-full" : "healthy";
+
+  const summary = level === "full"
+    // Never "broken": a plugin at its ceiling still runs, still reads what it
+    // already has, and still does everything that is not writing new rows.
+    ? "Its synced space is full. It can't save new synced data until it frees some."
+    : level === "nearly-full"
+      ? `Its synced space is getting full (${pressure}).`
+      : "Keeps a small amount of data in sync across your devices.";
+
+  const details: PluginStorageDetail[] = [
+    {
+      label: "Space used",
+      value: `${formatBytes(usage.collectionBytes)} of ${formatBytes(usage.collectionBudgetBytes)}`,
+    },
+    { label: "Saved items", value: `${formatItems(usage.rows)} of ${formatItems(usage.rowBudget)}` },
+  ];
+  // Null is unmetered, not zero. A host that cannot attribute sync bytes says
+  // nothing rather than reporting a confident 0 B.
+  if (usage.syncBytesTotal !== null) {
+    details.push({ label: "Sent to your devices", value: formatBytes(usage.syncBytesTotal) });
+  }
+
+  return { level, summary, details };
 }
 
 /* ── Formatting ─────────────────────────────────────────────────────────── */

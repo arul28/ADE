@@ -128,6 +128,29 @@ describe("pluginDataStore", () => {
     expect(store.getCollection("graph", "issues", "k1")).toBe(2);
   });
 
+  it("makes room for the write when the plugin opts into evicting its oldest rows", async () => {
+    const { db, store } = await openStore();
+
+    db.run(
+      `with recursive seq(n) as (select 1 union all select n + 1 from seq where n < ?)
+         insert into plugin_collections (plugin_id, collection, key, value_json, updated_at)
+         select 'graph', 'cache', 'k' || substr('0000' || n, -4), '1',
+                '2026-08-11T00:00:0' || (n % 2) || '.000Z' from seq`,
+      [PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN],
+    );
+
+    // Same full collection, two different answers — the option is the plugin's
+    // to make, and the store carries it through rather than deciding for it.
+    expect(codeOf(() => store.putCollection("graph", "cache", "fresh", 1))).toBe("plugin_budget_exceeded");
+    expect(() => store.putCollection("graph", "cache", "fresh", 1, { ifFull: "evictOldest" })).not.toThrow();
+
+    expect(store.getCollection("graph", "cache", "fresh")).toBe(1);
+    expect(store.usage("graph").entries[0]?.collectionRows).toBe(PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN);
+    // The oldest row (even n, stamped a second earlier) is the one that paid for it.
+    expect(store.getCollection("graph", "cache", "k0002")).toBeNull();
+    expect(store.getCollection("graph", "cache", "k0001")).toBe(1);
+  });
+
   it("publishes a contribution and deletes it on a null payload", async () => {
     const { store } = await openStore();
 

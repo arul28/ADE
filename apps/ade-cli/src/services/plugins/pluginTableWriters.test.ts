@@ -22,6 +22,7 @@ import {
 } from "./pluginTableWriters";
 
 const NOW = "2026-08-11T00:00:00.000Z";
+const LATER = "2026-08-11T01:00:00.000Z";
 
 function createLogger() {
   return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never;
@@ -106,6 +107,233 @@ describe("plugin table writers", () => {
       nowIso: NOW,
     })).not.toThrow();
     expect(readPluginCollectionUsage(db, "graph").rows).toBe(PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN);
+  });
+
+  describe("ifFull: evictOldest", () => {
+    /** A JSON string value of exactly `bytes` bytes, quotes included. */
+    const valueOf = (bytes: number): string => JSON.stringify("x".repeat(bytes - 2));
+
+    const seed = (collection: string, key: string, bytes: number, updatedAt: string): void => {
+      db.run(
+        `insert into plugin_collections (plugin_id, collection, key, value_json, updated_at)
+         values (?, ?, ?, ?, ?)`,
+        ["graph", collection, key, valueOf(bytes), updatedAt],
+      );
+    };
+
+    const keysIn = (collection: string): string[] => db.all<{ key: string }>(
+      "select key from plugin_collections where plugin_id = ? and collection = ? order by key",
+      ["graph", collection],
+    ).map((row) => row.key);
+
+    it("frees exactly enough bytes, in updated_at then key order, and lands the write", () => {
+      // 31 × 64 KiB leaves room for one more 64 KiB value minus the three bytes
+      // the other collection holds, so the write needs exactly one eviction.
+      for (let index = 0; index < 31; index += 1) {
+        seed("cache", `k${String(index).padStart(4, "0")}`, 64 * 1024, NOW);
+      }
+      // Older than every cache row and in another collection: eviction must not
+      // reach it even though it is the oldest row the plugin owns.
+      seed("saved", "pinned", 3, "2019-01-01T00:00:00.000Z");
+      // Oldest cache row, and deliberately the LAST key alphabetically, so the
+      // order clause is proven to lead on updated_at rather than on key.
+      seed("cache", "zzz-oldest", 64 * 1024, "2020-01-01T00:00:00.000Z");
+
+      putPluginCollectionValue(db, {
+        pluginId: "graph",
+        collection: "cache",
+        key: "fresh",
+        valueJson: valueOf(64 * 1024),
+        ifFull: "evictOldest",
+        nowIso: LATER,
+      });
+
+      expect(keysIn("cache")).toContain("fresh");
+      expect(keysIn("cache")).not.toContain("zzz-oldest");
+      // Exactly one row freed, not "everything until comfortable".
+      expect(keysIn("cache")).toHaveLength(31);
+      expect(keysIn("saved")).toEqual(["pinned"]);
+
+      // Same collection again: every remaining row shares NOW, so the tie breaks
+      // on key — and `fresh` (written at LATER, and alphabetically before k0000)
+      // is protected by its recency, not by luck.
+      putPluginCollectionValue(db, {
+        pluginId: "graph",
+        collection: "cache",
+        key: "fresher",
+        valueJson: valueOf(64 * 1024),
+        ifFull: "evictOldest",
+        nowIso: LATER,
+      });
+      expect(keysIn("cache")).not.toContain("k0000");
+      expect(keysIn("cache")).toContain("fresh");
+      expect(keysIn("cache")).toContain("fresher");
+    });
+
+    it("evicts to make room under the row cap without touching another collection", () => {
+      for (let index = 0; index < PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN - 2; index += 1) {
+        seed("cache", `k${String(index).padStart(4, "0")}`, 3, NOW);
+      }
+      seed("cache", "zzz-oldest", 3, "2020-01-01T00:00:00.000Z");
+      seed("saved", "pinned", 3, "2019-01-01T00:00:00.000Z");
+      expect(readPluginCollectionUsage(db, "graph").rows).toBe(PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN);
+
+      putPluginCollectionValue(db, {
+        pluginId: "graph",
+        collection: "cache",
+        key: "fresh",
+        valueJson: '"v"',
+        ifFull: "evictOldest",
+        nowIso: LATER,
+      });
+
+      expect(readPluginCollectionUsage(db, "graph").rows).toBe(PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN);
+      expect(keysIn("saved")).toEqual(["pinned"]);
+      expect(keysIn("cache")).toContain("fresh");
+      expect(keysIn("cache")).not.toContain("zzz-oldest");
+    });
+
+    it("evicts nothing when replacing a key with a smaller value", () => {
+      for (let index = 0; index < 32; index += 1) {
+        seed("cache", `k${String(index).padStart(4, "0")}`, 64 * 1024, NOW);
+      }
+      // At the byte ceiling exactly, so any real growth would refuse — but a
+      // replacement shrinks, and the delta accounting has to see that before it
+      // reaches for anyone else's row.
+      putPluginCollectionValue(db, {
+        pluginId: "graph",
+        collection: "cache",
+        key: "k0000",
+        valueJson: '"small"',
+        ifFull: "evictOldest",
+        nowIso: LATER,
+      });
+
+      expect(keysIn("cache")).toHaveLength(32);
+      expect(db.get<{ value_json: string }>(
+        "select value_json from plugin_collections where plugin_id = ? and collection = ? and key = ?",
+        ["graph", "cache", "k0000"],
+      )?.value_json).toBe('"small"');
+    });
+
+    it("never evicts the key it is writing, even when that key is the oldest row", () => {
+      seed("cache", "target", 3, "2019-01-01T00:00:00.000Z");
+      for (let index = 0; index < 32; index += 1) {
+        seed("cache", `k${String(index).padStart(4, "0")}`, 64 * 1024, NOW);
+      }
+
+      // Growing `target` from 3 bytes to 64 KiB does not fit, and `target` is the
+      // oldest row in the collection: freeing it would be self-defeating, so the
+      // eviction has to skip it and take the next oldest instead.
+      putPluginCollectionValue(db, {
+        pluginId: "graph",
+        collection: "cache",
+        key: "target",
+        valueJson: valueOf(64 * 1024),
+        ifFull: "evictOldest",
+        nowIso: LATER,
+      });
+
+      expect(keysIn("cache")).toContain("target");
+      expect(keysIn("cache")).not.toContain("k0000");
+      expect(db.get<{ bytes: number }>(
+        "select length(cast(value_json as blob)) as bytes from plugin_collections where key = ?",
+        ["target"],
+      )?.bytes).toBe(64 * 1024);
+    });
+
+    it("refuses, and rolls its evictions back, when the collection cannot free enough", () => {
+      // The bytes are held by another collection, which eviction may never
+      // touch, so emptying `cache` entirely still does not make room.
+      for (let index = 0; index < 32; index += 1) {
+        seed("other", `o${index}`, 64 * 1024, NOW);
+      }
+      seed("cache", "only", 64 * 1024, NOW);
+
+      let thrown: unknown;
+      try {
+        putPluginCollectionValue(db, {
+          pluginId: "graph",
+          collection: "cache",
+          key: "new",
+          valueJson: valueOf(64 * 1024),
+          ifFull: "evictOldest",
+          nowIso: LATER,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(isPluginBudgetExceeded(thrown)).toBe(true);
+      // The transaction is the whole point: a failed put must not leave the
+      // plugin poorer in rows than it started, having gained nothing.
+      expect(keysIn("cache")).toEqual(["only"]);
+      expect(keysIn("other")).toHaveLength(32);
+    });
+
+    it("stops at the eviction bound rather than emptying a collection row by row", () => {
+      for (let index = 0; index < 31; index += 1) {
+        seed("other", `o${index}`, 64 * 1024, NOW);
+      }
+      // 350 evictable rows worth 140,000 bytes — more than the 140,000-byte
+      // deficit the write creates, so an unbounded loop would succeed here. Only
+      // the first 200 are considered, which frees 80,000 and is not enough.
+      for (let index = 0; index < 350; index += 1) {
+        seed("cache", `k${String(index).padStart(4, "0")}`, 400, NOW);
+      }
+
+      expect(() => putPluginCollectionValue(db, {
+        pluginId: "graph",
+        collection: "cache",
+        key: "new",
+        valueJson: valueOf(64 * 1024),
+        ifFull: "evictOldest",
+        nowIso: LATER,
+      })).toThrowError(/maximum is/);
+      expect(keysIn("cache")).toHaveLength(350);
+    });
+
+    it("cannot rescue a value that is over the per-value ceiling", () => {
+      seed("cache", "k0", 3, NOW);
+
+      expect(() => putPluginCollectionValue(db, {
+        pluginId: "graph",
+        collection: "cache",
+        key: "huge",
+        valueJson: valueOf(PLUGIN_COLLECTION_VALUE_MAX_BYTES + 1),
+        ifFull: "evictOldest",
+        nowIso: LATER,
+      })).toThrowError(/at most/);
+      // No row was spent on a write that could never have fit.
+      expect(keysIn("cache")).toEqual(["k0"]);
+    });
+
+    it('refuses identically with ifFull absent and with ifFull "fail"', () => {
+      for (let index = 0; index < 32; index += 1) {
+        seed("cache", `k${String(index).padStart(4, "0")}`, 64 * 1024, NOW);
+      }
+      const put = (ifFull?: "fail" | "evictOldest"): unknown => {
+        try {
+          putPluginCollectionValue(db, {
+            pluginId: "graph",
+            collection: "cache",
+            key: "new",
+            valueJson: valueOf(64 * 1024),
+            ...(ifFull ? { ifFull } : {}),
+            nowIso: LATER,
+          });
+          return null;
+        } catch (error) {
+          return error;
+        }
+      };
+
+      const absent = put();
+      const explicit = put("fail");
+      expect(isPluginBudgetExceeded(absent)).toBe(true);
+      expect((absent as Error).message).toBe((explicit as Error).message);
+      expect(keysIn("cache")).toHaveLength(32);
+    });
   });
 
   it("caps contributions per plugin and treats a null payload as a retraction", () => {

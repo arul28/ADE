@@ -1,6 +1,6 @@
 ---
 name: ade-plugins
-description: Use this skill to build, extend, debug, or publish an ADE plugin — whenever the task is to add a tab, panel, row badge, toolbar action, row menu item, filter chip, empty state, file viewer, theme, or `ade` CLI command to ADE; to write or fix a `plugin.json` manifest; to author a panel schema in ADE's declarative UI vocabulary; to build a desktop-only custom UI page (a `webview` surface) against the `window.adePlugin` bridge; to link to a plugin panel or hand it a context; to call the plugin SDK (collections, secrets, contributions, config, actions, panels, events); to run `ade plugin create|install|dev|logs|list`; or to make something a plugin renders show up on desktop, web, iOS, and the `ade code` TUI at once.
+description: Use this skill to build, extend, debug, or publish an ADE plugin — whenever the task is to add a tab, panel, row badge, toolbar action, row menu item, filter chip, empty state, file viewer, theme, or `ade` CLI command to ADE; to write or fix a `plugin.json` manifest; to author a panel schema in ADE's declarative UI vocabulary; to build a desktop-only custom UI page (a `webview` surface) against the `window.adePlugin` bridge; to link to a plugin panel or hand it a context; to call the plugin SDK (collections, secrets, contributions, config, actions, panels, events); to run `ade plugin create|install|dev|logs|list`; or to make something a plugin renders show up on desktop, web, iOS, and the `ade code` TUI at once. Also use it to answer what a plugin can and cannot do — what its code is allowed to reach, which surfaces it may claim, and which budgets and reserved bindings will refuse it.
 ---
 
 # Authoring ADE plugins
@@ -16,6 +16,51 @@ description: Use this skill to build, extend, debug, or publish an ADE plugin �
 7. One exception to line 3: a `webview` surface draws the plugin's own HTML page, on the desktop and nowhere else. It still names a panel the other surfaces show in its place — see *Custom UI*.
 
 Corollary you will feel immediately: **anything you want computed, compute in your code and store as data.** The schema has no expressions, no conditionals, no formatting strings, and no callbacks.
+
+## What you can build — and what you can't
+
+### The engine has no fence around it
+
+Your `entry` module is a real Node process on the machine that owns the plugin. ADE spawns it from its own Node binary, with the plugin directory as the working directory, the user's environment minus a denylist of ADE's internal socket paths and credentials, and `require` anchored at the plugin root — so vendored `node_modules` and every Node builtin load normally. Read and write any file the user can, open any socket, shell out with `child_process`, run your own database, poll an API on a timer. There is no API allowlist, no declared-capability list, and nothing reviews a plugin before it installs.
+
+Say the consequence out loud when you ship one: **installing a plugin is trusting its author with the machine.** The SDK is a convenience layer over what that process could already do, not a boundary around it. Almost every limit below guards something *shared* — the sync layer, the relay, four clients that must render the same JSON. None of them guards the plugin's own machine, and there is nothing there to guard it with.
+
+### What you can put in front of the user
+
+- **Whole surfaces** — a `tab` or a `pane` rendering a panel schema, and on the desktop a `webview` drawing your own HTML page.
+- **Declarative panels**, which desktop, web, iOS and the `ade code` TUI each render with their own native widgets from one JSON document.
+- **Sockets on the six core surfaces** — `work`, `lanes`, `files`, `prs`, `automations`, `cto` — in seven shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
+- **Themes** (token sets, no code at all), **`ade` CLI subcommands**, **agent skills** that load only where the plugin is installed, **deeplinks** into your own panels, and **cross-surface navigation** — an action returns `{navigate: {…}}` and the client moves the user to another of your panels.
+
+Three shapes that fit the platform well:
+
+- **A Jira mirror.** The Mac engine polls Jira with the user's token and writes ~50 issues into a synced collection; the phone renders them in a panel, offline, holding no token.
+- **A CI dashboard.** One row per branch, green or amber (there is no red), recomputed by the machine that owns the repo and identical on every device.
+- **A live agent task tracker.** An agent updates rows through your CLI word or your action handler while every open client watches them move.
+
+### The lines you cannot cross
+
+**The rule that explains the rest of them: limits follow the data, not the UI target.** A plugin that draws a `webview` page, sets `mobile: false`, and keeps its state in its own files or its own SQLite meets effectively none of the ceilings below — no vocabulary ceiling, because the panel its webview surface must still name can be a single fallback card; no collection budget, because it stores nothing in the shared table; no relay concern, because it puts nothing on the wire. The caps engage the moment a plugin writes into synced collections, and from then on they apply wherever the UI happens to render: ADE is multi-machine, so those rows replicate to every machine and device on the account even when only the desktop ever draws them. "Desktop-only" is not a permission tier and there is no flag that opts a plugin out of the guardrails — keeping the data local is what opts it out.
+
+**Synced collections are small, and they are not your database.** 2 MiB per plugin per machine, 4,000 rows, 64 KiB per value — the full table is in *Budgets*. Every byte replicates to every device the user owns, and a phone has to hold all of it. Full is not broken: a `put` past a ceiling throws `plugin_budget_exceeded` and changes nothing else, reads and deletes keep working, and the accounting is delta-based — replacing a 60 KiB value with a 1 KiB one is allowed *at* the ceiling, so a plugin can always shrink itself. Treat collections as synced state; bulk data belongs in your own storage on disk, where nothing is counting. Writing a plugin that survives its own store filling up is a requirement, not a nicety — the rules are in *Never stall*.
+
+**Churning synced values spends the user's relay allowance.** Per-machine daily relay ceilings exist and a machine past one loses relay transport until midnight UTC — numbers and the rule in *Budgets*. Direct and LAN sync are never counted. Read it as etiquette rather than a limit you will hit: publish when something changed, not on a loop.
+
+**The vocabulary is thirteen components with hard ceilings** — 200 nodes, depth 8, 64 KiB per schema, plus the per-component caps in *Vocabulary limits*. No expressions, conditionals, formatting strings or callbacks. A component this build has never heard of renders a marker naming it, and a panel over any ceiling renders its required `fallback` instead — which is why `fallback` is mandatory rather than nice to have. What draws where differs per surface: *Per-surface support* is the authority, and worth reading before you design a panel around a `chart`.
+
+**A `webview` page is desktop-only and sandboxed.** Its own origin, `script-src 'self'`, no Node, no `require`, no raw IPC, and no `window.ade` — the `window.adePlugin` bridge is the entire capability, and even `collections.put` through it is refused on the desktop app (write through `invoke` instead). iOS, the web client and the TUI render the surface's `panelId` panel in its place. **There is no custom native UI on iOS or the TUI at all**; declarative panels are the only cross-device UI that exists.
+
+**Nothing you write executes anywhere but the owning machine.** The other clients render data — they never run a plugin's code, which is why a value has to be materialized in render shape before anyone can see it. The `mobile` flag only ever takes a surface away from the phone (see *Mobile*); it cannot put code there.
+
+**The six built-in surface bindings belong to ADE's own plugins.** `graph`, `review`, `history`, `linear`, `ios` and `app-control` are gated by `ade-graph`, `ade-review`, `ade-history`, `ade-linear`, `ade-ios-sim` and `ade-app-control`. A manifest that does not set `official: true` has its `builtin` dropped with a warning; a manifest that does set it still only gates the surface whose registered owner is its own plugin id, because the owner table is compiled into every client. Naming someone else's surface parses clean and changes nothing.
+
+**You cannot declare yourself Official.** The directory decides: an entry is official only when ADE's curated `official.json` lists it *and* both its repo and its install source sit in ADE's own GitHub organizations — otherwise it lists as community with a warning. Official entries carry a per-version sha256 the installer checks against the fetched tree; community plugins are not checksummed by the directory and install as unverified. Being listed in the Marketplace is not an endorsement.
+
+**Sockets and action domains are closed sets.** You fill the seven slots above on those six surfaces; there is no way to inject UI anywhere else, and placement is host-controlled and always after core content, so a contribution never reorders or interleaves with the product's own rows. `ade.actions.invoke` reaches ADE's existing action domains at **agent** role — CTO-only actions are refused — and a plugin cannot define a domain of its own.
+
+**Plugins cannot see each other.** The SDK server is constructed per plugin and answers every call against that plugin's id; the child never puts an id on the wire. Collections must be declared in your own manifest (an undeclared name is refused, not created), secrets are namespaced `plugin:<id>:<NAME>`, and `config.get()` returns your own settings. There is no cross-plugin read of any kind.
+
+One limit that is not about sharing, because it will bite you anyway: the *process* may work for as long as it likes, but the *host round-trip* is supervised. The child has 20s to send `ready` after it is spawned, one `invoke` is capped at 60s and then fails with `plugin_timeout`, and after 5 crashes in a row inside the first minute of life the host stops reviving it until someone reloads. Long work belongs in `activate` or an event handler, with the result stored — never inside the action the user is waiting on.
 
 ## Scaffold and run one
 
@@ -90,7 +135,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `minAdeVersion` | no | Floor. An ADE below it will not load the plugin; an unknown host version never locks the user out |
 | `vocabVersion` | no | Panel-schema vocabulary version. Positive integer, defaults to `1` |
 | `entry` | no | Relative path to the entry module. **Omit for UI-only plugins** (themes, static panels) — they run no code at all |
-| `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?, mobile?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI*. `mobile` — see *Mobile* |
+| `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?, mobile?, builtin?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI*. `mobile` — see *Mobile*. `builtin` names a compiled-in ADE tab this plugin gates instead of rendering, and is reserved — see *What you can build* |
 | `panels[]` | no | `{id, schemaFile?, title?, icon?}`. `schemaFile` is the default schema; `sdk.panels.update()` replaces it at runtime |
 | `sockets[]` | no | See *Sockets* below |
 | `collections` | no | `{"<name>": {"sync": true\|false}}`. `sync: true` rides the sync layer to your other devices |
@@ -98,7 +143,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `cli[]` | no | Subcommand words, `^[a-z][a-z0-9-]{0,31}$`, reachable as `ade <id> <word>` |
 | `skills[]` | no | Relative paths to agent-skill directories this plugin contributes; they join `ADE_AGENT_SKILLS_DIRS` |
 | `theme` | no | Token sets — see *Themes* |
-| `official` | no | **Ignored for trust.** Official status comes from the registry's curated file, never from the manifest |
+| `official` | no | **Not a trust claim.** The Official badge and the checksum rule come from the registry's curated file, never from the manifest. Locally the field does exactly one thing: a surface may carry `builtin` only on a manifest that sets it — see *What you can build* |
 
 Every path in a manifest (`entry`, `schemaFile`, `skills[]`) must be relative, inside the plugin directory, and free of `..` — absolute paths and traversal are refused at parse time.
 
@@ -327,7 +372,7 @@ ade plugin dev board                 # watch + reload on every save
 
 ## Sockets — appearing on core surfaces
 
-Six core surfaces: `work`, `lanes`, `files`, `prs`, `automations`, `cto`. Seven socket kinds. Placement is **host-controlled and always after core content** — a contribution never reorders, replaces, or interleaves with the product's own rows. `order` sorts plugins against each other and nothing more.
+Six core surfaces: `work`, `lanes`, `files`, `prs`, `automations`, `cto`. Seven socket kinds. Both sets are closed — a plugin fills a slot, it never invents one. Placement is **host-controlled and always after core content** — a contribution never reorders, replaces, or interleaves with the product's own rows. `order` sorts plugins against each other and nothing more.
 
 | Socket kind | Payload | What it draws |
 |---|---|---|
@@ -387,7 +432,7 @@ exports.actions = {
 |---|---|
 | `ade.actions.invoke(domain, action, args?)` | Invoke an ADE action at **agent** role. CTO-only actions are refused; project-scoped domains need `projectId` in `args` |
 | `ade.collections.get(collection, key)` | Read one value |
-| `ade.collections.put(collection, key, value)` | Write one value. Budget-checked inside the writer transaction |
+| `ade.collections.put(collection, key, value, options?)` | Write one value. Budget-checked inside the writer transaction. `{ifFull: "evictOldest"}` drops the oldest entries in that same collection to make room instead of refusing — see *Never stall* |
 | `ade.collections.delete(collection, key)` | Delete one value |
 | `ade.collections.list(collection, {keyPrefix?, limit?})` | Rows as `{collection, key, value, updatedAt}` |
 | `ade.secrets.get/set/delete(name)` | Machine credential store, namespaced `plugin:<id>:<NAME>`. Never readable by another plugin |
@@ -421,6 +466,32 @@ Writer-enforced, inside the transaction. These are not advice — a write past a
 
 Contributions are glances, not pages: 4 KiB is room for a badge and a tooltip, and that is the intent.
 
+### Relay fairness
+
+Those budgets bound what a plugin *stores*. A separate ceiling bounds what a machine *relays*: sync frames that travel through ADE's relay are counted per machine per UTC day — **500,000 frames** and **250 MiB** — and a machine past either has its tunnels closed and new ones refused until midnight UTC. Direct and LAN sync are never counted; only the relay hop is.
+
+Both ceilings sit roughly 100× above honest use, so nothing written normally approaches them. They are worth knowing anyway, because a plugin is the one thing on the machine that can write to the sync layer in a loop. Publish a value when it changed rather than on a timer, and clear a contribution with `null` rather than rewriting the same badge every tick.
+
+### Never stall
+
+A full store is a normal state, not an incident. A plugin **must** be written so that reaching a ceiling costs it one skipped item and nothing else — not a dead child, not a blank panel, not a plugin the user has to reinstall. These are requirements, not tuning advice.
+
+1. **Catch every `put`.** `ade.collections.put` can refuse, and an uncaught refusal inside `activate` is fatal to the child, while one inside an action handler fails that action. The rejection carries `code: "plugin_budget_exceeded"` and `detail: {budget, limit, actual}` — branch on `error.code` directly. ADE's own `isPluginBudgetExceeded` helper is not reachable from a plugin: the child has no ADE package to import and the `ade` global does not carry it. Treat a refusal as **prune, retry once, then skip the item and carry on.** Never treat it as fatal, and never retry in a loop — the ceiling will not move because you asked twice. This holds even with the self-healing write below: it makes room, it does not make the impossible fit.
+2. **Design the store as a bounded cache from day one, and let the platform hold the bound.** When a collection is a cache — newest N wins, nothing in it is precious — say so on the write and stop hand-rolling retention:
+
+   ```js
+   await ade.collections.put("issues", `open:${row.id}`, value, { ifFull: "evictOldest" });
+   ```
+
+   A write that would cross the byte or row budget then deletes the oldest entries **in that collection** until the value fits, atomically, and writes. It never reaches into another collection, so a cache cannot evict something precious you happened to store beside it — which is the argument for giving anything you cannot afford to lose a collection of its own. This is the recommended default for cache-shaped data. It does not rescue a value that can never fit — larger than the whole budget, or over the 64 KiB per-value cap — and that still throws, per rule 1. Omit the option and the behaviour is exactly as before: the write throws and you handle it.
+
+   **Custom retention stays manual.** `evictOldest` keeps the newest; a plugin that has to keep the most *relevant*, or age rows out on its own clock, prunes for itself. Then the old discipline applies: delete before you insert once you are at your own soft ceiling — around 80% of the platform cap, which leaves room for a value that grew — and prefer overwriting one key to accumulating keys, since a fixed `summary` key you rewrite can never grow the row count at all.
+3. **History-shaped data must be windowed or aggregated.** Logs, time series, message archives and event streams append forever by nature, and forever does not fit in 4,000 rows. Keep the latest snapshot or the last N entries and roll the rest off — when the window is simply "newest wins", rule 2's `ifFull` does the rolling for you. Bulk and media data do not belong in synced storage at any size — the 64 KiB per-value cap is the platform saying so, and your own files on disk are the answer.
+4. **Recovery is always available, so a stuck plugin is a written bug.** Deletes are never budget-checked and the byte accounting is delta-based, so shrinking a value succeeds at the ceiling exactly as it does on an empty store. A plugin that fills its budget can always dig itself out, unattended, with no user action and no reinstall.
+5. **Never block rendering on a write.** Panels render from what is already stored, so a refused `put` should cost the user the newest row and nothing more. Update the panel when a write lands; when it does not, leave the last good data on screen rather than replacing it with an error.
+
+The same discipline is what keeps you clear of the relay ceilings above: rewriting the same value in a tight loop spends the user's daily allowance on data nobody read. Write when the state actually changed, not on every tick of your own timer.
+
 ## Recipes
 
 ### A dashboard tab backed by an API
@@ -429,14 +500,26 @@ Manifest: one `tab` surface, one panel, one collection, one `secret` setting for
 
 ```js
 exports.activate = async (ade) => {
+  const KEEP = 50;                                     // bounded cache, decided up front
   const refresh = async () => {
     const token = await ade.secrets.get("API_TOKEN");
-    const rows = await fetchIssues(token);              // your own code
+    const rows = (await fetchIssues(token)).slice(0, KEEP);   // your own code
+    // Correctness, not budget: drop issues that have left the window entirely.
+    const keep = new Set(rows.map((row) => `open:${row.id}`));
+    for (const stored of await ade.collections.list("issues", { keyPrefix: "open:" })) {
+      if (!keep.has(stored.key)) await ade.collections.delete("issues", stored.key);
+    }
     for (const row of rows) {
-      // Materialize in RENDER shape — a `list` binding reads exactly these keys.
-      await ade.collections.put("issues", `open:${row.id}`, {
-        title: row.title, subtitle: row.repo, meta: row.age, tone: row.stale ? "warning" : "neutral",
-      });
+      try {
+        // Materialize in RENDER shape — a `list` binding reads exactly these keys.
+        // `ifFull` handles budget pressure; the catch handles a value that can never fit.
+        await ade.collections.put("issues", `open:${row.id}`, {
+          title: row.title, subtitle: row.repo, meta: row.age, tone: row.stale ? "warning" : "neutral",
+        }, { ifFull: "evictOldest" });
+      } catch (error) {
+        if (error?.code !== "plugin_budget_exceeded") throw error;
+        ade.log("warn", `Skipped ${row.id}: store full.`);    // skip the item, keep the plugin
+      }
     }
   };
   await refresh();
@@ -444,6 +527,8 @@ exports.activate = async (ade) => {
 };
 exports.actions = { refresh: async () => ({ ok: true }) };
 ```
+
+The window, the delete-before-insert pass and the `catch` are not decoration — see *Never stall*.
 
 Panel: a `list` with `{"bind": {"collection": "issues", "keyPrefix": "open:"}}` and a `button` whose `onPress.action` is `refresh`.
 
@@ -510,8 +595,8 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 3. **Secrets go through `ade.secrets`, never through the environment.** The child's env is denylisted, and a secret in a collection value is a secret in the sync layer.
 4. **Never assume a socket renders.** iOS draws two of the seven kinds today, and the TUI draws none. A contribution is an enhancement; the panel and the fallback are the floor.
 5. **The `plugin_*` SQL shapes are frozen.** A plugin never gets its own table or its own column on an ADE entity — collections and contributions are the two storage shapes there are.
-6. **Budgets are refusals, not warnings.** Handle `plugin_budget_exceeded` and prune your own data.
-7. **`"official": true` in your manifest means nothing.** Official is a statement the registry makes about a plugin, never one the plugin makes about itself.
+6. **Budgets are refusals, not warnings.** Catch `plugin_budget_exceeded` on every `put`, prune, and carry on — a full store must never stall a plugin (*Never stall*). Budgets bound what leaves the machine, never what the plugin's own process may do (*What you can build*).
+7. **`"official": true` in your manifest buys no trust.** Official is a statement the registry makes about a plugin, never one the plugin makes about itself. The one thing the field does locally is unlock the reserved `builtin` binding, which still gates nothing unless the compiled owner table already names your plugin id.
 8. **Bump `version` on every published change.** The install registry, the checksum table, and the update path all key off it.
 
 ## Troubleshooting
@@ -521,7 +606,7 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 | Plugin shows as `crashed` | The child exited. `ade plugin logs <id> --text` — the crash line carries the exit status and the tail of stderr. It restarts automatically with backoff `min(30s, 1s × 2ⁿ)`; a child that stays up 60s resets the counter. After 5 fast failures in a row the host stops reviving it and the status stays `crashed` — `ade plugin reload <id>` (or the Restart button) clears the counter and tries again |
 | Status stuck at `starting` | The child never sent `ready` within 20s. Usually a top-level throw in the entry module or a `require` of something not installed — check the logs |
 | An action hangs then fails | `plugin_timeout`: one `invoke` round-trip is capped at 60s. Do slow work in `activate` or an event handler and store the result |
-| A write fails with `plugin_budget_exceeded` | Read `detail.budget`, `detail.limit`, `detail.actual`. Prune with `ade.collections.delete`, or store less per row |
+| A write fails with `plugin_budget_exceeded` | Working as designed. Read `detail.budget`, `detail.limit`, `detail.actual`, prune with `ade.collections.delete`, retry once, then skip the item. Deletes always succeed, so recovery never needs the user — if the plugin stalled here, fix it against *Never stall* |
 | Panel renders as a fallback card | Panel-fatal: bad JSON, `v` mismatch, missing `fallback`, or over 200 nodes / depth 8 / 64 KiB. Compare against the limits above |
 | One component shows a marker, rest renders fine | Node-local. Either the component is malformed, or that surface does not draw it (see the support matrix) |
 | Panel renders on desktop, marker on iOS or the TUI | Expected for `chart`, and for `video`/`image` in the TUI. Not a bug — give the panel something else to say |
@@ -542,6 +627,6 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 1. Push a public repository with a valid `plugin.json` at its root.
 2. Add the `ade-plugin` GitHub topic.
 
-That is the whole process — no submission, no review queue, no account. A crawler picks up the topic and the plugin appears in the Marketplace. Being listed is not an endorsement; community entries show their author and carry no Official mark.
+That is the whole process — no submission, no review queue, no account. A crawler picks up the topic and the plugin appears in the Marketplace. Being listed is not an endorsement: community entries show their author, carry no Official mark, and are not checksummed by the directory, so they install as unverified. Official is not something publishing can earn — see *What you can build*.
 
 Users can also install straight from a git URL or a local path, from the Marketplace's install dialog or with `ade plugin install`.

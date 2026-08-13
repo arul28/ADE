@@ -17,6 +17,7 @@ import {
   PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN,
   PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN,
   PLUGIN_PANELS_MAX_PER_PLUGIN,
+  type PluginCollectionPutOptions,
   type PluginCollectionRow,
   type PluginPanelRecord,
   type PluginUsageSummary,
@@ -38,7 +39,18 @@ export { PLUGIN_TABLE_DDL };
 
 export type PluginDataStore = {
   getCollection(pluginId: string, collection: string, key: string): unknown;
-  putCollection(pluginId: string, collection: string, key: string, value: unknown): void;
+  /**
+   * Store a value. `options.ifFull` is the plugin's own choice about what a full
+   * budget means for THIS collection; omitting it refuses the write, which is
+   * what every caller written before the option existed gets.
+   */
+  putCollection(
+    pluginId: string,
+    collection: string,
+    key: string,
+    value: unknown,
+    options?: PluginCollectionPutOptions,
+  ): void;
   deleteCollection(pluginId: string, collection: string, key: string): void;
   listCollection(
     pluginId: string,
@@ -164,7 +176,7 @@ export function createPluginDataStore(deps: {
       }
     },
 
-    putCollection(pluginId, collection, key, value) {
+    putCollection(pluginId, collection, key, value, options) {
       const name = assertPluginCollectionName(collection);
       const rowKey = assertPluginCollectionKey(key);
       withBudgetErrors("collections", () => {
@@ -173,6 +185,9 @@ export function createPluginDataStore(deps: {
           collection: name,
           key: rowKey,
           valueJson: encodePluginJson(value),
+          // Spread rather than passed as `undefined` so the writer's args are
+          // shaped identically to before on the default path.
+          ...(options?.ifFull ? { ifFull: options.ifFull } : {}),
           nowIso: nowIso(),
         });
       });

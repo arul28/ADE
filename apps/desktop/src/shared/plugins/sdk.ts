@@ -51,6 +51,19 @@ export const PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN = 4_000;
 /** Largest single collection value. */
 export const PLUGIN_COLLECTION_VALUE_MAX_BYTES = 64 * 1024;
 
+/**
+ * Rows one `collections.put` may evict before it gives up and refuses.
+ *
+ * A bound rather than "delete until it fits" because eviction runs inside the
+ * write transaction: an unbounded loop on a plugin whose next value is enormous
+ * would hold the write lock while it emptied the collection row by row, and on
+ * a CRR every one of those deletes is a replicated change. 200 is far more than
+ * a plugin storing sanely-sized values ever needs to free one slot, and a write
+ * that cannot fit inside it is a write that should be refused rather than paid
+ * for by the rest of the collection.
+ */
+export const PLUGIN_COLLECTION_MAX_EVICTIONS_PER_PUT = 200;
+
 /** Total `plugin_contributions` rows one plugin may publish. */
 export const PLUGIN_CONTRIBUTIONS_MAX_PER_PLUGIN = 2_000;
 
@@ -191,6 +204,67 @@ export type PluginCollectionRow = {
   updatedAt: string;
 };
 
+/**
+ * What a `collections.put` should do when the write would take the plugin past
+ * its row or byte budget.
+ *
+ * `"fail"` is the default and is exactly what every plugin written before this
+ * option existed gets: the typed budget refusal, nothing written. `"evictOldest"`
+ * is the opt-in self-healing write — the host frees room by deleting the oldest
+ * rows of the SAME collection until the new value fits, then writes it, all in
+ * one transaction.
+ *
+ * The choice is the plugin's because only the plugin knows what its collection
+ * is. A cache of rendered rows wants `"evictOldest"` and should never stall its
+ * plugin at a ceiling; a collection of the user's saved items wants `"fail"`,
+ * because silently dropping the oldest one would be data loss the user never
+ * asked for. The platform's job is to make the first case a single argument
+ * rather than something each author reimplements — and to make the second case
+ * what you get by not asking.
+ */
+export const PLUGIN_COLLECTION_IF_FULL_MODES = ["fail", "evictOldest"] as const;
+
+export type PluginCollectionIfFull = (typeof PLUGIN_COLLECTION_IF_FULL_MODES)[number];
+
+/**
+ * Narrow an over-the-wire `ifFull`. Unknown strings are NOT quietly read as
+ * `"fail"`: a plugin that shipped a typo would then behave like a plugin that
+ * asked for the default, and it would look like it was working right up until
+ * the collection filled. The host rejects the call instead.
+ */
+export function isPluginCollectionIfFull(value: unknown): value is PluginCollectionIfFull {
+  return PLUGIN_COLLECTION_IF_FULL_MODES.some((mode) => mode === value);
+}
+
+export type PluginCollectionPutOptions = {
+  /** Omitted means `"fail"` — see {@link PLUGIN_COLLECTION_IF_FULL_MODES}. */
+  ifFull?: PluginCollectionIfFull;
+};
+
+/**
+ * The `collections.put` params frame, as the child puts it on the wire.
+ *
+ * Here rather than inline at the one call site because the compatibility
+ * promise is a property of the FRAME, not of the caller: a put that names no
+ * option must serialize to exactly the three keys it always did, so a plugin
+ * built against a newer SDK still speaks to an older host, and the host's
+ * `options` parse still sees "absent" rather than an empty object it would have
+ * to decide the meaning of.
+ */
+export function pluginCollectionPutParams(
+  collection: string,
+  key: string,
+  value: unknown,
+  options?: PluginCollectionPutOptions,
+): Record<string, unknown> {
+  return {
+    collection,
+    key,
+    value,
+    ...(options?.ifFull ? { options: { ifFull: options.ifFull } } : {}),
+  };
+}
+
 export type PluginEventName = "lane.changed" | "pr.changed" | "session.changed" | "install.changed";
 
 export type PluginEventPayload = {
@@ -234,7 +308,18 @@ export type AdePluginSdk = {
 
   collections: {
     get(collection: string, key: string): Promise<unknown>;
-    put(collection: string, key: string, value: unknown): Promise<void>;
+    /**
+     * Store a value, rejecting with a `plugin_budget_exceeded`
+     * {@link PluginSdkError} when it would take the plugin past a budget.
+     * Pass `{ ifFull: "evictOldest" }` to have the host make room in this
+     * collection instead of refusing.
+     */
+    put(
+      collection: string,
+      key: string,
+      value: unknown,
+      options?: PluginCollectionPutOptions,
+    ): Promise<void>;
     delete(collection: string, key: string): Promise<void>;
     list(collection: string, options?: { keyPrefix?: string; limit?: number }): Promise<PluginCollectionRow[]>;
   };

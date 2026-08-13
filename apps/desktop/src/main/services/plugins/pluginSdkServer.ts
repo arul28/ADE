@@ -12,9 +12,12 @@ import {
   assertPluginCollectionName,
   budgetExceeded,
   encodePluginJsonWithinBudget,
+  isPluginCollectionIfFull,
   PluginSdkError,
+  PLUGIN_COLLECTION_IF_FULL_MODES,
   PLUGIN_PANELS_MAX_PER_PLUGIN,
   PLUGIN_PANEL_SCHEMA_MAX_BYTES,
+  type PluginCollectionPutOptions,
   type PluginSdkMethod,
 } from "../../../shared/plugins/sdk";
 import type { PluginDataStore } from "./pluginDataStore";
@@ -32,6 +35,30 @@ function optionalRecord(value: unknown, field: string): Record<string, unknown> 
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) throw new PluginSdkError("invalid_args", `"${field}" must be an object.`);
   return value;
+}
+
+/**
+ * Read `collections.put`'s options frame.
+ *
+ * An absent frame returns `undefined` rather than `{}`, so the default path
+ * reaches the store with the same argument list it had before the option
+ * existed. An `ifFull` the host does not know is refused, never rounded down to
+ * the default: a plugin that asked for eviction and got silent "fail" would
+ * look correct until the day its collection filled, which is the exact failure
+ * this option exists to remove.
+ */
+function readPutOptions(value: unknown): PluginCollectionPutOptions | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) throw new PluginSdkError("invalid_args", '"options" must be an object.');
+  const ifFull = value.ifFull;
+  if (ifFull === undefined || ifFull === null) return undefined;
+  if (!isPluginCollectionIfFull(ifFull)) {
+    throw new PluginSdkError(
+      "invalid_args",
+      `"options.ifFull" must be one of ${PLUGIN_COLLECTION_IF_FULL_MODES.map((mode) => `"${mode}"`).join(", ")}.`,
+    );
+  }
+  return { ifFull };
 }
 
 export function createPluginSdkServer(deps: {
@@ -108,6 +135,7 @@ export function createPluginSdkServer(deps: {
             requireDeclaredCollection(params),
             assertPluginCollectionKey(requireString(params, "key")),
             params.value,
+            readPutOptions(params.options),
           );
           return null;
         }

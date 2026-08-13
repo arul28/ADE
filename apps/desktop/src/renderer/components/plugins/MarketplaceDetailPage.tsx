@@ -54,6 +54,7 @@ import {
   describePluginSource,
   installStateFor,
   pluginAuthorUrl,
+  pluginStoresData,
   type ListingInstallState,
   type MarketplaceListing,
 } from "./marketplaceModel";
@@ -343,7 +344,7 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
             </RailSection>
           ) : null}
 
-          {usage ? <UsageRail usage={usage} /> : null}
+          {usage && pluginStoresData(manifest, usage) ? <UsageRail usage={usage} /> : null}
         </aside>
       </div>
 

@@ -195,6 +195,28 @@ and are asserted equal to `dbMaintenanceApi.ts` by test.
 | Panels per plugin | 32 |
 | One panel schema | 64 KiB |
 
+**A full collection must never stall a plugin.** `collections.put` takes an
+opt-in fourth argument — `put(collection, key, value, {ifFull: "evictOldest"})` —
+that turns a budget refusal into a self-healing write: the writer deletes the
+oldest rows (`updated_at` ascending, then `key`) of the **same** collection
+until the value fits, then writes it, all inside the one transaction, so a crash
+cannot leave a plugin having paid the deletes without gaining the write. It
+never crosses into another collection or another plugin, never evicts the key
+being written, and stops after
+`PLUGIN_COLLECTION_MAX_EVICTIONS_PER_PUT` (200) rows — past that, or when the
+bytes in the way belong to another collection, the original
+`plugin_budget_exceeded` is thrown and the evictions roll back with it. The
+per-value 64 KiB cap is checked first and eviction can never rescue it.
+
+Omitting the option, or passing `{ifFull: "fail"}`, is the historical behavior
+exactly, down to the wire bytes: the child sends no `options` key at all, so an
+older host sees the frame it has always seen. An `ifFull` the host does not
+recognize is refused with `invalid_args` rather than read as the default — a
+plugin with a typo would otherwise look correct until the day its collection
+filled. Which mode a collection wants is the plugin's call: a cache of rendered
+rows should evict, a collection of the user's own saved items should refuse,
+because dropping the oldest one would be data loss nobody asked for.
+
 ### The vocabulary contract
 
 `VOCAB_VERSION` is 1. The component-name union is deliberately **open**

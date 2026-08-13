@@ -4,14 +4,14 @@ import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignToke
 import { setPluginContributionEnabled, type PluginUsageRow } from "../../lib/pluginRuntimeBridge";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import {
-  BudgetMeter,
   CoverageGlyph,
   COVERAGE_LABEL,
   RailSection,
 } from "./marketplaceUi";
 import {
+  PLUGIN_STORAGE_REASSURANCE,
   SURFACE_LABELS,
-  formatBytes,
+  describePluginStorage,
   type MachineCoverageRow,
   type MarketplaceListing,
 } from "./marketplaceModel";
@@ -276,26 +276,99 @@ function ContributionToggle({
   );
 }
 
+/**
+ * Storage, and how much of it is left.
+ *
+ * Calm until it matters. Two meters and four numbers were the honest report and
+ * the wrong one: they were shown at full volume to every reader, nearly all of
+ * whom were looking at a plugin using a rounding error of its space, and the
+ * only thing the display taught was that this corner of the page never says
+ * anything worth reading. So the resting state is one sentence with no numbers,
+ * the numbers sit one click away for whoever actually wants them, and the line
+ * only raises its voice — a dot, and the figure that is running out — when the
+ * plugin is close enough to its ceiling that it is about to change behaviour.
+ *
+ * The section is not rendered at all for a plugin that cannot store anything —
+ * `pluginStoresData` in `marketplaceModel.ts` gates it at the call site.
+ */
 export function UsageRail({ usage }: { usage: PluginUsageRow }) {
+  const report = describePluginStorage(usage);
+  const dotColor = report.level === "full" ? COLORS.danger : COLORS.warning;
+
   return (
-    <RailSection title="Storage and sync">
-      <BudgetMeter
-        label="Stored data"
-        used={usage.collectionBytes}
-        budget={usage.collectionBudgetBytes}
-        valueText={`${formatBytes(usage.collectionBytes)} of ${formatBytes(usage.collectionBudgetBytes)}`}
-      />
-      <BudgetMeter
-        label="Rows"
-        used={usage.rows}
-        budget={usage.rowBudget}
-        valueText={`${usage.rows} of ${usage.rowBudget}`}
-      />
-      {usage.syncBytesTotal !== null ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>
-          {formatBytes(usage.syncBytesTotal)} synced
+    <RailSection title="Synced data">
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 7 }}>
+        {report.level === "healthy" ? null : (
+          <span
+            // The sentence beside it already says the state; the dot is where
+            // the eye lands, not how the state is communicated.
+            aria-hidden
+            style={{
+              width: 6,
+              height: 6,
+              marginTop: 5,
+              flexShrink: 0,
+              borderRadius: 999,
+              background: dotColor,
+            }}
+          />
+        )}
+        <span
+          style={{
+            fontFamily: SANS_FONT,
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: report.level === "healthy" ? COLORS.textSecondary : COLORS.textPrimary,
+          }}
+        >
+          {report.summary}
         </span>
-      ) : null}
+      </div>
+
+      <details data-tour="plugin:marketplace.storage-details">
+        <summary
+          style={{
+            fontFamily: SANS_FONT,
+            fontSize: 11,
+            color: COLORS.textMuted,
+            cursor: "pointer",
+          }}
+        >
+          Details
+        </summary>
+        <dl style={{ margin: "8px 0 0", display: "grid", gap: 6 }}>
+          {report.details.map((detail) => (
+            <div
+              key={detail.label}
+              style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}
+            >
+              <dt style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>{detail.label}</dt>
+              <dd
+                style={{
+                  margin: 0,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  color: COLORS.textSecondary,
+                  textAlign: "right",
+                }}
+              >
+                {detail.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <p
+          style={{
+            margin: "8px 0 0",
+            fontFamily: SANS_FONT,
+            fontSize: 10.5,
+            lineHeight: 1.5,
+            color: COLORS.textDim,
+          }}
+        >
+          {PLUGIN_STORAGE_REASSURANCE}
+        </p>
+      </details>
     </RailSection>
   );
 }

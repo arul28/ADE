@@ -9,6 +9,8 @@ import {
   describePluginResources,
   describePluginSource,
   pluginAuthorUrl,
+  pluginStoresData,
+  describePluginStorage,
   installStateFor,
   installedPluginIds,
   listingFromInstalled,
@@ -20,7 +22,7 @@ import {
 } from "./marketplaceModel";
 import { MARKETPLACE_LOCAL_INDEX } from "./marketplaceLocalIndex";
 import { parsePluginManifest } from "../../../shared/plugins/manifest";
-import type { InstalledPlugin, PluginPresenceRow } from "../../lib/pluginRuntimeBridge";
+import type { InstalledPlugin, PluginPresenceRow, PluginUsageRow } from "../../lib/pluginRuntimeBridge";
 
 /**
  * These cover the decisions the Marketplace makes about *facts* — what the
@@ -311,6 +313,121 @@ describe("describePluginAdds", () => {
     expect(describePluginAdds(listing({ addsSummary: ["A tab"] }))).toEqual(["A tab"]);
     expect(describePluginAdds(listing({ isTheme: true }))).toEqual(["A colour theme"]);
     expect(describePluginAdds(listing())).toEqual([]);
+  });
+});
+
+/** 2 MB and 4,000 items, the budgets the host reports today. */
+function usageRow(overrides: Partial<PluginUsageRow> = {}): PluginUsageRow {
+  return {
+    pluginId: "graph",
+    collectionBytes: 0,
+    collectionBudgetBytes: 2 * 1024 * 1024,
+    rows: 0,
+    rowBudget: 4000,
+    syncBytesTotal: 0,
+    ...overrides,
+  };
+}
+
+describe("pluginStoresData", () => {
+  function manifestFor(raw: Record<string, unknown>) {
+    const { manifest } = parsePluginManifest({
+      name: "graph",
+      version: "1.0.0",
+      displayName: "Graph",
+      description: "",
+      ...raw,
+    });
+    return manifest;
+  }
+
+  it("says no for a plugin that declares no storage and holds none", () => {
+    // The manifest-only case the section is hidden for: a theme reports zeroes
+    // forever because it has nowhere to put anything.
+    expect(pluginStoresData(manifestFor({ theme: { tokens: { dark: {} } } }), usageRow())).toBe(false);
+    expect(pluginStoresData(null, usageRow())).toBe(false);
+    expect(pluginStoresData(null, null)).toBe(false);
+  });
+
+  it("says yes for a declared collection, and for a panel bound to a schema", () => {
+    expect(pluginStoresData(manifestFor({ collections: { nodes: { sync: false } } }), usageRow())).toBe(true);
+    expect(pluginStoresData(
+      manifestFor({ panels: [{ id: "main", schemaFile: "schema/main.json" }] }),
+      usageRow(),
+    )).toBe(true);
+  });
+
+  it("says yes on any nonzero usage, whatever the manifest declares", () => {
+    expect(pluginStoresData(null, usageRow({ collectionBytes: 12 }))).toBe(true);
+    expect(pluginStoresData(null, usageRow({ rows: 1 }))).toBe(true);
+    expect(pluginStoresData(null, usageRow({ syncBytesTotal: 40 }))).toBe(true);
+    // Unmetered sync is not evidence of storage.
+    expect(pluginStoresData(null, usageRow({ syncBytesTotal: null }))).toBe(false);
+  });
+});
+
+describe("describePluginStorage", () => {
+  it("stays quiet and numberless well below the ceiling", () => {
+    const report = describePluginStorage(usageRow({ collectionBytes: 86_016, rows: 120 }));
+    expect(report.level).toBe("healthy");
+    expect(report.summary).toBe("Keeps a small amount of data in sync across your devices.");
+    // The resting line must not quote a figure — that is the whole point of it.
+    expect(report.summary).not.toMatch(/\d/);
+  });
+
+  it("speaks up at 70% of either budget and goes red at 100%", () => {
+    const bytesBudget = 2 * 1024 * 1024;
+    expect(describePluginStorage(usageRow({ collectionBytes: bytesBudget * 0.7 })).level).toBe("nearly-full");
+    expect(describePluginStorage(usageRow({ rows: 2800 })).level).toBe("nearly-full");
+    // Just under the line is still the quiet state.
+    expect(describePluginStorage(usageRow({ rows: 2799 })).level).toBe("healthy");
+    expect(describePluginStorage(usageRow({ collectionBytes: bytesBudget })).level).toBe("full");
+    expect(describePluginStorage(usageRow({ rows: 4000 })).level).toBe("full");
+    // The worse of the two decides: one full budget is a full plugin.
+    expect(describePluginStorage(usageRow({ rows: 4000, collectionBytes: 0 })).level).toBe("full");
+  });
+
+  it("quotes whichever budget is actually running out", () => {
+    // Bytes comfortable, items nearly gone: quoting the bytes here would be a
+    // true number that answers the wrong question.
+    const byItems = describePluginStorage(usageRow({ collectionBytes: 1024, rows: 3200 }));
+    expect(byItems.summary).toBe("Its synced space is getting full (3,200 of 4,000 saved items).");
+
+    const byBytes = describePluginStorage(usageRow({ collectionBytes: 1.6 * 1024 * 1024, rows: 10 }));
+    expect(byBytes.summary).toBe("Its synced space is getting full (1.6 MB of 2.0 MB).");
+  });
+
+  it("says a full plugin still works rather than that it is broken", () => {
+    const report = describePluginStorage(usageRow({ rows: 4200 }));
+    expect(report.summary).toBe("Its synced space is full. It can't save new synced data until it frees some.");
+    expect(report.summary).not.toMatch(/broken|error|failed/i);
+  });
+
+  it("puts the numbers in the details, and omits sync when it is unmetered", () => {
+    const metered = describePluginStorage(usageRow({
+      collectionBytes: 86_016,
+      rows: 120,
+      syncBytesTotal: 1.2 * 1024 * 1024,
+    }));
+    expect(metered.details).toEqual([
+      { label: "Space used", value: "84 KB of 2.0 MB" },
+      { label: "Saved items", value: "120 of 4,000" },
+      { label: "Sent to your devices", value: "1.2 MB" },
+    ]);
+
+    const unmetered = describePluginStorage(usageRow({ syncBytesTotal: null }));
+    expect(unmetered.details.map((detail) => detail.label)).toEqual(["Space used", "Saved items"]);
+  });
+
+  it("treats a missing budget as unknown rather than as full", () => {
+    // A host that reports no ceiling must not paint every plugin red.
+    const report = describePluginStorage(usageRow({
+      collectionBytes: 900,
+      collectionBudgetBytes: 0,
+      rows: 12,
+      rowBudget: 0,
+    }));
+    expect(report.level).toBe("healthy");
   });
 });
 

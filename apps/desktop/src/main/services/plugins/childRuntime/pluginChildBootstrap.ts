@@ -22,6 +22,7 @@ import {
   decodePluginFrame,
   encodePluginFrame,
   fromPluginStructuralError,
+  pluginCollectionPutParams,
   PluginSdkError,
   toPluginStructuralError,
   type AdePluginSdk,
@@ -158,8 +159,8 @@ export function runPluginChild(): void {
     },
     collections: {
       get: (collection, key) => callHost("collections.get", { collection, key }),
-      put: async (collection, key, value) => {
-        await callHost("collections.put", { collection, key, value });
+      put: async (collection, key, value, options) => {
+        await callHost("collections.put", pluginCollectionPutParams(collection, key, value, options));
       },
       delete: async (collection, key) => {
         await callHost("collections.delete", { collection, key });
