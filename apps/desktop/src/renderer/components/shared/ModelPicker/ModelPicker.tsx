@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Lightning } from "@phosphor-icons/react";
 import {
@@ -18,7 +18,11 @@ import {
   resolveModelDescriptorWithRuntimeCatalog,
 } from "./modelCatalog";
 import { useModelRecents } from "./useModelRecents";
-import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+import type {
+  AgentChatModelCatalog,
+  AgentChatModelCatalogRefreshProvider,
+  OpenProjectBinding,
+} from "../../../../shared/types";
 import {
   clearRuntimeCatalogRequest,
   getRuntimeCatalogRequest,
@@ -27,6 +31,8 @@ import {
   runtimeCatalogProviderIsFresh,
   setRuntimeCatalogRequest,
   refreshProviderForFamily,
+  reserveRuntimeCatalogScope,
+  DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "./runtimeCatalogCache";
 
 export type ModelPickerProps = {
@@ -42,6 +48,15 @@ export type ModelPickerProps = {
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
+  /**
+   * The machine whose catalog this picker describes, when it is not the one
+   * this window's project tab is bound to. A runtime catalog is a machine fact
+   * (local ollama/LM Studio endpoints, installed cursor-agent, opencode
+   * inventory), and a Work tab shows chats from every machine at once — so a
+   * picker for a chat on another machine must fetch and cache under THAT
+   * machine, never the bound one. `null`/omitted means the bound machine.
+   */
+  runtimePin?: OpenProjectBinding | null;
   constrainToAvailableModelIds?: boolean;
   /**
    * Fast mode lives inside the picker (a per-row affordance plus a " Fast"
@@ -90,6 +105,7 @@ export const ModelPicker = memo(function ModelPicker({
   providerAuthStatus,
   onOpenSignIn,
   onRuntimeCatalogRefreshed,
+  runtimePin,
   constrainToAvailableModelIds = false,
   fastMode,
   onFastModeChange,
@@ -104,8 +120,35 @@ export const ModelPicker = memo(function ModelPicker({
   openRequestKey,
   onOpenRequestHandled,
 }: ModelPickerProps) {
+  const catalogScopeKey = runtimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  // The scope KEY is the reactive input; the binding object itself is only a
+  // routing payload. Reading it through a ref keeps `loadRuntimeCatalog` stable
+  // across renders even if a caller hands us a fresh object each time, so an
+  // open picker cannot be pushed into repeated cached-catalog fetches.
+  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin ?? null);
+  runtimePinRef.current = runtimePin ?? null;
   const [open, setOpen] = useState(false);
-  const [runtimeCatalog, setRuntimeCatalog] = useState<AgentChatModelCatalog | null>(() => getSharedRuntimeCatalog());
+  /**
+   * The rendered catalog is tagged with the machine it came from, and a tag
+   * mismatch is resolved synchronously against that machine's bucket.
+   *
+   * Holding a bare catalog in state let one render pair the PREVIOUS machine's
+   * catalog with the NEW scope key, and `descriptorsFromAgentChatModelCatalog`
+   * writes as it parses — so that render filed machine A's descriptors under
+   * machine B, permanently for any model B does not also report. Deriving the
+   * value instead of syncing it in an effect makes the pairing impossible, and
+   * a late in-flight response tagged with the old machine simply never shows.
+   */
+  const [runtimeCatalogState, setRuntimeCatalogState] = useState<{
+    scopeKey: string;
+    catalog: AgentChatModelCatalog | null;
+  }>(() => ({ scopeKey: catalogScopeKey, catalog: getSharedRuntimeCatalog(catalogScopeKey) }));
+  const runtimeCatalog = runtimeCatalogState.scopeKey === catalogScopeKey
+    ? runtimeCatalogState.catalog
+    : getSharedRuntimeCatalog(catalogScopeKey);
+  const setRuntimeCatalog = useCallback((catalog: AgentChatModelCatalog | null) => {
+    setRuntimeCatalogState({ scopeKey: catalogScopeKey, catalog });
+  }, [catalogScopeKey]);
   const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const [refreshErrorProvider, setRefreshErrorProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const { recents } = useModelRecents({ hydrate: open });
@@ -133,14 +176,14 @@ export const ModelPicker = memo(function ModelPicker({
     refreshProvider?: AgentChatModelCatalogRefreshProvider;
   }): Promise<AgentChatModelCatalog | null> => {
     const cursorFlavor = args.refreshProvider === "cursor" ? cursorSource : undefined;
-    const shared = getSharedRuntimeCatalog();
+    const shared = getSharedRuntimeCatalog(catalogScopeKey);
     if (args.mode === "cached" && shared) {
       setRuntimeCatalog(shared);
       return shared;
     }
     if (args.mode === "refresh-stale" && args.refreshProvider && shared) {
       setRuntimeCatalog(shared);
-      if (runtimeCatalogProviderIsFresh(args.refreshProvider, cursorFlavor)) {
+      if (runtimeCatalogProviderIsFresh(args.refreshProvider, cursorFlavor, catalogScopeKey)) {
         setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
         return { ...shared, stale: false };
       }
@@ -148,7 +191,7 @@ export const ModelPicker = memo(function ModelPicker({
 
     const bridge = window.ade?.agentChat?.modelCatalog;
     if (typeof bridge !== "function") return null;
-    const requestKey = `${args.mode}:${args.refreshProvider ?? "all"}:${cursorFlavor ?? "all"}`;
+    const requestKey = `${catalogScopeKey}|${args.mode}:${args.refreshProvider ?? "all"}:${cursorFlavor ?? "all"}`;
     const existingRequest = getRuntimeCatalogRequest(requestKey);
     if (existingRequest) {
       const next = await existingRequest;
@@ -156,15 +199,26 @@ export const ModelPicker = memo(function ModelPicker({
       return next;
     }
 
+    // Claim the bucket now so a response that lands after this machine's bucket
+    // was evicted or reset is dropped rather than resurrecting it.
+    const scopeSerial = reserveRuntimeCatalogScope(catalogScopeKey);
     const request = (async () => {
       try {
-        const next = await bridge({
+        const fetchArgs = {
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
-        });
+        };
+        // Only pinned surfaces pass a second argument, so the bound path keeps
+        // the exact call shape (and the preload's local IPC fallback) it had.
+        const pin = runtimePinRef.current;
+        const next = pin
+          ? await bridge(fetchArgs, pin)
+          : await bridge(fetchArgs);
         const visible = rememberRuntimeCatalog(next, {
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
+          scopeKey: catalogScopeKey,
+          scopeSerial,
         });
         setRuntimeCatalog(visible);
         if (args.refreshProvider) setRefreshErrorProvider((current) => current === args.refreshProvider ? null : current);
@@ -180,7 +234,7 @@ export const ModelPicker = memo(function ModelPicker({
       clearRuntimeCatalogRequest(requestKey, request);
     });
     return await request;
-  }, [cursorSource]);
+  }, [catalogScopeKey, cursorSource, setRuntimeCatalog]);
 
   useEffect(() => {
     if (!open) return;
@@ -192,10 +246,10 @@ export const ModelPicker = memo(function ModelPicker({
     if (refreshProvider) {
       void (async () => {
         const cursorFlavor = refreshProvider === "cursor" ? cursorSource : undefined;
-        const shared = getSharedRuntimeCatalog();
+        const shared = getSharedRuntimeCatalog(catalogScopeKey);
         if (shared) {
           setRuntimeCatalog(shared);
-          if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor)) {
+          if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, catalogScopeKey)) {
             setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
             return;
           }
@@ -213,11 +267,11 @@ export const ModelPicker = memo(function ModelPicker({
         }
       })();
     }
-  }, [cursorSource, loadRuntimeCatalog, onRuntimeCatalogRefreshed]);
+  }, [catalogScopeKey, cursorSource, loadRuntimeCatalog, onRuntimeCatalogRefreshed, setRuntimeCatalog]);
 
   const catalogModels = useMemo(
-    () => descriptorsFromAgentChatModelCatalog(runtimeCatalog, filter),
-    [filter, runtimeCatalog],
+    () => descriptorsFromAgentChatModelCatalog(runtimeCatalog, filter, catalogScopeKey),
+    [catalogScopeKey, filter, runtimeCatalog],
   );
 
   const modelList = useMemo<readonly ModelDescriptor[]>(() => {
@@ -240,6 +294,7 @@ export const ModelPicker = memo(function ModelPicker({
       selectedValue,
       filter,
       constrainToAvailableModelIds ? "available-only" : catalogMode,
+      catalogScopeKey,
     );
     if (catalogModels.models.length === 0) return fallbackModels;
     if (constrainToAvailableModelIds) return fallbackModels;
@@ -247,7 +302,7 @@ export const ModelPicker = memo(function ModelPicker({
     for (const model of fallbackModels) merged.set(model.id, model);
     for (const model of catalogModels.models) merged.set(model.id, model);
     return [...merged.values()];
-  }, [models, availableModelIds, value, filter, catalogMode, catalogModels.models, constrainToAvailableModelIds]);
+  }, [models, availableModelIds, value, filter, catalogMode, catalogModels.models, catalogScopeKey, constrainToAvailableModelIds]);
 
   const effectiveValue = useMemo<string>(() => {
     if (value && value.length > 0) return value;
@@ -262,8 +317,9 @@ export const ModelPicker = memo(function ModelPicker({
 
   const selectedModel = useMemo<ModelDescriptor | undefined>(() => {
     if (!value) return undefined;
-    return resolveModelDescriptorWithRuntimeCatalog(value) ?? createUnknownModelPlaceholder(value);
-  }, [value]);
+    return resolveModelDescriptorWithRuntimeCatalog(value, catalogScopeKey)
+      ?? createUnknownModelPlaceholder(value);
+  }, [catalogScopeKey, value]);
 
   const availableSet = useMemo(() => {
     const ids = constrainToAvailableModelIds || !runtimeCatalog
@@ -323,7 +379,7 @@ export const ModelPicker = memo(function ModelPicker({
             setOpen(false);
             return;
           }
-          const shared = getSharedRuntimeCatalog();
+          const shared = getSharedRuntimeCatalog(catalogScopeKey);
           if (next && shared) {
             setRuntimeCatalog(shared);
           }

@@ -1,5 +1,5 @@
 import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
-import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import type { ModelDescriptor, ProviderFamily } from "../../../../shared/modelRegistry";
 
 export function refreshProviderForFamily(family: ProviderFamily): AgentChatModelCatalogRefreshProvider | null {
   if (family === "opencode") return "opencode";
@@ -22,23 +22,102 @@ const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
   "ollama",
 ];
 
-let sharedRuntimeCatalog: AgentChatModelCatalog | null = null;
-const sharedRuntimeCatalogProviderRefreshedAt = new Map<AgentChatModelCatalogRefreshProvider, number>();
-// Cursor freshness is per discovery source: an SDK-scoped refresh must not
-// mark the CLI surface fresh (a later Work-tab CLI picker would otherwise
-// short-circuit its force refresh for the TTL and miss CLI-only changes).
-const cursorSourceRefreshedAt = new Map<"sdk" | "cli", number>();
+/**
+ * A runtime model catalog is a MACHINE fact, not a process fact: the ollama and
+ * LM Studio endpoints it enumerates, the installed `cursor-agent`, and the
+ * opencode inventory all live on whichever machine served `chat.modelCatalog`.
+ * A Work tab shows chats from every machine on the account at once, so a single
+ * process-global catalog describes the project tab's machine while a composer
+ * may target another — every entry is keyed by the binding key of the machine
+ * it describes. `""` is the machine this window's project tab is bound to.
+ */
+export const DEFAULT_RUNTIME_CATALOG_SCOPE = "";
+
+type RuntimeCatalogScopeState = {
+  catalog: AgentChatModelCatalog | null;
+  providerRefreshedAt: Map<AgentChatModelCatalogRefreshProvider, number>;
+  // Cursor freshness is per discovery source: an SDK-scoped refresh must not
+  // mark the CLI surface fresh (a later Work-tab CLI picker would otherwise
+  // short-circuit its force refresh for the TTL and miss CLI-only changes).
+  cursorSourceRefreshedAt: Map<"sdk" | "cli", number>;
+  // Descriptors parsed out of this machine's catalog. They live beside the
+  // catalog rather than in a parallel registry so one cap and one eviction
+  // govern both, and a dropped scope can never leave descriptors behind.
+  descriptorsById: Map<string, ModelDescriptor>;
+  // Identity of this bucket instance. A catalog fetch reserves the bucket and
+  // remembers this value; a response that comes back after the bucket was
+  // evicted or reset finds a different serial (or none) and is dropped instead
+  // of resurrecting a machine the window has stopped tracking.
+  serial: number;
+};
+
+// Scopes are bounded by the project bindings a window has open, so this cap is
+// only a backstop against unbounded growth over a long-lived session.
+const MAX_RUNTIME_CATALOG_SCOPES = 8;
+const runtimeCatalogScopes = new Map<string, RuntimeCatalogScopeState>();
 const sharedRuntimeCatalogRequests = new Map<string, Promise<AgentChatModelCatalog | null>>();
+let nextRuntimeCatalogScopeSerial = 1;
+
+function peekRuntimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState | undefined {
+  return runtimeCatalogScopes.get(scopeKey);
+}
+
+function runtimeCatalogScope(scopeKey: string): RuntimeCatalogScopeState {
+  const existing = runtimeCatalogScopes.get(scopeKey);
+  if (existing) return existing;
+  for (const key of runtimeCatalogScopes.keys()) {
+    if (runtimeCatalogScopes.size < MAX_RUNTIME_CATALOG_SCOPES) break;
+    // Never evict the bound machine: it is the hottest bucket and the one every
+    // unpinned surface reads, so dropping it would refetch the common case.
+    if (key === DEFAULT_RUNTIME_CATALOG_SCOPE) continue;
+    runtimeCatalogScopes.delete(key);
+  }
+  const created: RuntimeCatalogScopeState = {
+    catalog: null,
+    providerRefreshedAt: new Map(),
+    cursorSourceRefreshedAt: new Map(),
+    descriptorsById: new Map(),
+    serial: nextRuntimeCatalogScopeSerial++,
+  };
+  runtimeCatalogScopes.set(scopeKey, created);
+  return created;
+}
+
+/**
+ * Claim this machine's bucket before fetching its catalog, and return the token
+ * the write must present. Reserving up front is what lets a late response tell
+ * "my bucket is still here" apart from "my bucket was evicted and something
+ * else now owns this key".
+ */
+export function reserveRuntimeCatalogScope(scopeKey: string): number {
+  return runtimeCatalogScope(scopeKey).serial;
+}
+
+/** This machine's parsed descriptors, created on first write. */
+export function runtimeCatalogScopeDescriptors(scopeKey: string): Map<string, ModelDescriptor> {
+  return runtimeCatalogScope(scopeKey).descriptorsById;
+}
+
+/** This machine's parsed descriptors, or undefined when it has reported none. */
+export function peekRuntimeCatalogScopeDescriptors(
+  scopeKey: string,
+): Map<string, ModelDescriptor> | undefined {
+  return peekRuntimeCatalogScope(scopeKey)?.descriptorsById;
+}
+
+export function clearRuntimeCatalogScopeDescriptors(): void {
+  for (const scope of runtimeCatalogScopes.values()) scope.descriptorsById.clear();
+}
 
 export function resetModelPickerRuntimeCatalogForTests(): void {
-  sharedRuntimeCatalog = null;
-  sharedRuntimeCatalogProviderRefreshedAt.clear();
-  cursorSourceRefreshedAt.clear();
+  runtimeCatalogScopes.clear();
   sharedRuntimeCatalogRequests.clear();
 }
 
-export function getSharedRuntimeCatalog(): AgentChatModelCatalog | null {
-  return sharedRuntimeCatalog;
+export function getSharedRuntimeCatalog(
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
+): AgentChatModelCatalog | null {
+  return peekRuntimeCatalogScope(scopeKey)?.catalog ?? null;
 }
 
 function runtimeCatalogRefreshTtlMs(provider?: AgentChatModelCatalogRefreshProvider): number {
@@ -78,42 +157,47 @@ function shouldMarkRefreshProviderFresh(
 }
 
 function markRuntimeCatalogProviderFresh(
+  scopeKey: string,
   provider: AgentChatModelCatalogRefreshProvider,
   refreshedAt = Date.now(),
   cursorFlavor?: "sdk" | "cli",
 ): void {
+  const scope = runtimeCatalogScope(scopeKey);
   if (provider === "cursor") {
     const sources: ("sdk" | "cli")[] = cursorFlavor ? [cursorFlavor] : ["sdk", "cli"];
     for (const source of sources) {
       // Without an explicit flavor (generic cached-reuse marking), only mark a
       // source fresh if the catalog actually carries rows it can run, so an
       // sdk-only catalog never marks the cli surface fresh.
-      if (!cursorFlavor && sharedRuntimeCatalog && !catalogContainsRefreshProvider(sharedRuntimeCatalog, "cursor", source)) {
+      if (!cursorFlavor && scope.catalog && !catalogContainsRefreshProvider(scope.catalog, "cursor", source)) {
         continue;
       }
-      cursorSourceRefreshedAt.set(source, refreshedAt);
+      scope.cursorSourceRefreshedAt.set(source, refreshedAt);
     }
     return;
   }
-  sharedRuntimeCatalogProviderRefreshedAt.set(provider, refreshedAt);
+  scope.providerRefreshedAt.set(provider, refreshedAt);
 }
 
 export function runtimeCatalogProviderIsFresh(
   provider: AgentChatModelCatalogRefreshProvider,
   cursorFlavor?: "sdk" | "cli",
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
 ): boolean {
+  const scope = peekRuntimeCatalogScope(scopeKey);
+  if (!scope) return false;
   if (provider === "cursor") {
-    if (!sharedRuntimeCatalog || !catalogContainsRefreshProvider(sharedRuntimeCatalog, provider, cursorFlavor)) {
+    if (!scope.catalog || !catalogContainsRefreshProvider(scope.catalog, provider, cursorFlavor)) {
       return false;
     }
     const sources: ("sdk" | "cli")[] = cursorFlavor ? [cursorFlavor] : ["sdk", "cli"];
     const ttl = runtimeCatalogRefreshTtlMs(provider);
     return sources.every((source) => {
-      const at = cursorSourceRefreshedAt.get(source);
+      const at = scope.cursorSourceRefreshedAt.get(source);
       return Boolean(at && Date.now() - at <= ttl);
     });
   }
-  const refreshedAt = sharedRuntimeCatalogProviderRefreshedAt.get(provider);
+  const refreshedAt = scope.providerRefreshedAt.get(provider);
   return Boolean(refreshedAt && Date.now() - refreshedAt <= runtimeCatalogRefreshTtlMs(provider));
 }
 
@@ -123,34 +207,46 @@ export function rememberRuntimeCatalog(
     mode: "cached" | "refresh-stale" | "force";
     refreshProvider?: AgentChatModelCatalogRefreshProvider;
     cursorSource?: "sdk" | "cli";
+    scopeKey?: string;
+    /** Token from {@link reserveRuntimeCatalogScope}; omit to skip the check. */
+    scopeSerial?: number;
   },
 ): AgentChatModelCatalog {
-  if (args.mode === "cached" && sharedRuntimeCatalog) {
+  const scopeKey = args.scopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  if (args.scopeSerial !== undefined
+    && peekRuntimeCatalogScope(scopeKey)?.serial !== args.scopeSerial) {
+    // The bucket this response was fetched for is gone (evicted or reset).
+    // Hand the catalog back for immediate display, but do not recreate the
+    // bucket or overwrite whatever now owns this key.
+    return catalog;
+  }
+  const scope = runtimeCatalogScope(scopeKey);
+  if (args.mode === "cached" && scope.catalog) {
     for (const provider of REFRESH_PROVIDERS) {
       if (
-        runtimeCatalogProviderIsFresh(provider)
-        && catalogContainsRefreshProvider(sharedRuntimeCatalog, provider)
+        runtimeCatalogProviderIsFresh(provider, undefined, scopeKey)
+        && catalogContainsRefreshProvider(scope.catalog, provider)
         && !catalogContainsRefreshProvider(catalog, provider)
       ) {
-        return sharedRuntimeCatalog;
+        return scope.catalog;
       }
     }
   }
 
-  sharedRuntimeCatalog = catalog;
+  scope.catalog = catalog;
   const cursorFlavor = args.refreshProvider === "cursor" ? args.cursorSource : undefined;
   if (
     args.refreshProvider
     && (args.mode === "force" || catalog.stale !== true)
     && shouldMarkRefreshProviderFresh(catalog, args.refreshProvider, cursorFlavor)
   ) {
-    markRuntimeCatalogProviderFresh(args.refreshProvider, Date.now(), cursorFlavor);
+    markRuntimeCatalogProviderFresh(scopeKey, args.refreshProvider, Date.now(), cursorFlavor);
     return catalog;
   }
   if (args.mode === "cached" && catalog.stale !== true) {
     for (const provider of REFRESH_PROVIDERS) {
       if (catalogContainsRefreshProvider(catalog, provider)) {
-        markRuntimeCatalogProviderFresh(provider);
+        markRuntimeCatalogProviderFresh(scopeKey, provider);
       }
     }
   }

@@ -116,7 +116,10 @@ import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
-import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
+import {
+  DEFAULT_RUNTIME_CATALOG_SCOPE,
+  getSharedRuntimeCatalog,
+} from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
   AgentChatMessageList,
@@ -3479,6 +3482,18 @@ export function AgentChatPane({
     setModelPickerOpenRequest(undefined);
   }, []);
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
+  /**
+   * Runtime-catalog bucket for this pane's composer — the binding key of the
+   * machine that will run the turn, or `""` for the machine this window's
+   * project tab is bound to.
+   *
+   * It is state rather than a derived value because the composer's machine
+   * depends on `useDraftMachineRouting`, which is mounted far below the model
+   * memos that need the key. The effect that publishes it runs right after the
+   * binding resolves, so a machine switch costs one extra render — the same
+   * shape as `runtimeCatalogVersion`.
+   */
+  const [modelCatalogScopeKey, setModelCatalogScopeKey] = useState(DEFAULT_RUNTIME_CATALOG_SCOPE);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
   /**
@@ -5459,14 +5474,21 @@ export function AgentChatPane({
       includeActiveSessionModel: !modelSelectionConstrained,
     });
     if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind);
-    const catalog = getSharedRuntimeCatalog();
+    // Union in the runtime catalog's dynamic ids (ollama, LM Studio, opencode,
+    // cursor) for the composer's OWN machine — reading the bound machine's
+    // catalog here would offer models the target machine cannot run.
+    const catalog = getSharedRuntimeCatalog(modelCatalogScopeKey);
     if (!catalog) return filterCursorModelIdsForDraftKind(base, workDraftKind);
-    const runtimeIds = descriptorsFromAgentChatModelCatalog(catalog).availableModelIds;
+    const runtimeIds = descriptorsFromAgentChatModelCatalog(
+      catalog,
+      undefined,
+      modelCatalogScopeKey,
+    ).availableModelIds;
     if (!runtimeIds.length) return filterCursorModelIdsForDraftKind(base, workDraftKind);
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
     return filterCursorModelIdsForDraftKind([...merged], workDraftKind);
-  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
+  }, [availableModelIds, availableModelIdsOverride, modelCatalogScopeKey, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus
       ? familiesFromStatus(aiStatus, { allowCliOnlyModels: workDraftKind === "cli" })
@@ -5566,9 +5588,13 @@ export function AgentChatPane({
     ?? (selectedSession?.cursorCloudAgentId ? "cloud" : "local");
   const handoffAvailableModelIds = useMemo(() => {
     const merged = new Set<string>(availableModelIds);
-    const catalog = getSharedRuntimeCatalog();
+    const catalog = getSharedRuntimeCatalog(modelCatalogScopeKey);
     if (catalog) {
-      for (const id of descriptorsFromAgentChatModelCatalog(catalog).availableModelIds) {
+      for (const id of descriptorsFromAgentChatModelCatalog(
+        catalog,
+        undefined,
+        modelCatalogScopeKey,
+      ).availableModelIds) {
         merged.add(id);
       }
     }
@@ -5581,12 +5607,12 @@ export function AgentChatPane({
       .map((model) => model.id);
     const extras = filtered.filter((modelId) => !ordered.includes(modelId));
     extras.sort((left, right) => {
-      const leftLabel = resolveModelDescriptorWithRuntimeCatalog(left)?.displayName ?? left;
-      const rightLabel = resolveModelDescriptorWithRuntimeCatalog(right)?.displayName ?? right;
+      const leftLabel = resolveModelDescriptorWithRuntimeCatalog(left, modelCatalogScopeKey)?.displayName ?? left;
+      const rightLabel = resolveModelDescriptorWithRuntimeCatalog(right, modelCatalogScopeKey)?.displayName ?? right;
       return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
     });
     return [...ordered, ...extras];
-  }, [availableModelIds, runtimeCatalogVersion, selectedSessionModelId]);
+  }, [availableModelIds, modelCatalogScopeKey, runtimeCatalogVersion, selectedSessionModelId]);
   const canShowHandoff = Boolean(
     lockSessionId
       && selectedSessionId
@@ -11010,6 +11036,33 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
+  /**
+   * The composer's machine, but only when it is NOT the one this window's
+   * project tab is bound to.
+   *
+   * Which models a prompt box offers, which of them are configured, and their
+   * thinking levels are facts about the machine that will run the turn — a
+   * Work tab unions chats from every machine on the account, so the bound
+   * machine is frequently not that machine. `null` keeps the bound path (and
+   * its shared catalog + local IPC fallback) exactly as before, which is the
+   * common case and costs nothing.
+   */
+  const composerModelRuntimePin = useMemo(
+    () => (
+      activeComposerRuntimeBinding && activeComposerRuntimeBinding.key !== projectBinding?.key
+        ? activeComposerRuntimeBinding
+        : null
+    ),
+    [activeComposerRuntimeBinding, projectBinding?.key],
+  );
+  const composerModelCatalogScopeKey = composerModelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  // Layout effect, not effect: this publishes the machine the model memos above
+  // read from, so running it after paint would show one frame of the previous
+  // machine's model list when the composer switches machines. Setting the same
+  // key is a no-op re-render, so the common case still costs nothing.
+  useLayoutEffect(() => {
+    setModelCatalogScopeKey(composerModelCatalogScopeKey);
+  }, [composerModelCatalogScopeKey]);
   const draftAttachmentMachine = useMemo(() => ({
     id: selectedDraftMachineId,
     name: selectedDraftMachine?.name ?? (
@@ -11464,11 +11517,13 @@ export function AgentChatPane({
                 availableModelIds={handoffAvailableModelIds}
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
+                runtimePin={composerModelRuntimePin}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
                 reasoningEffort={handoffReasoningEffort}
                 onChange={setHandoffReasoningEffort}
+                catalogScopeKey={composerModelCatalogScopeKey}
               />
             </div>
             <div className="text-[10px] leading-4 text-fg/40">
@@ -11501,9 +11556,11 @@ export function AgentChatPane({
                 surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
+                runtimePin={composerModelRuntimePin}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
+                catalogScopeKey={composerModelCatalogScopeKey}
                 reasoningEffort={handoffReasoningEffort}
                 onChange={setHandoffReasoningEffort}
               />
@@ -12133,6 +12190,7 @@ export function AgentChatPane({
             onPromptHistoryNavigate={handlePromptHistoryNavigate}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
+            modelRuntimePin={composerModelRuntimePin}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}

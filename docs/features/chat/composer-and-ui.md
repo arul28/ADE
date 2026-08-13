@@ -372,7 +372,28 @@ that could not work without it.
   Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`). Cursor
   runtime rows carry `cursorAvailability`, so chat surfaces hide
   CLI-only models while Work CLI setup includes them and hides
-  SDK-only/chat-only rows. When a
+  SDK-only/chat-only rows.
+
+  **Everything a prompt box offers is scoped to the machine set in that
+  prompt box.** A Work tab unions chats from every machine on the account,
+  so the machine a chat runs on is frequently not the one the project tab
+  is bound to — and a runtime catalog is a machine fact (local ollama /
+  LM Studio endpoints, the installed `cursor-agent`, the opencode
+  inventory). `AgentChatPane` derives `composerModelRuntimePin` from
+  `activeComposerRuntimeBinding` (the session's `chatRuntimePin`, or the
+  draft shelf's machine) whenever it differs from the bound binding, and
+  passes it to `AgentChatComposer` as `modelRuntimePin`. The picker routes
+  `agentChat.modelCatalog(args, pin)` to that machine — the same pin
+  `agentChat.models` already takes — and caches the result under that
+  binding key, so machine A's local models can never appear in, or supply
+  thinking levels to, a composer targeting machine B. A `null` pin (the
+  common same-machine case) keeps the bound path, its shared catalog
+  bucket and the preload local-IPC fallback exactly as before, so the
+  scoping costs no extra probes for ordinary use. Provider *availability*
+  (`aiStatus`) was already pin-keyed in `aiDiscoveryCache.ts`; this brings
+  the catalog onto the same rule. On ADE Web a foreign pin is rejected by
+  `assertWebRuntimePinRoutable` (single-machine adapter) and the picker
+  falls back to the pin-scoped model list. When a
   caller passes `availableModelIdsOverride`, `AgentChatPane` constrains
   selection to exactly those ids: `filterChatModelIdsForSession({
   includeActiveSessionModel: false })` skips the usual "preserve the
@@ -690,11 +711,11 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | `ModelPickerRail.tsx` | Left-rail tabs (Favorites / Recents / per-provider groups). Reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
 | `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). Also renders the muted Fast chip when the surface supplied `onFastModeChange` and `modelSupportsFastMode()` holds for that row's descriptor; toggling it changes neither the selection nor the popover's open state. |
 | `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. |
-| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. |
+| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. All four take the same optional catalog scope key as `runtimeCatalogCache.ts`: descriptors are remembered per machine because a catalog's `reasoningEfforts` (the thinking-level ladder) and context window are machine-reported. There is deliberately **no fallback to another machine's bucket** — answering a miss from the bound machine is the same cross-machine leak the bucketing exists to prevent. A miss falls through to the static registry and then to `createUnknownModelPlaceholder`: correct-but-generic beats confident-and-wrong. |
 | `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |
 | `modelPickerSearch.ts` | `scoreModelPickerSearch` — fuzzy search across display name, family, provider, and ids; ranks favorites/recents above strict matches. |
 | `providerEmptyState.tsx` | Per-provider empty/auth/install CTA copy. Surfaces "Install OpenCode" when the binary is missing, "Sign in to Cursor" when auth is missing, etc. |
-| `runtimeCatalogCache.ts` | Renderer-side shared catalog cache. Tracks per-provider freshness (30 min for `opencode`/`cursor`/`droid`, 30 s for `lmstudio`/`ollama`) and dedupes concurrent `modelCatalog` requests by `${mode}:${refreshProvider}` keys. |
+| `runtimeCatalogCache.ts` | Renderer-side catalog cache, **bucketed per machine** by binding key (`DEFAULT_RUNTIME_CATALOG_SCOPE` = `""` is the bound machine; capped at 8 scopes). Each bucket tracks its own per-provider freshness (30 min for `opencode`/`cursor`/`droid`, 30 s for `lmstudio`/`ollama`), so one machine's refresh cannot mark another's providers fresh. Each bucket also owns the descriptors parsed from its catalog, so one cap and one eviction govern both and a dropped scope cannot leave descriptors behind; the bound machine's bucket is never evicted. Concurrent `modelCatalog` requests dedupe by `${scopeKey}|${mode}:${refreshProvider}:${cursorSource}`. Bucketing also fixes a stale read that predates cross-machine Work: nothing clears the cache when the project binding changes, so a single global catalog kept describing the previous machine after a switch. |
 | `useProviderAuthStatus.ts` | Resolves `AuthStatus` (`ok` / `limited` / `unauthed` / `unknown`) per `ProviderFamily` from the runtime-binding-scoped `aiDiscoveryCache`. A picker with no explicit `providerAuthStatus` seeds from the cached value, joins the shared single-flight refresh, and reacts to cache update/invalidation events; callers that already supply status opt out of the full fetch. The separate cheap OpenCode-binary probe is deduplicated by runtime/project scope. |
 | `useAuthOnlyFilter.ts` | Hides models whose provider is not authenticated, with a toggle for the catalog browse mode. |
 | `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to the per-project `ade.db` tables `model_picker_favorites` and `model_picker_recents` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. Desktop, TUI, and iOS share the CRR-backed store; the legacy `~/.ade/modelPicker.json` file is only a one-time migration source. |

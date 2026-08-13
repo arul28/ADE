@@ -1023,6 +1023,84 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());
   });
 
+  // The model catalog enumerates the SERVING machine's ollama/LM Studio
+  // endpoints, its installed cursor-agent and its opencode inventory. A Work
+  // tab unions chats from every machine, so a composer for a chat on another
+  // machine has to read that machine's catalog — reading the bound machine's
+  // is how the prompt box came to offer models the target could not run.
+  it("routes the model catalog through the bound runtime, or an explicit chat pin", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const chatRuntimePin = {
+      kind: "remote",
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      runtimeName: "Studio",
+      projectId: "project-2",
+      rootPath: "/remote/chat-project",
+      displayName: "Chat project",
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const id = (payload as { id?: string } | undefined)?.id;
+        return {
+          ok: true,
+          result: {
+            groups: [{ key: id === "target-2" ? "ollama" : "lmstudio", label: id, providers: [] }],
+            fetchedAt: "2026-05-18T00:00:00.000Z",
+          },
+          statusHints: {},
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: { getZoomLevel: vi.fn(() => 0), setZoomLevel: vi.fn(), getZoomFactor: vi.fn(() => 1) },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    // No pin: unchanged behaviour — the window's bound runtime answers.
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" }))
+      .resolves.toMatchObject({ groups: [{ key: "lmstudio" }] });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
+    });
+    invoke.mockClear();
+
+    // Pinned: the chat's own machine answers, and the bound one is not asked.
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" }, chatRuntimePin))
+      .resolves.toMatchObject({ groups: [{ key: "ollama" }] });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-2",
+      projectId: "project-2",
+      request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.objectContaining({ id: "target-1" }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatModelCatalog, expect.anything());
+  });
+
   it("reads env files locally while importing and exporting secrets on the bound remote machine", async () => {
     const binding = {
       kind: "remote",

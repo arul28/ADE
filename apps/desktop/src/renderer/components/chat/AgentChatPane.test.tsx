@@ -1353,6 +1353,118 @@ describe("AgentChatPane remote startup", () => {
     expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
   });
 
+  /**
+   * A Work tab unions chats from every machine on the account, so the machine a
+   * chat runs on is frequently NOT the one the project tab is bound to. What the
+   * prompt box offers — which models exist, and their thinking levels — is a
+   * fact about the machine that will run the turn.
+   *
+   * The bridge here answers differently per machine, exactly as two real Macs
+   * would: unpinned calls land on the bound machine (that is what preload's
+   * bound path does), pinned calls on the chat's own. Before the composer
+   * carried the pin, the picker for a chat on the Studio was filled from this
+   * Mac's catalog and offered `ollama/bound-only`, a model the Studio cannot run.
+   */
+  it("fills the prompt box from the chat's own machine, not the bound one", async () => {
+    const boundRoot = "/tmp/project-under-test";
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const catalogFor = (localModelId: string, displayName: string) => ({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "ollama",
+        displayName: "Ollama",
+        providers: [{
+          key: "ollama",
+          displayName: "Ollama",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "ollama",
+            label: "Ollama",
+            models: [{
+              id: localModelId,
+              runtimeModelId: localModelId,
+              provider: "ollama",
+              providerKey: "ollama",
+              groupKey: "ollama",
+              displayName,
+              isDefault: false,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    });
+
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    installAdeMocks({ sessions: [session] });
+
+    const modelCatalog = vi.fn(async (_args?: unknown, pin?: { targetId?: string } | null) => (
+      pin?.targetId === "target-studio"
+        ? catalogFor("ollama/studio-only", "Studio Only")
+        : catalogFor("ollama/bound-only", "Bound Only")
+    ));
+    (window.ade.agentChat as any).modelCatalog = modelCatalog;
+
+    useAppStore.setState({
+      project: { rootPath: boundRoot, displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+
+    // The catalog request is addressed to the machine the chat runs on.
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "cached" }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
+    });
+
+    // ...and the rows the user can pick under the local-models rail come from
+    // that machine: the Studio's ollama endpoint, never this Mac's.
+    fireEvent.click(await screen.findByRole("tab", { name: /^Ollama$/i }));
+    await waitFor(() => {
+      expect(document.querySelector('[data-model-id="ollama/studio-only"]')).toBeTruthy();
+    });
+    expect(document.querySelector('[data-model-id="ollama/bound-only"]')).toBeNull();
+  });
+
   it("applies shared AI status cache updates so Cursor unlocks without remount or force refresh", async () => {
     const projectRoot = "/tmp/project-under-test";
     const unauthorizedStatus: AiSettingsStatus = {
