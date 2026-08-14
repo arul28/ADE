@@ -82,6 +82,7 @@ import type {
   ChatTerminalWriteArgs,
   ChatTerminalPreviewArgs,
   ChatTerminalPreviewResult,
+  TerminalScreenSnapshot,
   TerminalSerializedSnapshot,
   TerminalSnapshotCell,
   TerminalSnapshotRow,
@@ -720,6 +721,11 @@ type PtyEntry = {
   /** Last size set by a non-mobile caller, restored when a phone detaches. */
   lastDesktopCols: number | null;
   lastDesktopRows: number | null;
+  /**
+   * A subscribed mobile/web viewport currently owns the live PTY size.
+   * Desktop fit-resizes remember lastDesktop* but must not fight the phone.
+   */
+  mobileViewportActive: boolean;
   pendingDataChunks: string[];
   pendingDataChars: number;
   pendingDataTimer: ReturnType<typeof setTimeout> | null;
@@ -2317,6 +2323,64 @@ export function createPtyService({
     } catch {
       return null;
     }
+  };
+
+  const screenSnapshotBufferType = (raw: unknown): "normal" | "alternate" => (
+    raw === "alternate" ? "alternate" : "normal"
+  );
+
+  const liveScreenSnapshot = (entry: PtyEntry): TerminalScreenSnapshot | null => {
+    const mirror = entry.terminalSnapshot;
+    // Disk snapshot writes may be disabled (ENOSPC) while the live headless
+    // xterm is still current. Mobile hydrate needs that live serialize.
+    if (!mirror || !entry.tracked) return null;
+    try {
+      const serialized = mirror.serializeAddon.serialize({ scrollback: 0 });
+      if (typeof serialized !== "string" || serialized.length === 0) return null;
+      return {
+        cols: mirror.terminal.cols,
+        rows: mirror.terminal.rows,
+        bufferType: screenSnapshotBufferType(mirror.terminal.buffer.active.type),
+        serialized,
+      };
+    } catch (err) {
+      const now = Date.now();
+      if (now - mirror.lastErrorAt > 10_000) {
+        mirror.lastErrorAt = now;
+        logger.warn("pty.terminal_screen_snapshot_failed", { sessionId: entry.sessionId, err: String(err) });
+      }
+      return null;
+    }
+  };
+
+  const storedScreenSnapshot = (sessionId: string): TerminalScreenSnapshot | null => {
+    const stored = readStoredTerminalSnapshot(sessionId);
+    if (!stored?.serialized) return null;
+    return {
+      cols: stored.cols,
+      rows: stored.rows,
+      bufferType: screenSnapshotBufferType(stored.bufferType),
+      serialized: stored.serialized,
+    };
+  };
+
+  const rememberDesktopSize = (entry: PtyEntry, cols: number, rows: number): void => {
+    entry.lastDesktopCols = cols;
+    entry.lastDesktopRows = rows;
+  };
+
+  const applyLivePtyResize = (entry: PtyEntry, cols: number, rows: number): void => {
+    if (entry.lastResizeCols === cols && entry.lastResizeRows === rows) return;
+    entry.pty.resize(cols, rows);
+    entry.lastResizeCols = cols;
+    entry.lastResizeRows = rows;
+    resizeTerminalSnapshot(entry, cols, rows);
+  };
+
+  const applyDesktopDrivenResize = (entry: PtyEntry, cols: number, rows: number): void => {
+    rememberDesktopSize(entry, cols, rows);
+    if (entry.mobileViewportActive) return;
+    applyLivePtyResize(entry, cols, rows);
   };
 
   const isTitleGenerationEnabled = (): boolean => {
@@ -5873,6 +5937,7 @@ export function createPtyService({
         lastResizeRows: null,
         lastDesktopCols: cols,
         lastDesktopRows: rows,
+        mobileViewportActive: false,
         pendingDataChunks: [],
         pendingDataChars: 0,
         pendingDataTimer: null,
@@ -7042,14 +7107,8 @@ export function createPtyService({
       if (!live) throw new Error("No running terminal matched the requested resize target.");
       const [liveId, entry] = live;
       const safe = clampDims(args.cols, args.rows);
-      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) {
-        return { ok: true, cols: safe.cols, rows: safe.rows };
-      }
       try {
-        entry.pty.resize(safe.cols, safe.rows);
-        entry.lastResizeCols = safe.cols;
-        entry.lastResizeRows = safe.rows;
-        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        applyDesktopDrivenResize(entry, safe.cols, safe.rows);
         return { ok: true, cols: safe.cols, rows: safe.rows };
       } catch (err) {
         logger.warn("pty.terminal_resize_failed", { ptyId: liveId, err: String(err) });
@@ -7091,15 +7150,11 @@ export function createPtyService({
       const safe = clampDims(cols, rows);
       // The ptyId-based path is only driven by the desktop renderer: remember
       // its size (even when the resize itself dedupes) so a mobile-driven
-      // resize can be undone when the phone detaches.
-      entry.lastDesktopCols = safe.cols;
-      entry.lastDesktopRows = safe.rows;
-      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return;
+      // resize can be undone when the phone detaches. While a phone is
+      // subscribed, do not apply the live resize — last writer used to win
+      // and a focused desktop pane kept ultrawide TUIs off the phone screen.
       try {
-        entry.pty.resize(safe.cols, safe.rows);
-        entry.lastResizeCols = safe.cols;
-        entry.lastResizeRows = safe.rows;
-        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        applyDesktopDrivenResize(entry, safe.cols, safe.rows);
       } catch (err) {
         logger.warn("pty.resize_failed", { ptyId, err: String(err) });
       }
@@ -7148,16 +7203,18 @@ export function createPtyService({
       const safe = clampDims(cols, rows);
       // A mobile viewport must never become the desktop-preferred size — it
       // is restored from lastDesktop* when the phone detaches.
-      if (opts?.source !== "mobile") {
-        entry.lastDesktopCols = safe.cols;
-        entry.lastDesktopRows = safe.rows;
+      if (opts?.source === "mobile") {
+        entry.mobileViewportActive = true;
+        try {
+          applyLivePtyResize(entry, safe.cols, safe.rows);
+          return true;
+        } catch (err) {
+          logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
+          return false;
+        }
       }
-      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return true;
       try {
-        entry.pty.resize(safe.cols, safe.rows);
-        entry.lastResizeCols = safe.cols;
-        entry.lastResizeRows = safe.rows;
-        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        applyDesktopDrivenResize(entry, safe.cols, safe.rows);
         return true;
       } catch (err) {
         logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
@@ -7179,12 +7236,10 @@ export function createPtyService({
       const cols = entry.lastDesktopCols;
       const rows = entry.lastDesktopRows;
       if (cols == null || rows == null) return false;
+      entry.mobileViewportActive = false;
       if (entry.lastResizeCols === cols && entry.lastResizeRows === rows) return false;
       try {
-        entry.pty.resize(cols, rows);
-        entry.lastResizeCols = cols;
-        entry.lastResizeRows = rows;
-        resizeTerminalSnapshot(entry, cols, rows);
+        applyLivePtyResize(entry, cols, rows);
         return true;
       } catch (err) {
         logger.warn("pty.restore_desktop_size_failed", { sessionId, err: String(err) });
@@ -7358,6 +7413,22 @@ export function createPtyService({
         endOffset: window.endOffset,
         alignStartToSafeBoundary: args.alignStartToSafeBoundary,
       });
+    },
+
+    /**
+     * Current-screen CSI for mobile/web replacing hydrates. Prefers the live
+     * headless xterm (already in alt-screen when the PTY is) and falls back to
+     * the on-disk snapshot for ended sessions. Never includes visibleRows.
+     */
+    readScreenSnapshot(sessionId: string): TerminalScreenSnapshot | null {
+      const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!trimmed) return null;
+      const live = liveEntryBySessionId(trimmed)?.[1] ?? null;
+      if (live) {
+        const liveScreen = liveScreenSnapshot(live);
+        if (liveScreen) return liveScreen;
+      }
+      return storedScreenSnapshot(trimmed);
     },
 
     /**

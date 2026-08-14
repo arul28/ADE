@@ -106,6 +106,8 @@ final class TerminalSessionController: NSObject, ObservableObject {
   @Published private(set) var isResuming = false
   @Published private(set) var resumeError: String?
   @Published private(set) var isSubscribed = false
+  @Published private(set) var hasPainted = false
+  @Published private(set) var subscribeError: String?
   @Published private(set) var ctrlArmed = false
   @Published private(set) var bellPulse = 0
   /// Bumped when typed input is dropped because the host is unreachable.
@@ -118,6 +120,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private static let maxFontSize: CGFloat = 20
   private static let transcriptByteCap = 4 * 1024 * 1024
   private static let scrollbackLines = 10_000
+  private static let maxQueuedEvents = 256
 
   private(set) var sessionId = ""
   private weak var syncService: SyncService?
@@ -175,13 +178,28 @@ final class TerminalSessionController: NSObject, ObservableObject {
     let resumeOffset = transcriptEndOffset
     Task { @MainActor [weak self] in
       guard let self else { return }
-      do {
-        try await syncService.subscribeTerminalStream(sessionId: sessionId, sinceOffset: resumeOffset)
-        self.isSubscribed = true
-        self.startLegacyPollingIfNeeded()
-      } catch {
-        self.isSubscribed = false
-      }
+      await self.subscribeStream(sinceOffset: resumeOffset)
+    }
+  }
+
+  func retrySubscribe() {
+    subscribeError = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.subscribeStream(sinceOffset: self.transcriptEndOffset)
+    }
+  }
+
+  private func subscribeStream(sinceOffset: Int?) async {
+    guard let syncService, !sessionId.isEmpty else { return }
+    do {
+      try await syncService.subscribeTerminalStream(sessionId: sessionId, sinceOffset: sinceOffset)
+      isSubscribed = true
+      subscribeError = nil
+      startLegacyPollingIfNeeded()
+    } catch {
+      isSubscribed = false
+      subscribeError = (error as NSError).localizedDescription
     }
   }
 
@@ -344,30 +362,69 @@ final class TerminalSessionController: NSObject, ObservableObject {
 
   private func handleStreamEvent(_ event: TerminalStreamEvent) {
     guard readyToFeed else {
-      queuedEvents.append(event)
+      enqueueUntilReady(event)
       return
     }
     applyStreamEvent(event)
   }
 
+  private func enqueueUntilReady(_ event: TerminalStreamEvent) {
+    if case .hydrate(_, true, _, _, _) = event {
+      queuedEvents.removeAll { pending in
+        if case .exit = pending { return false }
+        return true
+      }
+    }
+    queuedEvents.append(event)
+    guard queuedEvents.count > Self.maxQueuedEvents else { return }
+    var hydrate: TerminalStreamEvent?
+    var exitEvent: TerminalStreamEvent?
+    var rest: [TerminalStreamEvent] = []
+    for pending in queuedEvents {
+      switch pending {
+      case .hydrate(_, true, _, _, _):
+        hydrate = pending
+      case .exit:
+        exitEvent = pending
+      default:
+        rest.append(pending)
+      }
+    }
+    let reserved = (hydrate == nil ? 0 : 1) + (exitEvent == nil ? 0 : 1)
+    let keep = max(0, Self.maxQueuedEvents - reserved)
+    var next = Array(rest.suffix(keep))
+    if let hydrate { next.insert(hydrate, at: 0) }
+    if let exitEvent { next.append(exitEvent) }
+    queuedEvents = next
+  }
+
   private func applyStreamEvent(_ event: TerminalStreamEvent) {
     switch event {
-    case .hydrate(let text, let replacing, let startOffset, let endOffset):
+    case .hydrate(let text, let replacing, let startOffset, let endOffset, let paintFromScreen):
       inputStatusMessage = nil
       isSubscribed = true
+      subscribeError = nil
       noteHostOffsetCapability(endOffset != nil)
       if replacing {
         let bytes = Data(text.utf8)
         // Legacy polling refetches the same tail every cycle; rebuilding on an
         // unchanged tail would flicker the screen every poll.
-        if endOffset == nil, !bytes.isEmpty, transcript == bytes || (transcript.count > bytes.count && transcript.suffix(bytes.count) == bytes) {
+        if !paintFromScreen, endOffset == nil, !bytes.isEmpty, transcript == bytes || (transcript.count > bytes.count && transcript.suffix(bytes.count) == bytes) {
           return
         }
-        transcript = bytes
         transcriptStartOffset = startOffset
         transcriptEndOffset = endOffset
-        historyAtStart = startOffset == 0
-        rebuildTerminal()
+        if paintFromScreen {
+          // CSI is not a transcript window. Paging older log bytes in front of
+          // it would corrupt the alt-screen paint.
+          transcript = Data()
+          historyAtStart = true
+        } else {
+          transcript = bytes
+          historyAtStart = startOffset == 0
+        }
+        rebuildTerminal(feed: bytes)
+        if !bytes.isEmpty { hasPainted = true }
       } else {
         appendBytes(Data(text.utf8), endOffset: endOffset, countsAsLive: false)
       }
@@ -401,6 +458,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
     transcript.append(bytes)
     enforceTranscriptCap()
     terminalView?.feed(byteArray: [UInt8](bytes)[...])
+    if !bytes.isEmpty { hasPainted = true }
     if countsAsLive, !isPinnedToBottom {
       liveChunksWhileScrolledUp += 1
     }
@@ -418,12 +476,13 @@ final class TerminalSessionController: NSObject, ObservableObject {
     historyAtStart = false
   }
 
-  private func rebuildTerminal() {
+  private func rebuildTerminal(feed bytes: Data? = nil) {
     guard let view = terminalView else { return }
     view.holdScrollOnOutput = false
     view.getTerminal().resetToInitialState()
-    if !transcript.isEmpty {
-      view.feed(byteArray: [UInt8](transcript)[...])
+    let payload = bytes ?? transcript
+    if !payload.isEmpty {
+      view.feed(byteArray: [UInt8](payload)[...])
     }
     isPinnedToBottom = true
     liveChunksWhileScrolledUp = 0

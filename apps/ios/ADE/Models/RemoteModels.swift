@@ -4718,6 +4718,13 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var resolutionState: IntegrationResolutionState?
 }
 
+struct TerminalScreenSnapshot: Codable, Equatable {
+  var cols: Int
+  var rows: Int
+  var bufferType: String?
+  var serialized: String
+}
+
 struct TerminalSnapshot: Codable, Equatable {
   var sessionId: String
   var transcript: String
@@ -4736,6 +4743,20 @@ struct TerminalSnapshot: Codable, Equatable {
   /// restart orphaned a "running" session — typing would go nowhere. Absent
   /// on older hosts.
   var live: Bool?
+  /// Current-screen CSI for replacing hydrates. Alt-screen TUIs cannot be
+  /// reconstructed from a transcript tail. Absent on older hosts and on
+  /// delta resumes.
+  var screen: TerminalScreenSnapshot?
+
+  var hasScreenPaint: Bool {
+    guard let serialized = screen?.serialized else { return false }
+    return !serialized.isEmpty
+  }
+
+  var replacingHydrateText: String {
+    if delta == true { return transcript }
+    return hasScreenPaint ? (screen?.serialized ?? transcript) : transcript
+  }
 }
 
 /// Response payload for `terminal_history`: transcript bytes

@@ -70,6 +70,9 @@ struct TerminalSessionScreen: View {
     VStack(spacing: 0) {
       topBar
       SwiftTermSessionView(controller: controller)
+        .overlay {
+          terminalLoadOverlay
+        }
         .overlay(alignment: .top) {
           if controller.isLoadingHistory {
             TerminalHistoryShimmer()
@@ -82,6 +85,37 @@ struct TerminalSessionScreen: View {
               .padding(.bottom, 14)
           }
         }
+    }
+  }
+
+  @ViewBuilder
+  private var terminalLoadOverlay: some View {
+    if controller.hasPainted || controller.hasExited {
+      EmptyView()
+    } else if let subscribeError = controller.subscribeError {
+      VStack(spacing: 12) {
+        Text("Couldn’t load this terminal")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(subscribeError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .multilineTextAlignment(.center)
+          .padding(.horizontal, 24)
+        Button("Retry") {
+          controller.retrySubscribe()
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(ADEColor.accent)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(Color.black.opacity(0.72))
+    } else if !controller.isSubscribed {
+      ProgressView()
+        .controlSize(.regular)
+        .tint(.white)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.35))
     }
   }
 

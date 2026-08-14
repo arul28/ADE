@@ -7700,6 +7700,32 @@ describe("ptyService", () => {
       expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
       expect(mockPty.resize).toHaveBeenLastCalledWith(80, 24);
     });
+
+    it("ignores desktop fit-resizes while a mobile viewport owns the PTY", async () => {
+      const { service, mockPty } = createHarness();
+      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      expect(service.resizeBySessionId(sessionId, 60, 20, { source: "mobile" })).toBe(true);
+      vi.mocked(mockPty.resize).mockClear();
+
+      service.resize({ ptyId, cols: 375, rows: 53 });
+      expect(mockPty.resize).not.toHaveBeenCalled();
+      expect(service.resizeTerminal({ ptyId, cols: 200, rows: 40 })).toEqual({
+        ok: true,
+        cols: 200,
+        rows: 40,
+      });
+      expect(mockPty.resize).not.toHaveBeenCalled();
+
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(200, 40);
+    });
+
+    it("returns null from readScreenSnapshot for an unknown session", async () => {
+      const { service } = createHarness();
+      expect(service.readScreenSnapshot("missing")).toBeNull();
+      expect(service.readScreenSnapshot("")).toBeNull();
+    });
   });
 
   describe("ensureResumeTargets", () => {

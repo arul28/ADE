@@ -1379,6 +1379,13 @@ export type SyncTerminalUnsubscribePayload = {
   sessionId: string;
 };
 
+export type SyncTerminalScreenSnapshot = {
+  cols: number;
+  rows: number;
+  bufferType: "normal" | "alternate";
+  serialized: string;
+};
+
 export type SyncTerminalSnapshotPayload = {
   sessionId: string;
   transcript: string;
@@ -1398,6 +1405,13 @@ export type SyncTerminalSnapshotPayload = {
    * surface a resume affordance instead of silently accepting keystrokes.
    */
   live?: boolean;
+  /**
+   * Current-screen CSI for replacing hydrates. Alt-screen TUIs (Claude Code)
+   * cannot be reconstructed from a transcript tail — the DECSET is long gone
+   * and the tail is incremental CUP at the desktop width. Older clients ignore
+   * this field and keep replaying `transcript`. Omitted on delta resumes.
+   */
+  screen?: SyncTerminalScreenSnapshot | null;
 };
 
 export type SyncTerminalDataPayload = {
