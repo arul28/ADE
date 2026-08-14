@@ -14,6 +14,7 @@ import type {
   WebClientEnvironmentRecord,
 } from "../../sync";
 import { useWebWorkspace } from "../../workspace/WebWorkspaceContext";
+import { WebMachineSessionManager } from "../../workspace/WebMachineSessionManager";
 import { WebClientRoot } from "../WebClientRoot";
 import {
   LONG_PRESS_MS,
@@ -44,6 +45,7 @@ const mocks = vi.hoisted(() => {
   };
   return {
     federated,
+    retryDirectoryIdentities: [] as unknown[],
     createFederatedAdapter: vi.fn<[{
       manager: { listEnvironments(): WebClientEnvironmentRecord[] };
     }], typeof federated>(() => federated),
@@ -59,12 +61,24 @@ vi.mock("../../adapter/federated", () => ({
 vi.mock("../../../components/app/App", () => ({
   App: () => {
     const workspace = useWebWorkspace();
+    React.useEffect(() => {
+      mocks.retryDirectoryIdentities.push(workspace.retryDirectory);
+    }, [workspace.retryDirectory]);
     return (
       <>
         <div data-testid="app-root">{window.location.pathname}</div>
         <button type="button" onClick={() => void workspace.signOut()}>
           Test sign out
         </button>
+        <button type="button" onClick={() => void workspace.retryDirectory()}>
+          Test retry directory
+        </button>
+        <button type="button" onClick={() => void workspace.removeAccountMachine("alpha")}>
+          Test remove account machine
+        </button>
+        <div data-testid="workspace-environments">
+          {workspace.snapshot.environments.map((entry) => entry.envId).join(",")}
+        </div>
       </>
     );
   },
@@ -164,6 +178,7 @@ function accountClient(
     getSnapshot: () => snapshot,
     bootstrap: vi.fn(async () => snapshot),
     getAccessToken: vi.fn(async () => "token"),
+    getRelayBaseUrls: vi.fn(() => snapshot.relayBaseUrls),
     ...overrides,
   } as unknown as BrowserAccountClient;
 }
@@ -172,6 +187,7 @@ beforeEach(() => {
   federated.restore.mockResolvedValue(null);
   federated.dispose.mockReset();
   federated.activeAdapterListeners.clear();
+  mocks.retryDirectoryIdentities.length = 0;
   createFederatedAdapter.mockClear();
 });
 
@@ -272,6 +288,74 @@ describe("WebClientRoot workspace bootstrap", () => {
 
     expect(screen.getByTestId("app-root")).toBe(before);
     expect(createFederatedAdapter).toHaveBeenCalledOnce();
+  });
+
+  it("keeps directory retry stable across workspace snapshots", async () => {
+    const loadMachines = vi.fn(async () => signedOutAccount);
+    render(
+      <WebClientRoot
+        client={syncClient()}
+        accountClient={accountClient(signedOutAccount, { loadMachines })}
+      />,
+    );
+
+    await screen.findByTestId("app-root");
+    expect(mocks.retryDirectoryIdentities).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Test retry directory" }));
+    await waitFor(() => expect(loadMachines).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.retryDirectoryIdentities).toHaveLength(1));
+  });
+
+  it("forgets the local pairing and every cached catalog key after account removal", async () => {
+    const machine = {
+      machineKey: "alpha",
+      deviceId: "alpha",
+      name: "Alpha",
+      customName: null,
+      platform: "darwin",
+      deviceType: "desktop",
+      pubkey: null,
+      reachableEndpoints: [],
+      lastSeenAt: Date.now(),
+      online: true,
+    };
+    const signedInWithMachine = { ...signedInAccount, machines: [machine] };
+    const paired = environment({ envId: "alpha-env", hostDeviceId: "alpha" });
+    let environments = [paired];
+    let current = signedInWithMachine;
+    const removeMachine = vi.fn(async () => {
+      current = { ...current, machines: [] };
+    });
+    federated.forgetEnvironment.mockImplementation(async () => {
+      environments = [];
+    });
+    const forgetCatalog = vi.spyOn(WebMachineSessionManager.prototype, "forgetCatalog");
+
+    render(
+      <WebClientRoot
+        client={syncClient({
+          pruneAccountOwnedEnvironments: vi.fn(async () => ({
+            removedIds: [],
+            environments,
+          })),
+        })}
+        accountClient={accountClient(signedInWithMachine, {
+          getSnapshot: () => current,
+          loadMachines: vi.fn(async () => current),
+          removeMachine,
+        })}
+      />,
+    );
+
+    await screen.findByTestId("app-root");
+    expect(screen.getByTestId("workspace-environments").textContent).toBe("alpha-env");
+
+    fireEvent.click(screen.getByRole("button", { name: "Test remove account machine" }));
+    await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("alpha"));
+    await waitFor(() => expect(screen.getByTestId("workspace-environments").textContent).toBe(""));
+    expect(federated.forgetEnvironment).toHaveBeenCalledWith("alpha-env");
+    expect(forgetCatalog).toHaveBeenCalledWith("environment:alpha-env");
   });
 
   it("keeps browser storage failure non-fatal", async () => {

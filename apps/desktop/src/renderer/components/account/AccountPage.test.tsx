@@ -7,8 +7,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AccountPage, SignInCard, describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./AccountPage";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
-import type { AdeAccountMachine, AdeAccountStatus } from "../../../shared/types";
+import type { AdeAccountMachine, AdeAccountMachineRemovalResult, AdeAccountStatus } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { WebWorkspaceProvider } from "../../webclient/workspace/WebWorkspaceContext";
 
 const beginLogin = vi.fn(async () => undefined);
 const refreshAccount = vi.fn(async () => SIGNED_OUT);
@@ -362,6 +363,31 @@ describe("AccountPage signed-in", () => {
     await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
   });
 
+  it("keeps the removal confirmation open while removal is in flight", async () => {
+    let resolveRemoval!: (result: AdeAccountMachineRemovalResult) => void;
+    removeMachine.mockImplementationOnce(
+      () => new Promise<AdeAccountMachineRemovalResult>((resolve) => {
+        resolveRemoval = resolve;
+      }),
+    );
+    renderPage();
+    await screen.findByText("Studio");
+
+    fireEvent.click(screen.getByRole("button", { name: /Options for Studio/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Remove from account/ }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(dialog);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    resolveRemoval({ ok: true, machineKey: "studio-key" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("signs out only after the honest confirmation", async () => {
     renderPage();
     await screen.findByText("MacBook Pro");
@@ -432,6 +458,86 @@ describe("AccountPage signed-in", () => {
     await screen.findByText("MacBook Pro");
 
     expect(screen.queryByRole("button", { name: /Manage connections/ })).toBeNull();
+  });
+
+  it("uses the shared web roster so a leftover pairing is labeled, not a fourth account computer", async () => {
+    window.__adeWebClient = true;
+    const removeAccountMachine = vi.fn(async () => undefined);
+    const environment = {
+      envId: "alpha-env",
+      machineName: "windows alpha",
+      hostDeviceId: "alpha",
+    };
+    render(
+      <WebWorkspaceProvider
+        value={{
+          account: {
+            state: "signed_in",
+            userId: "user_1",
+            email: null,
+            name: null,
+            imageUrl: null,
+            expiresAt: null,
+            machines: [
+              machine({
+                machineKey: "studio-key",
+                deviceId: "studio-dev",
+                name: "Studio",
+                online: true,
+                reachableEndpoints: [{ kind: "lan", host: "192.168.1.5" }],
+              }),
+            ],
+            relayBaseUrls: [],
+            message: null,
+          },
+          snapshot: {
+            sessions: [{
+              targetId: "alpha-env",
+              environment,
+              status: { state: "reconnecting" },
+              state: "reconnecting",
+              projects: [],
+              lastUsedAt: Date.now(),
+              activeProjectId: null,
+              error: null,
+            }],
+            environments: [environment],
+            activeTargetId: null,
+            catalogs: [],
+            lastActiveMachineKey: null,
+            updatedAt: 0,
+          },
+          manager: {} as never,
+          adapter: { getActiveBinding: () => null } as never,
+          connectingMachineKey: null,
+          directoryLoading: false,
+          notice: null,
+          dismissNotice: vi.fn(),
+          consumePendingProjectPath: () => null,
+          signIn: vi.fn(),
+          signOut: vi.fn(),
+          retryDirectory: vi.fn(async () => undefined),
+          connectAccountMachine: vi.fn(),
+          connectEnvironment: vi.fn(),
+          connectMachineEntry: vi.fn(),
+          forgetMachineCatalog: vi.fn(),
+          renameMachine: vi.fn(),
+          removeAccountMachine,
+          forgetEnvironment: vi.fn(),
+        } as never}
+      >
+        <MemoryRouter initialEntries={["/account"]}>
+          <Routes>
+            <Route path="/account" element={<AccountPage />} />
+          </Routes>
+        </MemoryRouter>
+      </WebWorkspaceProvider>,
+    );
+
+    expect(await screen.findByText("windows alpha")).toBeTruthy();
+    expect(screen.getByText("This browser")).toBeTruthy();
+    expect(screen.getByText("1 on this account · 1 remembered in this browser")).toBeTruthy();
+    expect(screen.queryByText(/3 online/)).toBeNull();
   });
 
   // Removal revokes the machine durably: it cannot resurrect itself through its

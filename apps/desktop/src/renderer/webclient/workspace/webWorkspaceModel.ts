@@ -53,6 +53,12 @@ export type WebMachineEntry = {
   /** True when `projects` came from the persisted cache, not a live catalog. */
   stale: boolean;
   lastSeenAt: string | number | null;
+  /**
+   * This browser still has a pairing or catalog, but the account directory
+   * does not list the machine. Surfaces must not present it as a fourth
+   * account computer.
+   */
+  rememberedOnly: boolean;
 };
 
 /** Account rows share the environment identity when the machine has a device id. */
@@ -124,7 +130,64 @@ function webMachineStatusLabel(status: WebMachineStatus): string {
       return "Available";
     case "offline":
       return "Offline";
+    default: {
+      const _exhaustive: never = status;
+      return _exhaustive;
+    }
   }
+}
+
+/**
+ * One-glance status for a roster row. Remembered-only leftovers lead with that
+ * fact so they cannot be mistaken for a computer still on the account.
+ */
+export function webMachineRowStatusLine(machine: WebMachineEntry): string {
+  const detail = machine.connectStage
+    ?? (machine.status === "offline"
+      ? (() => {
+          const seen = webMachineLastSeenPhrase(machine.lastSeenAt);
+          return seen ? `Offline · last seen ${seen}` : "Offline";
+        })()
+      : (() => {
+          const projects = machine.projects.length;
+          const projectsLabel = projects > 0
+            ? `${projects} project${projects === 1 ? "" : "s"}`
+            : null;
+          return projectsLabel
+            ? `${machine.statusLabel} · ${projectsLabel}`
+            : machine.statusLabel;
+        })());
+  return machine.rememberedOnly
+    ? `Remembered in this browser · ${detail}`
+    : detail;
+}
+
+/**
+ * Shared header copy for the connections chip and Your computers, so the two
+ * surfaces cannot disagree about how many machines are on the account vs only
+ * leftover in this browser.
+ */
+export function webMachineRosterSummary(machines: readonly WebMachineEntry[]): string {
+  if (machines.length === 0) return "No computers on this account yet";
+  const onAccount = machines.filter((machine) => machine.accountMachine).length;
+  const remembered = machines.length - onAccount;
+  const live = machines.filter((machine) => machine.status === "live").length;
+  const parts: string[] = [];
+  parts.push(onAccount > 0 ? `${onAccount} on this account` : "None on this account");
+  if (remembered > 0) {
+    parts.push(`${remembered} remembered in this browser`);
+  }
+  if (live > 0) {
+    parts.push(`${live} connected in this tab`);
+  }
+  return parts.join(" · ");
+}
+
+/** Live or reconnecting rows hold a browser sync client toward the four-slot cap. */
+export function webMachineHeldSessionCount(machines: readonly WebMachineEntry[]): number {
+  return machines.filter((machine) => (
+    machine.status === "live" || machine.status === "connecting"
+  )).length;
 }
 
 /**
@@ -254,6 +317,7 @@ export function mergeWebMachines(args: {
       const lastSeenAt = entry.accountMachine?.lastSeenAt
         ?? entry.environment?.lastConnectedAt
         ?? null;
+      const rememberedOnly = entry.accountMachine == null;
       return {
         key,
         name: entry.name,
@@ -262,11 +326,14 @@ export function mergeWebMachines(args: {
         session: entry.session,
         status,
         statusLabel: webMachineStatusLabel(status),
-        reachability: reachabilityCopy(status, lastSeenAt),
+        reachability: rememberedOnly
+          ? `This browser still remembers ${entry.name}, but it is not on your ADE account`
+          : reachabilityCopy(status, lastSeenAt),
         connectStage: webConnectStage(entry.session?.status ?? null),
         projects: live ? liveProjects : (entry.catalog?.projects ?? []),
         stale: !live && (entry.catalog?.projects.length ?? 0) > 0,
         lastSeenAt,
+        rememberedOnly,
       };
     })
     .sort((left, right) => (

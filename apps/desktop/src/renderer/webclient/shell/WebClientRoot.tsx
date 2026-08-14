@@ -18,7 +18,7 @@ import {
 } from "../workspace/WebWorkspaceContext";
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
-import { mergeWebMachines } from "../workspace/webWorkspaceModel";
+import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
@@ -385,6 +385,19 @@ export function WebClientRoot({
     return installSessionLifecycleChrome(activeLifecycleClient);
   }, [activeLifecycleClient, displayedTargetId]);
 
+  const retryDirectory = useCallback(async () => {
+    setDirectoryLoading(true);
+    try {
+      const snapshot = await accountClient.loadMachines();
+      setAccount(snapshot);
+      const visible = await applyAccountPrivacy(snapshot);
+      sessionManager.replaceEnvironments(visible);
+      await installFederatedAdapter(snapshot);
+    } finally {
+      setDirectoryLoading(false);
+    }
+  }, [accountClient, applyAccountPrivacy, installFederatedAdapter, sessionManager]);
+
   useEffect(() => {
     let disposed = false;
 
@@ -502,18 +515,7 @@ export function WebClientRoot({
         sessionManager.replaceEnvironments(visible);
         await installFederatedAdapter(snapshot);
       },
-      async retryDirectory() {
-        setDirectoryLoading(true);
-        try {
-          const snapshot = await accountClient.loadMachines();
-          setAccount(snapshot);
-          const visible = await applyAccountPrivacy(snapshot);
-          sessionManager.replaceEnvironments(visible);
-          await installFederatedAdapter(snapshot);
-        } finally {
-          setDirectoryLoading(false);
-        }
-      },
+      retryDirectory,
       async connectAccountMachine(machine) {
         setConnectingMachineKey(machine.machineKey);
         try {
@@ -536,11 +538,33 @@ export function WebClientRoot({
         setAccount(accountClient.getSnapshot());
       },
       async removeAccountMachine(machineKey) {
-        await accountClient.removeMachine(machineKey);
+        const entry = mergeWebMachines({
+          accountMachines: accountRef.current.machines,
+          snapshot: sessionManager.getSnapshot(),
+          relayBaseUrls: accountClient.getRelayBaseUrls(),
+        }).find((machine) => machine.accountMachine?.machineKey === machineKey) ?? null;
+        let removalError: Error | null = null;
+        try {
+          await accountClient.removeMachine(machineKey);
+        } catch (cause) {
+          removalError = cause instanceof Error ? cause : new Error(String(cause));
+          if (accountClient.getSnapshot().machines.some((machine) => machine.machineKey === machineKey)) {
+            throw removalError;
+          }
+        }
         const snapshot = accountClient.getSnapshot();
         setAccount(snapshot);
+        if (entry?.environment) {
+          await adapter.forgetEnvironment(entry.environment.envId);
+        }
+        if (entry) {
+          for (const catalogKey of webMachineCatalogKeys(entry)) {
+            sessionManager.forgetCatalog(catalogKey);
+          }
+        }
         const visible = await applyAccountPrivacy(snapshot);
         sessionManager.replaceEnvironments(visible);
+        if (removalError) throw removalError;
       },
       async forgetEnvironment(targetId) {
         await adapter.forgetEnvironment(targetId);
@@ -563,6 +587,7 @@ export function WebClientRoot({
     federatedAdapter,
     installFederatedAdapter,
     refreshVisibleEnvironments,
+    retryDirectory,
     sessionManager,
     signIn,
     workspaceNotice,

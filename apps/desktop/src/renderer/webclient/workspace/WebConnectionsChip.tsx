@@ -12,10 +12,12 @@ import {
   useWebMachines,
   type WebWorkspaceContextValue,
 } from "./WebWorkspaceContext";
+import { WEB_MACHINE_SESSION_LIMIT } from "./WebMachineSessionManager";
 import {
   WEB_MACHINE_DOT_COLOR,
-  webMachineCatalogKeys,
-  webMachineLastSeenPhrase,
+  webMachineHeldSessionCount,
+  webMachineRosterSummary,
+  webMachineRowStatusLine,
   type WebMachineEntry,
 } from "./webWorkspaceModel";
 
@@ -70,29 +72,6 @@ const POPOVER_SURFACE: CSSProperties = {
   boxShadow: "var(--shadow-float)",
 };
 
-/**
- * The one-glance status for a row, kept short enough to actually fit 288px.
- *
- * `reachability` is a full sentence written for a tooltip ("Available —
- * connects when you open a project"); rendered inline it truncated to
- * "AVAILABLE — CONNECTS WHEN YOU OPE…", which is worse than useless. The row
- * shows the status word plus the one detail that changes what you'd do next,
- * and keeps the sentence as the title.
- */
-function rowStatusLine(machine: WebMachineEntry): string {
-  if (machine.connectStage) return machine.connectStage;
-  const projects = machine.projects.length;
-  const projectsLabel = projects > 0
-    ? `${projects} project${projects === 1 ? "" : "s"}`
-    : null;
-  if (machine.status === "offline") {
-    const seen = webMachineLastSeenPhrase(machine.lastSeenAt);
-    return seen ? `Offline · last seen ${seen}` : "Offline";
-  }
-  return projectsLabel
-    ? `${machine.statusLabel} · ${projectsLabel}`
-    : machine.statusLabel;
-}
 
 export function WebConnectionsChip() {
   const workspace = useOptionalWebWorkspace();
@@ -322,7 +301,14 @@ export function WebConnectionsChip() {
               fontFamily: MONO_FONT,
             }}
           >
-            To add a machine: sign in to ADE on it.
+            <div>{webMachineRosterSummary(machines)}</div>
+            {webMachineHeldSessionCount(machines) >= WEB_MACHINE_SESSION_LIMIT ? (
+              <div className="mt-1">
+                This tab keeps {WEB_MACHINE_SESSION_LIMIT} machines connected at once.
+                Others stay listed and connect when you open them.
+              </div>
+            ) : null}
+            <div className="mt-1">To add a machine: sign in to ADE on it.</div>
           </div>
         </div>,
         document.body,
@@ -416,7 +402,7 @@ function WebMachineRow({
                 fontWeight: isLive ? 600 : undefined,
               }}
             >
-              {rowStatusLine(machine)}
+              {webMachineRowStatusLine(machine)}
             </span>
           </span>
         </button>
@@ -514,7 +500,6 @@ function WebMachineRow({
                 if (!window.confirm(`Remove ${machine.name} from your ADE account?`)) return;
                 void run(machine, async () => {
                   await workspace.removeAccountMachine(machineKey);
-                  workspace.forgetMachineCatalog(webMachineCatalogKeys(machine));
                 });
               }}
             />
