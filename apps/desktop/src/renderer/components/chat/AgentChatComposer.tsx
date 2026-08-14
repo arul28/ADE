@@ -97,6 +97,8 @@ import {
   shouldReconcileSmartLinkDraft,
   type SmartLinkPreview,
 } from "../../../shared/smartLinks";
+import { hasChatOutputContext } from "../../../shared/chatOutputContext";
+import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -1828,7 +1830,9 @@ export function AgentChatComposer({
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
-  const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(() => findSmartLinks(draft).length > 0);
+  const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
+    () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft),
+  );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
   const [activeTurnSendMode, setActiveTurnSendMode] = useState<ActiveTurnSendMode>("inline");
   const [activeTurnStopMode, setActiveTurnStopMode] = useState<AgentChatStopMode>("stop_and_clear");
@@ -1837,8 +1841,8 @@ export function AgentChatComposer({
     : activeTurnSendMode;
 
   useEffect(() => {
-    setActiveTurnSendMode("inline");
-  }, [sessionId, turnActive]);
+    if (hasChatOutputContext(draft)) setSmartLinkEditorEnabled(true);
+  }, [draft]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -2498,6 +2502,7 @@ export function AgentChatComposer({
     const editor = richEditorRef.current;
     if (!editor) return draft;
     const parts: string[] = [];
+    const preservedChipText = new Map<string, string>();
     const visit = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         parts.push(node.textContent ?? "");
@@ -2505,7 +2510,13 @@ export function AgentChatComposer({
       }
       if (!(node instanceof HTMLElement)) return;
       if (node.dataset.composerChipText != null) {
-        parts.push(node.dataset.composerChipText);
+        if (node.dataset.composerChip === "chat-context") {
+          const token = `\u0000ctx${preservedChipText.size}\u0000`;
+          preservedChipText.set(token, node.dataset.composerChipText);
+          parts.push(token);
+        } else {
+          parts.push(node.dataset.composerChipText);
+        }
         return;
       }
       if (
@@ -2524,11 +2535,15 @@ export function AgentChatComposer({
       if (node.tagName === "DIV" || node.tagName === "P") parts.push("\n");
     };
     editor.childNodes.forEach(visit);
-    return parts
+    let serialized = parts
       .join("")
       .replace(/\u00a0/g, " ")
       .replace(/[ \t]{2,}/g, " ")
       .replace(/[ \t]+\n/g, "\n");
+    for (const [token, value] of preservedChipText) {
+      serialized = serialized.replace(token, value);
+    }
+    return serialized;
   }, [draft]);
 
   const syncRichDraft = useCallback(() => {
@@ -2764,7 +2779,8 @@ export function AgentChatComposer({
     } else {
       candidate = range.startContainer.childNodes[direction === "backward" ? range.startOffset - 1 : range.startOffset] ?? null;
     }
-    if (!(candidate instanceof HTMLElement) || !candidate.dataset.smartLinkUrl) return false;
+    if (!(candidate instanceof HTMLElement)) return false;
+    if (!candidate.dataset.smartLinkUrl && candidate.dataset.composerChip !== "chat-context") return false;
     removeSmartLinkNode(candidate);
     return true;
   }, [removeSmartLinkNode]);
@@ -3248,6 +3264,7 @@ export function AgentChatComposer({
     }
 
     hydrateMentionChipsInEditor();
+    hydrateChatOutputContextChipsInEditor(editor);
 
     const isFocusedInsideEditor = document.activeElement === editor;
     const insertChipFragment = (chip: HTMLElement) => {
@@ -4025,18 +4042,18 @@ export function AgentChatComposer({
     }
 
     if (event.currentTarget instanceof HTMLDivElement) {
-      const focusedSmartLink = document.activeElement instanceof HTMLElement
-        ? document.activeElement.closest<HTMLElement>("[data-smart-link-url]")
+      const focusedChip = document.activeElement instanceof HTMLElement
+        ? document.activeElement.closest<HTMLElement>("[data-smart-link-url], [data-composer-chip='chat-context']")
         : null;
-      if (focusedSmartLink && event.currentTarget.contains(focusedSmartLink)) {
+      if (focusedChip && event.currentTarget.contains(focusedChip)) {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          setSelectedSmartLinkNode(focusedSmartLink);
+          setSelectedSmartLinkNode(focusedChip);
           return;
         }
         if (event.key === "Backspace" || event.key === "Delete") {
           event.preventDefault();
-          removeSmartLinkNode(focusedSmartLink);
+          removeSmartLinkNode(focusedChip);
           return;
         }
       }
@@ -5711,6 +5728,13 @@ export function AgentChatComposer({
                     event.preventDefault();
                     event.stopPropagation();
                     setSelectedSmartLinkNode(smartLinkChip);
+                    return;
+                  }
+                  const chatContextChip = target?.closest?.("[data-composer-chip='chat-context']") as HTMLElement | null;
+                  if (chatContextChip) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSelectedSmartLinkNode(chatContextChip);
                     return;
                   }
                   const iosChip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;

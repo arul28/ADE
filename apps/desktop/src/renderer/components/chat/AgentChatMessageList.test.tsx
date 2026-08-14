@@ -935,6 +935,48 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("First block.\n\nSecond block."));
   });
 
+  it("adds selected assistant text to the composer as chat context", async () => {
+    const onInsertDraft = vi.fn();
+    renderMessageList(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "text", text: "Retry the lane checkout.", itemId: "text-1", turnId: "turn-1" },
+      }],
+      { onInsertDraft },
+    );
+
+    const output = document.querySelector("[data-assistant-output]");
+    expect(output).toBeTruthy();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(output!);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.mouseUp(document);
+
+    const add = await screen.findByTestId("assistant-output-add-to-chat");
+    fireEvent.click(add);
+    expect(onInsertDraft).toHaveBeenCalledTimes(1);
+    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("Retry the lane checkout.");
+    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("added it as context");
+  });
+
+  it("renders sent chat-context tags as Chat context chips", () => {
+    renderMessageList([{
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: {
+        type: "user_message",
+        text: `please <ade-chat-context>\nThe user highlighted the following text from your previous output and added it as context:\n\nRetry the lane checkout.\n</ade-chat-context> thanks`,
+        deliveryState: "delivered",
+      },
+    }]);
+    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Chat context");
+    expect(screen.getByText(/please/)).toBeTruthy();
+    expect(screen.getByText(/thanks/)).toBeTruthy();
+  });
+
   it("does not add turn-copy chrome for single-block or legacy null-turn text", () => {
     const { rerender } = renderMessageList([
       {
