@@ -51,7 +51,7 @@ describe("push-relay deploy smoke token mint", () => {
     const fetchMock = vi.fn(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/sessions") && init?.method === "POST" && !url.includes("/client/")) {
-        return jsonResponse(403, { errors: [{ code: "production_instance" }] });
+        return jsonResponse(400, { errors: [{ code: "unsupported_operation" }] });
       }
       if (url.endsWith("/sign_in_tokens")) {
         return jsonResponse(200, { token: "sit_ticket" });
