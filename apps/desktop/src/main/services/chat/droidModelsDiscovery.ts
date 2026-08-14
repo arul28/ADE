@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { createSession } from "@factory/droid-sdk";
+import { homedir, tmpdir } from "node:os";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,
@@ -9,7 +8,6 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
-import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
 
 export type DroidExecHelpModelRow = {
   id: string;
@@ -101,7 +99,11 @@ async function listDroidModelsFromCli(droidPath: string): Promise<DroidExecHelpM
 async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExecHelpModelRow[]> {
   const now = Date.now();
   try {
-    const helpResult = await spawnAsync(droidPath, ["exec", "--help"], { timeout: 8_000, maxOutputBytes: 64_000 });
+    const helpResult = await spawnAsync(droidPath, ["exec", "--help"], {
+      timeout: 8_000,
+      maxOutputBytes: 64_000,
+      cwd: tmpdir(),
+    });
     if (helpResult.status === 0) {
       const rows = parseDroidExecHelpModels(helpResult.stdout ?? "");
       if (rows.length) {
@@ -121,7 +123,7 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
 
   for (const args of probes) {
     try {
-      const result = await spawnAsync(droidPath, args, { timeout: 2_500 });
+      const result = await spawnAsync(droidPath, args, { timeout: 2_500, cwd: tmpdir() });
       if (result.status !== 0) continue;
       const stdout = (result.stdout ?? "").trim();
       if (!stdout) continue;
@@ -174,86 +176,11 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
     }
   }
 
+  if (cached?.models.length) {
+    return cached.models;
+  }
   cached = { at: now, models: [] };
   return [];
-}
-
-function addUnique(out: string[], value: string | null | undefined): void {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized) return;
-  if (!out.includes(normalized)) out.push(normalized);
-}
-
-function normalizeDroidReasoningEffort(value: unknown): string | null {
-  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  switch (normalized) {
-    case "none":
-    case "dynamic":
-    case "off":
-    case "minimal":
-    case "low":
-    case "medium":
-    case "high":
-    case "xhigh":
-    case "max":
-    case "ultracode":
-      return normalized;
-    case "extra-high":
-    case "extra_high":
-      return "xhigh";
-    case "ultra-code":
-    case "ultra_code":
-      return "ultracode";
-    default:
-      return null;
-  }
-}
-
-function normalizeDroidReasoningEfforts(value: unknown, defaultValue: unknown): string[] | undefined {
-  const out: string[] = [];
-  addUnique(out, normalizeDroidReasoningEffort(defaultValue));
-  if (Array.isArray(value)) {
-    for (const entry of value) addUnique(out, normalizeDroidReasoningEffort(entry));
-  }
-  return out.length ? out : undefined;
-}
-
-function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
-  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
-  const raw = Array.isArray(record?.availableModels) ? record.availableModels : [];
-  const seen = new Set<string>();
-  const rows: DroidExecHelpModelRow[] = [];
-  for (const entry of raw) {
-    const model = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
-    if (!model) continue;
-    const id = typeof model.id === "string" && model.id.trim().length
-      ? model.id.trim()
-      : typeof model.modelId === "string"
-        ? model.modelId.trim()
-        : "";
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    const displayName = typeof model.displayName === "string" && model.displayName.trim().length
-      ? model.displayName.trim()
-      : typeof model.shortDisplayName === "string" && model.shortDisplayName.trim().length
-        ? model.shortDisplayName.trim()
-        : id;
-    const reasoningTiers = normalizeDroidReasoningEfforts(
-      model.supportedReasoningEfforts,
-      model.defaultReasoningEffort,
-    );
-    rows.push({
-      id,
-      displayName,
-      customProxy: model.isCustom === true,
-      ...(reasoningTiers?.length ? { reasoningTiers } : {}),
-      capabilities: {
-        vision: model.noImageSupport !== true,
-        reasoning: Boolean(reasoningTiers?.length),
-      },
-    });
-  }
-  return rows;
 }
 
 function canonicalDroidReplacementForAlias(
@@ -327,28 +254,10 @@ function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHel
 }
 
 async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpModelRow[]> {
-  const now = Date.now();
-  // This runs createSession() in-process (not in the worker), so the SDK spawns
-  // `droid` straight from the Electron main process on a passive warm path.
-  ensureDroidSpawnsAreWindowless();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  try {
-    const session = await createSession({
-      execPath: droidPath,
-      cwd: process.cwd(),
-      abortSignal: controller.signal,
-    });
-    try {
-      const rows = readSdkModelRows(session.initResult);
-      cached = { at: now, models: rows };
-      return rows;
-    } finally {
-      await session.close().catch(() => undefined);
-    }
-  } finally {
-    clearTimeout(timeout);
-  }
+  // Model probes used to call createSession(), which writes an empty
+  // `New Session` stub under ~/.factory/sessions on every warmup. CLI help
+  // is enough for the picker and does not create session files.
+  return listDroidModelsFromCli(droidPath);
 }
 
 export function clearDroidCliModelsCache(): void {

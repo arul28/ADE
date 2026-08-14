@@ -16,6 +16,7 @@ export function LaneDialogShell({
   onCloseAutoFocus,
   children,
   footer,
+  scrollBody = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -29,6 +30,11 @@ export function LaneDialogShell({
   onCloseAutoFocus?: (event: Event) => void;
   children: ReactNode;
   footer?: ReactNode;
+  /**
+   * When false, the body does not scroll — the child owns the only scrollport.
+   * Default stays auto so existing dialogs keep their current layout.
+   */
+  scrollBody?: boolean;
 }) {
   const width = widthClassName ?? "w-[min(720px,calc(100vw-1rem))]";
   const maxHeight = "max-h-[min(92dvh,calc(100vh-1rem))]";
@@ -85,7 +91,13 @@ export function LaneDialogShell({
                     </Dialog.Close>
                   </div>
                 </div>
-                <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 py-3 sm:px-5 sm:py-4">
+                <div
+                  className={`min-h-0 flex-1 overflow-x-hidden overscroll-contain px-4 py-3 sm:px-5 sm:py-4 ${
+                    scrollBody ? "overflow-y-auto" : "overflow-hidden"
+                  }`}
+                  data-scroll-lock-scrollable=""
+                  onWheel={(event) => event.stopPropagation()}
+                >
                   {children}
                 </div>
                 {footer ? (

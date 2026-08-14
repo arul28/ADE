@@ -30,6 +30,17 @@ vi.mock("../../utils/codexComputerUse", () => ({
   resolveCodexComputerUseMcpConfig: computerUseMocks.resolveCodexComputerUseMcpConfig,
 }));
 
+vi.mock("./providerSessionHandles", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./providerSessionHandles")>();
+  return {
+    ...actual,
+    inspectLiveProviderSessions: vi.fn(() => ({
+      availability: { available: true as const, method: "lsof" as const },
+      byKey: new Map(),
+    })),
+  };
+});
+
 const execFileMock = vi.mocked(execFile);
 let root: string;
 
@@ -144,9 +155,16 @@ describe("externalSessionsService", () => {
     });
 
     const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+    expect(sessions).toEqual([]);
 
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0]).toMatchObject({
+    const lookedUp = await service.list({
+      providers: ["claude"],
+      laneId: "lane-1",
+      scope: "project",
+      sessionId: id,
+    });
+    expect(lookedUp).toHaveLength(1);
+    expect(lookedUp[0]).toMatchObject({
       provider: "claude",
       id,
       cwd: laneCwd,
@@ -154,7 +172,6 @@ describe("externalSessionsService", () => {
       messages: [{ role: "user", text: "import me", at: Date.parse("2026-07-06T10:00:00.000Z") }],
       alreadyImported: true,
       importedSessionRef: { kind: "cli", sessionId: "ade-session" },
-      possiblyActive: true,
       cwdMatchesRequestedLane: true,
       capabilities: {
         resumeInPlace: true,
@@ -246,9 +263,16 @@ describe("externalSessionsService", () => {
     });
 
     const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+    expect(sessions).toEqual([]);
 
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0]).toMatchObject({
+    const lookedUp = await service.list({
+      providers: ["claude"],
+      laneId: "lane-1",
+      scope: "project",
+      sessionId: id,
+    });
+    expect(lookedUp).toHaveLength(1);
+    expect(lookedUp[0]).toMatchObject({
       alreadyImported: true,
       importedSessionRef: { kind: "chat", sessionId: "chat-session" },
     });
@@ -293,9 +317,16 @@ describe("externalSessionsService", () => {
     });
 
     const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+    expect(sessions).toEqual([]);
 
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0]).toMatchObject({
+    const lookedUp = await service.list({
+      providers: ["claude"],
+      laneId: "lane-1",
+      scope: "project",
+      sessionId: id,
+    });
+    expect(lookedUp).toHaveLength(1);
+    expect(lookedUp[0]).toMatchObject({
       alreadyImported: true,
       importedSessionRef: { kind: "chat", sessionId: "chat-import-session" },
     });
@@ -439,6 +470,7 @@ describe("externalSessionsService", () => {
         cwd: laneCwd,
         timestamp: "2026-07-06T10:00:00.000Z",
       },
+      { type: "message", message: { role: "user", content: "droid prompt" } },
     ]);
     execFileMock.mockImplementation(() => ({ pid: 123 }) as ReturnType<typeof execFile>);
 
@@ -1409,7 +1441,7 @@ describe("externalSessionsService imported-session marking", () => {
     return { homeDir, projectRoot, laneCwd };
   }
 
-  it("keeps the imported badge after the ADE session it created is gone", async () => {
+  it("hides live ADE-tracked sessions and re-lists them after the ADE row is gone", async () => {
     const { homeDir, projectRoot, laneCwd } = laneSetup();
     const id = "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1";
     writeClaudeSession({ homeDir, cwd: laneCwd, id, text: "import then delete" });
@@ -1441,15 +1473,11 @@ describe("externalSessionsService imported-session marking", () => {
       scope: "project",
       limit: 5,
     };
-    await expect(service.list({ ...listArgs })).resolves.toMatchObject([
-      { alreadyImported: true, importedSessionRef: { kind: "cli", sessionId: "terminal-durable" } },
-    ]);
+    await expect(service.list({ ...listArgs })).resolves.toEqual([]);
 
-    // The terminal row is what used to carry the badge; deleting it must not
-    // make an already-imported provider session look importable again.
     liveSessions = [];
     await expect(service.list({ ...listArgs })).resolves.toMatchObject([
-      { alreadyImported: true, importedSessionRef: null },
+      { alreadyImported: false, importedBefore: true, importedSessionRef: null },
     ]);
   });
 
@@ -1496,9 +1524,14 @@ describe("externalSessionsService imported-session marking", () => {
     });
 
     const rows = await service.list({ providers: ["codex"], laneId: "lane-1", scope: "project", limit: 10 });
-
-    expect(rows.map((row) => row.id)).toEqual([sourceId]);
-    expect(rows[0]).toMatchObject({
+    expect(rows).toEqual([]);
+    const lookedUp = await service.list({
+      providers: ["codex"],
+      laneId: "lane-1",
+      scope: "project",
+      sessionId: sourceId,
+    });
+    expect(lookedUp[0]).toMatchObject({
       alreadyImported: true,
       importedSessionRef: { kind: "chat", sessionId: "chat-codex" },
     });
@@ -1551,9 +1584,13 @@ describe("externalSessionsService imported-session marking", () => {
     // The transplanted copy is a real Claude transcript on disk; it must not
     // come back as a session the user can import into ADE a second time.
     const rows = await service.list({ providers: ["claude"], scope: "all", limit: 10 });
-
-    expect(rows.map((row) => row.id)).toEqual([id]);
-    expect(rows[0]).toMatchObject({
+    expect(rows).toEqual([]);
+    const lookedUp = await service.list({
+      providers: ["claude"],
+      scope: "all",
+      sessionId: id,
+    });
+    expect(lookedUp[0]).toMatchObject({
       alreadyImported: true,
       importedSessionRef: { kind: "cli", sessionId: "terminal-transplant" },
     });
@@ -1604,13 +1641,7 @@ describe("externalSessionsService imported-session marking", () => {
     });
 
     const rows = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 10 });
-
-    // Discovery lists the leaf, but the import happened before the chain grew.
-    expect(rows.map((row) => row.id)).toEqual([leafId]);
-    expect(rows[0]).toMatchObject({
-      alreadyImported: true,
-      importedSessionRef: { kind: "chat", sessionId: "chat-ancestor" },
-    });
+    expect(rows).toEqual([]);
   });
 
   it("reads Claude activity from the live-session registry instead of file mtime", async () => {
@@ -1635,6 +1666,10 @@ describe("externalSessionsService imported-session marking", () => {
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
       ptyService: { create: vi.fn() },
       logger: makeLogger(),
+      inspectLiveSessions: () => ({
+        availability: { available: true, method: "lsof" },
+        byKey: new Map(),
+      }),
     });
 
     const rows = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 10 });
@@ -1674,6 +1709,10 @@ describe("externalSessionsService imported-session marking", () => {
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
       ptyService: { create: vi.fn() },
       logger: makeLogger(),
+      inspectLiveSessions: () => ({
+        availability: { available: true, method: "lsof" },
+        byKey: new Map(),
+      }),
     });
 
     const rows = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 10 });
@@ -1705,6 +1744,94 @@ describe("externalSessionsService imported-session marking", () => {
       .resolves.toHaveLength(60);
     await expect(service.list({ providers: ["claude"], laneId: "lane-1", scope: "project" }))
       .resolves.toHaveLength(50);
+  });
+
+  it("drops empty droid stubs from browse but still resolves them by id", async () => {
+    const { homeDir, projectRoot, laneCwd } = laneSetup();
+    const emptyId = "stubstub-0000-4000-8000-000000000001";
+    const usedId = "usedused-0000-4000-8000-000000000002";
+    const emptyPath = path.join(homeDir, ".factory", "sessions", droidSessionDir(laneCwd), `${emptyId}.jsonl`);
+    const usedPath = path.join(homeDir, ".factory", "sessions", droidSessionDir(laneCwd), `${usedId}.jsonl`);
+    writeJsonl(emptyPath, [{
+      type: "session_start",
+      id: emptyId,
+      title: "New Session",
+      cwd: laneCwd,
+      timestamp: "2026-07-06T10:00:00.000Z",
+    }]);
+    writeJsonl(usedPath, [
+      {
+        type: "session_start",
+        id: usedId,
+        title: "New Session",
+        cwd: laneCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+      },
+      {
+        type: "message",
+        message: { role: "user", content: "do work" },
+        timestamp: "2026-07-06T10:01:00.000Z",
+      },
+    ]);
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+      inspectLiveSessions: () => ({
+        availability: { available: true, method: "lsof" },
+        byKey: new Map(),
+      }),
+    });
+    const rows = await service.list({ providers: ["droid"], laneId: "lane-1", scope: "project", limit: 10 });
+    expect(rows.map((row) => row.id)).toEqual([usedId]);
+    const lookedUp = await service.list({
+      providers: ["droid"],
+      laneId: "lane-1",
+      scope: "project",
+      sessionId: emptyId,
+    });
+    expect(lookedUp.map((row) => row.id)).toEqual([emptyId]);
+  });
+
+  it("marks a foreign-held session live and hides one held by an ADE PTY", async () => {
+    const { homeDir, projectRoot, laneCwd } = laneSetup();
+    const foreignId = "f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1";
+    const ownedId = "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1";
+    writeClaudeSession({ homeDir, cwd: laneCwd, id: foreignId, text: "foreign" });
+    writeClaudeSession({ homeDir, cwd: laneCwd, id: ownedId, text: "ade owned" });
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn(), listLiveTrackedCliPids: () => [4242] },
+      logger: makeLogger(),
+      inspectLiveSessions: () => ({
+        availability: { available: true, method: "lsof" },
+        byKey: new Map([
+          [`claude:${foreignId}`, [{
+            provider: "claude" as const,
+            sessionId: foreignId,
+            filePath: "/tmp/foreign.jsonl",
+            pid: 99,
+          }]],
+          [`claude:${ownedId}`, [{
+            provider: "claude" as const,
+            sessionId: ownedId,
+            filePath: "/tmp/owned.jsonl",
+            pid: 4242,
+          }]],
+        ]),
+      }),
+    });
+    const rows = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 10 });
+    expect(rows.map((row) => row.id)).toEqual([foreignId]);
+    expect(rows[0]?.possiblyActive).toBe(true);
   });
 
   it("reports an uninstalled OpenCode CLI to a scan that asked only for it", async () => {

@@ -125,6 +125,11 @@ import {
 } from "./chatTextBatching";
 import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
 import {
+  buildFittedTranscriptReplay,
+  buildTranscriptReplayDocument,
+  toReplayForkDisclosure,
+} from "./crossProviderReplayFork";
+import {
   isPrimaryPinnedIdentity,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
@@ -251,6 +256,7 @@ import type {
   AgentChatFileRef,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatReplayForkDisclosure,
   AgentChatIdentityKey,
   AgentChatImportedFrom,
   AgentChatImportExternalSessionArgs,
@@ -1089,6 +1095,7 @@ type PersistedChatState = {
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
+  pendingTranscriptReplay?: string | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -2755,6 +2762,7 @@ type ManagedChatSession = {
   deleted: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
+  pendingTranscriptReplay: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -9169,14 +9177,33 @@ export function createAgentChatService(args: {
     };
   };
 
-  const readTranscriptEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
+  const readTranscriptEnvelopes = (
+    managed: ManagedChatSession,
+    options?: {
+      /**
+       * Also merge the in-memory event ring (events that may not have reached
+       * fs.appendFile yet). Only for readers that want the LIVE view, e.g.
+       * transcript-replay forks. Durability guards (emitAdeCard's retry check)
+       * must read the file alone: a ring hit there suppresses the retry of an
+       * append that never landed on disk.
+       */
+      includeBuffered?: boolean;
+    },
+  ): AgentChatEventEnvelope[] => {
+    const buffered = options?.includeBuffered
+      ? (eventHistoryBySession.get(managed.session.id) ?? [])
+          .filter((entry) => entry.sessionId === managed.session.id)
+      : [];
     try {
       const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
-      if (!transcriptPath) return [];
-      return parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
+      if (!transcriptPath) return buffered;
+      const fromFile = parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
+        .filter((entry) => entry.sessionId === managed.session.id);
+      if (!buffered.length) return fromFile;
+      return mergeEnvelopeStreams(fromFile, buffered)
         .filter((entry) => entry.sessionId === managed.session.id);
     } catch {
-      return [];
+      return buffered;
     }
   };
 
@@ -10741,6 +10768,56 @@ export function createAgentChatService(args: {
       target.pendingReconstructionContext = nextContext.length ? nextContext : null;
     }
     clearLaneDirectiveKey(target);
+  };
+
+  const stageTranscriptReplayOnSession = (
+    managed: ManagedChatSession,
+    sourceEnvelopes: readonly AgentChatEventEnvelope[],
+    contextWindow: number | null | undefined,
+  ): AgentChatReplayForkDisclosure | undefined => {
+    const fit = buildFittedTranscriptReplay(sourceEnvelopes, contextWindow);
+    managed.pendingTranscriptReplay = fit.text;
+    persistChatState(managed);
+    if (fit.truncated) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Replayed the full prior transcript. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+      });
+    }
+    return toReplayForkDisclosure(fit);
+  };
+
+  type ConsumedTurnContextPrefix = {
+    composed: string;
+    replay: string;
+    reconstruction: string;
+  };
+
+  const consumePendingTurnContextPrefix = (
+    managed: ManagedChatSession,
+    skip: boolean,
+  ): ConsumedTurnContextPrefix | null => {
+    if (skip) return null;
+    const replay = managed.pendingTranscriptReplay?.trim() ?? "";
+    const reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
+    if (!replay && !reconstruction) return null;
+    if (replay) managed.pendingTranscriptReplay = null;
+    if (reconstruction) managed.pendingReconstructionContext = null;
+    // Consumption has to be durable: `pendingTranscriptReplay` is restored on
+    // reconstruct, so clearing it in memory alone would replay the whole
+    // transcript a second time after a restart.
+    persistChatState(managed);
+    const parts: string[] = [];
+    if (replay) parts.push(replay);
+    if (reconstruction) {
+      parts.push(`System context (ADE continuity, do not echo verbatim):\n${reconstruction}`);
+    }
+    return {
+      composed: parts.join("\n\n"),
+      replay,
+      reconstruction,
+    };
   };
 
   const stageCursorSdkAgentRotationRecovery = (
@@ -12706,6 +12783,11 @@ export function createAgentChatService(args: {
           }
         : {}),
       ...collectOrchestrationFields(managed.session, prevPersisted),
+      // Always written (never omitted) so a consumed replay overwrites the
+      // stored text instead of surviving into the next reconstruct.
+      pendingTranscriptReplay: managed.pendingTranscriptReplay?.trim()
+        ? managed.pendingTranscriptReplay
+        : null,
       ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
       updatedAt: nowIso()
     };
@@ -17357,6 +17439,7 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
       pendingReconstructionContext: null,
+      pendingTranscriptReplay: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -17422,6 +17505,9 @@ export function createAgentChatService(args: {
     enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
+    if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
+      managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
+    }
 
     managedSessions.set(sessionId, managed);
     if (row.status === "detached") {
@@ -18026,17 +18112,13 @@ export function createAgentChatService(args: {
     const suppressTurnContext = providerSlashCommand && !planSlashCommand;
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = suppressTurnContext ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = suppressTurnContext ? "" : consumePendingTurnContextPrefix(managed, false)?.composed ?? "";
     if (reconstructionContext.length) {
       input.push({
         type: "text",
-        text: [
-          "System context (CTO reconstruction, do not echo verbatim):",
-          reconstructionContext
-        ].join("\n"),
+        text: reconstructionContext,
         text_elements: []
       });
-      managed.pendingReconstructionContext = null;
     }
     const { codexPolicy } = resolveCodexThreadParams(managed);
     await runtime.collaborationModesReady?.catch(() => {});
@@ -19873,20 +19955,14 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+      const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
       const basePromptText = providerSlashCommand
         ? args.promptText
         : [
-            reconstructionContext.length
-              ? [
-                  "System context (identity reconstruction, do not echo verbatim):",
-                  reconstructionContext,
-                ].join("\n")
-              : null,
+            reconstructionContext.length ? reconstructionContext : null,
             args.promptText,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
       if (reconstructionContext.length) {
-        managed.pendingReconstructionContext = null;
         persistChatState(managed);
       }
       // ── Stable query() session with background pre-warming ──
@@ -22261,9 +22337,8 @@ export function createAgentChatService(args: {
     },
   ): Promise<string> => {
     const providerSlashCommand = args.providerSlashCommand === true;
-    const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
     if (reconstructionContext.length) {
-      managed.pendingReconstructionContext = null;
       persistChatState(managed);
     }
     const attachmentText = args.resolvedAttachments.length
@@ -22277,12 +22352,7 @@ export function createAgentChatService(args: {
         ].join("\n")
       : null;
     return [
-      reconstructionContext.length
-        ? [
-            "System context (identity reconstruction, do not echo verbatim):",
-            reconstructionContext,
-          ].join("\n")
-        : null,
+      reconstructionContext.length ? reconstructionContext : null,
       attachmentText,
       args.promptText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
@@ -22534,9 +22604,9 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
     try {
       let prompt = args.promptText;
-      if (managed.pendingReconstructionContext?.trim()) {
-        prompt = `System context (ADE continuity, do not echo verbatim):\n${managed.pendingReconstructionContext.trim()}\n\n${prompt}`;
-        managed.pendingReconstructionContext = null;
+      const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
+      if (pendingContext) {
+        prompt = `${pendingContext}\n\n${prompt}`;
       }
       if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
         const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
@@ -22727,16 +22797,13 @@ export function createAgentChatService(args: {
       const attachmentHint = attachments.length
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
+      const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
       const userContent = providerSlashCommand
         ? args.promptText
         : [
-            managed.pendingReconstructionContext?.trim().length
-              ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
-              : null,
+            pendingContext,
             `${args.promptText}${attachmentHint}`,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
-
-      if (!providerSlashCommand) managed.pendingReconstructionContext = null;
 
       const abortController = new AbortController();
       runtime.eventAbortController = abortController;
@@ -29803,6 +29870,7 @@ export function createAgentChatService(args: {
       bufferedReasoning: null,
       ctoSessionStartedAt: null,
       pendingReconstructionContext: null,
+      pendingTranscriptReplay: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -30097,7 +30165,7 @@ export function createAgentChatService(args: {
   }: {
     sessionId: string;
     spawnKind: AgentChatSpawnKind;
-    source: "takeover" | "promote" | "parent_dispatch";
+    source: "takeover" | "promote" | "parent_dispatch" | "orphan";
   }): AgentChatSession => {
     const managed = ensureManagedSession(sessionId);
     const parentSessionId = managed.session.orchestrationParentSessionId?.trim() || "";
@@ -30108,8 +30176,8 @@ export function createAgentChatService(args: {
       throw new Error("The parent chat is gone, so this chat cannot report back.");
     }
     const previous = managed.session.spawnKind;
-    if (source === "takeover") {
-      managed.session.subagentTakeoverPromptShownAt = nowIso();
+    if (source === "takeover" || source === "orphan") {
+      managed.session.subagentTakeoverPromptShownAt = managed.session.subagentTakeoverPromptShownAt ?? nowIso();
     }
     managed.session.spawnKind = spawnKind;
     persistChatState(managed);
@@ -30122,9 +30190,23 @@ export function createAgentChatService(args: {
       source,
     });
     if (spawnKind === "peer" && previous !== "peer" && source === "takeover") {
-      postSpawnTakeoverNote(managed, parentSessionId);
+      if (parentChatStillExists(parentSessionId)) {
+        postSpawnTakeoverNote(managed, parentSessionId);
+      }
     }
     return managed.session;
+  };
+
+  const reconcileOrphanedSubagent = (managed: ManagedChatSession): void => {
+    const parentSessionId = managed.session.orchestrationParentSessionId?.trim() || "";
+    if (!parentSessionId || parentSessionId === managed.session.id) return;
+    if (managed.session.spawnKind !== "subagent") return;
+    if (parentChatStillExists(parentSessionId)) return;
+    applySpawnKindChange({
+      sessionId: managed.session.id,
+      spawnKind: "peer",
+      source: "orphan",
+    });
   };
 
   const setSpawnKind = ({ sessionId, spawnKind }: AgentChatSetSpawnKindArgs): AgentChatSession => {
@@ -30146,6 +30228,8 @@ export function createAgentChatService(args: {
       return managed.session;
     }
     if (managed.session.subagentTakeoverPromptShownAt) return managed.session;
+    reconcileOrphanedSubagent(managed);
+    if (managed.session.spawnKind !== "subagent") return managed.session;
     managed.session.subagentTakeoverPromptShownAt = nowIso();
     persistChatState(managed);
     emitSpawnKindMeta(managed);
@@ -30702,6 +30786,7 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
       pendingReconstructionContext: null,
+      pendingTranscriptReplay: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -30846,24 +30931,19 @@ export function createAgentChatService(args: {
     }
     const targetLaneId = resolvedTargetLaneId;
     const sourceProvider = managed.session.provider;
-    if (handoffMode === "fork") {
-      if (!providerSupportsHandoffFork(sourceProvider)) {
-        const label = handoffProviderLabel(sourceProvider);
-        throw new Error(`Full-history fork isn't available for ${label} chats. Use a brief handoff instead.`);
-      }
-      if (targetProvider !== sourceProvider) {
-        throw new Error(FORK_SAME_PROVIDER_MESSAGE);
-      }
-    }
-    const sourceClaudeRuntime = handoffMode === "fork" && managed.session.provider === "claude"
+    const nativeFork = handoffMode === "fork"
+      && providerSupportsHandoffFork(sourceProvider)
+      && targetProvider === sourceProvider;
+    const replayFork = handoffMode === "fork" && !nativeFork;
+    const sourceClaudeRuntime = nativeFork && managed.session.provider === "claude"
       ? ensureClaudeSessionRuntime(managed)
       : null;
     const sourceSdkSessionId = sourceClaudeRuntime?.sdkSessionId ?? null;
-    if (handoffMode === "fork" && managed.session.provider === "claude" && !sourceSdkSessionId) {
+    if (nativeFork && managed.session.provider === "claude" && !sourceSdkSessionId) {
       throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try Fork again.");
     }
     let sourceCodexForkThreadId: string | null = null;
-    if (handoffMode === "fork" && managed.session.provider === "codex") {
+    if (nativeFork && managed.session.provider === "codex") {
       const sourceThreadId = managed.session.threadId?.trim()
         || readPersistedState(sourceId)?.threadId?.trim()
         || "";
@@ -30882,7 +30962,7 @@ export function createAgentChatService(args: {
       sourceCodexForkThreadId = forkedThreadId;
     }
     let sourceOpenCodeForkSessionId: string | null = null;
-    if (handoffMode === "fork" && sourceProvider === "opencode") {
+    if (nativeFork && sourceProvider === "opencode") {
       if (managed.runtime?.kind !== "opencode") {
         try {
           await startOpenCodeSessionRuntime(managed);
@@ -30906,7 +30986,7 @@ export function createAgentChatService(args: {
       sourceOpenCodeForkSessionId = forkedId;
     }
     let sourceDroidForkSessionId: string | null = null;
-    if (handoffMode === "fork" && sourceProvider === "droid") {
+    if (nativeFork && sourceProvider === "droid") {
       let droidRuntime: DroidRuntime;
       try {
         droidRuntime = await ensureDroidRuntime(managed);
@@ -30973,7 +31053,7 @@ export function createAgentChatService(args: {
 
     const createdManaged = ensureManagedSession(created.id);
     createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
-    if (handoffMode === "fork") {
+    if (nativeFork) {
       if (createdManaged.session.provider === "claude" && sourceSdkSessionId) {
         createdManaged.claudeBackgroundResumeSessionId = sourceSdkSessionId;
         mirrorClaudeSessionPointer(createdManaged, sourceSdkSessionId);
@@ -31051,6 +31131,24 @@ export function createAgentChatService(args: {
       if (sourceEnvelopes.length) await appendImportedChatEvents(createdManaged, sourceEnvelopes);
     }
 
+    let replayForkDisclosure: AgentChatReplayForkDisclosure | undefined;
+    if (replayFork) {
+      const fit = buildFittedTranscriptReplay(
+        readTranscriptEnvelopes(managed, { includeBuffered: true }),
+        targetDescriptor.contextWindow,
+      );
+      createdManaged.pendingTranscriptReplay = fit.text;
+      persistChatState(createdManaged);
+      replayForkDisclosure = toReplayForkDisclosure(fit);
+      if (fit.truncated) {
+        emitChatEvent(createdManaged, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+        });
+      }
+    }
+
     if (handoffMode === "brief" || handoffNote) {
       await sendMessage({
         sessionId: created.id,
@@ -31068,6 +31166,7 @@ export function createAgentChatService(args: {
     return {
       session: createdManaged.session,
       usedFallbackSummary: handoffMode === "brief" ? usedFallbackSummary : false,
+      ...(replayForkDisclosure ? { replayFork: replayForkDisclosure } : {}),
     };
   };
 
@@ -32840,20 +32939,22 @@ export function createAgentChatService(args: {
 
   const persistedImportedChatResult = async (
     managed: ManagedChatSession,
-    provider: AgentChatImportProvider,
+    provider: string,
     providerTargetId: string,
+    replayFork?: AgentChatReplayForkDisclosure,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const summaryRow = sessionService.get(managed.session.id);
     if (!summaryRow) {
       throw externalChatImportError(
         "EXTERNAL_CHAT_SESSION_READ_FAILED",
-        `Imported ${provider === "claude" ? "Claude" : "Codex"} chat was not persisted.`,
+        `Imported ${provider} chat was not persisted.`,
       );
     }
     return {
       chatSessionId: managed.session.id,
       chatSummary: await summarizeSessionRow(summaryRow),
       providerTargetId,
+      ...(replayFork ? { replayFork } : {}),
     };
   };
 
@@ -32861,6 +32962,7 @@ export function createAgentChatService(args: {
     args: AgentChatImportExternalSessionArgs,
     laneWorktreePath: string,
     importedAt: number,
+    targetDescriptor?: ReturnType<typeof getModelById>,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalSessionId = args.externalSessionId.trim();
     if (hasPathSeparator(externalSessionId)) {
@@ -32917,7 +33019,10 @@ export function createAgentChatService(args: {
       const created = await createSession({
         laneId: args.laneId,
         provider: "claude",
-        model: DEFAULT_CLAUDE_MODEL,
+        model: targetDescriptor
+          ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
+          : DEFAULT_CLAUDE_MODEL,
+        ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
       createdSessionId = created.id;
@@ -32993,6 +33098,7 @@ export function createAgentChatService(args: {
   const importCodexExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
     importedAt: number,
+    targetDescriptor?: ReturnType<typeof getModelById>,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalThreadId = args.externalSessionId.trim();
     let createdSessionId: string | null = null;
@@ -33041,7 +33147,10 @@ export function createAgentChatService(args: {
       const created = await createSession({
         laneId: args.laneId,
         provider: "codex",
-        model: DEFAULT_CODEX_MODEL,
+        model: targetDescriptor
+          ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
+          : DEFAULT_CODEX_MODEL,
+        ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
       createdSessionId = created.id;
@@ -33130,6 +33239,141 @@ export function createAgentChatService(args: {
     }
   };
 
+  const importExternalChatSessionViaReplay = async (
+    args: AgentChatImportExternalSessionArgs,
+    options: {
+      targetProvider: AgentChatProvider;
+      targetDescriptor: NonNullable<ReturnType<typeof getModelById>>;
+      laneWorktreePath: string;
+      importedAt: number;
+    },
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const externalSessionId = args.externalSessionId.trim();
+    let envelopes: AgentChatEventEnvelope[] = [];
+    if (args.provider === "claude") {
+      if (hasPathSeparator(externalSessionId)) {
+        throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
+      }
+      const source = findClaudeSessionTranscript(externalSessionId, args.cwd);
+      if (!source) {
+        throw externalChatImportError(
+          "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+          `External Claude session '${externalSessionId}' was not found.`,
+        );
+      }
+      const sourceRead = readTailLines(source.transcriptPath, MAX_IMPORT_TRANSCRIPT_BYTES);
+      envelopes = claudeJsonlToChatEvents(sourceRead.lines, {
+        sessionId: "import-preview",
+        provider: "claude",
+        externalSessionId,
+        importedAt: options.importedAt,
+        laneId: args.laneId,
+        transcriptBytesTruncated: sourceRead.truncated,
+        transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
+      });
+    } else if (args.provider === "codex") {
+      let readerSessionId: string | null = null;
+      try {
+        const reader = await createSession({
+          laneId: args.laneId,
+          provider: "codex",
+          model: DEFAULT_CODEX_MODEL,
+        });
+        readerSessionId = reader.id;
+        const readerManaged = ensureManagedSession(reader.id);
+        const runtime = await ensureCodexSessionRuntime(readerManaged);
+        const readResponse = await runtime.request<unknown>("thread/read", {
+          threadId: externalSessionId,
+          includeTurns: true,
+        });
+        const sourceThread = extractCodexThreadTurns(readResponse, externalSessionId);
+        if (!sourceThread.foundThread) {
+          throw externalChatImportError(
+            "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+            `External Codex thread '${externalSessionId}' was not found by thread/read.`,
+          );
+        }
+        envelopes = codexTurnsToChatEvents(sourceThread.turns, {
+          sessionId: "import-preview",
+          provider: "codex",
+          externalSessionId,
+          importedAt: options.importedAt,
+          laneId: args.laneId,
+        });
+      } finally {
+        if (readerSessionId) {
+          await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
+            logger.warn("agent_chat.external_import_codex_replay_reader_cleanup_failed", {
+              sessionId: readerSessionId,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+          });
+        }
+      }
+    } else {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `Cross-provider replay import from ${args.provider} is not available yet; import as ${args.provider} first, then fork to the target model.`,
+      );
+    }
+
+    // A replay import with nothing to replay would create an empty chat and
+    // stage a blank prefix; discovery already hides empty transcripts, so fail
+    // loudly instead of importing a shell. Every import carries an "imported
+    // from" notice, so emptiness is judged by what the replay would render.
+    if (!buildTranscriptReplayDocument(envelopes).turnCount) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+        `External ${args.provider} session '${externalSessionId}' has no messages to replay.`,
+      );
+    }
+
+    const targetModel = options.targetDescriptor.isCliWrapped
+      ? options.targetDescriptor.providerModelId
+      : options.targetDescriptor.id;
+    let createdSessionId: string | null = null;
+    try {
+      const created = await createSession({
+        laneId: args.laneId,
+        provider: options.targetProvider,
+        model: targetModel,
+        modelId: options.targetDescriptor.id,
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      createdSessionId = created.id;
+      const managed = ensureManagedSession(created.id);
+      const seeded = envelopes.map((envelope) => ({
+        ...envelope,
+        sessionId: created.id,
+        provenance: {
+          ...(envelope.provenance ?? {}),
+          providerOrigin: "handoff_fork",
+          sourceSessionId: externalSessionId,
+        },
+      }));
+      applyImportedChatMetadata(managed, args, seeded, options.importedAt);
+      persistChatState(managed);
+      if (seeded.length) await appendImportedChatEvents(managed, seeded);
+      const replayFork = stageTranscriptReplayOnSession(
+        managed,
+        seeded,
+        options.targetDescriptor.contextWindow,
+      );
+      persistChatState(managed);
+      return await persistedImportedChatResult(managed, options.targetProvider, externalSessionId, replayFork);
+    } catch (error) {
+      if (createdSessionId) {
+        await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_cleanup_failed", {
+            sessionId: createdSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+  };
+
   const importExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
   ): Promise<AgentChatImportExternalSessionResult> => {
@@ -33145,6 +33389,14 @@ export function createAgentChatService(args: {
     if (!laneId) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "laneId is required.");
     }
+    const requestedModelId = typeof args.model === "string" ? args.model.trim() : "";
+    const targetDescriptor = requestedModelId
+      ? getModelById(requestedModelId) ?? resolveModelAlias(requestedModelId)
+      : null;
+    if (requestedModelId && (!targetDescriptor || targetDescriptor.deprecated)) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unknown model '${requestedModelId}'.`);
+    }
+    const targetProvider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : provider;
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
@@ -33159,12 +33411,21 @@ export function createAgentChatService(args: {
       cwd: typeof args.cwd === "string" && args.cwd.trim().length ? args.cwd.trim() : null,
       fork: args.fork === true,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      ...(requestedModelId ? { model: requestedModelId } : {}),
     };
     const importedAt = Date.now();
-    if (provider === "claude") {
-      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt);
+    if (targetProvider !== provider) {
+      return importExternalChatSessionViaReplay(normalizedArgs, {
+        targetProvider,
+        targetDescriptor: targetDescriptor!,
+        laneWorktreePath: launchContext.laneWorktreePath,
+        importedAt,
+      });
     }
-    return importCodexExternalChatSession(normalizedArgs, importedAt);
+    if (provider === "claude") {
+      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, targetDescriptor ?? undefined);
+    }
+    return importCodexExternalChatSession(normalizedArgs, importedAt, targetDescriptor ?? undefined);
   };
 
   const prepareSendMessage = ({
@@ -35069,7 +35330,7 @@ export function createAgentChatService(args: {
         reason: CursorSdkRecycleReason;
         runtime: CursorRuntime;
         turn: CursorTurnRef;
-        reconstructionContext: string | null;
+        consumedTurnContext: ConsumedTurnContextPrefix | null;
         resolveDispatch: (() => void) | null;
       };
 
@@ -35184,21 +35445,18 @@ export function createAgentChatService(args: {
     }
 
     let shouldDeliverQueuedSteer = false;
-    // Kept so a thread recycle can hand the same continuity context to the
-    // rotated agent instead of losing it with the abandoned prompt.
-    let consumedReconstructionContext: string | null = null;
+    // Kept so a thread recycle can restage each consumed bucket on the rotated
+    // agent instead of flattening replay + continuity into one string.
+    let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     try {
       let composed = args.promptText;
-      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-      consumedReconstructionContext = reconstructionContext.length ? reconstructionContext : null;
-      if (reconstructionContext.length) {
-        composed = [
-          "System context (ADE continuity, do not echo verbatim):",
-          reconstructionContext,
-          "",
-          composed,
-        ].join("\n");
-        managed.pendingReconstructionContext = null;
+      // Consumes the pending transcript replay and the continuity context in
+      // one shot; the parts are kept so a thread recycle can restage each
+      // bucket rather than losing them with the abandoned prompt.
+      const pendingTurnContext = consumePendingTurnContextPrefix(managed, false);
+      consumedTurnContext = pendingTurnContext;
+      if (pendingTurnContext?.composed) {
+        composed = `${pendingTurnContext.composed}\n\n${composed}`;
       }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
       const modeDirective = buildCursorSdkModeDirective();
@@ -35266,7 +35524,7 @@ export function createAgentChatService(args: {
           reason,
           runtime,
           turn: { turnId, turnModel, turnModelId },
-          reconstructionContext: consumedReconstructionContext,
+          consumedTurnContext,
           resolveDispatch: pendingAck?.resolve ?? null,
         };
       };
@@ -35475,10 +35733,17 @@ export function createAgentChatService(args: {
       previousAgentId: runtime.sdkAgentId,
       watchdogMs: CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
     });
-    // Hand the continuity context attempt 1 consumed to the rotation staging,
-    // instead of losing it with the abandoned prompt.
-    if (first.reconstructionContext && !managed.pendingReconstructionContext) {
-      managed.pendingReconstructionContext = first.reconstructionContext;
+    // Restage each consumed bucket on the rotated agent. Flattening both into
+    // pendingReconstructionContext would wrap the verbatim replay in a
+    // continuity header and double-wrap the continuity half on the next consume.
+    if (first.consumedTurnContext) {
+      if (first.consumedTurnContext.replay && !managed.pendingTranscriptReplay) {
+        managed.pendingTranscriptReplay = first.consumedTurnContext.replay;
+      }
+      if (first.consumedTurnContext.reconstruction && !managed.pendingReconstructionContext) {
+        managed.pendingReconstructionContext = first.consumedTurnContext.reconstruction;
+      }
+      persistChatState(managed);
     }
 
     const carriedSteers = await recycleCursorSdkAgentThread(managed, runtime, first.reason);
@@ -37063,15 +37328,9 @@ export function createAgentChatService(args: {
     let shouldDeliverQueuedSteer = false;
     try {
       let composed = args.promptText;
-      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-      if (reconstructionContext.length) {
-        composed = [
-          "System context (CTO reconstruction, do not echo verbatim):",
-          reconstructionContext,
-          "",
-          composed,
-        ].join("\n");
-        managed.pendingReconstructionContext = null;
+      const reconstructionContext = consumePendingTurnContextPrefix(managed, false)?.composed;
+      if (reconstructionContext) {
+        composed = `${reconstructionContext}\n\n${composed}`;
       }
       if (runtime.interrupted) {
         setSessionIdle(managed);
@@ -40307,7 +40566,25 @@ export function createAgentChatService(args: {
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
   ): Promise<AgentChatSessionSummary> => {
     const persisted = readPersistedState(row.id);
-    const liveManaged = managedSessions.get(row.id) ?? null;
+    const liveManagedInitial = managedSessions.get(row.id) ?? null;
+    if (liveManagedInitial) {
+      reconcileOrphanedSubagent(liveManagedInitial);
+    } else {
+      const persistedParent = persisted?.orchestrationParentSessionId?.trim() || "";
+      if (
+        persisted?.spawnKind === "subagent"
+        && persistedParent
+        && persistedParent !== row.id
+        && !parentChatStillExists(persistedParent)
+      ) {
+        try {
+          reconcileOrphanedSubagent(ensureManagedSession(row.id));
+        } catch {
+          // Listing must not fail because an orphaned child cannot be loaded.
+        }
+      }
+    }
+    const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
     const provider = liveSession?.provider ?? persisted?.provider ?? providerFromToolType(row.toolType);
     const fallbackModel = liveSession?.model ?? persisted?.model ?? fallbackModelForProvider(provider);
@@ -40487,7 +40764,12 @@ export function createAgentChatService(args: {
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
         : {}),
-      ...collectOrchestrationFields(liveSession, persisted)
+      ...collectOrchestrationFields(liveSession, persisted),
+      ...(() => {
+        const parentId = (liveSession?.orchestrationParentSessionId ?? persisted?.orchestrationParentSessionId)?.trim();
+        if (!parentId) return {};
+        return { orchestrationParentReachable: parentChatStillExists(parentId) };
+      })(),
     } satisfies AgentChatSessionSummary;
   };
 
@@ -42912,7 +43194,16 @@ export function createAgentChatService(args: {
         delete managed.session.fastMode;
       }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
-      if (previousProvider !== nextProvider || previousProvider === "codex") {
+      if (previousProvider !== nextProvider) {
+        delete managed.session.threadId;
+        managed.runtimeInvalidated = true;
+        clearLaneDirectiveKey(managed);
+        stageTranscriptReplayOnSession(
+          managed,
+          readTranscriptEnvelopes(managed, { includeBuffered: true }),
+          descriptor.contextWindow,
+        );
+      } else if (previousProvider === "codex") {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         clearLaneDirectiveKey(managed);

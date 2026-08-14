@@ -95,6 +95,10 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionListArgs,
   ExternalSessionSummary,
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
+  ExternalSessionDetailUpdatedEvent,
+  ExternalSessionDetailWatchArgs,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -2168,6 +2172,10 @@ declare global {
       externalSessions: {
         list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
         import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
+        getDetail: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
+        watchDetail: (args: ExternalSessionDetailWatchArgs) => Promise<ExternalSessionDetail>;
+        unwatchDetail: (args: { watchId: string }) => Promise<{ ok: true }>;
+        onDetailUpdated: (cb: (ev: ExternalSessionDetailUpdatedEvent) => void) => () => void;
       };
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;

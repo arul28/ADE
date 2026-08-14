@@ -18,6 +18,7 @@ import {
   piToolFlags,
   validateLaunchProfilePermissionMode,
   resolveTrackedCliResumeCommand,
+  withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
 } from "./cliLaunch";
 import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
@@ -272,6 +273,44 @@ describe("withCodexNoAltScreen", () => {
   it("does not match codex as a substring", () => {
     expect(withCodexNoAltScreen("mycodex")).toBe("mycodex");
     expect(withCodexNoAltScreen("codex-fork --arg")).toBe("codex-fork --arg");
+  });
+});
+
+describe("withClaudeSessionIdInCommandLine", () => {
+  const sessionId = "123e4567-e89b-12d3-a456-426614174000";
+
+  it("injects the flag for a bare claude token", () => {
+    expect(withClaudeSessionIdInCommandLine("claude --model sonnet", sessionId))
+      .toBe(`claude --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("injects the flag after env-var prefixes", () => {
+    expect(withClaudeSessionIdInCommandLine("FOO=1 claude --model sonnet", sessionId))
+      .toBe(`FOO=1 claude --session-id ${sessionId} --model sonnet`);
+  });
+
+  // resolveDirectProviderCommand hands callers an absolute executable, so the
+  // startup line and argv must both accept path-shaped invocations or they
+  // disagree about the assigned id.
+  it("injects the flag for an absolute claude path", () => {
+    expect(withClaudeSessionIdInCommandLine("/usr/local/bin/claude --model sonnet", sessionId))
+      .toBe(`/usr/local/bin/claude --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("injects the flag for a quoted path with spaces", () => {
+    expect(withClaudeSessionIdInCommandLine("'/Users/me/my tools/claude' --model sonnet", sessionId))
+      .toBe(`'/Users/me/my tools/claude' --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("injects the flag for a quoted Windows claude.exe path", () => {
+    expect(withClaudeSessionIdInCommandLine("\"C:\\Users\\me\\claude.exe\" --model sonnet", sessionId))
+      .toBe(`"C:\\Users\\me\\claude.exe" --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("leaves an already-assigned id and non-claude lines alone", () => {
+    expect(withClaudeSessionIdInCommandLine(`claude --session-id ${sessionId}`, sessionId))
+      .toBe(`claude --session-id ${sessionId}`);
+    expect(withClaudeSessionIdInCommandLine("codex --model gpt", sessionId)).toBe("codex --model gpt");
   });
 });
 

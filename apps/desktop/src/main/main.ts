@@ -112,6 +112,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { createProjectSearchService } from "./services/search/searchServiceWiring";
 import type { SearchService } from "./services/search/searchService";
 import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
+import { providerPointersFromChatRecord } from "./services/externalSessions/liveChatProviderRefs";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -3966,18 +3967,21 @@ app.whenReady().then(async () => {
         const sessions = await agentChatService.listSessions(undefined, {
           includeIdentity: true,
           includeAutomation: true,
-          includeArchived: true,
+          includeArchived: false,
         });
-        return sessions.flatMap((session) => {
-          const importedFrom = session.importedFrom;
-          if (!importedFrom?.provider?.trim() || !importedFrom.sessionId?.trim()) return [];
-          return [{
-            provider: importedFrom.provider,
-            externalId: importedFrom.sessionId,
+        // Same extractor the on-disk scan uses, so both sides key a chat the
+        // same way. Rolling our own here is how `unified` (OpenCode's persisted
+        // provider value) ended up keyed as `unified:<id>` on one path and
+        // `opencode:<id>` on the other, leaving live OpenCode chats visible in
+        // the import list.
+        return sessions.flatMap((session) =>
+          providerPointersFromChatRecord(session).map((pointer) => ({
+            provider: pointer.provider,
+            externalId: pointer.externalId,
             chatSessionId: session.sessionId,
-          }];
-        });
+          })));
       },
+      chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
       homeDir: os.homedir(),
       env: process.env,
     });

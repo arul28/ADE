@@ -1745,8 +1745,11 @@ describe("ptyService", () => {
         startupCommand: "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir=/tmp/custom-plugin --permission-mode default",
       });
 
+      // The env prefix does not hide the claude token from either injection, so
+      // the fallback line carries the bundled plugin AND the same deterministic
+      // session id the direct-spawn argv got.
       expect(mockPty.write).toHaveBeenCalledWith(
-        "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir \"/Applications/ADE Preview.app/Contents/Resources/agent-skills\" --plugin-dir=/tmp/custom-plugin --permission-mode default\r",
+        "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir \"/Applications/ADE Preview.app/Contents/Resources/agent-skills\" --session-id uuid-3 --plugin-dir=/tmp/custom-plugin --permission-mode default\r",
       );
     });
 
@@ -1771,7 +1774,71 @@ describe("ptyService", () => {
         startupCommand,
       });
 
-      expect(mockPty.write).toHaveBeenCalledWith(`${startupCommand}\r`);
+      // Only the deterministic session id is added; the plugin flag already
+      // present in the startup command is not duplicated.
+      expect(mockPty.write).toHaveBeenCalledWith(
+        `ADE_RUN_ID=run-1 claude --session-id uuid-3 --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin\r`,
+      );
+    });
+
+    it("keeps argv and the startup command in agreement when Claude is an absolute path", async () => {
+      // Regression: the assigned --session-id only reached `startupCommand`
+      // when it started with a bare `claude` token, so a resolved absolute
+      // executable put the flag in argv alone. The direct spawn and the shell
+      // fallback would then start two different provider sessions.
+      const claudePath = "/usr/local/bin/claude";
+      // The recorded resume target only accepts UUID-shaped ids, so the id
+      // generator has to look like the real one for this launch.
+      let uuidCounter = 0;
+      mocks.randomUUID.mockImplementation(() => {
+        uuidCounter += 1;
+        return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, "0")}`;
+      });
+      const { service, sessionService, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: claudePath,
+        args: ["--model", "sonnet"],
+        startupCommand: `${claudePath} --model sonnet`,
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnedArgs = ptyLib.spawn.mock.calls.at(-1)?.[1] as string[];
+      const flagIndex = spawnedArgs.indexOf("--session-id");
+      expect(flagIndex).toBeGreaterThanOrEqual(0);
+      const assignedId = spawnedArgs[flagIndex + 1];
+      expect(assignedId).toBeTruthy();
+
+      // The startup line is the shell fallback for the same launch, so the id
+      // it records has to be the one argv carries.
+      const createArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(createArgs?.resumeMetadata?.targetId).toBe(assignedId);
+    });
+
+    it("leaves an empty Claude startup command empty instead of fabricating one", async () => {
+      // Regression: the helper synthesized `claude --session-id <id>` when both
+      // the command and the startup line were empty, which then defeated
+      // create()'s `startupCommand ||= shellFallbackCmd` recovery.
+      const { service, sessionService, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+
+      const createArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(createArgs?.resumeMetadata?.targetId ?? null).toBeNull();
+      const written = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls
+        .map((call) => String(call[0]));
+      expect(written.some((data) => data.includes("--session-id"))).toBe(false);
     });
 
     it("routes the bundled Claude plugin into the -lc command line of shell-wrapped resume launches", async () => {

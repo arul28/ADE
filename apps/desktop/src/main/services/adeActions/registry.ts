@@ -45,6 +45,10 @@ import type {
   AttentionPresence,
 } from "../../../shared/types/attention";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
+import {
+  loadExternalSessionDetail,
+  normalizeExternalSessionDetailArgs,
+} from "../externalSessions/externalSessionDetail";
 import type {
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
@@ -937,7 +941,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unsubscribe",
   ],
   search: ["query", "indexStatus", "rebuildIndex"],
-  "external-sessions": ["list", "import"],
+  // No `watchDetail`/`unwatchDetail`: live detail watching pushes updates over a
+  // per-sender Electron IPC channel, which has no remote-runtime equivalent, so
+  // it stays local IPC only (`IPC.externalSessions{Watch,Unwatch}Detail`).
+  // Exposing them here would hand remote callers a snapshot that never updates.
+  "external-sessions": ["list", "import", "getDetail"],
 };
 
 export type AdeActionInputContract = {
@@ -1220,6 +1228,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Import an outside provider CLI session into an ADE lane as a CLI terminal or chat.",
       input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode? }",
       example: "ade actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
+    },
+    getDetail: {
+      description: "Re-parse one outside session file and return a generous transcript tail.",
+      input: "object { provider, sessionId }",
+      example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
     },
   },
 };
@@ -4107,6 +4120,13 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
         (args ?? {}) as Parameters<typeof externalSessionsService.importExternalSession>[0],
       );
     },
+    getDetail(args: unknown) {
+      return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(args ?? {}));
+    },
+    // `watchDetail`/`unwatchDetail` are deliberately absent: the watch pushes
+    // updates on a per-sender Electron IPC channel this action domain cannot
+    // reach, so the desktop bridge keeps them on local IPC. A no-op here would
+    // have told a remote caller it was watching when nothing would ever arrive.
   } as OpaqueService;
 }
 

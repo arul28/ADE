@@ -103,6 +103,8 @@ import {
   buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
+  claudeArgsResumeExistingSession,
+  claudeInvocationInCommandLine,
   isClaudeBinaryCommand,
   isLaunchProfile,
   sanitizeTrackedCliPromptSeed,
@@ -111,6 +113,7 @@ import {
   type TrackedCliLaunchCommand,
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
+  withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
@@ -124,6 +127,10 @@ import {
 import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
 import { discoverPiSessions } from "../externalSessions/discoverPi";
 import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
+import {
+  captureProviderSessionFromPidTree,
+  PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS,
+} from "../externalSessions/providerSessionHandles";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -181,10 +188,13 @@ export function materializeRuntimeCliLaunch(
   if (!isLaunchProfile(provider) || provider === "shell") {
     throw new Error(`Unsupported runtime CLI launch provider '${provider}'.`);
   }
+  const sessionId = runtimeCliLaunch.sessionId?.trim()
+    || (provider === "claude" ? randomUUID() : undefined);
   return buildTrackedCliLaunchCommand({
     ...runtimeCliLaunch,
     provider,
     laneWorktreePath,
+    ...(sessionId ? { sessionId } : {}),
   });
 }
 
@@ -742,6 +752,8 @@ type PtyEntry = {
   runtimeWindowTitleScanBuffer: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
+  /** Retry timer for the open-handle resume-target capture; cleared on close. */
+  sessionHandleCaptureTimer: ReturnType<typeof setTimeout> | null;
   startupTimer: ReturnType<typeof setTimeout> | null;
   initialInputTimer: ReturnType<typeof setTimeout> | null;
   /** Cancels a readiness wait that is not a plain timer (Pi's quiescence wait). */
@@ -1351,6 +1363,87 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
 function extractClaudeSessionIdFromCommand(command: string): string | null {
   const match = command.match(/--session-id(?:=|\s+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   return match?.[1] ?? null;
+}
+
+function extractClaudeSessionIdFromArgs(args: readonly string[]): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "--session-id") {
+      return args[index + 1]?.trim() || null;
+    }
+    if (token?.startsWith("--session-id=")) {
+      return token.slice("--session-id=".length).trim() || null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Give a fresh Claude launch a deterministic `--session-id` so ADE knows the
+ * provider session id without waiting for the transcript to appear.
+ *
+ * Placement follows the same rule as the bundled-plugin flag: `args` is the
+ * argv of whatever is actually spawned, which for resume/reattach launches is
+ * `/bin/bash --noprofile --norc -lc "<command line>"`. Prepending a Claude
+ * flag to a shell's argv makes bash exit 2 with "invalid option", so the flag
+ * goes into the -lc command line instead. Continuation launches
+ * (`--resume`/`--continue`) get no assignment at all — `--session-id` starts a
+ * new conversation and cannot be combined with them.
+ */
+function assignClaudeLaunchSessionId(args: {
+  command: string | null;
+  startupCommand: string;
+  commandArgs: string[];
+}): { startupCommand: string; commandArgs: string[]; assignedId: string | null } {
+  const shellCommandLine = isClaudeBinaryCommand(args.command) || !args.command?.trim()
+    ? null
+    : args.commandArgs[shellCommandLineArgIndex(args.commandArgs)] ?? null;
+  const existing = extractClaudeSessionIdFromArgs(args.commandArgs)
+    ?? extractClaudeSessionIdFromCommand(shellCommandLine ?? "")
+    ?? extractClaudeSessionIdFromCommand(args.startupCommand);
+  if (existing) {
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: existing };
+  }
+  const resumesExistingSession = claudeArgsResumeExistingSession(args.commandArgs)
+    || claudeArgsResumeExistingSession(claudeInvocationInCommandLine(shellCommandLine ?? "")?.claudeArgs ?? [])
+    || claudeArgsResumeExistingSession(claudeInvocationInCommandLine(args.startupCommand)?.claudeArgs ?? []);
+  if (resumesExistingSession) {
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+  }
+
+  const assignedId = randomUUID();
+  let commandArgs = args.commandArgs;
+  if (shellCommandLine != null) {
+    const index = shellCommandLineArgIndex(args.commandArgs);
+    const rewritten = withClaudeSessionIdInCommandLine(shellCommandLine, assignedId);
+    if (rewritten === shellCommandLine) {
+      // The wrapped command line does not invoke `claude`; leave it alone
+      // rather than smuggling the flag into someone else's argv.
+      return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+    }
+    commandArgs = args.commandArgs.slice();
+    commandArgs[index] = rewritten;
+  } else if (args.command?.trim()) {
+    commandArgs = ["--session-id", assignedId, ...args.commandArgs];
+  }
+
+  // argv and the startup command line describe the same launch, so they have to
+  // agree about the id: the direct spawn can fail and fall back to typing
+  // `startupCommand` at the shell. An empty startup command stays empty —
+  // `create()` fills it with the real fallback line rather than a fabricated one.
+  let startupCommand = args.startupCommand;
+  if (args.startupCommand.trim()) {
+    startupCommand = withClaudeSessionIdInCommandLine(args.startupCommand, assignedId);
+    if (startupCommand === args.startupCommand) {
+      // The startup line does not invoke `claude` anywhere reachable; assigning
+      // an id only to argv would make the two disagree.
+      return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+    }
+  } else if (commandArgs === args.commandArgs) {
+    // Nothing carries the flag: no command, no startup line.
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+  }
+  return { startupCommand, commandArgs, assignedId };
 }
 
 function buildInitialResumeMetadata(args: {
@@ -3444,6 +3537,79 @@ export function createPtyService({
     }
   };
 
+  // Provider CLIs only open their transcript once they have booted, so the
+  // capture polls on a decaying schedule. Every attempt is deferred and the
+  // enumeration itself is async: shelling out to lsof/handle.exe on the main
+  // thread would stall the whole app, and a live PTY that is being torn down
+  // must never trigger another probe (closeEntry clears the timer).
+  const scheduleProviderSessionHandleCapture = (entry: PtyEntry): void => {
+    let attempt = 0;
+    const tick = async (): Promise<void> => {
+      entry.sessionHandleCaptureTimer = null;
+      if (entry.disposed) return;
+      const session = sessionService.get(entry.sessionId);
+      if (sanitizeResumeTargetId(session?.resumeMetadata?.targetId ?? null)) return;
+      const pid = entry.pty.pid;
+      if (typeof pid === "number" && pid > 0) {
+        const captured = await captureProviderSessionFromPidTree({ rootPid: pid }).catch(() => null);
+        if (entry.disposed) return;
+        if (captured) {
+          let resumeCmd: string;
+          switch (captured.provider) {
+            case "codex":
+              resumeCmd = `codex resume ${captured.sessionId}`;
+              break;
+            case "claude":
+              resumeCmd = `claude --resume ${captured.sessionId}`;
+              break;
+            case "droid":
+              resumeCmd = `droid --resume ${captured.sessionId}`;
+              break;
+            case "opencode":
+              resumeCmd = `opencode --session ${captured.sessionId}`;
+              break;
+            case "pi":
+              // Canonical POSIX form, matching the storage-backfill producer below.
+              resumeCmd = commandArrayToLine(["pi", "--session", captured.sessionId], { platform: "linux" });
+              break;
+            case "cursor":
+              resumeCmd = `cursor-agent --resume ${captured.sessionId}`;
+              break;
+            default: {
+              const exhaustive: never = captured.provider;
+              throw new Error(`Unhandled provider ${exhaustive}`);
+            }
+          }
+          sessionService.setResumeCommand(entry.sessionId, resumeCmd);
+          logger.info("pty.resume_target_captured_from_handles", {
+            sessionId: entry.sessionId,
+            provider: captured.provider,
+            nativeSessionId: captured.sessionId,
+            pid: captured.pid,
+          });
+          return;
+        }
+      }
+      if (attempt >= PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS.length) {
+        logger.info("pty.resume_target_handle_capture_exhausted", {
+          sessionId: entry.sessionId,
+          toolType: entry.toolTypeHint,
+        });
+        return;
+      }
+      scheduleNextAttempt();
+    };
+    const scheduleNextAttempt = (): void => {
+      if (entry.disposed) return;
+      const delayMs = PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS[attempt]!;
+      attempt += 1;
+      const timer = setTimeout(() => { void tick(); }, delayMs);
+      timer.unref?.();
+      entry.sessionHandleCaptureTimer = timer;
+    };
+    scheduleNextAttempt();
+  };
+
   const tryBackfillResumeTarget = async (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
@@ -3956,6 +4122,10 @@ export function createPtyService({
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
       entry.aiTitleTimer = null;
+    }
+    if (entry.sessionHandleCaptureTimer) {
+      clearTimeout(entry.sessionHandleCaptureTimer);
+      entry.sessionHandleCaptureTimer = null;
     }
     if (entry.startupTimer) {
       clearTimeout(entry.startupTimer);
@@ -5248,7 +5418,7 @@ export function createPtyService({
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath)
         : null;
-      const effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
+      let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
         ? {
             ...args,
             startupCommand: materializedRuntimeLaunch.startupCommand,
@@ -5349,7 +5519,27 @@ export function createPtyService({
           throw Object.assign(new Error(decision.message), { code: decision.code });
         }
       }
-      const requestedStartupCommand = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
+      const requestedStartupCommandRaw = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
+      let requestedStartupCommand = requestedStartupCommandRaw;
+      if (
+        tracked
+        && isClaudeTrackedCliToolType(toolTypeHint)
+        && !existingSession
+      ) {
+        const assigned = assignClaudeLaunchSessionId({
+          command: typeof effectiveArgs.command === "string" ? effectiveArgs.command : null,
+          startupCommand: requestedStartupCommandRaw,
+          commandArgs: Array.isArray(effectiveArgs.args)
+            ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
+            : [],
+        });
+        requestedStartupCommand = assigned.startupCommand;
+        effectiveArgs = {
+          ...effectiveArgs,
+          startupCommand: assigned.startupCommand,
+          args: assigned.commandArgs,
+        };
+      }
       const requestedInitialInput = typeof effectiveArgs.initialInput === "string" ? effectiveArgs.initialInput : "";
       const requestedResumeMetadata = args.resumeMetadata ?? null;
       let initialResumeMetadata = existingSession?.resumeMetadata
@@ -5950,6 +6140,7 @@ export function createPtyService({
         recentOutputTail: "",
         runtimeWindowTitleScanBuffer: "",
         aiTitleTimer: null,
+        sessionHandleCaptureTimer: null,
         startupTimer: null,
         initialInputTimer: null,
         initialInputCancel: null,
@@ -5968,6 +6159,12 @@ export function createPtyService({
         piSessionLeaseUpgradeAttempts: 0,
       };
       ptys.set(ptyId, entry);
+      if (
+        isTrackedAgentCliToolType(toolTypeHint)
+        && !sanitizeResumeTargetId(initialResumeMetadata?.targetId ?? null)
+      ) {
+        scheduleProviderSessionHandleCapture(entry);
+      }
       if (chatSessionId) {
         terminalChatSessions.set(sessionId, chatSessionId);
         promoteActiveChatTerminal(chatSessionId, sessionId, toolTypeHint);
@@ -7261,6 +7458,16 @@ export function createPtyService({
 
     list(args: Parameters<typeof sessionService.list>[0] = {}): TerminalSessionSummary[] {
       return service.enrichSessions(sessionService.list(args));
+    },
+
+    listLiveTrackedCliPids(): number[] {
+      const pids: number[] = [];
+      for (const entry of ptys.values()) {
+        if (entry.disposed || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+        const pid = entry.pty.pid;
+        if (typeof pid === "number" && pid > 0) pids.push(pid);
+      }
+      return pids;
     },
 
     async readTranscriptTail(args: {

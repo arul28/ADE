@@ -890,6 +890,7 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { ChatScheduledWorkRecord, ChatScheduledWorkState } from "./chatScheduledWorkScheduler";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
+import { CROSS_PROVIDER_REPLAY_HEADER } from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
 import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
@@ -2714,6 +2715,31 @@ describe("createAgentChatService", () => {
           sessionId: externalSessionId,
         },
       });
+    });
+
+    it("regression: rejects a cross-provider replay import whose transcript has no messages", async () => {
+      const externalSessionId = "99999999-8888-7777-6666-555555555555";
+      const claudeConfigRoot = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(tmpHomeRoot, ".claude");
+      const claudeProjectDir = path.join(
+        claudeConfigRoot,
+        "projects",
+        tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
+      );
+      fs.mkdirSync(claudeProjectDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeProjectDir, `${externalSessionId}.jsonl`), "\n", "utf8");
+
+      const { service, sessionService } = createService();
+
+      await expect(service.importExternalChatSession({
+        provider: "claude",
+        externalSessionId,
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: false,
+        model: "openai/gpt-5.5",
+      })).rejects.toThrow(/has no messages to replay/i);
+
+      expect(sessionService.get("test-uuid-1")).toBeNull();
     });
 
     it("forks a same-cwd Claude chat import into a new SDK session id", async () => {
@@ -5083,6 +5109,7 @@ describe("createAgentChatService", () => {
       });
       const persisted = readPersistedChatState(result.session.id);
 
+      expect(result.usedFallbackSummary).toBe(false);
       expect(result.session.provider).toBe("cursor");
       expect(result.session.id).not.toBe(source.id);
       // Cursor threads cannot be resumed twice: the fork must start agentless.
@@ -5091,7 +5118,72 @@ describe("createAgentChatService", () => {
       // The tail is rebuilt by the shared fork path's transcript import, so the
       // Cursor seeding must not copy the entries as well — that doubled it.
       expect(persisted.recentConversationEntries ?? []).toEqual([]);
+      // Same-provider Cursor fork is ADE-side context seeding, not a replay.
+      // The field is persisted explicitly as null rather than omitted, so a
+      // restart cannot resurrect a stale replay.
+      expect(persisted.pendingTranscriptReplay).toBeNull();
       // No brief was generated — fork carries the conversation, not a summary.
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("forks a Cursor chat onto another provider by replaying the full transcript", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Keep the banner aligned with the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.session.provider).toBe("codex");
+      expect(persisted.pendingTranscriptReplay).toContain("Keep the banner aligned with the composer.");
+      expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("forks a Claude chat onto a Codex model with a full transcript replay", async () => {
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Replay this turn across providers.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.session.provider).toBe("codex");
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.replayFork).toBeUndefined();
+      expect(persisted.pendingTranscriptReplay).toContain("Replay this turn across providers.");
+      expect(persisted.pendingTranscriptReplay).not.toMatch(/This is a brief/i);
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
 
@@ -5131,6 +5223,62 @@ describe("createAgentChatService", () => {
       expect(forkedPrompt.split("Investigate the flaky migration test.").length - 1).toBe(1);
       // The fresh agent is created rather than resumed.
       expect(mockState.cursorSdkAcquireCalls.at(-1)?.agentId).toBeNull();
+    });
+
+    it("regression: does not replay the forked transcript again after a restart", async () => {
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Replay this transcript exactly once.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("Replay this transcript exactly once.");
+
+      const turnInputSince = async (start: number): Promise<string> => {
+        const request = await vi.waitFor(() => {
+          const found = mockState.codexRequestPayloads
+            .slice(start)
+            .find((payload) => payload.method === "turn/start") as {
+              params?: { input?: Array<{ text?: unknown }> };
+            } | undefined;
+          expect(found).toBeTruthy();
+          return found!;
+        });
+        return request.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      };
+
+      const firstStart = mockState.codexRequestPayloads.length;
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: "Continue from there.",
+      }, { awaitDispatch: true });
+      expect(await turnInputSince(firstStart)).toContain("Replay this transcript exactly once.");
+      // Consumption must be durable, not just in memory.
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
+
+      const restarted = createService().service;
+      const secondStart = mockState.codexRequestPayloads.length;
+      await restarted.sendMessage({
+        sessionId: result.session.id,
+        text: "Keep going.",
+      }, { awaitDispatch: true });
+      const secondInput = await turnInputSince(secondStart);
+      expect(secondInput).not.toContain("verbatim replay");
+      expect(secondInput).not.toContain("Replay this transcript exactly once.");
     });
 
     it("sends only the user note when forking with a handoff note", async () => {
@@ -11029,6 +11177,49 @@ describe("createAgentChatService", () => {
       );
     });
 
+    it("converts an orphaned subagent to a peer when the parent is gone", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      await service.deleteSession({ sessionId: parent.id });
+
+      const summary = await service.getSessionSummary(child.id);
+      expect(summary?.spawnKind).toBe("peer");
+      expect(summary?.orchestrationParentReachable).toBe(false);
+      expect(summary?.subagentTakeoverPromptShownAt).toBeTruthy();
+
+      const takeover = await service.updateSession({ sessionId: child.id, spawnKind: "peer" });
+      expect(takeover.spawnKind).toBe("peer");
+      expect(takeover.subagentTakeoverPromptShownAt).toBeTruthy();
+      expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
+    });
+
+    it("dismissing takeover on an orphan converts ownership and stays dismissed", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      await service.deleteSession({ sessionId: parent.id });
+
+      const dismissed = service.dismissSubagentTakeoverPrompt({ sessionId: child.id });
+      expect(dismissed.spawnKind).toBe("peer");
+      expect(dismissed.subagentTakeoverPromptShownAt).toBeTruthy();
+      const again = service.dismissSubagentTakeoverPrompt({ sessionId: child.id });
+      expect(again.spawnKind).toBe("peer");
+      expect(again.subagentTakeoverPromptShownAt).toBe(dismissed.subagentTakeoverPromptShownAt);
+    });
+
     it("reports a stopped completion before deleting an unfinished child", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
@@ -13952,6 +14143,32 @@ describe("createAgentChatService", () => {
       expect(metaEvent?.opencodePermissionMode).toBe("plan");
     });
 
+    it("replays the full transcript when switching to an out-of-family model", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Seamless replay-fork on model change.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(session.status).toBe("idle");
+      });
+
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        modelId: "openai/gpt-5.5",
+      });
+      const persisted = readPersistedChatState(updated.id);
+
+      expect(updated.provider).toBe("codex");
+      expect(persisted.pendingTranscriptReplay).toContain("Seamless replay-fork on model change.");
+      expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
+    });
+
     it("does not broadcast mode fields when no mode field is updated", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -14708,6 +14925,60 @@ describe("createAgentChatService", () => {
       expect(events.filter((event) =>
         event.sessionId === session.id && event.event.type === "error",
       )).toHaveLength(1);
+    });
+
+    it("restages a verbatim transcript replay into its own bucket across a Cursor thread recycle", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep the banner aligned with the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(session.status).toBe("idle");
+      });
+
+      // Out-of-family model switch stages both buckets: the verbatim replay
+      // and the ADE continuity reconstruction rebuilt from the conversation.
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "cursor/composer-2",
+      });
+      expect(readPersistedChatState(session.id).pendingTranscriptReplay)
+        .toContain("Keep the banner aligned with the composer.");
+
+      mockState.cursorSdkSendCalls = [];
+      mockState.onCursorSendPrompt = () => {
+        mockState.cursorSendPromptError = mockState.cursorSdkSendCalls.length === 1
+          ? new Error("Cursor SDK send failed: [internal] write ECANCELED")
+          : null;
+      };
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the recycle.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+
+      const continuityHeader = "System context (ADE continuity, do not echo verbatim):";
+      const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(retryPrompt.split(continuityHeader).length - 1).toBe(1);
+      expect(retryPrompt).toContain(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(retryPrompt).toContain("Keep the banner aligned with the composer.");
+
+      const headerIndex = retryPrompt.indexOf(continuityHeader);
+      const replayIndex = retryPrompt.indexOf(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(replayIndex).toBeGreaterThanOrEqual(0);
+      expect(replayIndex).toBeLessThan(headerIndex);
+      expect(retryPrompt.slice(headerIndex)).not.toContain(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(readPersistedChatState(session.id).pendingTranscriptReplay).toBeNull();
     });
 
     it("recovers once when a Cursor run returns a transport error with no stream events", async () => {

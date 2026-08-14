@@ -1430,6 +1430,11 @@ export type OrchestrationSessionFields = {
    * so desktop, iOS, and ADE Code do not re-show it. Absent means not shown yet.
    */
   subagentTakeoverPromptShownAt?: string | null;
+  /**
+   * False when the parent chat is gone or not a chat session. Renderers hide
+   * the takeover banner instead of resurrecting it against a dead parent.
+   */
+  orchestrationParentReachable?: boolean;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -2064,6 +2069,8 @@ export type AgentChatImportExternalSessionArgs = {
   cwd: string | null;
   fork: boolean;
   title?: string;
+  /** Catalog model id for the imported ADE chat. Cross-family values replay the transcript. */
+  model?: string;
 };
 
 export type AgentChatImportExternalSessionResult = {
@@ -2079,6 +2086,7 @@ export type AgentChatImportExternalSessionResult = {
    * because an unnamed fork target is a copy nothing marks as ADE-created.
    */
   providerTargetId: string;
+  replayFork?: AgentChatReplayForkDisclosure;
 };
 
 /**
@@ -2222,6 +2230,18 @@ export type AgentChatHandoffArgs = {
 export type AgentChatHandoffResult = {
   session: AgentChatSession;
   usedFallbackSummary: boolean;
+  /**
+   * Present when the fork seeded the target via full-transcript replay
+   * (cross-provider, or a provider without a native fork) and oldest turns
+   * were dropped to fit the target context window.
+   */
+  replayFork?: AgentChatReplayForkDisclosure;
+};
+
+export type AgentChatReplayForkDisclosure = {
+  truncated: boolean;
+  truncatedTurnCount: number;
+  keptTurnCount: number;
 };
 
 export type AgentChatCrossMachineTargetConfig = {

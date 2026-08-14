@@ -25,6 +25,7 @@ import {
   type AutoLaneIdentitySuggestion,
   type AgentChatInteractionMode,
   type AgentChatDispatchSteerMode,
+  type AgentChatReplayForkDisclosure,
   type AgentChatSteerResult,
   type AgentChatStopMode,
   type AiProviderConnectionStatus,
@@ -58,7 +59,6 @@ import {
 import {
   isUnsupportedAgentChatRecoveryActionError,
   providerForkIsContextSeeded,
-  providerSupportsHandoffFork,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
@@ -163,6 +163,7 @@ import {
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionBrowser";
+import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
   readImportedFrom,
   providerDisplayName as externalProviderDisplayName,
@@ -3614,6 +3615,10 @@ export function AgentChatPane({
   const [preferencesReady, setPreferencesReady] = useState(() => hasWarmChatModelCatalog(projectRoot));
   const preferencesProjectRootRef = useRef<string | null | undefined>(projectRoot);
   const [error, setError] = useState<string | null>(null);
+  // What a completed replay fork actually did, as opposed to the pre-fork hint
+  // that only predicts it: the fork is supposed to replay verbatim, so dropped
+  // turns have to be reported, not merely foreshadowed.
+  const [replayForkDisclosure, setReplayForkDisclosure] = useState<AgentChatReplayForkDisclosure | null>(null);
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
@@ -5681,26 +5686,15 @@ export function AgentChatPane({
     () => (handoffTargetDescriptor ? resolveProviderGroupForModel(handoffTargetDescriptor) : null),
     [handoffTargetDescriptor],
   );
-  // Whether the SOURCE provider exposes a native fork surface at all (claude,
-  // codex, opencode, droid). Fork keeps the target in the same provider — the
-  // model may still change within it — so the fork model picker is constrained
-  // to same-provider models below.
-  const handoffForkSupported = providerSupportsHandoffFork(selectedSession?.provider);
-  // Cursor's fork reseeds context rather than copying a provider thread, so the
-  // panel must not promise the whole conversation comes along verbatim.
+  // Fork is available for every source: same-family uses the native provider
+  // fork when one exists; any other target model replays the full transcript.
+  const handoffForkSupported = true;
+  // Cursor's same-family fork reseeds context rather than copying a provider
+  // thread, so the panel must not promise the whole conversation comes along
+  // verbatim on that path. Cross-family targets still get the full replay.
   const handoffForkIsContextSeeded = providerForkIsContextSeeded(selectedSession?.provider);
-  const handoffForkModelFilter = useCallback((descriptor: ModelDescriptor) => {
-    const sourceProvider = selectedSession?.provider;
-    return Boolean(sourceProvider && resolveProviderGroupForModel(descriptor) === sourceProvider);
-  }, [selectedSession?.provider]);
-  const handoffForkAvailableModelIds = useMemo(() => {
-    const sourceProvider = selectedSession?.provider;
-    if (!sourceProvider) return [] as string[];
-    return handoffAvailableModelIds.filter((id) => {
-      const desc = resolveModelDescriptorWithRuntimeCatalog(id);
-      return desc ? resolveProviderGroupForModel(desc) === sourceProvider : false;
-    });
-  }, [handoffAvailableModelIds, selectedSession?.provider]);
+  const handoffForkModelFilter = useCallback((_descriptor: ModelDescriptor) => true, []);
+  const handoffForkAvailableModelIds = handoffAvailableModelIds;
   const handoffNativeControlState = useMemo((): NativeControlState => ({
     interactionMode,
     claudePermissionMode: handoffClaudePermissionMode,
@@ -7027,7 +7021,7 @@ export function AgentChatPane({
       // Land on the menu each open; default the local mode to fork when the
       // source provider can fork, else brief. Seed lane + remote model.
       setHandoffView("menu");
-      setHandoffLocalMode(providerSupportsHandoffFork(selectedSession?.provider) ? "fork" : "brief");
+      setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
       setRemoteHandoffModelId(
         selectedSessionModelId
@@ -9944,6 +9938,7 @@ export function AgentChatPane({
       ...current.filter((job) => job.sourceSessionId !== selectedSessionId),
     ]);
     setError(null);
+    setReplayForkDisclosure(null);
     setHandoffBusy(true);
     setChatActionsOpen(false);
     try {
@@ -9991,6 +9986,7 @@ export function AgentChatPane({
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
       }, ...chatPinArgsFor(chatRuntimePinRef));
+      setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
       invalidateCurrentChatSessionList();
@@ -11599,13 +11595,13 @@ export function AgentChatPane({
   const handoffForkCopy = useMemo(() => (handoffForkIsContextSeeded
     ? {
         subtitle: "Fork carries this conversation into a new chat. Brief summarizes it and starts fresh.",
-        body: <>Forks into a new chat — Cursor threads can&rsquo;t be resumed twice, so ADE seeds the new chat with this conversation&rsquo;s context{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>The transcript is copied into the new chat; any {handoffSourceProviderLabel} model is fine.</>,
+        body: <>{handoffSourceProviderLabel} models start a new chat seeded with this conversation&rsquo;s context — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
+        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
       }
     : {
         subtitle: "Fork copies the whole conversation. Brief summarizes it and starts fresh.",
-        body: <>Forks the full conversation through {handoffSourceProviderLabel}&rsquo;s native fork{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Forked history stays with {handoffSourceProviderLabel}; any {handoffSourceProviderLabel} model is fine.</>,
+        body: <>Same-family models use {handoffSourceProviderLabel}&rsquo;s native fork. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
+        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
       }
   ), [handoffForkIsContextSeeded, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
 
@@ -11898,7 +11894,7 @@ export function AgentChatPane({
             description="Start a new chat from this one — fork the thread or send a brief."
             disabled={handoffTurnGate}
             onClick={() => {
-              setHandoffLocalMode(handoffForkSupported ? "fork" : "brief");
+              setHandoffLocalMode("fork");
               setHandoffView("local");
             }}
           />
@@ -12574,25 +12570,34 @@ export function AgentChatPane({
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
     && selectedSession.orchestrationParentSessionId
+    && selectedSession.orchestrationParentReachable !== false
     && !selectedSession.subagentTakeoverPromptShownAt
     ? (
       <ChatSubagentTakeoverBanner
         parentTitle={spawnLineage?.parentTitle ?? null}
+        // Matches ChatComposerShell's own width rule exactly so the banner and
+        // the prompt box share an edge: capped column when standard, full
+        // bleed inside a grid tile where the composer drops its max width.
+        className={cn(
+          layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
+        )}
         onTakeOver={() => {
           const sessionId = composerSessionId;
           const previousShownAt = selectedSession.subagentTakeoverPromptShownAt ?? null;
+          const shownAt = new Date().toISOString();
           patchSessionSummary(sessionId, {
             spawnKind: "peer",
-            subagentTakeoverPromptShownAt: new Date().toISOString(),
+            subagentTakeoverPromptShownAt: shownAt,
           });
           void window.ade.agentChat.updateSession({
             sessionId,
             spawnKind: "peer",
           }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
             patchSessionSummary(sessionId, {
-              spawnKind: updated.spawnKind,
-              subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt,
+              spawnKind: updated.spawnKind ?? "peer",
+              subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
             });
+            void refreshSessions({ force: true }).catch(() => {});
           }).catch((err) => {
             patchSessionSummary(sessionId, {
               spawnKind: "subagent",
@@ -12610,8 +12615,11 @@ export function AgentChatPane({
             subagentTakeoverPromptShown: true,
           }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
             patchSessionSummary(sessionId, {
+              spawnKind: updated.spawnKind,
               subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
+              orchestrationParentReachable: updated.orchestrationParentReachable,
             });
+            void refreshSessions({ force: true }).catch(() => {});
           }).catch((err) => {
             patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: null });
             setError(err instanceof Error ? err.message : String(err));
@@ -13427,6 +13435,21 @@ export function AgentChatPane({
             ) : null}
           </div>
         ) : null}
+        {replayForkDisclosure ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5 font-sans text-[11px] text-amber-100/80">
+            <span className="min-w-0 flex-1 break-words">
+              {`Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `}
+              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window.`}
+            </span>
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-amber-300/15 px-2 py-0.5 font-medium text-amber-50/90 transition-colors hover:bg-amber-300/[0.12]"
+              onClick={() => setReplayForkDisclosure(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
         {mergedRuntimeBanner?.kind === "cli-only" ? (
           <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
@@ -13840,6 +13863,14 @@ export function AgentChatPane({
                           </div>
                         ) : null}
 
+                        {onImportedSession && !appPanelOpen ? (
+                          <ImportFloatingBadge
+                            projectRoot={projectRoot}
+                            disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                            onOpen={() => setImportBrowserOpen(true)}
+                          />
+                        ) : null}
+
                         {/* Launch shelf — everything that answers "where does this
                             run". It is drawn as a recessed drawer tucked under the
                             composer rather than as another centered band: the lane
@@ -13926,7 +13957,7 @@ export function AgentChatPane({
                                         label: "Import session",
                                         description: draftLaunchTargetIsAutoCreate
                                           ? "Select a lane first — imports need a lane folder."
-                                          : "Continue an external Claude, Codex, Cursor, Droid, or OpenCode session here.",
+                                          : "Continue a Claude, Codex, Cursor, Droid, OpenCode, or Pi chat here.",
                                       }}
                                     >
                                       <button
