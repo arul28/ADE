@@ -103,6 +103,7 @@ export function ConfirmSheet({
 }) {
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (busy) return;
       if (event.key === "Escape") {
         event.stopPropagation();
         onCancel();
@@ -110,7 +111,7 @@ export function ConfirmSheet({
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [onCancel]);
+  }, [busy, onCancel]);
 
   return (
     <div
@@ -118,6 +119,7 @@ export function ConfirmSheet({
       aria-modal="true"
       aria-label={title}
       onClick={(event) => {
+        if (busy) return;
         if (event.target === event.currentTarget) onCancel();
       }}
       style={{
@@ -156,6 +158,7 @@ export function ConfirmSheet({
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "16px 20px 18px" }}>
           <button
             type="button"
+            disabled={busy}
             onClick={onCancel}
             style={outlineButton({ height: 34, fontSize: 12.5, padding: "0 14px" })}
           >
@@ -1329,4 +1332,3 @@ export function YourMacsCard() {
     </div>
   );
 }
-

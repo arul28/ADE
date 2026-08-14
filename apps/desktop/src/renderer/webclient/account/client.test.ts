@@ -744,6 +744,53 @@ describe("BrowserAccountClient", () => {
     expect(client.getSnapshot().machines).toEqual([]);
   });
 
+  it("preserves the roster after an unrelated 502 response", async () => {
+    const assigned: string[] = [];
+    const location = browserLocation(assigned);
+    const token = accessToken();
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://clerk.example/oauth/token") {
+        return new Response(JSON.stringify({
+          access_token: token,
+          refresh_token: "refresh-secret",
+          expires_in: 3600,
+        }), { status: 200 });
+      }
+      if (url === "https://directory.example/account/machines") {
+        return new Response(JSON.stringify({
+          machines: [{
+            machineKey: "alpha",
+            deviceId: "alpha",
+            name: "windows alpha",
+            reachableEndpoints: [],
+            online: true,
+          }],
+        }), { status: 200 });
+      }
+      if (url === "https://directory.example/account/machines/alpha") {
+        return new Response(JSON.stringify({ error: "upstream unavailable" }), { status: 502 });
+      }
+      return new Response(JSON.stringify({ machines: [] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new BrowserAccountClient({
+      config: {
+        issuer: "https://clerk.example",
+        clientId: "client_ade",
+        directoryBaseUrl: "https://directory.example",
+        relayBaseUrls: ["wss://relay.example"],
+      },
+      fetchImpl,
+      location,
+      history: { replaceState: () => {} },
+      storage: new MemorySessionStorage(),
+      sessionStore: new BrowserAccountSessionStore(new MemoryStorage()),
+    });
+    await completeSignIn(client, location, assigned);
+    await expect(client.removeMachine("alpha")).rejects.toThrow("Couldn't remove that machine (502)");
+    expect(client.getSnapshot().machines.map((machine) => machine.machineKey)).toEqual(["alpha"]);
+  });
+
   it("turns a hung directory delete into a timeout the confirm sheet can dismiss", async () => {
     const assigned: string[] = [];
     const location = browserLocation(assigned);

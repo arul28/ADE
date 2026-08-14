@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AccountPage, SignInCard, describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./AccountPage";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
-import type { AdeAccountMachine, AdeAccountStatus } from "../../../shared/types";
+import type { AdeAccountMachine, AdeAccountMachineRemovalResult, AdeAccountStatus } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { WebWorkspaceProvider } from "../../webclient/workspace/WebWorkspaceContext";
 
@@ -361,6 +361,31 @@ describe("AccountPage signed-in", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
+  });
+
+  it("keeps the removal confirmation open while removal is in flight", async () => {
+    let resolveRemoval!: (result: AdeAccountMachineRemovalResult) => void;
+    removeMachine.mockImplementationOnce(
+      () => new Promise<AdeAccountMachineRemovalResult>((resolve) => {
+        resolveRemoval = resolve;
+      }),
+    );
+    renderPage();
+    await screen.findByText("Studio");
+
+    fireEvent.click(screen.getByRole("button", { name: /Options for Studio/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Remove from account/ }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(dialog);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    resolveRemoval({ ok: true, machineKey: "studio-key" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("signs out only after the honest confirmation", async () => {

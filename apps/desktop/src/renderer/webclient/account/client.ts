@@ -46,6 +46,12 @@ function isAbortError(cause: unknown): boolean {
   return cause instanceof Error && (cause.name === "AbortError" || cause.name === "TimeoutError");
 }
 
+function isConfirmedActivityPurgeFailure(value: unknown): boolean {
+  return isRecord(value)
+    && value.code === "activity_purge_failed"
+    && value.machineRemoved === true;
+}
+
 /**
  * `key`/`length` are optional: they are only needed to sweep abandoned stashes,
  * and a caller supplying a minimal storage stub simply keeps them until their
@@ -800,18 +806,25 @@ export class BrowserAccountClient {
         await this.expireSession();
         throw new Error("ADE account session expired.");
       }
-      // Directory delete happens before the Activity purge. 404 means a retry
-      // after a half-finished removal; 502 means the machine is already off
-      // the roster and only Activity is left. Both must drop the local row.
-      if (response.status === 404 || response.status === 502) {
-        this.snapshot = {
-          ...this.snapshot,
-          machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
-        };
-        if (response.status === 502) throw new Error(ACTIVITY_PURGE_FAILED_MESSAGE);
-        return { ok: true, machineKey };
+      if (!response.ok) {
+        let payload: unknown = null;
+        try {
+          payload = await readBoundedAccountDirectoryJson(response);
+        } catch {
+          // Preserve the local row when the directory does not prove that the
+          // account-side removal completed.
+        }
+        if (isConfirmedActivityPurgeFailure(payload)) {
+          // The directory row is gone, but Activity still needs a retry. This
+          // is the only non-2xx response that authorizes local cleanup.
+          this.snapshot = {
+            ...this.snapshot,
+            machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
+          };
+          throw new Error(ACTIVITY_PURGE_FAILED_MESSAGE);
+        }
+        throw new Error(`Couldn't remove that machine (${response.status}).`);
       }
-      if (!response.ok) throw new Error(`Couldn't remove that machine (${response.status}).`);
       await response.body?.cancel().catch(() => undefined);
       this.snapshot = {
         ...this.snapshot,
