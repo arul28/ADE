@@ -1,4 +1,4 @@
-import { CaretDown, Check, DesktopTower } from "@phosphor-icons/react";
+import { CaretDown, Check, CloudArrowUp, DesktopTower } from "@phosphor-icons/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -12,9 +12,26 @@ import {
 export type DraftMachineOption = {
   id: string;
   name: string;
+  /**
+   * "cloud" entries are not computers ADE is paired with — they are hosted
+   * runtimes (today: Cursor Cloud) that run the chat off-machine. They live in
+   * this list because "where does this run" is one question, not two.
+   */
+  kind?: "machine" | "cloud";
+  /** Set to render the row disabled with this sentence as its tooltip. */
+  unavailableReason?: string | null;
 };
 
 const MENU_WIDTH = 220;
+const CLOUD_VIOLET = "#A78BFA";
+
+function machineIcon(option: DraftMachineOption) {
+  return option.kind === "cloud" ? (
+    <CloudArrowUp size={12} weight="fill" className="shrink-0" style={{ color: CLOUD_VIOLET }} aria-hidden />
+  ) : (
+    <DesktopTower size={12} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
+  );
+}
 
 /**
  * Machine half of the launch shelf's "where does this run" pair.
@@ -33,11 +50,14 @@ export function DraftMachinePicker({
   selectedMachineId,
   onChange,
   disabled = false,
+  onOpen,
 }: {
   machines: readonly DraftMachineOption[];
   selectedMachineId: string | null;
   onChange: (machineId: string) => void;
   disabled?: boolean;
+  /** Fires when the menu opens so callers can retry a failed catalog probe. */
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -144,14 +164,18 @@ export function DraftMachinePicker({
   const triggerLabel = selected
     ? `Choose machine, currently ${selected.name}`
     : `Choose machine, current machine unavailable; fallback ${displayed.name}`;
+  const hasCloudOption = machines.some((machine) => machine.kind === "cloud");
+  const triggerDescription = hasCloudOption
+    ? "Pick this computer, another paired computer, or Cursor Cloud. The lane list beside it follows your choice."
+    : "Pick this computer or another paired computer. The lane list beside it follows your choice.";
 
   return (
     <div className="relative inline-flex shrink-0">
       <SmartTooltip
         forceEnabled
         content={{
-          label: "Machine",
-          description: "Which computer this chat runs on. The lane list beside it follows your choice.",
+          label: "Where it runs",
+          description: triggerDescription,
         }}
       >
         <button
@@ -162,7 +186,11 @@ export function DraftMachinePicker({
           aria-expanded={open}
           aria-label={triggerLabel}
           disabled={disabled}
-          onClick={() => setOpen((current) => !current)}
+          onClick={() => setOpen((current) => {
+            const next = !current;
+            if (next) onOpen?.();
+            return next;
+          })}
           className={cn(
             "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border px-2",
             "font-sans text-[11px] font-medium transition-colors",
@@ -172,7 +200,7 @@ export function DraftMachinePicker({
             disabled && "cursor-not-allowed opacity-45",
           )}
         >
-          <DesktopTower size={12} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
+          {machineIcon(displayed)}
           <span className="min-w-0 truncate">{displayed.name}</span>
           <CaretDown
             size={9}
@@ -204,12 +232,14 @@ export function DraftMachinePicker({
                 >
                   {machines.map((machine) => {
                     const active = machine.id === selectedMachineId;
-                    return (
+                    const reason = machine.unavailableReason?.trim() || null;
+                    const row = (
                       <button
                         key={machine.id}
                         type="button"
                         role="menuitemradio"
                         aria-checked={active}
+                        disabled={Boolean(reason)}
                         onClick={() => {
                           closeAndRestoreFocus();
                           if (!active) onChange(machine.id);
@@ -217,12 +247,23 @@ export function DraftMachinePicker({
                         className={cn(
                           "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[11px] transition-colors",
                           active ? "text-fg/90" : "text-fg/65 hover:bg-white/[0.06] hover:text-fg/90",
+                          reason && "cursor-not-allowed opacity-40 hover:bg-transparent",
                         )}
                       >
-                        <DesktopTower size={12} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
+                        {machineIcon(machine)}
                         <span className="min-w-0 truncate">{machine.name}</span>
                         {active ? <Check size={11} weight="bold" className="ml-auto shrink-0" aria-hidden /> : null}
                       </button>
+                    );
+                    if (!reason) return row;
+                    return (
+                      <SmartTooltip
+                        key={machine.id}
+                        forceEnabled
+                        content={{ label: machine.name, description: reason }}
+                      >
+                        {row}
+                      </SmartTooltip>
                     );
                   })}
                 </div>

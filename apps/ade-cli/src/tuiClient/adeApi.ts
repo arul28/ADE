@@ -765,6 +765,14 @@ export async function getOpenCodeRuntimeDiagnostics(connection: AdeCodeConnectio
   return await connection.action<OpenCodeRuntimeSnapshot>("ai", "getOpenCodeRuntimeDiagnostics", {});
 }
 
+export async function watchCursorCloudMirror(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  watching: boolean,
+): Promise<void> {
+  await connection.action("ai", "watchCursorCloudMirror", { sessionId, watching });
+}
+
 export async function createChatSession(args: {
   connection: AdeCodeConnection;
   laneId: string;

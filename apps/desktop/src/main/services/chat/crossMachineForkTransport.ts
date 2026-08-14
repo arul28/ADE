@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import zlib from "node:zlib";
-import { providerSupportsHandoffFork } from "../../../shared/types/chat";
+import { providerSupportsCrossMachineHandoffFork } from "../../../shared/types/chat";
 import type {
   AgentChatCrossMachineForkTransport,
   AgentChatCrossMachineHandoffCapsule,
@@ -139,8 +139,11 @@ export function validateForkTransport(capsule: AgentChatCrossMachineHandoffCapsu
   if (!forkTransport || typeof forkTransport !== "object" || Array.isArray(forkTransport)) {
     throw new Error("The handoff capsule has a malformed fork transport.");
   }
+  // Cross-machine, not local: providers whose fork produces no transportable
+  // artifact (Droid's machine-local index, Cursor's context-only reseed) are
+  // refused by the provider gate itself rather than by the kind allowlist below.
   if (
-    !providerSupportsHandoffFork(forkTransport.provider)
+    !providerSupportsCrossMachineHandoffFork(forkTransport.provider)
     || forkTransport.provider !== capsule.source.provider
   ) {
     throw new Error("The handoff capsule has an invalid fork transport provider.");

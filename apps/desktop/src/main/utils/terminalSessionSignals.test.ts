@@ -200,7 +200,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "chat-1",
       launch: { permissionMode: "edit" },
-    })).toBe("cursor-agent --resume chat-1");
+    })).toBe("cursor-agent --mode ask --resume chat-1");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",

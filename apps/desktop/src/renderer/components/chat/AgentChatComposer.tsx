@@ -569,14 +569,15 @@ const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
  * rather than as an answer — and "where is this actually running" is a question
  * worth answering while you are typing into it.
  */
-function ComposerMachineChip({ machineName }: { machineName: string }) {
+function ComposerMachineChip({ machineName, cloud = false }: { machineName: string; cloud?: boolean }) {
   return (
     <SmartTooltip
       forceEnabled
       content={{
         label: machineName,
-        description:
-          "This chat runs on the machine that owns its lane. To move it, use Chat actions → Handoff → Continue on another machine.",
+        description: cloud
+          ? "This chat is a live view of a Cursor Cloud agent. Replies run in cloud."
+          : "This chat runs on the machine that owns its lane. To move it, use Chat actions → Handoff → Continue on another machine.",
       }}
     >
       <span
@@ -588,11 +589,11 @@ function ComposerMachineChip({ machineName }: { machineName: string }) {
         )}
         style={{ whiteSpace: "nowrap" }}
       >
-        {/* Amber tower, the same identity mark the sidebar badge and the session
-            hover card use. Bare here — no pill — because the composer toolbar's
-            other controls are already bordered and a third box would read as a
-            fourth button. */}
-        <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+        {cloud ? (
+          <CloudArrowUp size={11} weight="fill" className="text-violet-300/85" aria-hidden />
+        ) : (
+          <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+        )}
         <span className="max-w-24 truncate">{machineName}</span>
       </span>
     </SmartTooltip>
@@ -1483,6 +1484,7 @@ export function AgentChatComposer({
   onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
+  cursorRuntime = null,
   modelRuntimePin = null,
   attachmentPersistenceUnavailableReason = null,
   contextAttachments = [],
@@ -1586,16 +1588,8 @@ export function AgentChatComposer({
   showIosSimulatorToggle = false,
   iosSimulatorOpen = false,
   onToggleIosSimulator,
-  cursorCloudAvailable = false,
   cursorCloudCanLaunch = false,
-  cursorCloudAgentId = null,
-  cursorCloudPaneOpen = false,
-  cursorCloudActiveCount = 0,
-  cursorCloudLaunchModeOpen = false,
-  cursorCloudLaunchPanel = null,
-  onOpenCloudLaunchMode,
-  onCloseCloudLaunchMode,
-  onOpenCloudBringToLocal,
+  cursorCloudModeActive = false,
   onSubmitToCloud,
   showAppControlToggle = false,
   appControlOpen = false,
@@ -1626,6 +1620,8 @@ export function AgentChatComposer({
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
+  /** Cloud chats run on Cursor Cloud, not on this computer or a paired machine. */
+  cursorRuntime?: "local" | "cloud" | null;
   /**
    * {@link composerMachineBinding} when it is NOT the machine this window's
    * project tab is bound to. What a model picker offers — which models exist,
@@ -1793,23 +1789,18 @@ export function AgentChatComposer({
   showIosSimulatorToggle?: boolean;
   iosSimulatorOpen?: boolean;
   onToggleIosSimulator?: () => void;
-  cursorCloudAvailable?: boolean;
   /**
-   * Whether the composer can launch a brand-new cloud run from the current chat. Only true for
-   * fresh chats with no events and no existing cloud agent — once a chat has any turns, the
-   * "Send to Cursor Cloud" affordance hides and the inline launch strip becomes unavailable.
-   * The "Open existing cloud chat" menu item is independent and remains visible whenever
-   * `cursorCloudAvailable` is true, since it spawns a separate session.
+   * Whether this chat can still start a cloud run. Only true for fresh chats with no events and
+   * no existing cloud agent — once a chat has turns, the cloud toggle goes disabled rather than
+   * disappearing, so the affordance does not move around under the cursor.
    */
   cursorCloudCanLaunch?: boolean;
-  cursorCloudAgentId?: string | null;
-  cursorCloudPaneOpen?: boolean;
-  cursorCloudActiveCount?: number;
-  cursorCloudLaunchModeOpen?: boolean;
-  cursorCloudLaunchPanel?: React.ReactNode;
-  onOpenCloudLaunchMode?: () => void;
-  onCloseCloudLaunchMode?: () => void;
-  onOpenCloudBringToLocal?: () => void;
+  /**
+   * Cloud mode: the next send goes to Cursor Cloud instead of the local runtime. The composer
+   * owns no control for it — it is set by picking "Cursor Cloud" in the launch shelf's machine
+   * picker, and the Send button's cloud glyph is the whole visual signal.
+   */
+  cursorCloudModeActive?: boolean;
   onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
@@ -3494,9 +3485,11 @@ export function AgentChatComposer({
      drop actually lands. Its absence is meaningful rather than unknown: a chat
      with no remote binding is running on this Mac. */
   const composerMachineName = sessionId
-    ? composerMachineBinding?.kind === "remote"
-      ? composerMachineBinding.runtimeName
-      : THIS_MACHINE_NAME
+    ? cursorRuntime === "cloud"
+      ? "Cursor Cloud"
+      : composerMachineBinding?.kind === "remote"
+        ? composerMachineBinding.runtimeName
+        : THIS_MACHINE_NAME
     : null;
 
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
@@ -4355,16 +4348,15 @@ export function AgentChatComposer({
       return;
     }
     // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
-    // turns have been exchanged the inline launch strip is unavailable, so this branch is gated
-    // on `cursorCloudCanLaunch` to defend against a stale `cursorCloudLaunchModeOpen=true`.
+    // turns have been exchanged the cloud target is unavailable, so this branch is gated on
+    // `cursorCloudCanLaunch` to defend against a stale `cursorCloudModeActive=true`.
     const hasContextSelection =
       iosElementContextItems.length > 0
       || appControlContextItems.length > 0
       || builtInBrowserContextItems.length > 0;
     if (
-      cursorCloudAvailable
-      && cursorCloudCanLaunch
-      && cursorCloudLaunchModeOpen
+      cursorCloudCanLaunch
+      && cursorCloudModeActive
       && onSubmitToCloud
     ) {
       const trimmed = draft.trim();
@@ -4385,7 +4377,7 @@ export function AgentChatComposer({
       return;
     }
     onSubmit();
-  }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudModeActive, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5304,7 +5296,10 @@ export function AgentChatComposer({
                 outside that conditional because orchestration leads and host
                 surfaces hide model controls without hiding a running chat. */}
             {composerMachineName ? (
-              <ComposerMachineChip machineName={composerMachineName} />
+              <ComposerMachineChip
+                machineName={composerMachineName}
+                cloud={cursorRuntime === "cloud"}
+              />
             ) : null}
           </div>
 
@@ -5354,18 +5349,11 @@ export function AgentChatComposer({
                 <Paperclip className="h-3 w-3" size={14} weight="bold" />
               </button>
             </SmartTooltip>
-                        {cursorCloudAvailable && (onOpenCloudLaunchMode || onOpenCloudBringToLocal) ? (
-              <CursorCloudActionMenu
-                canLaunch={cursorCloudCanLaunch}
-                paneOpen={cursorCloudPaneOpen}
-                launchModeOpen={cursorCloudLaunchModeOpen}
-                cloudAgentId={cursorCloudAgentId}
-                activeCount={cursorCloudActiveCount}
-                onOpenLaunchMode={onOpenCloudLaunchMode}
-                onCloseLaunchMode={onCloseCloudLaunchMode}
-                onOpenBringToLocal={onOpenCloudBringToLocal}
-              />
-            ) : null}
+            {/* CURSOR-CLOUD-PANEL: the composer's Cursor Cloud glyph and its menu (whose second
+                entry, "Open existing cloud chat", mounted the right-side cloud panel) are
+                temporarily disabled; they return in the dedicated cloud-panel PR. Cloud mode is
+                now chosen in the launch shelf's machine picker, and the Send button carries the
+                cloud glyph while it is on. */}
 
             {/* Secondary toggles, folded behind one glyph. Each entry is still
                 gated by exactly the condition that used to gate its button, so
@@ -5526,10 +5514,9 @@ export function AgentChatComposer({
               (() => {
                 // Switch the Send button to its cloud variant only when the chat is fresh enough
                 // to actually launch a new cloud run. Once turns exist, the launch path is closed
-                // and we keep the standard local Send affordance even if the cloud pane is open.
-                const cloudMode = cursorCloudAvailable
-                  && cursorCloudCanLaunch
-                  && cursorCloudLaunchModeOpen
+                // and we keep the standard local Send affordance.
+                const cloudMode = cursorCloudCanLaunch
+                  && cursorCloudModeActive
                   && !parallelChatMode;
                 const label = parallelChatMode
                   ? "Send to lanes"
@@ -5599,11 +5586,6 @@ export function AgentChatComposer({
         />
       ) : (
       <>
-      {cursorCloudLaunchModeOpen && cursorCloudLaunchPanel ? (
-        <div className="border-b border-violet-300/[0.10] bg-violet-500/[0.04] px-3 py-3">
-          {cursorCloudLaunchPanel}
-        </div>
-      ) : null}
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
         <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
@@ -5871,143 +5853,3 @@ export function AgentChatComposer({
   );
 }
 
-function CursorCloudActionMenu({
-  canLaunch,
-  paneOpen,
-  launchModeOpen,
-  cloudAgentId,
-  activeCount,
-  onOpenLaunchMode,
-  onCloseLaunchMode,
-  onOpenBringToLocal,
-}: {
-  /**
-   * Whether the "Send to Cursor Cloud" launch item should be available. The trigger button itself
-   * is always shown (so users can always reach "Open existing cloud chat") but the launch row is
-   * only useful for fresh chats with no exchanged turns.
-   */
-  canLaunch: boolean;
-  paneOpen: boolean;
-  launchModeOpen: boolean;
-  cloudAgentId: string | null;
-  activeCount: number;
-  onOpenLaunchMode?: () => void;
-  onCloseLaunchMode?: () => void;
-  onOpenBringToLocal?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const recalc = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const menuWidth = 280;
-      const gap = 8;
-      const top = Math.max(8, rect.top - gap);
-      const left = Math.min(window.innerWidth - menuWidth - 8, Math.max(8, rect.right - menuWidth));
-      setMenuPos({ left, top });
-    };
-    recalc();
-    window.addEventListener("resize", recalc);
-    window.addEventListener("scroll", recalc, true);
-    return () => {
-      window.removeEventListener("resize", recalc);
-      window.removeEventListener("scroll", recalc, true);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handle = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (wrapRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
-    window.addEventListener("mousedown", handle);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", handle);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  const active = paneOpen || launchModeOpen;
-  return (
-    <div ref={wrapRef} className="relative">
-      <SmartTooltip
-        content={{
-          label: "Cursor Cloud",
-          description: "Send this prompt to Cursor Cloud or resume a cloud chat locally.",
-          effect: cloudAgentId ? "This chat is promoted to cloud." : undefined,
-        }}
-      >
-        <button
-          type="button"
-          ref={triggerRef}
-          onClick={() => setOpen((v) => !v)}
-          className={cn(
-            "relative inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
-            active
-              ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-100/90"
-              : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-violet-300/22 hover:text-violet-200/80",
-          )}
-          aria-label="Cursor Cloud actions"
-          aria-haspopup="menu"
-          aria-expanded={open}
-        >
-          <CloudArrowUp className="h-3 w-3" size={14} weight={active ? "fill" : "regular"} />
-          {activeCount > 0 ? (
-            <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 px-0.5 font-mono text-[8px] font-bold text-black" style={{ background: "#A78BFA" }}>{activeCount}</span>
-          ) : cloudAgentId ? (
-            <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full border border-black/40" style={{ background: "#A78BFA" }} aria-hidden />
-          ) : null}
-        </button>
-      </SmartTooltip>
-      {open && menuPos ? createPortal(
-        <div
-          ref={menuRef}
-          role="menu"
-          style={{ left: menuPos.left, top: menuPos.top, transform: "translateY(-100%)", width: 280 }}
-          className="fixed z-[1000] overflow-hidden rounded-lg border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_94%,black_6%)] shadow-[0_18px_48px_rgba(0,0,0,0.48)] backdrop-blur-xl"
-        >
-          {canLaunch ? (
-            <>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => { setOpen(false); if (launchModeOpen) onCloseLaunchMode?.(); else onOpenLaunchMode?.(); }}
-                className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-violet-500/[0.10]"
-              >
-                <CloudArrowUp size={14} weight="fill" className="mt-0.5 shrink-0 text-violet-300" />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-sans text-[12px] font-semibold text-fg/90">{launchModeOpen ? "Cancel cloud send" : "Send to Cursor Cloud"}</span>
-                  <span className="block font-sans text-[10.5px] leading-snug text-fg/45">{launchModeOpen ? "Hide the cloud launch options." : "Pick a repo, branch, model — then send your prompt to a fresh cloud agent."}</span>
-                </span>
-              </button>
-              <div className="h-px bg-white/[0.05]" />
-            </>
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => { setOpen(false); onOpenBringToLocal?.(); }}
-            className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-violet-500/[0.10]"
-          >
-            <ArrowBendDownRight size={14} weight="bold" className="mt-0.5 shrink-0 text-violet-300/85" />
-            <span className="min-w-0 flex-1">
-              <span className="block font-sans text-[12px] font-semibold text-fg/90">Open existing cloud chat</span>
-              <span className="block font-sans text-[10.5px] leading-snug text-fg/45">Browse your Cursor Cloud agents and open one as a chat in ADE.</span>
-            </span>
-          </button>
-        </div>,
-        document.body,
-      ) : null}
-    </div>
-  );
-}

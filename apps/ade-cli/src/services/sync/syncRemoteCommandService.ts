@@ -5390,6 +5390,27 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return { ok: true };
   });
+  register("ai.openCursorCloudChat", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const agentName = asTrimmedString(payload.agentName);
+    const sessionId = asTrimmedString(payload.sessionId);
+    const modelId = asTrimmedString(payload.modelId);
+    return requireService(args.agentChatService, "Agent chat service not available.").openCursorCloudChat({
+      cloudAgentId: requireString(payload.cloudAgentId, "ai.openCursorCloudChat requires cloudAgentId."),
+      laneId: requireString(payload.laneId, "ai.openCursorCloudChat requires laneId."),
+      ...(agentName ? { agentName } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(modelId ? { modelId } : {}),
+    });
+  });
+  register("ai.watchCursorCloudMirror", { viewerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.watching !== "boolean") {
+      throw new Error("ai.watchCursorCloudMirror requires watching to be a boolean.");
+    }
+    requireService(args.agentChatService, "Agent chat service not available.").watchCursorCloudMirror({
+      sessionId: requireString(payload.sessionId, "ai.watchCursorCloudMirror requires sessionId."),
+      watching: payload.watching,
+    });
+  });
   register("orchestration.runCreate", { viewerAllowed: true }, async (payload) => {
     const orchestrationService = requireService(args.orchestrationService, "Orchestration service not available.");
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

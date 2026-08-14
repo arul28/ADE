@@ -16,7 +16,7 @@ import type {
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { openExternalUrl } from "../../lib/openExternal";
-import { repoMatchKey } from "../../lib/cursorCloudUtils";
+import { cursorCloudErrorMessage, repoMatchKey } from "../../lib/cursorCloudUtils";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
@@ -66,11 +66,6 @@ function repoLabel(url: string): string {
   const parts = trimmed.split("/");
   if (parts.length >= 2) return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
   return trimmed;
-}
-
-function errorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim() || "Cursor Cloud request failed.";
 }
 
 export type ChatCursorCloudPanelHandle = {
@@ -185,7 +180,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
         setActiveRuns({});
       }
     } catch (err) {
-      setError(errorMessage(err));
+      setError(cursorCloudErrorMessage(err));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -288,7 +283,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
       await refresh({ soft: true });
       return { agentId: created.agent.agentId };
     } catch (err) {
-      setError(errorMessage(err));
+      setError(cursorCloudErrorMessage(err));
       return null;
     } finally {
       setLoading(false);
@@ -307,7 +302,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
       await window.ade.ai.cursorCloudCancelRun({ agentId, runId });
       await refresh({ soft: true });
     } catch (err) {
-      setError(errorMessage(err));
+      setError(cursorCloudErrorMessage(err));
     } finally {
       setBusyAgentId(null);
     }
@@ -321,7 +316,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
       else await window.ade.ai.cursorCloudArchiveAgent(agentId);
       await refresh({ soft: true });
     } catch (err) {
-      setError(errorMessage(err));
+      setError(cursorCloudErrorMessage(err));
     } finally {
       setBusyAgentId(null);
     }
@@ -335,7 +330,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
       setAgents((prev) => prev.filter((agent) => agent.agentId !== agentId));
       setConfirmDeleteAgentId(null);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(cursorCloudErrorMessage(err));
     } finally {
       setBusyAgentId(null);
     }
@@ -361,7 +356,7 @@ export const ChatCursorCloudPanel = forwardRef<ChatCursorCloudPanelHandle, ChatC
       // error banner only shows while the panel is open.
       // eslint-disable-next-line no-console
       console.error("[cursor-cloud] openChat failed", err);
-      setError(errorMessage(err));
+      setError(cursorCloudErrorMessage(err));
     } finally {
       setBusyAgentId(null);
     }

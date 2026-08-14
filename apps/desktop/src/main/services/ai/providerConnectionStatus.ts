@@ -6,6 +6,7 @@ import {
   readCodexCredentials,
 } from "./providerCredentialSources";
 import { getAllApiKeys } from "./apiKeyStore";
+import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { isCursorAdminApiKey } from "./utils";
 import {
@@ -204,25 +205,31 @@ export async function buildProviderConnections(
   const cursorEnvUsageAuth = isCursorAdminApiKey(cursorEnvKey);
   const cursorAdminEnvAuth = Boolean(cursorAdminEnvKey);
   const cursorAdminUsageAuth = isCursorAdminApiKey(cursorAdminEnvKey);
-  let cursorStoredAuth = false;
+  const cursorAuthSnapshot = await getCursorSdkAuthSnapshot();
+  let cursorStoredAuth = cursorAuthSnapshot.adeKeyPresent;
   let cursorStoredUsageAuth = false;
-  let cursorStoreUnavailable = false;
-  try {
-    const storedCursorKey = getAllApiKeys().cursor?.trim() ?? "";
-    cursorStoredAuth = Boolean(storedCursorKey);
-    cursorStoredUsageAuth = isCursorAdminApiKey(storedCursorKey);
-  } catch {
-    // API key store may not be initialized yet (or read failed); surface as a
-    // distinct state so the blocker copy doesn't lie about the absence of a key.
-    cursorStoreUnavailable = true;
+  let cursorStoreUnavailable = cursorAuthSnapshot.storeUnavailable;
+  if (cursorStoredAuth) {
+    try {
+      const storedCursorKey = getAllApiKeys().cursor?.trim() ?? "";
+      cursorStoredUsageAuth = isCursorAdminApiKey(storedCursorKey);
+    } catch {
+      cursorStoreUnavailable = true;
+    }
   }
-  const cursorSdkAuth = Boolean(cursorEnvAuth || cursorStoredAuth);
+  // ADE store first, then CURSOR_API_KEY. An OAuth-minted stored key counts as
+  // connected; ~/.cursor/sdk/auth.json alone does not.
+  const cursorSdkAuth = Boolean(cursorAuthSnapshot.adeKeyPresent || cursorEnvAuth);
   const cursorUsageAuth = Boolean(cursorEnvUsageAuth || cursorStoredUsageAuth || cursorAdminUsageAuth);
   const cursorAuthAvailable = Boolean(cursorSdkAuth || cursorUsageAuth);
-  let cursorCredsSource: "cursor-env" | "cursor-api-key-store" | "cursor-admin-env" | undefined;
-  if (cursorEnvAuth) cursorCredsSource = "cursor-env";
-  else if (cursorStoredAuth) cursorCredsSource = "cursor-api-key-store";
-  else if (cursorAdminEnvAuth) cursorCredsSource = "cursor-admin-env";
+  const cursorCredsSource = cursorAuthSnapshot.credentialSource
+    ?? (cursorEnvAuth
+      ? "cursor-env" as const
+      : cursorStoredAuth
+        ? "cursor-api-key-store" as const
+        : cursorAdminEnvAuth
+          ? "cursor-admin-env" as const
+          : undefined);
   // The SDK package is bundled with the app, but Cursor chat is only runtime
   // ready after verification/model discovery proves the SDK can load and the
   // key can access agent models.
@@ -249,7 +256,7 @@ export async function buildProviderConnections(
   } else if (cursorStoreUnavailable) {
     cursorBlocker = "ADE could not read the Cursor API key store yet. Retry after the key store is ready.";
   } else {
-    cursorBlocker = "Enter a Cursor API key from https://cursor.com/dashboard/api.";
+    cursorBlocker = "Sign in with Cursor or enter a Cursor API key from https://cursor.com/dashboard/api.";
   }
 
   const cursor: AiProviderConnectionStatus = {
@@ -259,6 +266,7 @@ export async function buildProviderConnections(
     runtimeAvailable: cursorFlags.runtimeAvailable,
     usageAvailable: cursorSupported && cursorUsageAuth,
     path: cursorSupported ? "@cursor/sdk" : null,
+    ...(cursorAuthSnapshot.email ? { accountEmail: cursorAuthSnapshot.email } : {}),
     sources: cursorSupported
       ? [
         {

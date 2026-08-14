@@ -75,6 +75,9 @@ let decryptionFailed = false;
 let macosKeychainError: string | null = null;
 let missingMacosKeychainProviders = new Set<string>();
 let missingCredentialProviders = new Set<string>();
+/** How the current ADE-stored Cursor key was written. Lost on process restart;
+ *  cursorSdkAuth reconstructs from Cursor.auth.status() + the SDK auth file. */
+let cursorKeyOrigin: "oauth" | "pasted" | null = null;
 
 export function __setSafeStorageForTests(next: SafeStorage | null): void {
   safeStorage = next;
@@ -500,6 +503,7 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
   macosKeychainError = null;
   missingMacosKeychainProviders = new Set<string>();
   missingCredentialProviders = new Set<string>();
+  cursorKeyOrigin = null;
 }
 
 export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
@@ -540,6 +544,7 @@ export function storeApiKey(provider: string, key: string): void {
     missingCredentialProviders.delete(normalizedProvider);
     const index = readCredentialProviderIndex();
     writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
+    if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
     return;
   }
   const nextStore = { ...store, [normalizedProvider]: normalizedKey };
@@ -547,6 +552,7 @@ export function storeApiKey(provider: string, key: string): void {
   deleteMacosKeychainSecretBestEffort(normalizedProvider);
   missingMacosKeychainProviders.add(normalizedProvider);
   cache = nextStore;
+  if (normalizedProvider === "cursor") cursorKeyOrigin = "pasted";
 }
 
 export function getApiKey(provider: string): string | null {
@@ -594,6 +600,7 @@ export function deleteApiKey(provider: string): void {
   const normalizedProvider = normalizeProvider(provider);
   if (!normalizedProvider.length) return;
   const store = ensureStore();
+  if (normalizedProvider === "cursor") cursorKeyOrigin = null;
   if (credentialStore) {
     deleteCredentialSecret(credentialProviderKey(normalizedProvider));
     delete store[normalizedProvider];
@@ -615,6 +622,31 @@ export function deleteApiKey(provider: string): void {
 export function listStoredProviders(): string[] {
   const store = ensureStore();
   return Object.keys(store);
+}
+
+/**
+ * Mark the current ADE-stored Cursor key as minted by Cursor.auth.login().
+ * Call after storeApiKey("cursor", mintedKey) — storeApiKey itself records a
+ * paste so a later Sign out can keep a key the user typed in afterwards.
+ */
+export function markCursorApiKeyOAuthMinted(): void {
+  try {
+    const stored = ensureStore().cursor?.trim();
+    cursorKeyOrigin = stored ? "oauth" : null;
+  } catch {
+    cursorKeyOrigin = null;
+  }
+}
+
+/** Origin of the ADE-stored Cursor key, or null when none is stored. */
+export function getCursorApiKeyOrigin(): "oauth" | "pasted" | null {
+  try {
+    const stored = ensureStore().cursor?.trim();
+    if (!stored) return null;
+    return cursorKeyOrigin;
+  } catch {
+    return null;
+  }
 }
 
 export function getAllApiKeys(): Record<string, string> {

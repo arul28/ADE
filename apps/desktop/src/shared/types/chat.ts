@@ -2042,6 +2042,11 @@ export type AgentChatCreateArgs = {
   runtimeMode?: AgentChatRuntimeMode;
   goal?: string | null;
   recoveredFromSessionId?: string;
+  /**
+   * Predetermined session id. Used so a Cursor Cloud Agent.create can stamp
+   * ade_session_id before the ADE chat row exists.
+   */
+  sessionId?: string;
   // Orchestration-mode fields — set when spawning into an orchestration run.
   orchestrationRunId?: string;
   orchestrationRole?: OrchestrationRole;
@@ -2139,27 +2144,42 @@ export type AgentChatLaunchCliResult = {
 export type AgentChatRuntimeMode = "interactive" | "print";
 
 /**
- * Providers whose runtime exposes a native "fork this thread" operation that
- * ADE can drive for local handoff: Claude (SDK `resume` + `forkSession`),
- * Codex (app-server `thread/fork`), OpenCode (`POST /session/{id}/fork`), and
- * Droid (SDK `droid.fork_session`). Cursor has no fork surface (resume only),
- * so Cursor handoffs are brief-only. Fork requires source and target on the
- * same provider; the model may still change within that provider.
+ * Providers ADE can fork into a new local chat: Claude (SDK `resume` +
+ * `forkSession`), Codex (app-server `thread/fork`), OpenCode
+ * (`POST /session/{id}/fork`), Droid (SDK `droid.fork_session`), and Cursor.
+ *
+ * Cursor is the odd one out: `@cursor/sdk` has no fork/clone surface at all and
+ * a thread cannot be resumed twice, so ADE forks it at the ADE layer instead —
+ * the new chat starts on a fresh Cursor agent seeded with the source
+ * conversation's context (the same seeding used when an agent rotates). Fork
+ * requires source and target on the same provider; the model may still change
+ * within that provider.
  */
-export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid"] as const;
+export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor"] as const;
 
 export function providerSupportsHandoffFork(provider: AgentChatProvider | null | undefined): boolean {
   return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
 }
 
 /**
+ * True when a provider's fork is ADE-side context seeding rather than a native
+ * provider fork, so the UI must not promise a copied thread. Cursor is the only
+ * one today: its SDK has no fork surface and a thread cannot be resumed twice.
+ */
+export function providerForkIsContextSeeded(provider: AgentChatProvider | null | undefined): boolean {
+  return provider === "cursor";
+}
+
+/**
  * Droid can fork locally, but its session index is machine-local, so the
- * relocated-file resume path is not portable across ADE machines yet. Derived
- * from the local set rather than restated, so adding a provider to one list
- * cannot silently leave the other behind.
+ * relocated-file resume path is not portable across ADE machines yet. Cursor's
+ * fork is ADE-side context seeding with no transportable provider artifact at
+ * all, so there is nothing to package for another machine. Derived from the
+ * local set rather than restated, so adding a provider to one list cannot
+ * silently leave the other behind.
  */
 export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS
-  .filter((provider) => provider !== "droid");
+  .filter((provider) => provider !== "droid" && !providerForkIsContextSeeded(provider));
 
 export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
   return provider != null
@@ -2442,6 +2462,12 @@ export type AgentChatCloudOverrides = {
   workOnCurrentBranch?: boolean;
   prUrl?: string | null;
   skipReviewerRequest?: boolean;
+  /** Linear identifier kept on the ADE session; not sent as cloud.metadata. */
+  linearIssueId?: string | null;
+  /** Project secret names to inject as cloud.envVars. Values are resolved in main. */
+  secretNames?: string[];
+  /** Persist secretNames as the next preselection for this lane. */
+  rememberSecretNames?: boolean;
 };
 
 export type AgentChatSendArgs = {

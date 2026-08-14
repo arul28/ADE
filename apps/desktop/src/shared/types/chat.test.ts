@@ -16,8 +16,9 @@ describe("AgentChatModelsArgs", () => {
 });
 
 describe("handoff fork provider support", () => {
-  it("keeps local Droid forks enabled while refusing cross-machine Droid forks", () => {
+  it("keeps local Droid and Cursor forks enabled while refusing them across machines", () => {
     expect(providerSupportsHandoffFork("droid")).toBe(true);
+    expect(providerSupportsHandoffFork("cursor")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("droid")).toBe(false);
     expect(providerSupportsCrossMachineHandoffFork("claude")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("codex")).toBe(true);

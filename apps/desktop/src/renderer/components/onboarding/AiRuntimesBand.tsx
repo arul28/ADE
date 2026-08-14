@@ -572,8 +572,8 @@ function getCta(
   if (phase === "checking") return null;
   if (meta.id === "opencode") return <OpenCodeProviders />;
   if (phase === "ready") return null;
-  // Cursor authenticates with an API key, not a login command: install the CLI
-  // first (missing), then add the key once it's detected (auth).
+  // Cursor authenticates with Sign in or an API key as equal peers: install
+  // first (missing), then either path once the SDK is detected (auth).
   if (meta.id === "cursor") {
     if (phase === "missing") return <InstallBlock docsUrl={meta.docsUrl} command={meta.installCommand} />;
     return <CursorKeyPopover onSave={onSaveCursorKey} />;
@@ -585,15 +585,88 @@ function getCta(
 }
 
 function CursorKeyPopover({ onSave }: { onSave: (key: string) => Promise<{ ok: boolean; message?: string }> }) {
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const { copy, copied } = useCopyToClipboard({ timeout: 1200 });
+
+  useEffect(() => {
+    const subscribe = window.ade?.ai?.onCursorAuthStatus;
+    if (typeof subscribe !== "function") return undefined;
+    return subscribe((event) => {
+      if (event.url) setLoginUrl(event.url);
+      if (event.state === "pending") setLoginBusy(true);
+      if (event.state === "success" || event.state === "error" || event.state === "cancelled" || event.state === "logged-out") {
+        setLoginBusy(false);
+        if (event.state === "success" || event.state === "cancelled" || event.state === "logged-out") {
+          setLoginUrl(null);
+        }
+        if (event.state === "error" && event.error) setLoginError(event.error);
+      }
+    });
+  }, []);
+
+  const signIn = async () => {
+    const login = window.ade?.ai?.cursorAuthLogin;
+    if (typeof login !== "function") {
+      setLoginError("Cursor sign-in is unavailable in this session.");
+      return;
+    }
+    setLoginBusy(true);
+    setLoginError(null);
+    try {
+      const result = await login();
+      if (!result.ok) setLoginError(result.error);
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
   return (
-    <InputPopover
-      triggerLabel="Add key"
-      title="Cursor API key"
-      helpText={<>Get a key at <code style={codeStyle}>cursor.com/dashboard/api</code></>}
-      placeholder="cur_..."
-      onSave={onSave}
-      align="left"
-    />
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={loginBusy}
+          onClick={() => void signIn()}
+          aria-label="Sign in with Cursor"
+        >
+          {loginBusy ? "Signing in…" : "Sign in"}
+        </Button>
+        <InputPopover
+          triggerLabel="Add key"
+          title="Cursor API key"
+          helpText={<>Get a key at <code style={codeStyle}>cursor.com/dashboard/api</code></>}
+          placeholder="cur_..."
+          onSave={onSave}
+          align="left"
+        />
+      </div>
+      {loginUrl ? (
+        <button
+          type="button"
+          onClick={() => void copy(loginUrl)}
+          aria-label="Copy Cursor sign-in URL"
+          style={{
+            ...cmdRowStyle,
+            width: "100%",
+            textAlign: "left",
+            cursor: "pointer",
+            font: "inherit",
+            color: "inherit",
+          }}
+        >
+          <code style={cmdTextStyle}>{loginUrl}</code>
+          {copied ? <Check size={11} weight="bold" /> : <Copy size={11} weight="bold" />}
+        </button>
+      ) : null}
+      {loginError ? (
+        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: 1.4 }}>{loginError}</div>
+      ) : null}
+    </div>
   );
 }
 

@@ -37,7 +37,7 @@ for vendored runtimes without changing the union.
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
 | `codex` | Pinned `@openai/codex` 0.144.5 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
-| `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSlashCommandDiscovery.ts`. |
+| `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
 | `pi` | The user's own Pi installation, loaded as a library inside a forked Node worker (never a static import — the worker resolves the installation only after init validation). The worker owns the Pi agent session, its model runtime, its tool registry, and its sign-in; ADE owns the cards the session blocks on. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; the shared native session store in `piSessionStore.ts` (resolving the tree, reading headers, authorizing files), `piSessionLease.ts` (the live-writer lock), and `piSessionOwnership.ts` (the durable ownership claim); installation and sign-in in `services/ai/piInstallation.ts` and `services/ai/piAuthService.ts`. |
 
@@ -516,6 +516,25 @@ options. Cursor model descriptors also carry `cursorAvailability`:
 SDK-capable rows are eligible for chat sessions, CLI-capable rows are
 eligible for Work CLI launches, and rows with both flags appear in both
 surfaces.
+
+`resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
+permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
+sandbox mode, hard guards, orchestration-lead flag, and a `fullAuto` marker.
+`fullAuto` is only the name of ADE's full-auto permission mode — it partitions
+the worker pool and labels logs. It is deliberately not wired to the Cursor
+SDK's `local.force` send option, which expires the currently active persisted
+run: that is a recovery action, not a permission level, and it is reachable
+only through `CursorSdkSendPrompt.forceExpireActiveRun` on ADE's automatic
+recovery re-send. Conflating the two would let a full-auto session silently
+discard a turn that was still working.
+
+Cursor is also the one provider whose local fork is not a provider fork.
+`@cursor/sdk` exposes no fork/clone/branch operation and a Cursor thread cannot
+be resumed twice, so ADE's fork opens a fresh Cursor agent seeded with the
+source conversation's context — the same seeding path used when a wedged thread
+is recycled. `providerForkIsContextSeeded` marks it so the handoff UI describes
+what actually happens, and so cross-machine fork excludes it (there is no
+artifact to transport).
 
 ### Abstract-to-native mapping
 

@@ -102,10 +102,18 @@ export type DraftLaunchMode = "foreground" | "background";
 export type DraftLaunchKind = BackgroundLaunchNotice["draftKind"];
 export type DraftLaunchJobStatus = "naming-lane" | "creating-lane" | "starting-session" | "sending-prompt" | "ready" | "failed";
 
+/**
+ * Where the launch is headed. Cursor Cloud takes the same stages as a local launch — make the
+ * lane, start the agent, hand over the prompt — but each stage takes visibly longer and happens
+ * off this machine, so the status line says so rather than claiming a local session is starting.
+ */
+export type DraftLaunchTarget = "local" | "cursor-cloud";
+
 export type DraftLaunchJob = {
   id: string;
   mode: DraftLaunchMode;
   draftKind: DraftLaunchKind;
+  target: DraftLaunchTarget;
   status: DraftLaunchJobStatus;
   title: string;
   laneId: string | null;

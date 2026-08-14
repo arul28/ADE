@@ -1917,6 +1917,8 @@ export type SyncRemoteCommandAction =
   | "ai.getStatus"
   | "ai.updateConfig"
   | "ai.deleteApiKey"
+  | "ai.openCursorCloudChat"
+  | "ai.watchCursorCloudMirror"
   | "orchestration.runCreate"
   | "prs.list"
   | "prs.listOpenForRepo"

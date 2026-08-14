@@ -62,8 +62,16 @@ export const LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS =
  */
 export const PI_LOGIN_IPC_TIMEOUT_MS = 11 * 60_000;
 
+/**
+ * Cursor.auth.login() polls the browser handshake for ~20 minutes. The
+ * transport budget has to outlive that, or the renderer reports failure while
+ * the daemon is still waiting on the browser.
+ */
+export const CURSOR_LOGIN_IPC_TIMEOUT_MS = 21 * 60_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
+  ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
   // Lane deletion can legitimately include a 60s worktree removal followed by
   // a 45s remote-branch deletion. The old 30s client budget reported failure
   // while the daemon kept mutating state to a successful completion.
@@ -78,6 +86,12 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // success (ADE-122).
   ["chat.handoffSession", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // Cursor Cloud open-chat hydrates conversation + boots a worker + attaches
+  // the live stream. The 30s default fired while Cursor's VM was still
+  // installing, so the renderer reported failure on the draft pane while the
+  // daemon later created an empty session (ADE-122 class).
+  ["ai.openCursorCloudChat", 120_000],
+  ["ai.createCursorCloudRun", 120_000],
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],

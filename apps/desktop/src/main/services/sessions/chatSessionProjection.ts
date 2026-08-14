@@ -90,6 +90,8 @@ export function projectChatOntoSession(
       ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
       : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
+    lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
+    ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
   };
   if (chat.awaitingInput) {
     return {

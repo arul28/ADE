@@ -641,7 +641,9 @@ describe("ChatView", () => {
     expect(frame).toContain("unityMCP");
   });
 
-  it("keeps steer lifecycle notices out of visible chat blocks", () => {
+  // Copy matches what agentChatService actually emits, reasons and all — the
+  // TUI used to match short literals the host never sends.
+  it("keeps steer queue chatter out of visible chat blocks", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -653,25 +655,61 @@ describe("ChatView", () => {
         sessionId: "s1",
         timestamp: "2026-01-01T12:00:00.500Z",
         sequence: 2,
-        event: { type: "system_notice", steerId: "steer-1", message: "Message queued" } as never,
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId: "steer-1",
+          message: "Message queued — will be sent when the current turn completes.",
+        } as never,
       },
       {
         sessionId: "s1",
         timestamp: "2026-01-01T12:00:01.000Z",
         sequence: 3,
-        event: { type: "system_notice", steerId: "steer-1", message: "Delivering queued message" } as never,
-      },
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:01.500Z",
-        sequence: 4,
-        event: { type: "system_notice", steerId: "steer-1", message: "Queued message cancelled" } as never,
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId: "steer-1",
+          message: "Delivering your queued message...",
+        } as never,
       },
     ], { width: 80 });
 
     expect(frame).not.toContain("Message queued");
-    expect(frame).not.toContain("Delivering queued message");
-    expect(frame).not.toContain("Queued message cancelled");
+    expect(frame).not.toContain("Delivering your queued message");
+  });
+
+  it("keeps a cancelled steer's reason visible after its queued bubble is dropped", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "first ask", turnId: "turn-active" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.500Z",
+        sequence: 2,
+        event: { type: "user_message", text: "queued version", steerId: "steer-1", deliveryState: "queued", turnId: "turn-active" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.500Z",
+        sequence: 3,
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId: "steer-1",
+          message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+        } as never,
+      },
+    ], { width: 80 });
+
+    // The steer is settled, so its staged chip is gone...
+    expect(frame).not.toContain("queued version");
+    // ...which makes the cancellation notice the only account of it.
+    expect(frame).toContain("Queued message cancelled");
   });
 
   it("right-aligns user messages inside an accent-bordered bubble", () => {

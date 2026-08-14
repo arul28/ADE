@@ -3,6 +3,7 @@ import {
   Alarm,
   CircleNotch,
   Clock,
+  CloudArrowUp,
   DesktopTower,
   DownloadSimple,
   GitPullRequest,
@@ -54,6 +55,8 @@ import {
   type SessionHoverCardRow,
 } from "./SessionHoverCard";
 import { ToolLogo } from "./ToolLogos";
+import { cursorCloudAgentWebUrl } from "../../lib/cursorCloudUtils";
+import { openExternalUrl } from "../../lib/openExternal";
 import { readImportedFrom, providerDisplayName } from "./importSessions/contract";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
@@ -887,6 +890,24 @@ export const SessionCard = React.memo(function SessionCard({
     />
   ) : null;
 
+  const cloudAgentHref = cursorCloudAgentWebUrl(session.cursorCloudAgentId);
+  const cursorCloudLink = cloudAgentHref ? (
+    <button
+      type="button"
+      data-testid="session-cursor-cloud-link"
+      className="inline-flex shrink-0 items-center text-violet-300/80 transition-colors hover:text-violet-100"
+      title="Open Cursor Cloud agent in browser"
+      aria-label="Open Cursor Cloud agent in browser"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openExternalUrl(cloudAgentHref);
+      }}
+    >
+      <CloudArrowUp size={14} weight="fill" />
+    </button>
+  ) : null;
+
   /* COMPACT ROWS ONLY. The full row carries lineage on line 1 now, and two
      lineage indicators on one row is exactly the duplication this pass removes.
      Compact rows have no line 1 at all — dropping the glyph there would delete
@@ -989,6 +1010,7 @@ export const SessionCard = React.memo(function SessionCard({
         <div className={cn("flex h-8 min-w-0 items-center gap-1.5", SESSION_ROW_INNER_PADDING_CLASS)}>
           {titleNode}
           {compactLineageGlyph}
+          {cursorCloudLink}
           <ToolLogo toolType={session.toolType} size={14} className="shrink-0 opacity-75" />
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
@@ -1069,6 +1091,7 @@ export const SessionCard = React.memo(function SessionCard({
             {/* The provider mark is the least informative thing in the row —
                 most rows share a provider — so it sits in the least prominent
                 slot rather than leading the card. */}
+            {cursorCloudLink}
             <ToolLogo toolType={session.toolType} size={20} className="shrink-0 opacity-75" />
           </div>
         </div>

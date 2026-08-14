@@ -91,6 +91,9 @@ import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
+import { createCursorCloudIngressService } from "../../desktop/src/main/services/automations/cursorCloudIngressService";
+import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/services/automations/cursorCloudAutomationDispatch";
+import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
@@ -313,6 +316,7 @@ export type AdeRuntime = {
   pushPublisherService?: PushPublisherService | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
+  cursorCloudIngressService?: ReturnType<typeof createCursorCloudIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   productAnalyticsService?: ProductAnalyticsService | null;
@@ -1405,6 +1409,37 @@ export async function createAdeRuntime(args: {
     });
     linearIngressService.start();
   }
+  const cursorCloudIngressService = createCursorCloudIngressService({
+    db,
+    projectId,
+    credentialStore: openCursorCloudCredentialStore(projectRoot),
+    getAccountAccessToken,
+    cursorStore: createKvIngressCursorStore(db),
+    dispatch: async (record) => {
+      await agentChatService?.handleCursorCloudStatusChange(record).catch((error: unknown) => {
+        logger.warn("agent_chat.cursor_cloud_status_change_failed", {
+          eventId: record.eventId,
+          agentId: record.agentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      if (!automationService) return;
+      await Promise.all(buildCursorCloudAutomationDispatches(record).map((dispatch) =>
+        automationService.dispatchIngressTrigger(dispatch).catch((error) => {
+          logger.warn("automations.cursor_cloud_relay_dispatch_failed", {
+            eventId: record.eventId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      ));
+    },
+    logger,
+  });
+  automationService?.setCursorCloudIngressAvailable(() => {
+    const status = cursorCloudIngressService.getStatus();
+    return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
+  });
+  cursorCloudIngressService.start();
   const configReloadService = createConfigReloadService({
     paths: {
       sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -1945,6 +1980,7 @@ export async function createAdeRuntime(args: {
     automationService,
     automationIngressService,
     linearIngressService,
+    cursorCloudIngressService,
     automationPlannerService,
     computerUseArtifactBrokerService,
     iosSimulatorService,
@@ -1978,6 +2014,7 @@ export async function createAdeRuntime(args: {
       swallow(() => relayTunnelGate.dispose());
       swallow(() => automationIngressService?.dispose());
       swallow(() => linearIngressService?.stop());
+      swallow(() => cursorCloudIngressService.stop());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
       swallow(() => usageProductAnalyticsExporter.stop());

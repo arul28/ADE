@@ -91,6 +91,7 @@ import {
   pushModelPickerRecent,
   toggleModelPickerFavorite,
   getOpenCodeRuntimeDiagnostics,
+  watchCursorCloudMirror,
   getSlashCommands,
   getScheduledWorkState,
   getStoredApiKeyProviders,
@@ -4420,6 +4421,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => sessions.find((session) => session.sessionId === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
+  useEffect(() => {
+    const sessionId = activeSession?.sessionId;
+    const agentId = activeSession?.cursorCloudAgentId?.trim();
+    if (!connection || !sessionId || !agentId) return;
+    void watchCursorCloudMirror(connection, sessionId, true).catch(() => undefined);
+    return () => {
+      void watchCursorCloudMirror(connection, sessionId, false).catch(() => undefined);
+    };
+  }, [activeSession?.cursorCloudAgentId, activeSession?.sessionId, connection]);
   const activeTerminalSession = useMemo(
     () => terminalSessions.find((session) => session.terminalId === activeSessionId) ?? null,
     [activeSessionId, terminalSessions],

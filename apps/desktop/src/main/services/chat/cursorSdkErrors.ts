@@ -87,6 +87,22 @@ export function sdkErrorCode(error: unknown): string | undefined {
   return typeof code === "string" && code.trim() ? code.trim() : undefined;
 }
 
+/**
+ * True when local `sandboxOptions.enabled: true` was rejected because this
+ * host cannot sandbox. Callers should retry with `enabled: false` and keep
+ * ADE hook denials rather than failing the chat.
+ */
+export function isCursorSdkSandboxUnsupportedError(error: unknown): boolean {
+  const message = (
+    error instanceof Error ? error.message : String(error ?? "")
+  ).toLowerCase();
+  if (!message.includes("sandbox")) return false;
+  const name = error instanceof Error ? error.name : "";
+  return name === "ConfigurationError"
+    || message.includes("not supported")
+    || message.includes("sandboxoptions.enabled");
+}
+
 function mergeErrorDetail(
   ...details: Array<CursorSdkErrorDetail | undefined>
 ): CursorSdkErrorDetail | undefined {
@@ -204,9 +220,9 @@ export async function readCursorSdkRunFailureDetail(args: {
       : undefined;
   const merged = mergeErrorDetail(resultDetail, runErrorDetail, storeDetail, extraDetail, requestDetail);
   let code = merged?.code?.trim();
-  const classification = classifyCursorSdkErrorText(...detailTexts(merged));
-  if (!code && classification.kind !== "unknown") {
-    code = classification.kind === "rate_limit" ? "rate_limited" : classification.kind;
+  const kind = classifyCursorSdkErrorText(...detailTexts(merged));
+  if (!code && kind !== "unknown") {
+    code = kind === "rate_limit" ? "rate_limited" : kind;
   }
   if (!code && storeDetail?.message) code = storeDetail.message;
   return {

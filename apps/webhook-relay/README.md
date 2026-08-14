@@ -1,6 +1,6 @@
 # ADE webhook relay
 
-This is the cheap hosted ingress for ADE GitHub and Linear events. Providers
+This is the cheap hosted ingress for ADE GitHub, Linear, and Cursor Cloud events. Providers
 deliver webhooks to a Cloudflare Worker, the Worker verifies the provider HMAC
 signature, writes the event into D1, and ADE polls the newest events with a
 monotonic cursor. A repo-scoped hibernating Durable Object also sends connected
@@ -116,6 +116,13 @@ generates its own webhook signing secret and registers it into the
 For local tests or a Linear-compatible proxy, `LINEAR_API_BASE_URL` overrides
 the default `https://api.linear.app/graphql` endpoint. It may be the GraphQL URL
 itself or an origin, in which case the Worker appends `/graphql`.
+
+Cursor Cloud webhooks use a separate D1 table (`cursor_events`) and do not
+reuse `linear_events`. Cursor POSTs `statusChange` to `POST /cursor/webhook`
+with `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body),
+`X-Webhook-ID`, and `X-Webhook-Event: statusChange`. ADE registers the signing
+secret at `POST /cursor/register` and polls `GET /cursor/events?after=seq:N`.
+Bad signatures return 401. Optional worker secret: `CURSOR_WEBHOOK_SECRET`.
 
 Only self-hosted legacy project-token routes need `RELAY_ACCESS_TOKEN`:
 

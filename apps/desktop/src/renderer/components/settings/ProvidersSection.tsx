@@ -7,6 +7,8 @@ import type {
   AiProviderConnectionStatus,
   AiSettingsStatus,
   ProjectConfigSnapshot,
+  CursorSdkAuthEvent,
+  CursorSdkAuthStatus,
 } from "../../../shared/types";
 import type {
   AiCustomProviderConfig,
@@ -138,8 +140,8 @@ const CLI_TOOLS: Array<{
   {
     cli: "cursor",
     label: "Cursor",
-    authStory: "Uses CURSOR_API_KEY.",
-    loginCmd: "Add a Cursor API key",
+    authStory: "Sign in with Cursor or use a Cursor API key.",
+    loginCmd: "Sign in with Cursor or add a Cursor API key",
     installHint: "Get a Cursor API key from https://cursor.com/dashboard/api",
   },
   {
@@ -389,6 +391,10 @@ function describeCredentialSource(connection: AiProviderConnectionStatus | null 
   if (localSource.source === "codex-auth-file") return "Local credentials found in ~/.codex/auth.json.";
   if (localSource.source === "cursor-env") return "Detected via CURSOR_API_KEY environment variable.";
   if (localSource.source === "cursor-api-key-store") return "Cursor API key is stored in ADE encrypted storage.";
+  if (localSource.source === "cursor-oauth") {
+    const email = connection?.accountEmail?.trim();
+    return email ? `Signed in as ${email}.` : "Signed in with Cursor.";
+  }
   if (localSource.source === "factory-env") return "Detected via FACTORY_API_KEY environment variable.";
   if (localSource.source === "pi-auth-file") return "Detected via ~/.pi/agent/auth.json.";
   if (localSource.source === "pi-models-file") return "Detected via ~/.pi/agent/models.json.";
@@ -482,6 +488,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [customModelSlugs, setCustomModelSlugs] = useState("");
   const [savingAdvanced, setSavingAdvanced] = useState(false);
   const [statusLoadError, setStatusLoadError] = useState<string | null>(null);
+  const [cursorAuth, setCursorAuth] = useState<CursorSdkAuthStatus | null>(null);
+  const [cursorLoginBusy, setCursorLoginBusy] = useState(false);
+  const [cursorLoginUrl, setCursorLoginUrl] = useState<string | null>(null);
   const statusKnownRef = useRef(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
   // Seed the slugs field from config exactly once — saves send the full list
@@ -499,18 +508,26 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     }
     setError(null);
     try {
-      const [nextStatus, nextStoredProviders, nextProjectConfig] = await Promise.all([
+      const [nextStatus, nextStoredProviders, nextProjectConfig, nextCursorAuth] = await Promise.all([
         window.ade.ai.getStatus({
           force: options?.force === true,
           refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
         }),
         window.ade.ai.listApiKeys(),
         window.ade.projectConfig.get(),
+        window.ade.ai.cursorAuthStatus().catch(() => null),
       ]);
       statusKnownRef.current = true;
       setStatusLoadError(null);
       setStatus(nextStatus as AiSettingsStatus);
       setProjectConfigSnapshot(nextProjectConfig);
+      if (nextCursorAuth) {
+        setCursorAuth(nextCursorAuth);
+        if (nextCursorAuth.loginInProgress) {
+          setCursorLoginBusy(true);
+          if (nextCursorAuth.loginUrl) setCursorLoginUrl(nextCursorAuth.loginUrl);
+        }
+      }
       if (editingLocalProvider == null && savingLocalProvider == null) {
         setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus as AiSettingsStatus));
       }
@@ -557,6 +574,25 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     // Never clobber text the user typed while the initial probe was loading.
     setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
   }, [status?.customModelSlugs]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade.ai.onCursorAuthStatus((event: CursorSdkAuthEvent) => {
+      if (event.url) setCursorLoginUrl(event.url);
+      if (event.state === "pending") setCursorLoginBusy(true);
+      if (event.state === "success" || event.state === "error" || event.state === "cancelled" || event.state === "logged-out") {
+        setCursorLoginBusy(false);
+        if (event.state === "success" || event.state === "logged-out" || event.state === "cancelled") {
+          setCursorLoginUrl(null);
+        }
+        void refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
+      }
+      if (event.state === "error" && event.error) setError(event.error);
+      if (event.state === "success") {
+        setNotice(event.email ? `Signed in as ${event.email}.` : "Signed in with Cursor.");
+      }
+    });
+    return unsubscribe;
+  }, [refreshStatus]);
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
@@ -857,6 +893,68 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     }
   };
 
+  const loginWithCursor = async () => {
+    setError(null);
+    setNotice(null);
+    setCursorLoginBusy(true);
+    try {
+      const result = await window.ade.ai.cursorAuthLogin();
+      if (!result.ok) {
+        setError(result.error || "Cursor sign-in failed.");
+        return;
+      }
+      setVerifyingProvider("cursor");
+      invalidateAiDiscoveryCache();
+      const verification = await window.ade.ai.verifyApiKey("cursor");
+      invalidateAiDiscoveryCache();
+      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      setVerificationByProvider((prev) => ({ ...prev, cursor: verification }));
+      if (verification.ok) {
+        setNotice(result.email ? `Signed in as ${result.email}.` : "Cursor connection verified.");
+        setCursorLoginUrl(null);
+      } else {
+        setError(verification.message || "Cursor verification failed.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCursorLoginBusy(false);
+      setVerifyingProvider(null);
+    }
+  };
+
+  const logoutCursor = async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await window.ade.ai.cursorAuthLogout();
+      if (!result.ok) {
+        setError(result.error || "Cursor sign-out failed.");
+        return;
+      }
+      invalidateAiDiscoveryCache();
+      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      setVerificationByProvider((prev) => {
+        const next = { ...prev };
+        delete next.cursor;
+        return next;
+      });
+      setNotice("Signed out of Cursor.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const cancelCursorLogin = async () => {
+    try {
+      await window.ade.ai.cursorAuthCancel();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCursorLoginBusy(false);
+    }
+  };
+
   const handleRefreshCatalog = async () => {
     setRefreshingCatalog(true);
     try {
@@ -1104,6 +1202,13 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
           const isVerified = !isVerifying && verification?.ok;
           const isInvalid = !isVerifying && verification && !verification.ok;
           const isKeyConnected = Boolean(isVerified || (!isInvalid && keySource && connection?.runtimeAvailable));
+          const signedInEmail = (cursorAuth?.email ?? connection?.accountEmail)?.trim() || null;
+          const oauthSignedIn = Boolean(
+            cursorAuth?.sdkStatus === "logged-in"
+            || cursorAuth?.credentialSource === "cursor-oauth"
+            || connection?.sources.some((entry) => entry.source === "cursor-oauth"),
+          );
+          const loginUrl = cursorLoginUrl ?? cursorAuth?.loginUrl ?? null;
           const tone = isVerifying
             ? { color: COLORS.info, label: "Verifying" }
             : isVerified
@@ -1117,7 +1222,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
               ? "Cursor SDK connected. ADE uses this key for Cursor chat and Cursor Cloud agents."
               : isInvalid
                 ? verification.message
-                : isInitialCheckInFlight ? "Checking Cursor SDK API key." : (connection?.blocker ?? "Enter a Cursor API key.");
+                : isInitialCheckInFlight ? "Checking Cursor SDK API key." : (connection?.blocker ?? "Sign in with Cursor or enter a Cursor API key.");
           return (
             <section style={panel({ borderLeft: `3px solid ${tone.color}`, padding: 14 })}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -1135,79 +1240,134 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
               </div>
               <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
               {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}`, display: "grid", gridTemplateColumns: "140px minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
-                <div>
-                  <div style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>API key</div>
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>CURSOR_API_KEY</div>
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  {isEditing ? (
-                    <input
-                      autoFocus
-                      aria-label="Cursor API key"
-                      value={editValue}
-                      onChange={(event) => setEditValue(event.target.value)}
-                      placeholder="crsr_..."
-                      type="password"
-                      disabled={isVerifying}
-                      style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-                    />
-                  ) : keySource ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <SourceBadge source={keySource} />
-                      {isVerifying ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.info, fontSize: 10, fontFamily: MONO_FONT }}>
-                          <Info size={12} weight="fill" />
-                          Verifying...
-                        </span>
-                      ) : isKeyConnected ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.success, fontSize: 10, fontFamily: MONO_FONT }}>
-                          <CheckCircle size={12} weight="fill" />
-                          Connected
-                        </span>
-                      ) : verification ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: verification.ok ? COLORS.success : COLORS.danger, fontSize: 10, fontFamily: MONO_FONT }}>
-                          {verification.ok ? <CheckCircle size={12} weight="fill" /> : <XCircle size={12} weight="fill" />}
-                          {verification.ok ? "Verified" : verification.message}
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                          {keySource === "env" ? "Loaded from environment" : keySource === "config" ? "Defined in project config" : "Stored locally"}
-                        </span>
-                      )}
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", gap: 16 }}>
+                <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={SECTION_LABEL_STYLE}>Sign in with Cursor</div>
+                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                    Opens a browser and mints a Cursor API key for ADE. Does not copy Cursor IDE cookies.
+                  </div>
+                  {oauthSignedIn ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 6, color: COLORS.success, fontSize: 11, fontFamily: MONO_FONT }}>
+                        <CheckCircle size={14} weight="fill" />
+                        {signedInEmail ? `Signed in as ${signedInEmail}` : "Signed in with Cursor"}
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Sign out of Cursor"
+                        style={{ ...outlineButton({ height: 28 }), color: COLORS.danger, alignSelf: "flex-start" }}
+                        disabled={cursorLoginBusy || isVerifying}
+                        onClick={() => void logoutCursor()}
+                      >
+                        Sign out
+                      </button>
                     </div>
                   ) : (
-                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>No Cursor API key configured</span>
-                  )}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                  {isEditing ? (
-                    <>
-                      <button type="button" aria-label="Save Cursor API key" style={primaryButton()} disabled={isVerifying || !editValue.trim()} onClick={() => void saveCursorApiKey()}>
-                        {isVerifying ? "Verifying..." : "Save"}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <button
+                        type="button"
+                        aria-label="Sign in with Cursor"
+                        style={outlineButton({ height: 28 })}
+                        disabled={cursorLoginBusy || isVerifying}
+                        onClick={() => void loginWithCursor()}
+                      >
+                        {cursorLoginBusy ? "Signing in…" : "Sign in"}
                       </button>
-                      <button type="button" style={outlineButton()} disabled={isVerifying} onClick={cancelEditing}>Cancel</button>
-                    </>
-                  ) : keySource ? (
-                    <>
-                      {isKeyConnected ? (
-                        <ConnectedTag />
-                      ) : (
-                        <button type="button" aria-label="Verify Cursor API key" style={outlineButton()} disabled={isVerifying} onClick={() => void verifyApiKey("cursor")}>
-                          {isVerifying ? "Verifying..." : "Verify"}
+                      {cursorLoginBusy ? (
+                        <button
+                          type="button"
+                          aria-label="Cancel Cursor sign-in"
+                          style={outlineButton({ height: 28 })}
+                          onClick={() => void cancelCursorLogin()}
+                        >
+                          Cancel
                         </button>
-                      )}
-                      {keySource === "store" ? (
-                        <>
-                          <button type="button" style={outlineButton()} disabled={isVerifying} onClick={() => beginEditing("cursor")}>Replace</button>
-                          <button type="button" style={outlineButton()} disabled={isVerifying} onClick={() => void deleteApiKey("cursor").catch(() => undefined)}>Delete</button>
-                        </>
                       ) : null}
-                    </>
-                  ) : (
-                    <button type="button" aria-label="Add Cursor API key" style={outlineButton()} onClick={() => beginEditing("cursor")}>Add key</button>
+                    </div>
                   )}
-                </div>
+                  {loginUrl && cursorLoginBusy ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                        If a browser did not open, copy this URL:
+                      </div>
+                      <CopyableCommand command={loginUrl} />
+                    </div>
+                  ) : null}
+                </section>
+                <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={SECTION_LABEL_STYLE}>API key</div>
+                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>CURSOR_API_KEY</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
+                    <div style={{ minWidth: 0 }}>
+                      {isEditing ? (
+                        <input
+                          autoFocus
+                          aria-label="Cursor API key"
+                          value={editValue}
+                          onChange={(event) => setEditValue(event.target.value)}
+                          placeholder="crsr_..."
+                          type="password"
+                          disabled={isVerifying}
+                          style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
+                        />
+                      ) : keySource ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <SourceBadge source={keySource} />
+                          {isVerifying ? (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.info, fontSize: 10, fontFamily: MONO_FONT }}>
+                              <Info size={12} weight="fill" />
+                              Verifying...
+                            </span>
+                          ) : isKeyConnected ? (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.success, fontSize: 10, fontFamily: MONO_FONT }}>
+                              <CheckCircle size={12} weight="fill" />
+                              Connected
+                            </span>
+                          ) : verification ? (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: verification.ok ? COLORS.success : COLORS.danger, fontSize: 10, fontFamily: MONO_FONT }}>
+                              {verification.ok ? <CheckCircle size={12} weight="fill" /> : <XCircle size={12} weight="fill" />}
+                              {verification.ok ? "Verified" : verification.message}
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                              {keySource === "env" ? "Loaded from environment" : keySource === "config" ? "Defined in project config" : "Stored locally"}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>No Cursor API key configured</span>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                      {isEditing ? (
+                        <>
+                          <button type="button" aria-label="Save Cursor API key" style={outlineButton({ height: 28 })} disabled={isVerifying || !editValue.trim()} onClick={() => void saveCursorApiKey()}>
+                            {isVerifying ? "Verifying..." : "Save"}
+                          </button>
+                          <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={cancelEditing}>Cancel</button>
+                        </>
+                      ) : keySource ? (
+                        <>
+                          {isKeyConnected ? (
+                            <ConnectedTag />
+                          ) : (
+                            <button type="button" aria-label="Verify Cursor API key" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => void verifyApiKey("cursor")}>
+                              {isVerifying ? "Verifying..." : "Verify"}
+                            </button>
+                          )}
+                          {keySource === "store" ? (
+                            <>
+                              <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => beginEditing("cursor")}>Replace</button>
+                              <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => void deleteApiKey("cursor").catch(() => undefined)}>Delete</button>
+                            </>
+                          ) : null}
+                        </>
+                      ) : (
+                        <button type="button" aria-label="Add Cursor API key" style={outlineButton({ height: 28 })} onClick={() => beginEditing("cursor")}>Add key</button>
+                      )}
+                    </div>
+                  </div>
+                </section>
               </div>
             </section>
           );

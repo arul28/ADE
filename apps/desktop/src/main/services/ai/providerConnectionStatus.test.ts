@@ -10,6 +10,7 @@ const mockState = vi.hoisted(() => ({
   getProviderRuntimeHealth: vi.fn(),
   resolvePiInstallation: vi.fn(),
   probePiProfileInventory: vi.fn(),
+  getCursorSdkAuthSnapshot: vi.fn(),
 }));
 
 vi.mock("./providerCredentialSources", () => ({
@@ -25,6 +26,10 @@ vi.mock("./providerRuntimeHealth", () => ({
 vi.mock("./piInstallation", () => ({
   resolvePiInstallation: (...args: unknown[]) => mockState.resolvePiInstallation(...args),
   probePiProfileInventory: (...args: unknown[]) => mockState.probePiProfileInventory(...args),
+}));
+
+vi.mock("./cursorSdkAuth", () => ({
+  getCursorSdkAuthSnapshot: (...args: unknown[]) => mockState.getCursorSdkAuthSnapshot(...args),
 }));
 
 let buildProviderConnections: (
@@ -54,6 +59,7 @@ beforeEach(async () => {
   mockState.getProviderRuntimeHealth.mockReset();
   mockState.resolvePiInstallation.mockReset();
   mockState.probePiProfileInventory.mockReset();
+  mockState.getCursorSdkAuthSnapshot.mockReset();
 
   mockState.readClaudeCredentials.mockResolvedValue(null);
   mockState.readCodexCredentials.mockResolvedValue(null);
@@ -61,6 +67,18 @@ beforeEach(async () => {
   mockState.getProviderRuntimeHealth.mockReturnValue(null);
   mockState.resolvePiInstallation.mockReturnValue(null);
   mockState.probePiProfileInventory.mockResolvedValue(null);
+  mockState.getCursorSdkAuthSnapshot.mockImplementation(async () => ({
+    storeUnavailable: false,
+    adeKeyPresent: false,
+    envKeyPresent: Boolean(process.env.CURSOR_API_KEY?.trim()),
+    adminEnvKeyPresent: Boolean(process.env.CURSOR_ADMIN_API_KEY?.trim()),
+    credentialSource: process.env.CURSOR_API_KEY?.trim()
+      ? "cursor-env"
+      : process.env.CURSOR_ADMIN_API_KEY?.trim()
+        ? "cursor-admin-env"
+        : undefined,
+    sdkLoggedIn: false,
+  }));
 
   ({ buildProviderConnections } = await import("./providerConnectionStatus"));
 });
@@ -273,6 +291,35 @@ describe("buildProviderConnections", () => {
       if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
       else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
     }
+  });
+
+  it("treats an OAuth-minted stored Cursor key as connected and surfaces the account email", async () => {
+    mockState.getCursorSdkAuthSnapshot.mockResolvedValue({
+      storeUnavailable: false,
+      adeKeyPresent: true,
+      envKeyPresent: false,
+      adminEnvKeyPresent: false,
+      credentialSource: "cursor-oauth",
+      sdkLoggedIn: true,
+      email: "ada@cursor.com",
+    });
+
+    const result = await buildProviderConnections(
+      mergeCliStatuses([
+        {
+          cli: "cursor",
+          installed: false,
+          path: null,
+          authenticated: false,
+          verified: false,
+        },
+      ]),
+    );
+
+    expect(result.cursor.authAvailable).toBe(true);
+    expect(result.cursor.accountEmail).toBe("ada@cursor.com");
+    expect(result.cursor.sources.find((entry) => entry.kind === "local-credentials")?.source).toBe("cursor-oauth");
+    expect(result.cursor.blocker).toBe("Verify the Cursor API key to enable Cursor chat.");
   });
 
   it("marks Cursor runtime available after the SDK probe reports ready", async () => {

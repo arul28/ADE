@@ -38,6 +38,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "prs.createGithubStack",
   "prs.addGithubStackPullRequests",
   "prs.unstackGithubStack",
+  // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
+  // sync on these; optional so an older phone against a newer host does not
+  // go limited, and an older host simply omits the actions.
+  "ai.openCursorCloudChat",
+  "ai.watchCursorCloudMirror",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

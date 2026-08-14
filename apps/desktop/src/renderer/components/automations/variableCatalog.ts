@@ -44,6 +44,11 @@ const LINEAR_VARS: TemplateVariable[] = [
   { token: "{{trigger.issue.labels}}", label: "Labels" },
 ];
 
+const CURSOR_CLOUD_VARS: TemplateVariable[] = [
+  { token: "{{trigger.summary}}", label: "Summary" },
+  { token: "{{trigger.branch}}", label: "Branch" },
+];
+
 const LANE_VARS: TemplateVariable[] = [
   { token: "{{trigger.lane.id}}", label: "Lane id" },
   { token: "{{trigger.laneName}}", label: "Lane name" },
@@ -65,6 +70,8 @@ export function variablesForTrigger(triggerType: string): VariableGroup[] {
     if (triggerType.includes("pr")) groups.push({ title: "Pull request", variables: PR_VARS });
   } else if (source === "linear") {
     groups.push({ title: "Linear issue", variables: LINEAR_VARS });
+  } else if (source === "cursor") {
+    groups.push({ title: "Cursor Cloud", variables: CURSOR_CLOUD_VARS });
   } else if (source === "lane" || source === "git") {
     groups.push({ title: "Lane", variables: LANE_VARS });
   }

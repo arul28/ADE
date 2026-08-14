@@ -2024,3 +2024,36 @@ describe("SessionCard hover detail card", () => {
     }
   });
 });
+
+describe("SessionCard Cursor Cloud link", () => {
+  it("puts a cloud glyph left of the provider logo and opens cursor.com without selecting the row", () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    (window as unknown as { ade: { app: { openExternal: typeof openExternal } } }).ade = {
+      app: { openExternal },
+    };
+    const onSelect = vi.fn();
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "cursor",
+          cursorCloudAgentId: "bc-749a9047-4f2a-470c-8425-5087b725ba65",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={onSelect}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const link = screen.getByTestId("session-cursor-cloud-link");
+    const logo = screen.getByTestId("tool-logo");
+    expect(link.nextElementSibling).toBe(logo);
+
+    fireEvent.click(link);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://cursor.com/agents?id=bc-749a9047-4f2a-470c-8425-5087b725ba65",
+    );
+    expect(container.textContent).not.toContain("Live view");
+  });
+});
