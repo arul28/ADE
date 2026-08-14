@@ -56,8 +56,12 @@ and in tests.
   `readTranscriptSnapshot` for authoritative logical-offset hydration, and
   `readTranscriptRange({ sessionId, startOffset, endOffset })` for mobile
   scrollback/delta resume across rollover,
+  `readScreenSnapshot(sessionId)` for current-screen SerializeAddon CSI
+  (alt-screen TUIs cannot be rebuilt from a log tail),
   offset-stamped PTY data batches, desktop-size restore after
-  mobile-driven resizes, agent CLI input protocol (bracketed paste,
+  mobile-driven resizes (desktop fit-resizes remember lastDesktop* but
+  skip live `pty.resize` while a subscribed phone/web viewport owns the
+  size), agent CLI input protocol (bracketed paste,
   chunked writes, provider-specific submit delays), process tree
   termination (`terminatePtyProcessTree` walks descendant PIDs via
   `pgrep` and escalates to `SIGKILL` after a grace timer), live session
@@ -515,7 +519,8 @@ Shared types and IPC:
   `terminal_exit`, `terminal_input`, `terminal_input_ack`,
   `terminal_resize`) for iOS/web Work surfaces, including logical transcript
   offsets, `sinceOffset` delta resume, authoritative full snapshots,
-  input-id dedupe/ack metadata, `live` backing-PTY status, and
+  optional `screen` current-screen CSI on replacing hydrates, input-id
+  dedupe/ack metadata, `live` backing-PTY status, and
   pull-to-load-older history pages, plus
   the mobile CLI launcher payload
   (`SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
@@ -528,12 +533,17 @@ Shared types and IPC:
   `adapter/sessionsPty.ts` — hosted-web terminal watermark/recovery state and
   the `window.ade` PTY bridge. Duplicate/overlapping live ranges are dropped or
   UTF-8-trimmed, one gap resubscribe requests the missing suffix, and an
-  authoritative full snapshot is surfaced as `PtyDataEvent.replace`.
+  authoritative full snapshot is surfaced as `PtyDataEvent.replace`. Replacing
+  hydrates prefer `screen.serialized` and stamp `screen: true` so TerminalView
+  writes CSI verbatim instead of running transcript-grid normalization.
 - `apps/ade-cli/src/services/sync/syncHostService.ts` — remote terminal
   subscription barrier and input boundary. It installs the barrier before
   reading a logical transcript snapshot, queues concurrent data/exit events
   within 256 events / 2 MB, trims snapshot overlap, and recaptures up to four
-  times rather than exposing a gap. Its terminal-input ledger deduplicates
+  times rather than exposing a gap. Catch-up overflow fails the barrier and
+  still answers `terminal_snapshot` (with current-screen CSI when available);
+  it does not close the controller websocket. Its terminal-input ledger
+  deduplicates
   stable input ids before PTY write and acknowledges success/duplicate/failure
   to ACK-capable web/iOS clients.
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
@@ -1390,7 +1400,10 @@ iOS Work surfaces:
   surface for CLI sessions. It subscribes with `sinceOffset`, applies
   offset-stamped `terminal_data`, recovers gaps with a guarded delta/full
   resubscribe, pages older retained transcript bytes via `terminal_history`,
-  sends ordered `terminal_input` through `SyncTerminalInputQueue`, reports viewport
+  paints replacing hydrates from `screen.serialized` when present (Claude
+  Code alt-screen cannot be rebuilt from the 512 KB log tail), shows a
+  loading/error overlay until the first paint, sends ordered `terminal_input`
+  through `SyncTerminalInputQueue`, reports viewport
   changes as `terminal_resize`, and unsubscribes on disappear.
 - `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
   terminal artifact/output views and inline preview cards; the older
@@ -1913,6 +1926,17 @@ runtime and agent chat runtime both layer the same identity envs
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
+- **Mobile/web replacing hydrates cannot replay a transcript tail for an
+  alt-screen TUI.** Desktop keeps a headless xterm and hydrates from
+  SerializeAddon current-screen CSI. A days-long Claude Code session's last
+  512 KB is CUP/EL at the desktop width with the DECSET long gone, so iOS
+  used to paint black. `terminal_snapshot.screen` carries that serialize
+  (`scrollback: 0`, omit if over 256k chars — never slice CSI). Deltas stay
+  transcript-only. Clients that do not know the field keep the old tail
+  replay. While a phone/web peer is subscribed, desktop fit-resizes remember
+  lastDesktop* but must not call live `pty.resize`; restore on last
+  unsubscribe. Catch-up overflow must not `ws.close(4001)` — that blanked
+  every other iOS surface on the same socket.
 - `reconcileStaleRunningSessions` accepts `excludeToolTypes` but desktop and
   brain startup no longer exclude chat tool types — stale
   `running` chat rows are swept to `detached` like any other orphaned

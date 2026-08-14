@@ -99,6 +99,7 @@ import type {
   SyncTerminalInputAckPayload,
   SyncTerminalInputPayload,
   SyncTerminalSnapshotPayload,
+  SyncTerminalScreenSnapshot,
 } from "../../../../desktop/src/shared/types";
 import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
@@ -486,6 +487,7 @@ const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
 const MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS = 256;
 const MAX_PENDING_TERMINAL_SNAPSHOT_BYTES = 2_000_000;
 const MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS = 4;
+const MAX_TERMINAL_SCREEN_SERIALIZED_CHARS = 256_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
@@ -2999,7 +3001,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && peer.ws.readyState === WebSocket.OPEN;
   }
 
-  function isCurrentTerminalSnapshotBarrier(
+  function isActiveTerminalSnapshotBarrier(
     peer: PeerState,
     sessionId: string,
     barrier: PendingTerminalSnapshotBarrier,
@@ -3007,8 +3009,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   ): boolean {
     const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
     return isPeerLifecycleCurrent(peer, lifecycleGeneration)
-      && currentBarrier === barrier
-      && !barrier.failed;
+      && currentBarrier === barrier;
   }
 
   function clearTerminalSnapshotBarrier(
@@ -3052,6 +3053,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     barrier.queuedBytes = queuedBytes;
   }
 
+  function readTerminalScreenSnapshot(sessionId: string): SyncTerminalScreenSnapshot | null {
+    const screen = args.ptyService.readScreenSnapshot?.(sessionId) ?? null;
+    if (!screen?.serialized) return null;
+    if (screen.serialized.length > MAX_TERMINAL_SCREEN_SERIALIZED_CHARS) return null;
+    if (!Number.isFinite(screen.cols) || !Number.isFinite(screen.rows)) return null;
+    if (screen.cols < 1 || screen.rows < 1) return null;
+    return {
+      cols: Math.floor(screen.cols),
+      rows: Math.floor(screen.rows),
+      bufferType: screen.bufferType === "alternate" ? "alternate" : "normal",
+      serialized: screen.serialized,
+    };
+  }
+
+  function withTerminalScreen(
+    sessionId: string,
+    snapshot: SyncTerminalSnapshotPayload,
+  ): SyncTerminalSnapshotPayload {
+    if (snapshot.delta === true) return snapshot;
+    const screen = readTerminalScreenSnapshot(sessionId);
+    return screen ? { ...snapshot, screen } : snapshot;
+  }
+
   function failTerminalSnapshotBarrier(
     peer: PeerState,
     sessionId: string,
@@ -3068,11 +3092,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       queuedBytes: barrier.queuedBytes,
       peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
     });
-    try {
-      peer.ws.close(4001, "Terminal snapshot catch-up failed");
-    } catch {
-      // The failed barrier still prevents an out-of-order or lossy flush.
-    }
+    // Do not close the controller socket. A hot Claude TUI can overflow the
+    // catch-up queue on LAN; tearing down sync blanks every other surface on
+    // that phone. The subscribe loop sends the last captured snapshot instead.
   }
 
   function enqueueTerminalSnapshotEvent(
@@ -7719,9 +7741,41 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           : null;
         let forceReplacement = false;
         let barrierCompleted = false;
+        let lastCapturedTranscript: {
+          data: string;
+          startOffset: number | null;
+          endOffset: number | null;
+        } | null = null;
+        const sendReplacingSnapshot = (
+          session: ReturnType<typeof args.sessionService.get>,
+          transcriptSnapshot: {
+            data: string;
+            startOffset: number | null;
+            endOffset: number | null;
+          } | null,
+        ): boolean => {
+          const snapshot = withTerminalScreen(sessionId, {
+            sessionId,
+            transcript: transcriptSnapshot?.data ?? "",
+            status: session?.status ?? null,
+            runtimeState: session?.runtimeState ?? null,
+            lastOutputPreview: session?.lastOutputPreview ?? null,
+            capturedAt: nowIso(),
+            startOffset: transcriptSnapshot?.startOffset ?? null,
+            endOffset: transcriptSnapshot?.endOffset ?? null,
+            live: args.ptyService.hasLivePty(sessionId),
+          });
+          return sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
+        };
         try {
           while (barrier.captureAttempt < MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS) {
-            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (barrier.failed) {
+              if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
+                barrierCompleted = true;
+              }
+              break;
+            }
             barrier.captureAttempt += 1;
             const session = args.sessionService.get(sessionId);
             const transcriptSnapshot = session
@@ -7735,7 +7789,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                   "Sync operation aborted.",
                 )
               : null;
-            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (transcriptSnapshot) lastCapturedTranscript = transcriptSnapshot;
+            if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (barrier.failed) {
+              if (sendReplacingSnapshot(session, lastCapturedTranscript)) {
+                barrierCompleted = true;
+              }
+              break;
+            }
 
             const flush = planTerminalSnapshotFlush(
               barrier,
@@ -7770,7 +7831,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 startsAtUtf8Boundary
                 && snapshotBytes.length === transcriptSnapshot.endOffset - transcriptSnapshot.startOffset
               ) {
-                snapshot = {
+                snapshot = withTerminalScreen(sessionId, {
                   sessionId,
                   transcript: snapshotBytes.subarray(byteStart).toString("utf8"),
                   status: session?.status ?? null,
@@ -7781,10 +7842,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                   endOffset: transcriptSnapshot.endOffset,
                   delta: true,
                   live: args.ptyService.hasLivePty(sessionId),
-                };
+                });
               }
             }
-            snapshot ??= {
+            snapshot ??= withTerminalScreen(sessionId, {
               sessionId,
               transcript: transcriptSnapshot?.data ?? "",
               status: session?.status ?? null,
@@ -7794,7 +7855,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               startOffset: transcriptSnapshot?.startOffset ?? null,
               endOffset: transcriptSnapshot?.endOffset ?? null,
               live: args.ptyService.hasLivePty(sessionId),
-            };
+            });
             if (!sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId)) break;
             barrierCompleted = true;
             for (const event of flush.events) {
@@ -7810,10 +7871,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
           if (
             !barrierCompleted
-            && isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)
-            && barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS
+            && isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)
+            && (barrier.failed || barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS)
           ) {
             failTerminalSnapshotBarrier(peer, sessionId, barrier, "capture_did_not_reach_stable_offset");
+            if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
+              barrierCompleted = true;
+            }
           }
         } catch (error) {
           if (peer.pendingTerminalSnapshots.get(sessionId) === barrier) {

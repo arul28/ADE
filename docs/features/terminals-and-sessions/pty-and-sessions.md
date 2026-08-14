@@ -337,11 +337,14 @@ derive logical offsets from the current file size.
 
 Resize ownership: the ptyId-based `resize(...)` path (desktop
 renderer) records `lastDesktopCols/Rows` on the entry;
-`resizeBySessionId(..., { source: "mobile" })` does not.
-`restoreDesktopSizeBySessionId(sessionId)` puts the PTY back to the
-recorded desktop size — the sync host calls it when the last
-subscribed phone detaches, so a phone-fitted 45-column reflow doesn't
-linger on desktop.
+`resizeBySessionId(..., { source: "mobile" })` does not, and sets
+`mobileViewportActive` so a focused desktop pane cannot fight the phone
+with live `pty.resize`. `restoreDesktopSizeBySessionId(sessionId)`
+clears that flag and puts the PTY back to the recorded desktop size —
+the sync host calls it when the last subscribed phone detaches, so a
+phone-fitted 45-column reflow doesn't linger on desktop.
+`readScreenSnapshot(sessionId)` returns live SerializeAddon current-screen
+CSI (scrollback 0, no visibleRows) for mobile/web replacing hydrates.
 
 `updatePreviewThrottled` uses `derivePreviewFromChunk` to track the last
 non-empty line, capped at 220 chars. Preview is flushed to

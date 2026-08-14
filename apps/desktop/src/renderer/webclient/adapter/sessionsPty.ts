@@ -67,9 +67,12 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
           events.emit("ptyData", {
             ptyId: resolvedPtyId,
             sessionId: payload.sessionId,
-            data: payload.transcript,
+            data: payload.delta === true
+              ? payload.transcript
+              : (payload.screen?.serialized || payload.transcript),
             offset: payload.endOffset,
             ...(payload.delta === true ? {} : { replace: true }),
+            ...(payload.delta !== true && payload.screen?.serialized ? { screen: true } : {}),
           });
         },
         data: (payload) => {
