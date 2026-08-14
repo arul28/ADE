@@ -122,6 +122,7 @@ import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./s
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
+import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLocalDatabase";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
@@ -2570,9 +2571,10 @@ app.whenReady().then(async () => {
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
     // The .ade directory may exist from git (shared scaffold files like ade.yaml),
-    // but the db is gitignored and machine-local. A missing db means this machine
-    // has never completed setup, so onboarding should run.
+    // but the db is gitignored and machine-local. A missing db, or a scaffold
+    // first-open marker, means this machine has not finished a real bind yet.
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
+    const scaffoldedFirstOpen = consumeFirstOpenStabilityMarker(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot, {
@@ -2591,7 +2593,7 @@ app.whenReady().then(async () => {
     });
     const packagedFirstOpenStabilityMode =
       app.isPackaged
-      && !hadAdeDir
+      && (!hadAdeDir || scaffoldedFirstOpen)
       && process.env.ADE_DISABLE_FIRST_OPEN_STABILITY !== "1";
     const projectStabilityMode = devStabilityMode || packagedFirstOpenStabilityMode;
 

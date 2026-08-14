@@ -77,7 +77,7 @@ describe("createLocalProject", () => {
     runGitMock.mockReset();
   });
 
-  it("creates README + .gitignore and runs init/add/commit on main", async () => {
+  it("creates README + .gitignore and inits git without an initial commit", async () => {
     runGitMock.mockResolvedValue(gitOk());
     const parentDir = makeTempDir("ade-scaffold-create-");
     const service = createProjectScaffoldService({
@@ -100,17 +100,19 @@ describe("createLocalProject", () => {
 
     const argsList = runGitMock.mock.calls.map((c) => c[0] as string[]);
     expect(argsList[0]).toEqual(["init", "--initial-branch=main"]);
-    expect(argsList).toContainEqual(["add", "."]);
-    expect(argsList).toContainEqual(["commit", "-m", "Initial commit"]);
+    expect(argsList).not.toContainEqual(["add", "."]);
+    expect(argsList.some((args) => args[0] === "commit")).toBe(false);
+    expect(fs.existsSync(path.join(result.rootPath, ".ade", "ade.db"))).toBe(true);
+    expect(
+      fs.existsSync(path.join(result.rootPath, ".ade", "cache", "first-open-stability")),
+    ).toBe(true);
   });
 
   it("falls back to plain init + symbolic-ref when --initial-branch is unsupported", async () => {
     runGitMock
       .mockResolvedValueOnce(gitFail("error: unknown option `initial-branch'"))
       .mockResolvedValueOnce(gitOk()) // git init (plain)
-      .mockResolvedValueOnce(gitOk()) // symbolic-ref
-      .mockResolvedValueOnce(gitOk()) // add .
-      .mockResolvedValueOnce(gitOk()); // commit
+      .mockResolvedValueOnce(gitOk()); // symbolic-ref
 
     const parentDir = makeTempDir("ade-scaffold-fallback-init-");
     const service = createProjectScaffoldService({
@@ -126,14 +128,9 @@ describe("createLocalProject", () => {
     expect(argsList[2]).toEqual(["symbolic-ref", "HEAD", "refs/heads/main"]);
   });
 
-  it("retries the initial commit with the ADE author when git identity is missing", async () => {
-    runGitMock
-      .mockResolvedValueOnce(gitOk()) // init --initial-branch=main
-      .mockResolvedValueOnce(gitOk()) // add .
-      .mockResolvedValueOnce(gitFail("Please tell me who you are."))
-      .mockResolvedValueOnce(gitOk()); // retry commit
-
-    const parentDir = makeTempDir("ade-scaffold-author-fallback-");
+  it("never runs git commit during create", async () => {
+    runGitMock.mockResolvedValue(gitOk());
+    const parentDir = makeTempDir("ade-scaffold-no-commit-");
     const service = createProjectScaffoldService({
       logger: makeLogger(),
       githubService: makeGithubServiceStub(),
@@ -141,36 +138,8 @@ describe("createLocalProject", () => {
 
     await service.createLocalProject({ name: "no-config-project", parentDir });
 
-    const calls = runGitMock.mock.calls;
-    expect(calls).toHaveLength(4);
-    expect(calls[2]?.[0]).toEqual(["commit", "-m", "Initial commit"]);
-    expect(calls[3]?.[0]).toEqual([
-      "commit",
-      "-m",
-      "Initial commit",
-      "--author=ADE <ade@local>",
-    ]);
-    const retryEnv = (calls[3]?.[1] as { env?: Record<string, string> }).env ?? {};
-    expect(retryEnv.GIT_COMMITTER_NAME).toBe("ADE");
-    expect(retryEnv.GIT_COMMITTER_EMAIL).toBe("ade@local");
-  });
-
-  it("does not throw when the author-fallback commit also fails (best-effort)", async () => {
-    runGitMock
-      .mockResolvedValueOnce(gitOk())
-      .mockResolvedValueOnce(gitOk())
-      .mockResolvedValueOnce(gitFail("Please tell me who you are."))
-      .mockResolvedValueOnce(gitFail("still no identity"));
-
-    const parentDir = makeTempDir("ade-scaffold-author-retry-fail-");
-    const service = createProjectScaffoldService({
-      logger: makeLogger(),
-      githubService: makeGithubServiceStub(),
-    });
-
-    await expect(
-      service.createLocalProject({ name: "uncommittable", parentDir }),
-    ).resolves.toEqual({ rootPath: path.join(parentDir, "uncommittable") });
+    const argsList = runGitMock.mock.calls.map((c) => c[0] as string[]);
+    expect(argsList.some((args) => args[0] === "commit")).toBe(false);
   });
 
   it("rejects names with path separators", async () => {
@@ -239,11 +208,10 @@ describe("createLocalProject", () => {
     ).resolves.toEqual({ rootPath: empty });
   });
 
-  it("rolls back the created directory when a step after mkdir fails", async () => {
-    // init ok, then `git add .` fails after README/.gitignore are written.
+  it("rolls back the created directory when git init fails", async () => {
     runGitMock
-      .mockResolvedValueOnce(gitOk())
-      .mockResolvedValueOnce(gitFail("fatal: not a git repository", 128));
+      .mockResolvedValueOnce(gitFail("fatal: could not create work tree"))
+      .mockResolvedValueOnce(gitFail("fatal: could not create work tree"));
 
     const parentDir = makeTempDir("ade-scaffold-rollback-");
     const service = createProjectScaffoldService({
@@ -254,15 +222,14 @@ describe("createLocalProject", () => {
     const rootPath = path.join(parentDir, "doomed");
     await expect(
       service.createLocalProject({ name: "doomed", parentDir }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/git init failed/i);
 
-    // The directory we created must be gone so a retry isn't blocked by target_exists.
     expect(fs.existsSync(rootPath)).toBe(false);
   });
 
   it("does not roll back a pre-existing empty directory on failure", async () => {
     runGitMock
-      .mockResolvedValueOnce(gitOk())
+      .mockResolvedValueOnce(gitFail("boom", 128))
       .mockResolvedValueOnce(gitFail("boom", 128));
 
     const parentDir = makeTempDir("ade-scaffold-rollback-preexist-");
@@ -343,6 +310,10 @@ describe("cloneRepository", () => {
       "https://github.com/octocat/Hello-World",
       path.join(parentDir, "Hello-World"),
     ]);
+    expect(fs.existsSync(path.join(result.rootPath, ".ade", "ade.db"))).toBe(true);
+    expect(
+      fs.existsSync(path.join(result.rootPath, ".ade", "cache", "first-open-stability")),
+    ).toBe(true);
   });
 
   it("uses the explicit name override when provided", async () => {

@@ -32,7 +32,6 @@ import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
   GitHubStatus,
-  OnboardingStatus,
   PrEventPayload,
   ProjectInfo,
   OpenProjectBinding,
@@ -67,7 +66,6 @@ import {
   applyShellHeaderInset,
 } from "../../lib/zoom";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
-import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { holdLayoutSettle } from "../../lib/layoutSettle";
 import { cn } from "../ui/cn";
@@ -118,7 +116,6 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/cto",
   "/settings",
   "/chats",
-  "/onboarding",
 ] as const;
 
 export function productAnalyticsScreenForPathname(pathname: string): string {
@@ -346,9 +343,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [aiStatusLoaded, setAiStatusLoaded] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubConnectionGeneration, setGithubConnectionGeneration] = useState(0);
-  const [onboardingStatus, setOnboardingStatus] =
-    useState<OnboardingStatus | null>(null);
-  const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
   // Connection/health banner dismissals now live in a durable localStorage store
   // (see IntegrationBannerHost / bannerDismiss.ts) so they survive restart, rather
   // than the session-only Zustand maps this used to read.
@@ -369,7 +363,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     isRemoteProject,
     pathname: location.pathname,
   };
-  const isOnboardingRoute = location.pathname === "/onboarding";
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   const activityDeepLink = isActivityRoute(location.pathname);
@@ -813,48 +806,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [isRemoteProject, isWorkAdjacentRoute, project?.rootPath, showWelcome]);
 
-  useEffect(() => {
-    let cancelled = false;
-    if (!project?.rootPath || showWelcome || isRemoteProject) {
-      setOnboardingStatus(null);
-      setOnboardingStatusLoading(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-    setOnboardingStatusLoading(true);
-    void window.ade.onboarding
-      .getStatus()
-      .then((status) => {
-        if (cancelled) return;
-        setOnboardingStatus(status);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setOnboardingStatus(null);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setOnboardingStatusLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isRemoteProject, project?.rootPath, showWelcome]);
-
-  useEffect(() => {
-    const handler = (event: Event) => {
-      if (isRemoteProject) return;
-      const detail = (event as CustomEvent<OnboardingStatus>).detail;
-      if (!detail) return;
-      setOnboardingStatus(detail);
-      setOnboardingStatusLoading(false);
-    };
-    window.addEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
-    return () =>
-      window.removeEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
-  }, [isRemoteProject]);
-
   // Track visited tabs — mark after a short delay so stagger animation can play on first visit
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -1061,30 +1012,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!project?.rootPath || showWelcome) return;
-    if (isRemoteProject) return;
-    if (isOnboardingRoute) return;
-    if (onboardingStatusLoading) return;
-    if (
-      !onboardingStatus?.freshProject ||
-      onboardingStatus.completedAt ||
-      onboardingStatus.dismissedAt
-    )
-      return;
-    navigate("/onboarding", { replace: true });
-  }, [
-    isOnboardingRoute,
-    navigate,
-    onboardingStatus?.completedAt,
-    onboardingStatus?.dismissedAt,
-    onboardingStatus?.freshProject,
-    onboardingStatusLoading,
-    isRemoteProject,
-    project?.rootPath,
-    showWelcome,
-  ]);
-
-  useEffect(() => {
     setAiFailure(null);
     setAiMockProvider(null);
   }, [providerMode]);
@@ -1197,12 +1124,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
 
-  const shouldHoldProjectRouteForOnboarding =
-    Boolean(project?.rootPath) &&
-    !showWelcome &&
-    location.pathname === "/work" &&
-    onboardingStatusLoading;
-  const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
   const staleCliNoticeAgeHours = staleCliNotice
     ? getStaleRunningCliSessionAgeHours({
         status: "running",
@@ -1270,7 +1191,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <BrainRecoveryNotice />
 
-      {!hideSidebar && projectMissing && project?.rootPath ? (
+      {projectMissing && project?.rootPath ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">
           <span className="font-semibold">Project directory not found</span> —
           it may have been moved or deleted.
@@ -1324,7 +1245,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && !showWelcome && project?.rootPath ? (
+      {!showWelcome && project?.rootPath ? (
         <IntegrationBannerHost
           currentProjectRoot={currentProjectRoot}
           githubStatus={githubStatus}
@@ -1337,7 +1258,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
       ) : null}
 
-      {!hideSidebar && providerMode === "subscription" && aiFailure ? (
+      {providerMode === "subscription" && aiFailure ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
           <span className="font-semibold">Last AI job failed:</span>{" "}
           {aiFailure.jobId ? `job ${shortId(aiFailure.jobId)} · ` : ""}
@@ -1371,27 +1292,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar && feedbackGenerating ? (
+      {feedbackGenerating ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-violet-500/6 px-3 py-1.5 text-[11px] font-mono text-violet-800 animate-pulse">
           Generating feedback report...
         </div>
       ) : null}
 
       <div className="flex-1 flex min-h-0">
-        {hideSidebar ? null : (
-          // Graph page uses `fixed` viewport layers up to z-[96]; keep the tab rail above them.
-          <aside
-            className="ade-sidebar-clip shrink-0 z-[100] border-r"
-            data-tour="app.sidebar"
-            onMouseEnter={holdPanesUntilRailSettles}
-            onMouseLeave={holdPanesUntilRailSettles}
-            onTransitionEnd={releasePanesOnRailSettle}
-          >
-            <div className="ade-sidebar flex flex-col py-2 h-full">
-              <TabNav githubStatus={githubStatus} />
-            </div>
-          </aside>
-        )}
+        <aside
+          className="ade-sidebar-clip shrink-0 z-[100] border-r"
+          data-tour="app.sidebar"
+          onMouseEnter={holdPanesUntilRailSettles}
+          onMouseLeave={holdPanesUntilRailSettles}
+          onTransitionEnd={releasePanesOnRailSettle}
+        >
+          <div className="ade-sidebar flex flex-col py-2 h-full">
+            <TabNav githubStatus={githubStatus} />
+          </div>
+        </aside>
 
         <main ref={shellMainRef} className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>
           <TabBackground />
@@ -1399,15 +1317,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="relative z-[1] min-h-0 flex-1 w-full"
             data-tab-revisit={!isFirstVisit || undefined}
           >
-            {shouldHoldProjectRouteForOnboarding ? (
-              <div className="flex h-full w-full items-center justify-center">
-                <div className="text-xs font-mono text-muted-fg/70">
-                  Opening project setup...
-                </div>
-              </div>
-            ) : (
-              children
-            )}
+            {children}
           </div>
           {staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 || storeToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">

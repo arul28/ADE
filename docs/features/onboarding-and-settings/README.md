@@ -4,10 +4,9 @@ Two related but distinct flows:
 
 - **Onboarding** — the fastest path to a usable installation and a usable
   project. Covers registering the project with the runtime so every client
-  (desktop, `ade code`, iOS) sees it, detecting essentials, connecting AI
-  runtimes, GitHub, and Linear, and optionally attaching existing git
-  worktrees as lanes. The first-run project setup page is a single dashboard
-  of status cards rather than a blocking step-by-step wizard.
+  (desktop, `ade code`, iOS) sees it. Opening or creating a project lands on
+  Work immediately; AI runtimes, GitHub, and Linear live in Settings. There is
+  no blocking project setup dashboard.
 - **Settings** — long-lived configuration organized by tab. Project
   configuration persists to `.ade/ade.yaml` (shared) and `.ade/local.yaml`
   (local) through `projectConfigService`; machine-level desktop preferences
@@ -174,33 +173,10 @@ Renderer — onboarding:
   — projectless welcome and project-picker surface. It lists recent local and
   remote projects, opens or forgets entries, and launches project creation,
   clone, or folder selection before a project-bound route is available.
-- `apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`
-  — first-run and manual "re-run setup" dashboard. It renders the project
-  header, Finish / Skip actions, the AI runtimes band, essentials row,
-  GitHub / Linear cards, and existing-worktree import card.
-- `apps/desktop/src/renderer/components/onboarding/AiRuntimesBand.tsx`
-  — compact setup surface for Claude, Codex, Cursor, Factory Droid, and
-  OpenCode. Shows runtime readiness, install / sign-in commands, Cursor API-key
-  entry, helper toggles, and per-helper model pickers. Claude, Codex, and
-  OpenCode are backed by pinned tools, so the band also subscribes to the
-  agent-tools cache and renders a per-runtime downloading percent or a
-  `kind`-specific failure ("Not enough disk space to unpack", "No pinned build
-  for this platform") with a retry. Cursor and Droid are user-installed and keep
-  the plain detected / not-detected treatment. A cache `failed` never shows for
-  a runtime that resolved anyway — a user's own CLI on PATH satisfies it
-  without the cache.
-- `apps/desktop/src/renderer/components/onboarding/DevToolsRow.tsx`
-  — essential local tooling status for git and the terminal `ade` CLI.
-- `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,
-  `LinearCard.tsx` — setup cards for repository auth and Linear OAuth /
-  API-key auth. There is no worktree-import card: every git worktree in the
-  project already appears as a lane, so there is nothing to select.
-- `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
-  `RescanButton.tsx`, `onboardingTheme.ts` — shared setup-card controls and
-  brand/status styling tokens.
-- `apps/desktop/src/renderer/components/onboarding/DevToolsSection.tsx`
-  — legacy full-size dev tool detection surface retained for existing routes
-  that still mount it.
+- `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
+  — name plus a first-class location row (default parent, Change folder,
+  editable path). Create opens Work; it does not show a success interstitial
+  or the removed project-setup dashboard.
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
   — top-level passive help mount. It renders the one-time ADE welcome
   video gate plus `DidYouKnow`; guided per-tab tours and the old
@@ -447,8 +423,7 @@ Renderer — settings:
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
   `bundledAvailable`, and the resolved `installTargetPath` for the
-  bundled `ade` binary. In compact form (used by the Integrations tab and
-  the onboarding `DevToolsSection`) it shows the current install
+  bundled `ade` binary. It shows the current install
   path, an Install / Repair button that runs the platform
   install-path helper, and an "Add to PATH" hint when the install
   target isn't on the user's `$PATH`. Agents launched by ADE always
@@ -1012,9 +987,8 @@ banner):
 - [configuration-schema.md](./configuration-schema.md) — shape of
   `.ade/ade.yaml` and `.ade/local.yaml` as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
-- [first-run.md](./first-run.md) — the first-run setup dashboard,
-  stack detection, existing-lane import, and the UX contract that lets
-  users skip optional integrations.
+- [first-run.md](./first-run.md) — first launch lands on Work. There is
+  no blocking project-setup dashboard; optional integrations live in Settings.
 
 ## Onboarding responsibilities
 
@@ -1061,8 +1035,7 @@ the General settings tab via `AdeCliSection`:
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
-   on macOS, equivalents on other platforms). The compact form embedded
-   in the Integrations tab and the onboarding `DevToolsSection` shows the
+   on macOS, equivalents on other platforms). Settings → General shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
 5. Register projects with the runtime. Opening a project on desktop
