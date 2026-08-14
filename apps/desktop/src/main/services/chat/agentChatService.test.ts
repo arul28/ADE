@@ -14641,6 +14641,12 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true });
         expect(mockState.cursorSdkSendCalls).toHaveLength(2);
         expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
+        // awaitDispatch can resolve before the turn's finally clears busy.
+        // The one-shot expiry is already consumed; wait until this send is
+        // idle so the next one is a true follow-up, not an overlap bounce.
+        await vi.waitFor(() => {
+          expect(service.hasActiveWorkloads()).toBe(false);
+        });
 
         await service.sendMessage({
           sessionId: session.id,

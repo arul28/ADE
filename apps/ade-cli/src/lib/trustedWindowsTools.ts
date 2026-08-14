@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export type TrustedWindowsTool = "powershell" | "reg" | "schtasks" | "tar" | "taskkill";
+export type TrustedWindowsTool = "powershell" | "reg" | "rundll32" | "schtasks" | "tar" | "taskkill";
 
 const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
   powershell: path.win32.join("WindowsPowerShell", "v1.0", "powershell.exe"),
   reg: "reg.exe",
+  rundll32: "rundll32.exe",
   schtasks: "schtasks.exe",
   // bsdtar, shipped in System32 since Windows 10 1803. Resolving it here rather
   // than as bare "tar" keeps a PATH-planted tar.exe out of the extraction path.

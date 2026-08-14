@@ -11594,6 +11594,21 @@ export function AgentChatPane({
     }
   }, [draftLaunchTargetId, showDraftLaunchControls]);
 
+  const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
+  const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
+  const handoffForkCopy = useMemo(() => (handoffForkIsContextSeeded
+    ? {
+        subtitle: "Fork carries this conversation into a new chat. Brief summarizes it and starts fresh.",
+        body: <>Forks into a new chat — Cursor threads can&rsquo;t be resumed twice, so ADE seeds the new chat with this conversation&rsquo;s context{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
+        footnote: <>The transcript is copied into the new chat; any {handoffSourceProviderLabel} model is fine.</>,
+      }
+    : {
+        subtitle: "Fork copies the whole conversation. Brief summarizes it and starts fresh.",
+        body: <>Forks the full conversation through {handoffSourceProviderLabel}&rsquo;s native fork{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
+        footnote: <>Forked history stays with {handoffSourceProviderLabel}; any {handoffSourceProviderLabel} model is fine.</>,
+      }
+  ), [handoffForkIsContextSeeded, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
+
   if (!laneId) {
     return (
       <ChatSurfaceShell
@@ -11727,21 +11742,6 @@ export function AgentChatPane({
       />
     </div>
   );
-  const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
-  const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
-  const handoffForkCopy = useMemo(() => (handoffForkIsContextSeeded
-    ? {
-        subtitle: "Fork carries this conversation into a new chat. Brief summarizes it and starts fresh.",
-        body: <>Forks into a new chat — Cursor threads can&rsquo;t be resumed twice, so ADE seeds the new chat with this conversation&rsquo;s context{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>The transcript is copied into the new chat; any {handoffSourceProviderLabel} model is fine.</>,
-      }
-    : {
-        subtitle: "Fork copies the whole conversation. Brief summarizes it and starts fresh.",
-        body: <>Forks the full conversation through {handoffSourceProviderLabel}&rsquo;s native fork{laneId ? <> and stays in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Forked history stays with {handoffSourceProviderLabel}; any {handoffSourceProviderLabel} model is fine.</>,
-      }
-  ), [handoffForkIsContextSeeded, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
-
   const handoffLaneSourceLanes = availableLanes ?? lanes;
   const handoffLaneOptions = handoffLaneSourceLanes.length
     ? [AUTO_CREATE_LANE_OPTION, ...handoffLaneSourceLanes]

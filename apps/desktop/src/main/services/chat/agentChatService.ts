@@ -33299,6 +33299,10 @@ export function createAgentChatService(args: {
       (managed.session.provider === "cursor" || managed.session.provider === "droid")
       && managed.session.status === "active"
       && !allowActiveSession
+      // Settlement left a one-shot expiry for the next Cursor send. The
+      // abandoned execute may still read as active until it finishes, and
+      // that send must go through rather than bounce as busy.
+      && !(managed.session.provider === "cursor" && managed.cursorSdkForceExpireNextSend === true)
     ) {
       throw new Error("Turn is already active.");
     }
@@ -41385,12 +41389,15 @@ export function createAgentChatService(args: {
       clearCursorSdkSilenceWatch(runtime);
       // The interrupt above is best-effort and its failure is only logged, so
       // clearing `busy` here can leave a run still registered as active on the
-      // Cursor agent. Let the next send on this runtime expire it rather than
-      // fail busy — settlement is a deliberate abandonment, unlike a normal
-      // send, which must never kill a turn that is genuinely still working.
-      if (runtime.busy) managed.cursorSdkForceExpireNextSend = true;
+      // Cursor agent. Always arm the one-shot expiry: interrupt may already
+      // have dropped ADE's busy flag while the agent-side run is still live,
+      // and the next send must expire that run rather than bounce as busy.
+      // Settlement is a deliberate abandonment, unlike a normal send, which
+      // must never kill a turn that is genuinely still working.
+      managed.cursorSdkForceExpireNextSend = true;
       runtime.busy = false;
       runtime.activeTurnId = null;
+      runtime.activeCloudRunId = null;
     } else if (runtime?.kind === "droid") {
       for (const waiter of runtime.permissionWaiters.values()) {
         cancelDroidPermissionWaiter(waiter, "Droid input was dismissed because the session was settled.");

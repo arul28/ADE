@@ -82,4 +82,48 @@ describe("externalLinks", () => {
       restorePlatform();
     }
   });
+
+  it("uses System32 rundll32 on Windows", async () => {
+    const restorePlatform = mockPlatform("win32");
+    try {
+      mockedExecFile.mockImplementation((_file, _args, _options, cb) => {
+        cb?.(null as never, "" as never, "" as never);
+        return {} as never;
+      });
+
+      await openExternalUrl("https://github.com/acme/ade/pull/1");
+
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        String.raw`\\?\GLOBALROOT\SystemRoot\System32\rundll32.exe`,
+        ["url.dll,FileProtocolHandler", "https://github.com/acme/ade/pull/1"],
+        { timeout: 5_000, windowsHide: true },
+        expect.any(Function),
+      );
+      expect(shellOpenExternal).not.toHaveBeenCalled();
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it("uses /usr/bin/xdg-open on Linux", async () => {
+    const restorePlatform = mockPlatform("linux");
+    try {
+      mockedExecFile.mockImplementation((_file, _args, _options, cb) => {
+        cb?.(null as never, "" as never, "" as never);
+        return {} as never;
+      });
+
+      await openExternalUrl("https://github.com/acme/ade/pull/1");
+
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        "/usr/bin/xdg-open",
+        ["https://github.com/acme/ade/pull/1"],
+        { timeout: 5_000, windowsHide: true },
+        expect.any(Function),
+      );
+      expect(shellOpenExternal).not.toHaveBeenCalled();
+    } finally {
+      restorePlatform();
+    }
+  });
 });

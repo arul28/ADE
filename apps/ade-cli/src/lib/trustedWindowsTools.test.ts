@@ -12,6 +12,12 @@ import {
 } from "./trustedWindowsTools";
 
 describe("trusted Windows tool resolution", () => {
+  it("exposes rundll32 through the same System32 kernel alias", () => {
+    expect(trustedWindowsToolKernelPath("rundll32")).toBe(
+      String.raw`\\?\GLOBALROOT\SystemRoot\System32\rundll32.exe`,
+    );
+  });
+
   it("derives and validates the executable from the kernel SystemRoot alias", () => {
     const kernelTool = trustedWindowsToolKernelPath("powershell");
     const canonicalRoot = String.raw`C:\Windows\System32`;
