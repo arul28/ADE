@@ -7710,6 +7710,18 @@ describe("ptyService", () => {
 
       service.resize({ ptyId, cols: 375, rows: 53 });
       expect(mockPty.resize).not.toHaveBeenCalled();
+
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(375, 53);
+    });
+
+    it("ignores resizeTerminal while a mobile viewport owns the PTY", async () => {
+      const { service, mockPty } = createHarness();
+      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      expect(service.resizeBySessionId(sessionId, 60, 20, { source: "mobile" })).toBe(true);
+      vi.mocked(mockPty.resize).mockClear();
+
       expect(service.resizeTerminal({ ptyId, cols: 200, rows: 40 })).toEqual({
         ok: true,
         cols: 200,
@@ -7725,6 +7737,70 @@ describe("ptyService", () => {
       const { service } = createHarness();
       expect(service.readScreenSnapshot("missing")).toBeNull();
       expect(service.readScreenSnapshot("")).toBeNull();
+    });
+
+    it("hydrates stored screens from scrollback-0 CSI instead of the full snapshot serialize", async () => {
+      const { service } = createHarness();
+      const snapshotPath = path.join(
+        "/tmp/test-project",
+        ".ade",
+        "cache",
+        "terminal-snapshots",
+        "ended-session.json",
+      );
+      mocks.fileContents.set(snapshotPath, JSON.stringify({
+        version: 1,
+        terminalId: "ended-session",
+        cols: 80,
+        rows: 24,
+        capturedAt: "2026-08-14T00:00:00.000Z",
+        status: "exited",
+        runtimeState: "exited",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "SCROLLBACK-CSI".repeat(20_000),
+        screenSerialized: "\x1b[?1049hCURRENT",
+        visibleRows: [],
+      }));
+
+      expect(service.readScreenSnapshot("ended-session")).toEqual({
+        cols: 80,
+        rows: 24,
+        bufferType: "alternate",
+        serialized: "\x1b[?1049hCURRENT",
+      });
+    });
+
+    it("omits stored screen when the snapshot has no scrollback-0 serialize", async () => {
+      const { service } = createHarness();
+      const snapshotPath = path.join(
+        "/tmp/test-project",
+        ".ade",
+        "cache",
+        "terminal-snapshots",
+        "legacy-session.json",
+      );
+      mocks.fileContents.set(snapshotPath, JSON.stringify({
+        version: 1,
+        terminalId: "legacy-session",
+        cols: 80,
+        rows: 24,
+        capturedAt: "2026-08-14T00:00:00.000Z",
+        status: "exited",
+        runtimeState: "exited",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "SCROLLBACK-CSI",
+        visibleRows: [],
+      }));
+
+      expect(service.readScreenSnapshot("legacy-session")).toBeNull();
     });
   });
 

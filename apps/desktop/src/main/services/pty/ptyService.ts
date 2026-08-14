@@ -2223,6 +2223,7 @@ export function createPtyService({
       baseY: buffer.baseY,
       viewportY: buffer.viewportY,
       serialized: mirror.serializeAddon.serialize({ scrollback: TERMINAL_SNAPSHOT_SCROLLBACK }),
+      screenSerialized: mirror.serializeAddon.serialize({ scrollback: 0 }),
       visibleRows: visibleRowsFromTerminal(mirror.terminal),
     };
   };
@@ -2355,12 +2356,12 @@ export function createPtyService({
 
   const storedScreenSnapshot = (sessionId: string): TerminalScreenSnapshot | null => {
     const stored = readStoredTerminalSnapshot(sessionId);
-    if (!stored?.serialized) return null;
+    if (!stored?.screenSerialized) return null;
     return {
       cols: stored.cols,
       rows: stored.rows,
       bufferType: screenSnapshotBufferType(stored.bufferType),
-      serialized: stored.serialized,
+      serialized: stored.screenSerialized,
     };
   };
 

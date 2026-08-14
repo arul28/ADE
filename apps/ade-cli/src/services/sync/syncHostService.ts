@@ -7741,6 +7741,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           : null;
         let forceReplacement = false;
         let barrierCompleted = false;
+        let lastCapturedTranscript: {
+          data: string;
+          startOffset: number | null;
+          endOffset: number | null;
+        } | null = null;
         const sendReplacingSnapshot = (
           session: ReturnType<typeof args.sessionService.get>,
           transcriptSnapshot: {
@@ -7766,7 +7771,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           while (barrier.captureAttempt < MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS) {
             if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
             if (barrier.failed) {
-              if (sendReplacingSnapshot(args.sessionService.get(sessionId), null)) {
+              if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
                 barrierCompleted = true;
               }
               break;
@@ -7784,9 +7789,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                   "Sync operation aborted.",
                 )
               : null;
+            if (transcriptSnapshot) lastCapturedTranscript = transcriptSnapshot;
             if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
             if (barrier.failed) {
-              if (sendReplacingSnapshot(session, transcriptSnapshot)) {
+              if (sendReplacingSnapshot(session, lastCapturedTranscript)) {
                 barrierCompleted = true;
               }
               break;
@@ -7869,7 +7875,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             && (barrier.failed || barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS)
           ) {
             failTerminalSnapshotBarrier(peer, sessionId, barrier, "capture_did_not_reach_stable_offset");
-            if (sendReplacingSnapshot(args.sessionService.get(sessionId), null)) {
+            if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
               barrierCompleted = true;
             }
           }

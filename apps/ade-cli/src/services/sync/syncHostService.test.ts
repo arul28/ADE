@@ -11678,6 +11678,68 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     }
   });
 
+  it("sends the last captured transcript when capture attempts exhaust without ever failing", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    const captures: Array<(snapshot: { data: string; startOffset: number; endOffset: number }) => void> = [];
+    readTranscriptSnapshot.mockImplementation(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      captures.push(resolve);
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-capture-exhausted",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "exhausted-recapture",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => captures.length > 0 ? true : null,
+        "first exhausted-recapture snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "x",
+        offset: 6_000,
+      });
+      captures[0]!({ data: "CAPTURE-1", startOffset: 0, endOffset: 5_000 });
+      for (let attempt = 1; attempt < 4; attempt += 1) {
+        await waitForValue(
+          () => captures.length > attempt ? true : null,
+          `exhausted-recapture snapshot capture ${attempt + 1}`,
+        );
+        captures[attempt]!({
+          data: `CAPTURE-${attempt + 1}`,
+          startOffset: 0,
+          endOffset: 5_000,
+        });
+      }
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "exhausted-recapture");
+      expect(readTranscriptSnapshot).toHaveBeenCalledTimes(4);
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: "CAPTURE-4",
+        screen: { serialized: SCREEN_CSI },
+      });
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+      expect(client.closeEvents).toEqual([]);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("replaces with a tail snapshot when sinceOffset already equals the transcript end", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const { host, readTranscriptTail, readTranscriptSnapshot, readTranscriptRange } = createTerminalHost(projectRoot);

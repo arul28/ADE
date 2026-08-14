@@ -544,6 +544,12 @@ export type TerminalSerializedSnapshot = {
   baseY: number;
   viewportY: number;
   serialized: string;
+  /**
+   * Current-screen CSI (`serialize({ scrollback: 0 })`). Distinct from
+   * `serialized`, which includes normal-buffer scrollback and can exceed the
+   * 256k mobile hydrate cap. Optional so older on-disk snapshots still parse.
+   */
+  screenSerialized?: string;
   visibleRows: TerminalSnapshotRow[];
 };
 
