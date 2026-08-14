@@ -34,6 +34,15 @@ describe("chatOutputContext", () => {
     expect(extractChatOutputContextQuote(block!).length).toBe(MAX_CHAT_OUTPUT_CONTEXT_CHARS);
   });
 
+  it("does not split a surrogate pair at the selection limit", () => {
+    const emoji = "😀";
+    const prefix = "x".repeat(MAX_CHAT_OUTPUT_CONTEXT_CHARS - 1);
+    const quote = extractChatOutputContextQuote(formatChatOutputContextBlock(prefix + emoji)!);
+    expect(quote.endsWith(emoji)).toBe(false);
+    expect(quote).toBe(prefix);
+    expect(quote.length).toBe(MAX_CHAT_OUTPUT_CONTEXT_CHARS - 1);
+  });
+
   it("splits inline chips so prose can sit before and after them", () => {
     const block = formatChatOutputContextBlock("selected line")!;
     const text = `please ${block} thanks`;

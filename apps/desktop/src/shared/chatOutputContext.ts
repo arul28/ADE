@@ -44,12 +44,21 @@ export function extractChatOutputContextQuote(block: string): string {
   return inner;
 }
 
+function clipChatOutputContextQuote(text: string): string {
+  if (text.length <= MAX_CHAT_OUTPUT_CONTEXT_CHARS) return text;
+  let end = MAX_CHAT_OUTPUT_CONTEXT_CHARS;
+  const last = text.charCodeAt(end - 1);
+  const next = text.charCodeAt(end);
+  if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+    end -= 1;
+  }
+  return text.slice(0, end);
+}
+
 export function formatChatOutputContextBlock(selectedText: string): string | null {
   const clipped = neutralizeChatOutputContextText(normalizeNewlines(selectedText).trim());
   if (!clipped) return null;
-  const quote = clipped.length > MAX_CHAT_OUTPUT_CONTEXT_CHARS
-    ? clipped.slice(0, MAX_CHAT_OUTPUT_CONTEXT_CHARS)
-    : clipped;
+  const quote = clipChatOutputContextQuote(clipped);
   return `${CHAT_OUTPUT_CONTEXT_OPEN}\n${CHAT_OUTPUT_CONTEXT_PREAMBLE}\n\n${quote}\n${CHAT_OUTPUT_CONTEXT_CLOSE}`;
 }
 

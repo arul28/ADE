@@ -19,7 +19,9 @@ export function selectionIsInsideAssistantOutput(
   const start = nodeElement(range.startContainer);
   const end = nodeElement(range.endContainer);
   if (!start || !end || !root.contains(start) || !root.contains(end)) return false;
-  return Boolean(start.closest(ASSISTANT_OUTPUT_SELECTOR) && end.closest(ASSISTANT_OUTPUT_SELECTOR));
+  const startOutput = start.closest(ASSISTANT_OUTPUT_SELECTOR);
+  const endOutput = end.closest(ASSISTANT_OUTPUT_SELECTOR);
+  return Boolean(startOutput && startOutput === endOutput);
 }
 
 export function readAssistantOutputSelection(

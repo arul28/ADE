@@ -31,4 +31,27 @@ describe("readAssistantOutputSelection", () => {
     expect(outside).toBeNull();
     root.remove();
   });
+
+  it("returns null when a range spans assistant-output elements", () => {
+    const root = document.createElement("div");
+    const first = document.createElement("div");
+    first.dataset.assistantOutput = "true";
+    first.textContent = "first answer";
+    const second = document.createElement("div");
+    second.dataset.assistantOutput = "true";
+    second.textContent = "second answer";
+    root.append(first, second);
+    document.body.append(root);
+
+    const selection = window.getSelection();
+    if (!selection) throw new Error("jsdom selection unavailable");
+    const range = document.createRange();
+    range.setStart(first.firstChild!, 0);
+    range.setEnd(second.firstChild!, 6);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    expect(readAssistantOutputSelection(root, selection)).toBeNull();
+    root.remove();
+  });
 });
