@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.59] - 2026-08-14
+
+### Connections and sync
+
+- Account-aware machine connections now provide clearer pairing, rename, and recovery states across desktop and web.
+- Cursor Cloud sessions mirror into ADE, with presence- and authorization-gated inbound sync.
+- Connection errors distinguish authentication, pairing, and runtime conditions; keychain repair no longer silently loses the account session.
+
+### Work and chat
+
+- The terminal client now has a desktop-parity work list for sessions and work rows.
+- Model selection follows the machine running the chat and refreshes after Cursor authentication.
+- Chat info shows each subagent's own model, with inherited fallback only when no explicit model exists.
+- iOS rehydrates mobile CLI sessions from live screen state after reconnecting.
+
+### Activity
+
+- Desktop, iOS, and push surfaces now share canonical activity state and presentation.
+
 ## [1.2.58] - 2026-08-11
 
 ### Performance
@@ -1527,6 +1546,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[1.2.59]: https://github.com/arul28/ADE/compare/v1.2.58...v1.2.59
 [1.2.58]: https://github.com/arul28/ADE/compare/v1.2.57...v1.2.58
 [1.2.57]: https://github.com/arul28/ADE/compare/v1.2.56...v1.2.57
 [1.2.56]: https://github.com/arul28/ADE/compare/v1.2.55...v1.2.56
