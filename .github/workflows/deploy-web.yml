@@ -160,5 +160,12 @@ jobs:
         with:
           node-version: 22
       - run: cd apps/push-relay && npm ci
-      - name: Apply D1 migrations and deploy Worker
-        run: cd apps/push-relay && npm run deploy
+      - name: Mint Clerk smoke tokens and deploy Worker
+        env:
+          CLERK_PROD_SECRET_KEY: ${{ secrets.CLERK_PROD_SECRET_KEY }}
+          CLERK_PROD_PUBLISHABLE_KEY: ${{ secrets.CLERK_PROD_PUBLISHABLE_KEY }}
+          ADE_PUSH_RELAY_SMOKE_USER_ID: ${{ secrets.ADE_PUSH_RELAY_SMOKE_USER_ID }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
+          ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID: ${{ secrets.ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID }}
+        run: cd apps/push-relay && npm run deploy:ci
