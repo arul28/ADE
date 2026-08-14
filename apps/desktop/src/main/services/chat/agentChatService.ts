@@ -10788,10 +10788,16 @@ export function createAgentChatService(args: {
     return toReplayForkDisclosure(fit);
   };
 
+  type ConsumedTurnContextPrefix = {
+    composed: string;
+    replay: string;
+    reconstruction: string;
+  };
+
   const consumePendingTurnContextPrefix = (
     managed: ManagedChatSession,
     skip: boolean,
-  ): string | null => {
+  ): ConsumedTurnContextPrefix | null => {
     if (skip) return null;
     const replay = managed.pendingTranscriptReplay?.trim() ?? "";
     const reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
@@ -10807,7 +10813,11 @@ export function createAgentChatService(args: {
     if (reconstruction) {
       parts.push(`System context (ADE continuity, do not echo verbatim):\n${reconstruction}`);
     }
-    return parts.join("\n\n");
+    return {
+      composed: parts.join("\n\n"),
+      replay,
+      reconstruction,
+    };
   };
 
   const stageCursorSdkAgentRotationRecovery = (
@@ -18102,7 +18112,7 @@ export function createAgentChatService(args: {
     const suppressTurnContext = providerSlashCommand && !planSlashCommand;
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = suppressTurnContext ? "" : consumePendingTurnContextPrefix(managed, false) ?? "";
+    const reconstructionContext = suppressTurnContext ? "" : consumePendingTurnContextPrefix(managed, false)?.composed ?? "";
     if (reconstructionContext.length) {
       input.push({
         type: "text",
@@ -19945,7 +19955,7 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand) ?? "";
+      const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
       const basePromptText = providerSlashCommand
         ? args.promptText
         : [
@@ -22327,7 +22337,7 @@ export function createAgentChatService(args: {
     },
   ): Promise<string> => {
     const providerSlashCommand = args.providerSlashCommand === true;
-    const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand) ?? "";
+    const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
     if (reconstructionContext.length) {
       persistChatState(managed);
     }
@@ -22594,7 +22604,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
     try {
       let prompt = args.promptText;
-      const pendingContext = consumePendingTurnContextPrefix(managed, false);
+      const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
       if (pendingContext) {
         prompt = `${pendingContext}\n\n${prompt}`;
       }
@@ -22787,7 +22797,7 @@ export function createAgentChatService(args: {
       const attachmentHint = attachments.length
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
-      const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand);
+      const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
       const userContent = providerSlashCommand
         ? args.promptText
         : [
@@ -35320,7 +35330,7 @@ export function createAgentChatService(args: {
         reason: CursorSdkRecycleReason;
         runtime: CursorRuntime;
         turn: CursorTurnRef;
-        reconstructionContext: string | null;
+        consumedTurnContext: ConsumedTurnContextPrefix | null;
         resolveDispatch: (() => void) | null;
       };
 
@@ -35435,18 +35445,18 @@ export function createAgentChatService(args: {
     }
 
     let shouldDeliverQueuedSteer = false;
-    // Kept so a thread recycle can hand the same continuity context to the
-    // rotated agent instead of losing it with the abandoned prompt.
-    let consumedReconstructionContext: string | null = null;
+    // Kept so a thread recycle can restage each consumed bucket on the rotated
+    // agent instead of flattening replay + continuity into one string.
+    let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     try {
       let composed = args.promptText;
       // Consumes the pending transcript replay and the continuity context in
-      // one shot; the composed prefix is kept so a thread recycle can restage
-      // it on the rotated agent instead of losing it with the abandoned prompt.
-      const reconstructionContext = consumePendingTurnContextPrefix(managed, false);
-      consumedReconstructionContext = reconstructionContext;
-      if (reconstructionContext) {
-        composed = `${reconstructionContext}\n\n${composed}`;
+      // one shot; the parts are kept so a thread recycle can restage each
+      // bucket rather than losing them with the abandoned prompt.
+      const pendingTurnContext = consumePendingTurnContextPrefix(managed, false);
+      consumedTurnContext = pendingTurnContext;
+      if (pendingTurnContext?.composed) {
+        composed = `${pendingTurnContext.composed}\n\n${composed}`;
       }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
       const modeDirective = buildCursorSdkModeDirective();
@@ -35514,7 +35524,7 @@ export function createAgentChatService(args: {
           reason,
           runtime,
           turn: { turnId, turnModel, turnModelId },
-          reconstructionContext: consumedReconstructionContext,
+          consumedTurnContext,
           resolveDispatch: pendingAck?.resolve ?? null,
         };
       };
@@ -35723,10 +35733,17 @@ export function createAgentChatService(args: {
       previousAgentId: runtime.sdkAgentId,
       watchdogMs: CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
     });
-    // Hand the continuity context attempt 1 consumed to the rotation staging,
-    // instead of losing it with the abandoned prompt.
-    if (first.reconstructionContext && !managed.pendingReconstructionContext) {
-      managed.pendingReconstructionContext = first.reconstructionContext;
+    // Restage each consumed bucket on the rotated agent. Flattening both into
+    // pendingReconstructionContext would wrap the verbatim replay in a
+    // continuity header and double-wrap the continuity half on the next consume.
+    if (first.consumedTurnContext) {
+      if (first.consumedTurnContext.replay && !managed.pendingTranscriptReplay) {
+        managed.pendingTranscriptReplay = first.consumedTurnContext.replay;
+      }
+      if (first.consumedTurnContext.reconstruction && !managed.pendingReconstructionContext) {
+        managed.pendingReconstructionContext = first.consumedTurnContext.reconstruction;
+      }
+      persistChatState(managed);
     }
 
     const carriedSteers = await recycleCursorSdkAgentThread(managed, runtime, first.reason);
@@ -37311,7 +37328,7 @@ export function createAgentChatService(args: {
     let shouldDeliverQueuedSteer = false;
     try {
       let composed = args.promptText;
-      const reconstructionContext = consumePendingTurnContextPrefix(managed, false);
+      const reconstructionContext = consumePendingTurnContextPrefix(managed, false)?.composed;
       if (reconstructionContext) {
         composed = `${reconstructionContext}\n\n${composed}`;
       }

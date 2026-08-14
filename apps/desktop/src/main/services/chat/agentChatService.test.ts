@@ -890,6 +890,7 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { ChatScheduledWorkRecord, ChatScheduledWorkState } from "./chatScheduledWorkScheduler";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
+import { CROSS_PROVIDER_REPLAY_HEADER } from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
 import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
@@ -14924,6 +14925,60 @@ describe("createAgentChatService", () => {
       expect(events.filter((event) =>
         event.sessionId === session.id && event.event.type === "error",
       )).toHaveLength(1);
+    });
+
+    it("restages a verbatim transcript replay into its own bucket across a Cursor thread recycle", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep the banner aligned with the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(session.status).toBe("idle");
+      });
+
+      // Out-of-family model switch stages both buckets: the verbatim replay
+      // and the ADE continuity reconstruction rebuilt from the conversation.
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "cursor/composer-2",
+      });
+      expect(readPersistedChatState(session.id).pendingTranscriptReplay)
+        .toContain("Keep the banner aligned with the composer.");
+
+      mockState.cursorSdkSendCalls = [];
+      mockState.onCursorSendPrompt = () => {
+        mockState.cursorSendPromptError = mockState.cursorSdkSendCalls.length === 1
+          ? new Error("Cursor SDK send failed: [internal] write ECANCELED")
+          : null;
+      };
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the recycle.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+
+      const continuityHeader = "System context (ADE continuity, do not echo verbatim):";
+      const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(retryPrompt.split(continuityHeader).length - 1).toBe(1);
+      expect(retryPrompt).toContain(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(retryPrompt).toContain("Keep the banner aligned with the composer.");
+
+      const headerIndex = retryPrompt.indexOf(continuityHeader);
+      const replayIndex = retryPrompt.indexOf(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(replayIndex).toBeGreaterThanOrEqual(0);
+      expect(replayIndex).toBeLessThan(headerIndex);
+      expect(retryPrompt.slice(headerIndex)).not.toContain(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(readPersistedChatState(session.id).pendingTranscriptReplay).toBeNull();
     });
 
     it("recovers once when a Cursor run returns a transport error with no stream events", async () => {
