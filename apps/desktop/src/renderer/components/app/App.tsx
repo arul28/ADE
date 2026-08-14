@@ -22,7 +22,6 @@ import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
-import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { GlossaryPage } from "../onboarding/GlossaryPage";
@@ -324,7 +323,6 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
     "/automations",
     "/cto",
     "/settings",
-    "/onboarding",
   ];
   if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
     return null;
@@ -545,7 +543,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
       {active && !isWorkRoute && !isLanesRoute ? (
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
-          <Route path="/onboarding" element={<PageErrorBoundary><ProjectSetupPage /></PageErrorBoundary>} />
+          <Route path="/onboarding" element={<Navigate to="/work" replace />} />
           <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
           <Route path="/files" element={
             <PageErrorBoundary>
@@ -789,10 +787,7 @@ function ProjectTabHost() {
     }
     previousActiveSurfaceKeyRef.current = activeSurfaceKey;
     if (!activeSurfaceKey) return;
-    const shouldKeepInitialRoute =
-      currentRoute &&
-      currentRoute !== "/onboarding";
-    if (!previousSurfaceKey && shouldKeepInitialRoute) {
+    if (!previousSurfaceKey && currentRoute) {
       writeStoredProjectRoute(activeSurfaceKey, currentRoute);
       setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === currentRoute ? prev : { ...prev, [activeSurfaceKey]: currentRoute }));
       return;

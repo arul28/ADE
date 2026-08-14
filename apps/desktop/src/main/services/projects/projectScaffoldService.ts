@@ -16,6 +16,7 @@ import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
 import { initializeOrRepairAdeProject } from "./adeProjectService";
+import { ensureProjectLocalDatabase } from "./projectLocalDatabase";
 
 type GithubService = ReturnType<typeof createGithubService>;
 
@@ -60,15 +61,6 @@ function isDirectoryNonEmpty(dirPath: string): boolean {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-}
-
-function isGitIdentityError(stderr: string): boolean {
-  const text = stderr.toLowerCase();
-  return (
-    text.includes("please tell me who you are") ||
-    text.includes("user.email") ||
-    text.includes("author identity")
-  );
 }
 
 function hashToken(token: string): string {
@@ -126,39 +118,13 @@ export function createProjectScaffoldService({
       fs.writeFileSync(path.join(rootPath, "README.md"), `# ${name}\n`, "utf8");
       fs.writeFileSync(path.join(rootPath, ".gitignore"), GITIGNORE_CONTENT, "utf8");
       initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
-
-      const addRes = await runGit(["add", "."], { cwd: rootPath, timeoutMs: 15_000 });
-      if (addRes.exitCode !== 0) {
-        throw new Error(`git add failed: ${addRes.stderr.trim() || `exit ${addRes.exitCode}`}`);
-      }
-
-      const commitRes = await runGit(["commit", "-m", "Initial commit"], { cwd: rootPath, timeoutMs: 15_000 });
-      if (commitRes.exitCode !== 0) {
-        if (isGitIdentityError(commitRes.stderr)) {
-          const retry = await runGit(
-            ["commit", "-m", "Initial commit", "--author=ADE <ade@local>"],
-            {
-              cwd: rootPath,
-              timeoutMs: 15_000,
-              env: {
-                ...process.env,
-                GIT_COMMITTER_NAME: "ADE",
-                GIT_COMMITTER_EMAIL: "ade@local",
-              },
-            },
-          );
-          if (retry.exitCode !== 0) {
-            logger.warn("project_scaffold.initial_commit_retry_failed", {
-              rootPath,
-              stderr: retry.stderr.trim(),
-            });
-          }
-        } else {
-          logger.warn("project_scaffold.initial_commit_failed", {
-            rootPath,
-            stderr: commitRes.stderr.trim(),
-          });
-        }
+      try {
+        await ensureProjectLocalDatabase(rootPath, logger);
+      } catch (dbErr) {
+        logger.warn("project_scaffold.local_db_warm_failed", {
+          rootPath,
+          error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+        });
       }
 
       return { rootPath };
@@ -239,6 +205,16 @@ export function createProjectScaffoldService({
       });
       if (cloneRes.exitCode !== 0) {
         throw new Error(cloneRes.stderr.trim() || `git clone failed (exit ${cloneRes.exitCode})`);
+      }
+
+      initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
+      try {
+        await ensureProjectLocalDatabase(rootPath, logger);
+      } catch (dbErr) {
+        logger.warn("project_scaffold.clone_local_db_warm_failed", {
+          rootPath,
+          error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+        });
       }
 
       return { rootPath };

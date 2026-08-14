@@ -64,6 +64,7 @@ import {
 import { cn } from "../ui/cn";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
+import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
@@ -1663,11 +1664,41 @@ export function CommandPalette({
       : "Paste a path, type to filter, or drop a folder anywhere…"
     : "Search commands, projects, and threads…";
 
+  const openCreatedOrClonedProject = useCallback(
+    async (
+      result: { rootPath: string; displayName: string; projectId?: string },
+      location: ProjectLocation,
+    ) => {
+      writeStoredProjectRoute(
+        location.kind === "remote" && result.projectId
+          ? `remote:${location.targetId}:${result.projectId}`
+          : `local:${result.rootPath}`,
+        "/work",
+      );
+      try {
+        if (location.kind === "remote" && result.projectId) {
+          await switchRemoteProject(location.targetId, result.projectId);
+        } else {
+          await switchProjectToPath(result.rootPath);
+        }
+        navigate("/work");
+      } catch (error) {
+        console.error("Failed to open new project", error);
+      }
+      onOpenChange(false);
+    },
+    [navigate, onOpenChange, switchProjectToPath, switchRemoteProject],
+  );
+
   const handleProjectActionSuccess = useCallback(
     (
       verb: "Created" | "Cloned",
       result: { rootPath: string; displayName: string; projectId?: string },
     ) => {
+      if (verb === "Created") {
+        void openCreatedOrClonedProject(result, activeProjectLocation);
+        return;
+      }
       setActionOutcome({
         verb,
         displayName: result.displayName,
@@ -1677,7 +1708,7 @@ export function CommandPalette({
       });
       setMode("project-success");
     },
-    [activeProjectLocation],
+    [activeProjectLocation, openCreatedOrClonedProject],
   );
 
   const handleSuccessOpen = useCallback(async () => {
@@ -1685,20 +1716,8 @@ export function CommandPalette({
       onOpenChange(false);
       return;
     }
-    try {
-      if (actionOutcome.location.kind === "remote" && actionOutcome.projectId) {
-        await switchRemoteProject(
-          actionOutcome.location.targetId,
-          actionOutcome.projectId,
-        );
-      } else {
-        await switchProjectToPath(actionOutcome.rootPath);
-      }
-    } catch (error) {
-      console.error("Failed to open new project", error);
-    }
-    onOpenChange(false);
-  }, [actionOutcome, onOpenChange, switchProjectToPath, switchRemoteProject]);
+    await openCreatedOrClonedProject(actionOutcome, actionOutcome.location);
+  }, [actionOutcome, onOpenChange, openCreatedOrClonedProject]);
 
   const handleSuccessStay = useCallback(() => {
     onOpenChange(false);

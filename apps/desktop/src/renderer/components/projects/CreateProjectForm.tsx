@@ -14,12 +14,12 @@ import type {
   ProjectBrowseResult,
 } from "../../../shared/types";
 import { extractError } from "../../lib/format";
+import { abbreviateHome, arePathsEqual, normalizePath } from "../../lib/pathUtils";
 import {
   COLORS,
   LABEL_STYLE,
   MONO_FONT,
   SANS_FONT,
-  cardStyle,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
@@ -61,26 +61,24 @@ function validateName(rawName: string): NameValidation {
   return { ok: true };
 }
 
-function joinPath(parent: string, name: string): string {
-  if (!parent) return name;
-  const sep = parent.includes("\\") ? "\\" : "/";
-  const trimmed =
-    parent.endsWith("/") || parent.endsWith("\\")
-      ? parent.slice(0, -1)
-      : parent;
-  if (!name) return trimmed;
-  return `${trimmed}${sep}${name}`;
+export function joinParentAndName(parent: string, name: string): string {
+  const trimmedParent = parent.trim();
+  const trimmedName = name.trim();
+  if (!trimmedParent) return trimmedName;
+  if (!trimmedName) return normalizePath(trimmedParent);
+  const stripped = trimmedParent.replace(/[\\/]+$/, "");
+  return normalizePath(`${stripped}/${trimmedName}`);
 }
 
 const inputStyle: CSSProperties = {
-  height: 36,
+  height: 40,
   padding: "0 12px",
-  fontSize: 13,
+  fontSize: 14,
   fontFamily: SANS_FONT,
   color: COLORS.textPrimary,
   background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
   border: `1px solid ${COLORS.border}`,
-  borderRadius: 8,
+  borderRadius: 10,
   outline: "none",
   width: "100%",
   boxSizing: "border-box",
@@ -136,9 +134,16 @@ export function CreateProjectForm({
   const validation = useMemo(() => validateName(name), [name]);
   const trimmedName = name.trim();
   const previewPath = useMemo(
-    () => (parentDir && trimmedName ? joinPath(parentDir, trimmedName) : ""),
+    () => (parentDir && trimmedName ? joinParentAndName(parentDir, trimmedName) : ""),
     [parentDir, trimmedName],
   );
+  const locationDisplay = parentDirLoading
+    ? "Finding a default folder…"
+    : previewPath
+      ? abbreviateHome(previewPath)
+      : parentDir
+        ? abbreviateHome(parentDir)
+        : "Choose a folder";
 
   useEffect(() => {
     if (!previewPath || !validation.ok) {
@@ -150,7 +155,12 @@ export function CreateProjectForm({
       void browse({ partialPath: previewPath })
         .then((result) => {
           if (checkRequestRef.current !== requestId) return;
-          setPathExists(Boolean(result.exactDirectoryPath === previewPath));
+          setPathExists(
+            Boolean(
+              result.exactDirectoryPath &&
+                arePathsEqual(result.exactDirectoryPath, previewPath),
+            ),
+          );
         })
         .catch(() => {
           if (checkRequestRef.current !== requestId) return;
@@ -176,7 +186,7 @@ export function CreateProjectForm({
     setError(null);
     try {
       const selected = await pickDirectory({
-        title: "Choose parent directory",
+        title: "Choose where to create the project",
         defaultPath: parentDir || undefined,
       });
       if (selected) {
@@ -220,11 +230,11 @@ export function CreateProjectForm({
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: 16,
+        gap: 18,
         width: "100%",
       }}
     >
-      <Field label="PROJECT NAME">
+      <Field label="Name">
         <input
           autoFocus
           type="text"
@@ -239,54 +249,102 @@ export function CreateProjectForm({
           }}
           style={inputStyle}
           disabled={pending}
+          aria-label="Project name"
         />
         {showNameError && !validation.ok ? (
           <InlineHint tone="danger">{validation.reason}</InlineHint>
-        ) : null}
+        ) : (
+          <InlineHint tone="muted">This becomes the folder name.</InlineHint>
+        )}
       </Field>
 
       {machineName ? (
-        <InlineHint tone="muted">Target: {machineName}</InlineHint>
+        <InlineHint tone="muted">Creating on {machineName}</InlineHint>
       ) : null}
 
-      <Field label="PARENT DIRECTORY">
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="text"
-            value={parentDir}
-            onChange={(event) => setParentDir(event.target.value)}
-            placeholder={parentDirLoading ? "Loading…" : "Parent directory"}
+      <Field label="Location">
+        <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+          <button
+            type="button"
+            onClick={() => {
+              void handleChooseParent();
+            }}
+            disabled={pickerPending || pending || !pickDirectory}
+            aria-label="Change project location"
+            title={previewPath || parentDir || "Choose a folder"}
             style={{
               ...inputStyle,
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-start",
+              textAlign: "left",
+              cursor: pickDirectory ? "pointer" : "default",
               fontFamily: MONO_FONT,
               fontSize: 12,
               color: parentDir ? COLORS.textPrimary : COLORS.textMuted,
-              flex: 1,
+              overflow: "hidden",
             }}
-            title={parentDir}
-            disabled={pending || parentDirLoading}
-          />
+          >
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {locationDisplay}
+            </span>
+          </button>
           {pickDirectory ? (
             <button
               type="button"
-              style={outlineButton({ minWidth: 44 })}
+              style={{
+                ...outlineButton({ minWidth: 108, height: 40 }),
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+              }}
               disabled={pickerPending || pending}
               onClick={() => {
                 void handleChooseParent();
               }}
-              aria-label="Choose parent directory"
             >
               {pickerPending ? (
-                <CircleNotch size={12} weight="bold" className="animate-spin" />
+                <CircleNotch size={13} weight="bold" className="animate-spin" />
               ) : (
-                <FolderOpen size={12} weight="regular" />
+                <FolderOpen size={14} weight="regular" />
               )}
+              Change
             </button>
           ) : null}
         </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <input
+            type="text"
+            value={parentDir}
+            onChange={(event) => setParentDir(event.target.value)}
+            placeholder={parentDirLoading ? "Loading…" : "Parent folder"}
+            aria-label="Parent folder"
+            style={{
+              ...inputStyle,
+              height: 34,
+              fontFamily: MONO_FONT,
+              fontSize: 12,
+              color: parentDir ? COLORS.textPrimary : COLORS.textMuted,
+            }}
+            disabled={pending || parentDirLoading}
+          />
+          {pathExists ? (
+            <InlineHint tone="danger">A folder already exists at that path</InlineHint>
+          ) : (
+            <InlineHint tone="muted">
+              Default is fine — Change or edit the folder if you want it somewhere else.
+            </InlineHint>
+          )}
+        </div>
       </Field>
-
-      <PathPreview path={previewPath} exists={pathExists} />
 
       {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
 
@@ -311,6 +369,7 @@ export function CreateProjectForm({
           style={primaryButton({
             opacity: canSubmit ? 1 : 0.55,
             cursor: canSubmit ? "pointer" : "not-allowed",
+            minWidth: 108,
           })}
           onClick={() => {
             void handleSubmit();
@@ -323,7 +382,7 @@ export function CreateProjectForm({
               Creating…
             </>
           ) : (
-            "Create"
+            "Create and open"
           )}
         </button>
       </div>
@@ -339,65 +398,18 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <span
         style={{
           ...LABEL_STYLE,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+          fontSize: 11,
+          color: COLORS.textMuted,
         }}
       >
         {label}
       </span>
       {children}
-    </label>
-  );
-}
-
-function PathPreview({ path, exists }: { path: string; exists: boolean }) {
-  if (!path) return null;
-  return (
-    <div
-      style={cardStyle({
-        padding: "10px 12px",
-        borderRadius: 10,
-        background: exists
-          ? "color-mix(in srgb, var(--color-error) 8%, transparent)"
-          : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
-        borderColor: exists
-          ? "color-mix(in srgb, var(--color-error) 40%, var(--color-border))"
-          : COLORS.border,
-        backdropFilter: "none",
-        WebkitBackdropFilter: "none",
-      })}
-    >
-      <div style={{ ...LABEL_STYLE, marginBottom: 4 }}>WILL BE CREATED AT</div>
-      <div
-        style={{
-          fontFamily: MONO_FONT,
-          fontSize: 12,
-          color: exists ? COLORS.danger : COLORS.textPrimary,
-          wordBreak: "break-all",
-        }}
-      >
-        {path}
-      </div>
-      {exists ? (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            marginTop: 6,
-            fontSize: 11,
-            fontFamily: SANS_FONT,
-            color: COLORS.danger,
-          }}
-        >
-          <Warning size={12} weight="fill" />
-          Path already exists
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -415,8 +427,9 @@ function InlineHint({
         display: "inline-flex",
         alignItems: "center",
         gap: 6,
-        fontSize: 11,
+        fontSize: 12,
         fontFamily: SANS_FONT,
+        lineHeight: 1.4,
         color: tone === "danger" ? COLORS.danger : COLORS.textMuted,
       }}
     >

@@ -4,10 +4,9 @@ Two related but distinct flows:
 
 - **Onboarding** — the fastest path to a usable installation and a usable
   project. Covers registering the project with the runtime so every client
-  (desktop, `ade code`, iOS) sees it, detecting essentials, connecting AI
-  runtimes, GitHub, and Linear, and optionally attaching existing git
-  worktrees as lanes. The first-run project setup page is a single dashboard
-  of status cards rather than a blocking step-by-step wizard.
+  (desktop, `ade code`, iOS) sees it. Opening or creating a project lands on
+  Work immediately; AI runtimes, GitHub, and Linear live in Settings. There is
+  no blocking project setup dashboard.
 - **Settings** — long-lived configuration organized by tab. Project
   configuration persists to `.ade/ade.yaml` (shared) and `.ade/local.yaml`
   (local) through `projectConfigService`; machine-level desktop preferences
@@ -174,30 +173,12 @@ Renderer — onboarding:
   — projectless welcome and project-picker surface. It lists recent local and
   remote projects, opens or forgets entries, and launches project creation,
   clone, or folder selection before a project-bound route is available.
-- `apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`
-  — first-run and manual "re-run setup" dashboard. It renders the project
-  header, Finish / Skip actions, the AI runtimes band, essentials row,
-  GitHub / Linear cards, and existing-worktree import card.
-- `apps/desktop/src/renderer/components/onboarding/AiRuntimesBand.tsx`
-  — compact setup surface for Claude, Codex, Cursor, Factory Droid, and
-  OpenCode. Shows runtime readiness, install / sign-in commands, Cursor API-key
-  entry, helper toggles, and per-helper model pickers. Claude, Codex, and
-  OpenCode are backed by pinned tools, so the band also subscribes to the
-  agent-tools cache and renders a per-runtime downloading percent or a
-  `kind`-specific failure ("Not enough disk space to unpack", "No pinned build
-  for this platform") with a retry. Cursor and Droid are user-installed and keep
-  the plain detected / not-detected treatment. A cache `failed` never shows for
-  a runtime that resolved anyway — a user's own CLI on PATH satisfies it
-  without the cache.
-- `apps/desktop/src/renderer/components/onboarding/DevToolsRow.tsx`
-  — essential local tooling status for git and the terminal `ade` CLI.
-- `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,
-  `LinearCard.tsx` — setup cards for repository auth and Linear OAuth /
-  API-key auth. There is no worktree-import card: every git worktree in the
-  project already appears as a lane, so there is nothing to select.
+- `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
+  — name plus a first-class location row (default parent, Change folder,
+  editable path). Create opens Work; it does not show a success interstitial
+  or the removed project-setup dashboard.
 - `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
-  `RescanButton.tsx`, `onboardingTheme.ts` — shared setup-card controls and
-  brand/status styling tokens.
+  `RescanButton.tsx` — shared controls still used by Settings / help surfaces.
 - `apps/desktop/src/renderer/components/onboarding/DevToolsSection.tsx`
   — legacy full-size dev tool detection surface retained for existing routes
   that still mount it.

@@ -31,7 +31,7 @@ function resolveProjectRoot(): string {
     return path.resolve(process.cwd(), "..", "..");
   }
 
-  // Packaged fallback: keep state somewhere writable until onboarding picks a repo.
+  // Packaged fallback: keep state somewhere writable until a project is opened.
   return path.resolve(app.getPath("userData"), "ade-project");
 }
 
