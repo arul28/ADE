@@ -5156,7 +5156,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("offers fork for a Cursor source with honest context-seeding copy", async () => {
+  it("offers fork, defaults to it, and states both Cursor caveats for a Cursor source", async () => {
     const { bothId } = seedCursorRuntimeModelCatalog();
     const session = buildSession("session-1", {
       provider: "cursor",
@@ -5172,17 +5172,35 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
 
+    // Fork is offered for every source now — Cursor forks by replaying the
+    // full transcript into a new chat rather than via a native provider fork.
     const forkTab = await screen.findByRole("button", { name: /^Fork$/ });
+    const briefTab = await screen.findByRole("button", { name: /^Brief$/ });
     expect((forkTab as HTMLButtonElement).disabled).toBe(false);
     expect(forkTab.getAttribute("aria-pressed")).toBe("true");
-    // Cursor's fork is ADE-side context seeding, and the copy says so.
-    expect(screen.getByText(/Cursor threads can.t be resumed twice/i)).toBeTruthy();
+    expect(briefTab.getAttribute("aria-pressed")).toBe("false");
     expect(screen.queryByText(/can.t fork chat history/i)).toBeNull();
+    // Both caveats belong here: Cursor's same-provider fork is ADE-side context
+    // seeding, and any other model gets the verbatim transcript replay.
+    expect(screen.getByText(/Cursor threads can.t be resumed twice/i)).toBeTruthy();
+    expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Fork chat" })).toBeTruthy();
   });
 
-  it("constrains the fork model picker to the source provider", async () => {
+  it("lets fork target an out-of-family model and forks it as a full-transcript replay", async () => {
     const session = buildSession("session-1", { status: "idle" }); // codex source
-    installAdeMocks({ includeClaudeModel: true, sessions: [session] });
+    const { handoff } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions: [session],
+      handoffResult: {
+        session: buildCreatedSession("session-2", {
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-5",
+        }),
+        usedFallbackSummary: false,
+      },
+    });
 
     renderPane(session);
 
@@ -5190,13 +5208,28 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
 
-    // Fork tab is active for a codex source; its picker excludes cross-provider models.
-    const localViewConstrained = await screen.findByTestId("handoff-local");
-    fireEvent.click(within(localViewConstrained).getByRole("button", { name: /^Select model/ }));
-    const anthropicTab = screen.queryByRole("tab", { name: /^Anthropic$/i });
-    if (anthropicTab) fireEvent.click(anthropicTab);
-    const claudeForkOptions = screen.queryAllByRole("option", { name: /Claude/i });
-    expect(claudeForkOptions.some((option) => option.getAttribute("aria-disabled") !== "true")).toBe(false);
+    // Fork is the default tab, and its picker is no longer constrained to the
+    // source provider's own family — an Anthropic target is selectable.
+    const localViewCrossFamily = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localViewCrossFamily).getByRole("button", { name: /^Select model/ }));
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+    // The cross-family path is disclosed as a verbatim replay, truncated only
+    // when the transcript overflows the target model's context window.
+    expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
+    expect(screen.getByText(/Oldest turns drop only if the transcript exceeds the target context window/i)).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      }));
+    });
   });
 
   it("routes a brief handoff into a newly auto-created lane", async () => {

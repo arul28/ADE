@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import { resolveHomeDir } from "./discoveryUtils";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
@@ -32,11 +32,17 @@ export type CommandResult = {
   error?: string;
 };
 
+/**
+ * Handle enumeration shells out to `lsof`/`handle.exe`/`powershell.exe`, which
+ * can take seconds on a busy machine. Every runner here is awaited so the
+ * Electron main thread never blocks on one — callers may still inject a
+ * synchronous implementation in tests.
+ */
 export type RunCommand = (
   command: string,
   args: string[],
   options?: { timeoutMs?: number },
-) => CommandResult;
+) => CommandResult | Promise<CommandResult>;
 
 const UUID_IN_PATH = /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu;
 const CLI_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
@@ -44,28 +50,39 @@ const HANDLE_CAPTURE_DELAYS_MS = [400, 1_200, 3_000, 8_000] as const;
 
 export const PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS: readonly number[] = HANDLE_CAPTURE_DELAYS_MS;
 
-function defaultRunCommand(command: string, args: string[], options?: { timeoutMs?: number }): CommandResult {
-  try {
-    const result = spawnSync(command, args, {
-      encoding: "utf8",
-      timeout: options?.timeoutMs ?? 4_000,
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true,
-    });
-    return {
-      status: result.status,
-      stdout: String(result.stdout ?? ""),
-      stderr: String(result.stderr ?? ""),
-      ...(result.error ? { error: result.error.message } : {}),
-    };
-  } catch (error) {
-    return {
-      status: null,
-      stdout: "",
-      stderr: "",
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
+function defaultRunCommand(command: string, args: string[], options?: { timeoutMs?: number }): Promise<CommandResult> {
+  return new Promise<CommandResult>((resolve) => {
+    try {
+      execFile(
+        command,
+        args,
+        {
+          encoding: "utf8",
+          timeout: options?.timeoutMs ?? 4_000,
+          maxBuffer: 4 * 1024 * 1024,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          const status = error == null
+            ? 0
+            : (typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null);
+          resolve({
+            status,
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr ?? ""),
+            ...(error ? { error: error.message } : {}),
+          });
+        },
+      );
+    } catch (error) {
+      resolve({
+        status: null,
+        stdout: "",
+        stderr: "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
 }
 
 export function providerSessionRoots(args: {
@@ -161,11 +178,11 @@ function uniquePositivePids(pids: Iterable<number>): number[] {
   return [...seen];
 }
 
-export function collectDescendantPids(
+export async function collectDescendantPids(
   rootPids: readonly number[],
   runCommand: RunCommand = defaultRunCommand,
   platform: NodeJS.Platform = process.platform,
-): number[] {
+): Promise<number[]> {
   const roots = uniquePositivePids(rootPids);
   const found = new Set(roots);
   const queue = [...roots];
@@ -173,8 +190,8 @@ export function collectDescendantPids(
     const parent = queue.pop();
     if (parent == null) continue;
     const children = platform === "win32"
-      ? listWindowsChildPids(parent, runCommand)
-      : listPosixChildPids(parent, runCommand);
+      ? await listWindowsChildPids(parent, runCommand)
+      : await listPosixChildPids(parent, runCommand);
     for (const child of children) {
       if (found.has(child)) continue;
       found.add(child);
@@ -184,8 +201,8 @@ export function collectDescendantPids(
   return [...found];
 }
 
-function listPosixChildPids(parent: number, runCommand: RunCommand): number[] {
-  const result = runCommand("pgrep", ["-P", String(parent)], { timeoutMs: 2_000 });
+async function listPosixChildPids(parent: number, runCommand: RunCommand): Promise<number[]> {
+  const result = await runCommand("pgrep", ["-P", String(parent)], { timeoutMs: 2_000 });
   if (result.status !== 0) return [];
   return result.stdout
     .split(/\s+/u)
@@ -193,8 +210,8 @@ function listPosixChildPids(parent: number, runCommand: RunCommand): number[] {
     .filter((pid) => Number.isInteger(pid) && pid > 0);
 }
 
-function listWindowsChildPids(parent: number, runCommand: RunCommand): number[] {
-  const result = runCommand(
+async function listWindowsChildPids(parent: number, runCommand: RunCommand): Promise<number[]> {
+  const result = await runCommand(
     "powershell.exe",
     [
       "-NoLogo",
@@ -212,12 +229,12 @@ function listWindowsChildPids(parent: number, runCommand: RunCommand): number[] 
     .filter((pid) => Number.isInteger(pid) && pid > 0);
 }
 
-function listProviderCliPids(
+async function listProviderCliPids(
   runCommand: RunCommand,
   platform: NodeJS.Platform,
-): number[] {
+): Promise<number[]> {
   if (platform === "win32") {
-    const result = runCommand(
+    const result = await runCommand(
       "powershell.exe",
       [
         "-NoLogo",
@@ -239,7 +256,7 @@ function listProviderCliPids(
     }
     return uniquePositivePids(pids);
   }
-  const result = runCommand("ps", ["-axo", "pid=,args="], { timeoutMs: 3_000 });
+  const result = await runCommand("ps", ["-axo", "pid=,args="], { timeoutMs: 3_000 });
   if (result.status !== 0) return [];
   const pids: number[] = [];
   for (const line of result.stdout.split(/\n/u)) {
@@ -259,14 +276,14 @@ function isProviderCliCommandLine(lowerArgs: string): boolean {
     && (lowerArgs.includes(".pi") || lowerArgs.includes("coding-agent") || lowerArgs.includes("--session"));
 }
 
-function listOpenFilesForPids(
+async function listOpenFilesForPids(
   pids: readonly number[],
   availability: Extract<HandleInspectionAvailability, { available: true }>,
   runCommand: RunCommand,
-): Array<{ pid: number; filePath: string }> {
+): Promise<Array<{ pid: number; filePath: string }>> {
   if (pids.length === 0) return [];
   if (availability.method === "lsof") {
-    const result = runCommand("lsof", ["-nP", "-Fn", "-a", "-p", pids.join(",")], { timeoutMs: 6_000 });
+    const result = await runCommand("lsof", ["-nP", "-Fn", "-a", "-p", pids.join(",")], { timeoutMs: 6_000 });
     const files: Array<{ pid: number; filePath: string }> = [];
     let currentPid: number | null = null;
     for (const line of result.stdout.split(/\n/u)) {
@@ -283,7 +300,7 @@ function listOpenFilesForPids(
   }
   const files: Array<{ pid: number; filePath: string }> = [];
   for (const pid of pids) {
-    const result = runCommand("handle.exe", ["-accepteula", "-nobanner", "-p", String(pid)], { timeoutMs: 4_000 });
+    const result = await runCommand("handle.exe", ["-accepteula", "-nobanner", "-p", String(pid)], { timeoutMs: 4_000 });
     for (const filePath of parseHandleExePaths(result.stdout)) {
       files.push({ pid, filePath });
     }
@@ -291,12 +308,12 @@ function listOpenFilesForPids(
   return files;
 }
 
-function resolveAvailability(
+async function resolveAvailability(
   runCommand: RunCommand,
   platform: NodeJS.Platform,
-): HandleInspectionAvailability {
+): Promise<HandleInspectionAvailability> {
   if (platform === "win32") {
-    const probe = runCommand("handle.exe", ["-accepteula", "-nobanner", "-?"], { timeoutMs: 2_000 });
+    const probe = await runCommand("handle.exe", ["-accepteula", "-nobanner", "-?"], { timeoutMs: 2_000 });
     if (probe.error && /enoent|not found|is not recognized/i.test(probe.error)) {
       return { available: false, reason: "windows_handle_enumeration_unavailable" };
     }
@@ -305,7 +322,7 @@ function resolveAvailability(
     }
     return { available: true, method: "handle.exe" };
   }
-  const probe = runCommand("lsof", ["-v"], { timeoutMs: 2_000 });
+  const probe = await runCommand("lsof", ["-v"], { timeoutMs: 2_000 });
   if (probe.error && /enoent|not found/i.test(probe.error)) {
     return { available: false, reason: "lsof_unavailable" };
   }
@@ -315,28 +332,28 @@ function resolveAvailability(
   return { available: true, method: "lsof" };
 }
 
-export function inspectLiveProviderSessions(args: {
+export async function inspectLiveProviderSessions(args: {
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
   extraPids?: readonly number[];
   runCommand?: RunCommand;
   platform?: NodeJS.Platform;
-}): LiveProviderSessionIndex {
+}): Promise<LiveProviderSessionIndex> {
   const runCommand = args.runCommand ?? defaultRunCommand;
   const platform = args.platform ?? process.platform;
-  const availability = resolveAvailability(runCommand, platform);
+  const availability = await resolveAvailability(runCommand, platform);
   const byKey = new Map<string, ProviderSessionHandle[]>();
   if (!availability.available) {
     return { availability, byKey };
   }
   const roots = providerSessionRoots({ homeDir: args.homeDir, env: args.env });
-  const providerPids = listProviderCliPids(runCommand, platform);
-  const treePids = collectDescendantPids(
+  const providerPids = await listProviderCliPids(runCommand, platform);
+  const treePids = await collectDescendantPids(
     [...providerPids, ...(args.extraPids ?? [])],
     runCommand,
     platform,
   );
-  for (const { pid, filePath } of listOpenFilesForPids(treePids, availability, runCommand)) {
+  for (const { pid, filePath } of await listOpenFilesForPids(treePids, availability, runCommand)) {
     const parsed = parseProviderSessionFromPath(filePath, roots);
     if (!parsed) continue;
     const key = `${parsed.provider}:${parsed.sessionId}`;
@@ -361,20 +378,20 @@ export function handlesForSession(
   return index.byKey.get(`${provider}:${sessionId}`) ?? [];
 }
 
-export function captureProviderSessionFromPidTree(args: {
+export async function captureProviderSessionFromPidTree(args: {
   rootPid: number;
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
   runCommand?: RunCommand;
   platform?: NodeJS.Platform;
-}): ProviderSessionHandle | null {
+}): Promise<ProviderSessionHandle | null> {
   const runCommand = args.runCommand ?? defaultRunCommand;
   const platform = args.platform ?? process.platform;
-  const availability = resolveAvailability(runCommand, platform);
+  const availability = await resolveAvailability(runCommand, platform);
   if (!availability.available) return null;
-  const pids = collectDescendantPids([args.rootPid], runCommand, platform);
+  const pids = await collectDescendantPids([args.rootPid], runCommand, platform);
   const roots = providerSessionRoots({ homeDir: args.homeDir, env: args.env });
-  for (const { pid, filePath } of listOpenFilesForPids(pids, availability, runCommand)) {
+  for (const { pid, filePath } of await listOpenFilesForPids(pids, availability, runCommand)) {
     const parsed = parseProviderSessionFromPath(filePath, roots);
     if (!parsed) continue;
     return {

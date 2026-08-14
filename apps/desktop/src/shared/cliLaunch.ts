@@ -460,33 +460,77 @@ export function shellCommandLineArgIndex(args: string[]): number {
   return commandIndex < args.length ? commandIndex : -1;
 }
 
-// Insert `--plugin-dir <root>` right after the `claude` token of a shell
-// command line, leaving env-var prefixes and the caller's own flags intact.
-export function withClaudePluginInCommandLine(commandLine: string, pluginRoot: string): string {
-  if (!commandLine?.trim()) return commandLine;
+/**
+ * Locate the `claude` token of a shell command line, allowing leading
+ * `KEY=value` env prefixes, and return the args that follow it.
+ */
+export function claudeInvocationInCommandLine(
+  commandLine: string,
+): { claudeIndex: number; claudeArgs: string[] } | null {
+  if (!commandLine?.trim()) return null;
   let commandArgs: string[] = [];
   try {
     commandArgs = parseCommandLine(commandLine);
   } catch {
     // Keep malformed or unsupported shell input intact.
-    return commandLine;
+    return null;
   }
   const claudeIndex = commandArgs.findIndex((arg, index) =>
     arg === "claude"
     && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
   );
-  const claudeArgs = claudeIndex >= 0 ? commandArgs.slice(claudeIndex + 1) : [];
-  const hasPluginRoot = claudeArgs.some((arg, index) =>
-    (arg === "--plugin-dir" && claudeArgs[index + 1] === pluginRoot)
-    || arg === `--plugin-dir=${pluginRoot}`,
-  );
-  if (claudeIndex < 0 || hasPluginRoot) {
-    return commandLine;
-  }
+  if (claudeIndex < 0) return null;
+  return { claudeIndex, claudeArgs: commandArgs.slice(claudeIndex + 1) };
+}
+
+function withArgsAfterClaudeToken(commandLine: string, claudeIndex: number, extraArgs: string[]): string {
   const claudeSpan = shellWordSpans(commandLine)[claudeIndex];
   if (!claudeSpan) return commandLine;
-  const pluginArgs = commandArrayToLine(["--plugin-dir", pluginRoot]);
-  return `${commandLine.slice(0, claudeSpan.end)} ${pluginArgs}${commandLine.slice(claudeSpan.end)}`;
+  return `${commandLine.slice(0, claudeSpan.end)} ${commandArrayToLine(extraArgs)}${commandLine.slice(claudeSpan.end)}`;
+}
+
+// Insert `--plugin-dir <root>` right after the `claude` token of a shell
+// command line, leaving env-var prefixes and the caller's own flags intact.
+export function withClaudePluginInCommandLine(commandLine: string, pluginRoot: string): string {
+  const invocation = claudeInvocationInCommandLine(commandLine);
+  if (!invocation) return commandLine;
+  const hasPluginRoot = invocation.claudeArgs.some((arg, index) =>
+    (arg === "--plugin-dir" && invocation.claudeArgs[index + 1] === pluginRoot)
+    || arg === `--plugin-dir=${pluginRoot}`,
+  );
+  if (hasPluginRoot) return commandLine;
+  return withArgsAfterClaudeToken(commandLine, invocation.claudeIndex, ["--plugin-dir", pluginRoot]);
+}
+
+// Insert `--session-id <uuid>` right after the `claude` token of a shell
+// command line. Same placement rule as the plugin flag: prepending it to the
+// wrapping shell's own argv would make bash die with "invalid option".
+export function withClaudeSessionIdInCommandLine(commandLine: string, sessionId: string): string {
+  const invocation = claudeInvocationInCommandLine(commandLine);
+  if (!invocation) return commandLine;
+  if (claudeArgsCarrySessionId(invocation.claudeArgs)) return commandLine;
+  return withArgsAfterClaudeToken(commandLine, invocation.claudeIndex, ["--session-id", sessionId]);
+}
+
+function claudeArgsCarrySessionId(args: readonly string[]): boolean {
+  return args.some((arg) => arg === "--session-id" || arg.startsWith("--session-id="));
+}
+
+/**
+ * `claude --session-id <uuid>` starts a NEW conversation with that id, so it
+ * is mutually exclusive with `--resume`/`--continue`: assigning one to a
+ * continuation launch would either be rejected by the CLI or silently start a
+ * fresh session in place of the one the user asked to resume.
+ */
+export function claudeArgsResumeExistingSession(args: readonly string[]): boolean {
+  return args.some((arg) =>
+    arg === "--resume"
+    || arg === "-r"
+    || arg === "--continue"
+    || arg === "-c"
+    || arg.startsWith("--resume=")
+    || arg.startsWith("--continue="),
+  );
 }
 
 export function defaultTrackedCliStartupCommand(provider: CliProvider): string {

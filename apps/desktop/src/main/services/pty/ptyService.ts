@@ -103,6 +103,8 @@ import {
   buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
+  claudeArgsResumeExistingSession,
+  claudeInvocationInCommandLine,
   isClaudeBinaryCommand,
   isLaunchProfile,
   sanitizeTrackedCliPromptSeed,
@@ -111,6 +113,7 @@ import {
   type TrackedCliLaunchCommand,
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
+  withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
@@ -749,6 +752,8 @@ type PtyEntry = {
   runtimeWindowTitleScanBuffer: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
+  /** Retry timer for the open-handle resume-target capture; cleared on close. */
+  sessionHandleCaptureTimer: ReturnType<typeof setTimeout> | null;
   startupTimer: ReturnType<typeof setTimeout> | null;
   initialInputTimer: ReturnType<typeof setTimeout> | null;
   /** Cancels a readiness wait that is not a plain timer (Pi's quiescence wait). */
@@ -1373,20 +1378,62 @@ function extractClaudeSessionIdFromArgs(args: readonly string[]): string | null 
   return null;
 }
 
+/**
+ * Give a fresh Claude launch a deterministic `--session-id` so ADE knows the
+ * provider session id without waiting for the transcript to appear.
+ *
+ * Placement follows the same rule as the bundled-plugin flag: `args` is the
+ * argv of whatever is actually spawned, which for resume/reattach launches is
+ * `/bin/bash --noprofile --norc -lc "<command line>"`. Prepending a Claude
+ * flag to a shell's argv makes bash exit 2 with "invalid option", so the flag
+ * goes into the -lc command line instead. Continuation launches
+ * (`--resume`/`--continue`) get no assignment at all — `--session-id` starts a
+ * new conversation and cannot be combined with them.
+ */
 function assignClaudeLaunchSessionId(args: {
+  command: string | null;
   startupCommand: string;
   commandArgs: string[];
-}): { startupCommand: string; commandArgs: string[]; assignedId: string } {
+}): { startupCommand: string; commandArgs: string[]; assignedId: string | null } {
+  const shellCommandLine = isClaudeBinaryCommand(args.command) || !args.command?.trim()
+    ? null
+    : args.commandArgs[shellCommandLineArgIndex(args.commandArgs)] ?? null;
   const existing = extractClaudeSessionIdFromArgs(args.commandArgs)
+    ?? extractClaudeSessionIdFromCommand(shellCommandLine ?? "")
     ?? extractClaudeSessionIdFromCommand(args.startupCommand);
-  const assignedId = existing || randomUUID();
   if (existing) {
-    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId };
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: existing };
   }
-  const commandArgs = ["--session-id", assignedId, ...args.commandArgs];
-  const startupCommand = args.startupCommand.trim()
-    ? args.startupCommand.replace(/^(claude(?:\.exe)?)\b/iu, `$1 --session-id ${assignedId}`)
-    : `claude --session-id ${assignedId}`;
+  const resumesExistingSession = claudeArgsResumeExistingSession(args.commandArgs)
+    || claudeArgsResumeExistingSession(claudeInvocationInCommandLine(shellCommandLine ?? "")?.claudeArgs ?? [])
+    || claudeArgsResumeExistingSession(claudeInvocationInCommandLine(args.startupCommand)?.claudeArgs ?? []);
+  if (resumesExistingSession) {
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+  }
+
+  const assignedId = randomUUID();
+  let commandArgs = args.commandArgs;
+  if (shellCommandLine != null) {
+    const index = shellCommandLineArgIndex(args.commandArgs);
+    const rewritten = withClaudeSessionIdInCommandLine(shellCommandLine, assignedId);
+    if (rewritten === shellCommandLine) {
+      // The wrapped command line does not invoke `claude`; leave it alone
+      // rather than smuggling the flag into someone else's argv.
+      return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+    }
+    commandArgs = args.commandArgs.slice();
+    commandArgs[index] = rewritten;
+  } else if (args.command?.trim()) {
+    commandArgs = ["--session-id", assignedId, ...args.commandArgs];
+  }
+
+  let startupCommand = args.startupCommand;
+  if (/^claude(?:\.exe)?\b/iu.test(args.startupCommand.trim())) {
+    startupCommand = withClaudeSessionIdInCommandLine(args.startupCommand, assignedId);
+  } else if (!args.startupCommand.trim() && !args.command?.trim()) {
+    startupCommand = `claude --session-id ${assignedId}`;
+    commandArgs = ["--session-id", assignedId, ...args.commandArgs];
+  }
   return { startupCommand, commandArgs, assignedId };
 }
 
@@ -3481,15 +3528,22 @@ export function createPtyService({
     }
   };
 
+  // Provider CLIs only open their transcript once they have booted, so the
+  // capture polls on a decaying schedule. Every attempt is deferred and the
+  // enumeration itself is async: shelling out to lsof/handle.exe on the main
+  // thread would stall the whole app, and a live PTY that is being torn down
+  // must never trigger another probe (closeEntry clears the timer).
   const scheduleProviderSessionHandleCapture = (entry: PtyEntry): void => {
     let attempt = 0;
-    const tick = (): void => {
+    const tick = async (): Promise<void> => {
+      entry.sessionHandleCaptureTimer = null;
       if (entry.disposed) return;
       const session = sessionService.get(entry.sessionId);
       if (sanitizeResumeTargetId(session?.resumeMetadata?.targetId ?? null)) return;
       const pid = entry.pty.pid;
       if (typeof pid === "number" && pid > 0) {
-        const captured = captureProviderSessionFromPidTree({ rootPid: pid });
+        const captured = await captureProviderSessionFromPidTree({ rootPid: pid }).catch(() => null);
+        if (entry.disposed) return;
         if (captured) {
           let resumeCmd: string;
           switch (captured.provider) {
@@ -3533,12 +3587,17 @@ export function createPtyService({
         });
         return;
       }
+      scheduleNextAttempt();
+    };
+    const scheduleNextAttempt = (): void => {
+      if (entry.disposed) return;
       const delayMs = PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS[attempt]!;
       attempt += 1;
-      const timer = setTimeout(tick, delayMs);
+      const timer = setTimeout(() => { void tick(); }, delayMs);
       timer.unref?.();
+      entry.sessionHandleCaptureTimer = timer;
     };
-    tick();
+    scheduleNextAttempt();
   };
 
   const tryBackfillResumeTarget = async (
@@ -4053,6 +4112,10 @@ export function createPtyService({
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
       entry.aiTitleTimer = null;
+    }
+    if (entry.sessionHandleCaptureTimer) {
+      clearTimeout(entry.sessionHandleCaptureTimer);
+      entry.sessionHandleCaptureTimer = null;
     }
     if (entry.startupTimer) {
       clearTimeout(entry.startupTimer);
@@ -5454,6 +5517,7 @@ export function createPtyService({
         && !existingSession
       ) {
         const assigned = assignClaudeLaunchSessionId({
+          command: typeof effectiveArgs.command === "string" ? effectiveArgs.command : null,
           startupCommand: requestedStartupCommandRaw,
           commandArgs: Array.isArray(effectiveArgs.args)
             ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
@@ -6066,6 +6130,7 @@ export function createPtyService({
         recentOutputTail: "",
         runtimeWindowTitleScanBuffer: "",
         aiTitleTimer: null,
+        sessionHandleCaptureTimer: null,
         startupTimer: null,
         initialInputTimer: null,
         initialInputCancel: null,

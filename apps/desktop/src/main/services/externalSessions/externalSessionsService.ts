@@ -120,7 +120,7 @@ type ExternalSessionsServiceArgs = {
   /** Test seam for process/handle inspection. */
   inspectLiveSessions?: (args: {
     extraPids?: readonly number[];
-  }) => LiveProviderSessionIndex;
+  }) => LiveProviderSessionIndex | Promise<LiveProviderSessionIndex>;
   runHandleCommand?: RunCommand;
 };
 
@@ -680,13 +680,13 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       args.chatSessionsDir ?? resolveAdeLayout(args.projectRoot).chatSessionsDir,
     );
     const extraPids = args.ptyService.listLiveTrackedCliPids?.() ?? [];
-    const liveHandles = args.inspectLiveSessions?.({ extraPids })
+    const liveHandles = await (args.inspectLiveSessions?.({ extraPids })
       ?? inspectLiveProviderSessions({
         homeDir: args.homeDir,
         env: args.env,
         extraPids,
         runCommand: args.runHandleCommand,
-      });
+      }));
     if (!liveHandles.availability.available) {
       args.logger.warn?.("external_sessions.handle_inspection_unavailable", {
         reason: liveHandles.availability.reason,
@@ -778,13 +778,13 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       logger: args.logger,
     });
     if (!session || session.id !== sessionId) return null;
-    const liveHandles = args.inspectLiveSessions?.({ extraPids: args.ptyService.listLiveTrackedCliPids?.() ?? [] })
+    const liveHandles = await (args.inspectLiveSessions?.({ extraPids: args.ptyService.listLiveTrackedCliPids?.() ?? [] })
       ?? inspectLiveProviderSessions({
         homeDir: args.homeDir,
         env: args.env,
         extraPids: args.ptyService.listLiveTrackedCliPids?.() ?? [],
         runCommand: args.runHandleCommand,
-      });
+      }));
     const liveClaudeIds = provider === "claude"
       ? liveClaudeSessionIds({ homeDir: args.homeDir, env: args.env })
       : null;
