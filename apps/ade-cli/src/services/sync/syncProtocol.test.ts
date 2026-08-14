@@ -24,6 +24,9 @@ import {
   SyncProtocolVersionMismatchError,
   SYNC_PROTOCOL_MIN_SUPPORTED,
   SYNC_PROTOCOL_VERSION,
+  DEFAULT_SYNC_HOST_PORT,
+  SYNC_HOST_MAX_PORT,
+  buildSyncHostPortCandidates,
 } from "./syncProtocol";
 
 // Deterministic xorshift PRNG — gzip cannot compress its output, so payloads
@@ -382,5 +385,24 @@ describe("parseSyncEnvelope", () => {
     });
 
     expect(() => parseSyncEnvelope(encoded)).toThrow(/Failed to decode gzip sync envelope oversized-inflate/);
+  });
+});
+
+describe("buildSyncHostPortCandidates", () => {
+  it("always probes 8787 first, even when lastPort is 8788", () => {
+    const candidates = buildSyncHostPortCandidates(8788);
+    expect(candidates[0]).toBe(DEFAULT_SYNC_HOST_PORT);
+    expect(candidates[1]).toBe(8788);
+    expect(candidates[2]).toBe(8789);
+    expect(candidates.at(-1)).toBe(SYNC_HOST_MAX_PORT);
+    expect(new Set(candidates).size).toBe(candidates.length);
+    expect(candidates).toHaveLength(SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1);
+  });
+
+  it("does not prefer a lastPort outside the sync range", () => {
+    expect(buildSyncHostPortCandidates(443)[0]).toBe(DEFAULT_SYNC_HOST_PORT);
+    expect(buildSyncHostPortCandidates(443)).not.toContain(443);
+    expect(buildSyncHostPortCandidates(null)[0]).toBe(DEFAULT_SYNC_HOST_PORT);
+    expect(buildSyncHostPortCandidates(undefined)[0]).toBe(DEFAULT_SYNC_HOST_PORT);
   });
 });

@@ -189,6 +189,12 @@ export type AgentChatSpawnCompletion = {
   childTurnId?: string;
   status: "completed" | "failed" | "stopped";
   summary?: string;
+  /**
+   * Human messages the user sent to the child during this turn. Present on
+   * subagent wakes so the parent can see the two-drivers overlap before it
+   * follows up. Omitted when the count is zero.
+   */
+  humanMessageCount?: number;
 };
 
 export type AgentChatSpawnDispatchMetadata = {
@@ -273,6 +279,10 @@ export type AgentChatNoticeDetail = {
    */
   hasInlineCard?: boolean;
   spawnCompletion?: AgentChatSpawnCompletion;
+  spawnTakeover?: {
+    childSessionId: string;
+    childTitle: string;
+  };
   spawnCompletionDeliveryFailure?: {
     childTurnId: string;
     parentSessionId: string;
@@ -1313,6 +1323,8 @@ export type AgentChatEvent =
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
       cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+      spawnKind?: AgentChatSpawnKind;
+      subagentTakeoverPromptShownAt?: string | null;
       // Accept turnId for uniformity with other variants — ignored by handlers.
       turnId?: string;
     };
@@ -1413,6 +1425,11 @@ export type OrchestrationSessionFields = {
   orchestrationRole?: OrchestrationRole;
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
+  /**
+   * When the takeover banner was dismissed or Take over was chosen. Brain-side
+   * so desktop, iOS, and ADE Code do not re-show it. Absent means not shown yet.
+   */
+  subagentTakeoverPromptShownAt?: string | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -2807,11 +2824,23 @@ export type AgentChatArchiveArgs = {
   sessionId: string;
 };
 
+export type AgentChatSetSpawnKindArgs = {
+  sessionId: string;
+  spawnKind: AgentChatSpawnKind;
+};
+
+export type AgentChatDismissSubagentTakeoverPromptArgs = {
+  sessionId: string;
+};
+
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
   title?: string | null;
   tag?: string | null;
   manuallyNamed?: boolean;
+  spawnKind?: AgentChatSpawnKind;
+  /** Persist that the takeover banner was shown and answered or dismissed. */
+  subagentTakeoverPromptShown?: boolean;
   modelId?: ModelId;
   reasoningEffort?: string | null;
   fastMode?: boolean;

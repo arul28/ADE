@@ -3,60 +3,58 @@ import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatEventMetadata } f
 /**
  * Who a spawned child chat is currently working for.
  *
- * A subagent completion wakes its parent when the parent still owns the child's
- * mission, not only when the parent started the turn that happened to finish.
- * Long missions are mostly driven by the child's own scheduled wakeups — an ADE
- * ship loop polling CI, say — so strict per-turn attribution left the parent
- * unnotified on the turn that actually delivered the result.
+ * Wake vs quiet is decided by the child's persisted `spawnKind`, not by the
+ * latest human message. A subagent always wakes its parent; a peer never does.
+ * Taking over (demote to peer) is an explicit user action. A human message
+ * while the child stays a subagent does not close the report channel — the
+ * next wake names how many human messages landed in that turn so the parent
+ * can read the transcript before following up.
  *
- * Ownership is the most recent *directive* the child received. A directive is
- * someone assigning work: a human message, or a message the host stamped as
- * parent-dispatched. Everything else continues whatever mission is already in
- * flight and must not reassign it:
+ * `isHumanChildMessage` counts those human messages. Parent dispatches,
+ * scheduled wakes, relays, host continuations, and any orchestration origin
+ * are not human messages.
  *
- * - `scheduledWake` — the child's own durable scheduler firing.
- * - `spawnCompletion` — a result returning from the child's own grandchild.
- * - `agentRelay` — another bound agent talking to the child: its own grandchild
- *   reporting in (which ADE's spawn guidance tells children to do), a sibling
- *   coordinating, or the child messaging itself. None of them own the mission,
- *   so none of them may take it from the parent.
- * - `orchestrationOrigin` with any `intent` other than `"directive"` — status,
- *   diff notices, questions and cancellations inside an orchestration run.
- * - `hostContinuation` — ADE prompting the child to resume/repair its own work.
- * - `kind: "continuity_recovery"` — the same thing on transcripts written
- *   before `hostContinuation` existed. Current writers set both.
- * - `deliveryState: "queued"` — not yet delivered, and the queued copy is
- *   lossy (the queue path strips `scheduledWake`). The delivered twin carries
- *   the authoritative metadata; a queued message that is never delivered was
- *   never acted on and should not take ownership.
- *
- * A handoff prompt (`kind: "handoff"` / `"cross_machine_handoff"`) *is* a
- * directive: it carries a human's continuation intent into the session.
- *
- * Every input here is persisted host-authored state. `spawnDispatch` is stamped
- * at the ADE RPC edge from the caller's bound session and the target's
- * persisted parent, with caller-supplied values deleted first, so a child
- * cannot manufacture ownership of itself.
+ * Every host-authored marker is persisted host state. `spawnDispatch` is
+ * stamped at the ADE RPC edge from the caller's bound session and the
+ * target's persisted parent, with caller-supplied values deleted first, so a
+ * child cannot manufacture ownership of itself.
  */
-export const isMissionDirective = (
+export const isHumanChildMessage = (
   event: Extract<AgentChatEvent, { type: "user_message" }>,
 ): boolean => {
   if (event.deliveryState === "queued") return false;
   const metadata: AgentChatEventMetadata | null | undefined = event.metadata;
   if (!metadata) return true;
+  if (metadata.spawnDispatch) return false;
   if (NON_DIRECTIVE_METADATA_KEYS.some((key) => metadata[key])) return false;
   if (metadata.kind === "continuity_recovery") return false;
-  // Orchestration pings: a worker reporting status, a diff notice, a question,
-  // or a cancellation is coordination inside a run. Only an explicit directive
-  // assigns work.
-  const orchestrationIntent = (metadata.orchestrationOrigin as { intent?: unknown } | undefined)?.intent;
-  if (orchestrationIntent != null && orchestrationIntent !== "directive") return false;
+  if (metadata.orchestrationOrigin) return false;
   return true;
 };
 
-/** Host-authored markers that say "this message continues the mission" rather
- * than "this message assigns one". The single source for both the predicate
- * above and the untrusted-caller strip below. */
+export const countHumanChildMessagesForTurn = (
+  history: readonly AgentChatEventEnvelope[],
+  turnId: string,
+): number => {
+  let count = 0;
+  for (const envelope of history) {
+    const event = envelope.event;
+    if (event?.type !== "user_message") continue;
+    if (event.turnId !== turnId) continue;
+    if (!isHumanChildMessage(event)) continue;
+    count += 1;
+  }
+  return count;
+};
+
+export const formatHumanChildMessageAnnotation = (count: number): string | null => {
+  if (count <= 0) return null;
+  if (count === 1) return "The user also sent 1 message to this chat.";
+  return `The user also sent ${count} messages to this chat.`;
+};
+
+/** Host-authored markers that are not human messages. Shared with the
+ * untrusted-caller strip below. */
 const NON_DIRECTIVE_METADATA_KEYS = [
   "scheduledWake",
   "spawnCompletion",
@@ -73,63 +71,12 @@ const NON_DIRECTIVE_METADATA_KEYS = [
 export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   "spawnDispatch",
   // Written in-process by the orchestration service, never accepted from a
-  // chat caller — its `intent` also feeds the directive test above.
+  // chat caller. Any orchestration origin is excluded from the human-message
+  // count above.
   "orchestrationOrigin",
   ...NON_DIRECTIVE_METADATA_KEYS,
 ] as const;
 
 export const stripHostAuthoredMessageProvenance = (metadata: Record<string, unknown>): void => {
   for (const key of HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS) delete metadata[key];
-};
-
-const lastDirective = (
-  history: readonly AgentChatEventEnvelope[],
-): Extract<AgentChatEvent, { type: "user_message" }> | null => {
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const event = history[index]?.event;
-    if (event?.type !== "user_message" || !isMissionDirective(event)) continue;
-    return event;
-  }
-  return null;
-};
-
-const stampedByParent = (
-  event: Extract<AgentChatEvent, { type: "user_message" }> | null,
-  parentSessionId: string,
-): boolean => event?.metadata?.spawnDispatch?.parentSessionId === parentSessionId;
-
-/**
- * Whether a finished child turn should wake `parentSessionId`.
- *
- * Two independent reasons, either of which is enough:
- * - the parent dispatched *this* turn (the original contract — kept so a turn
- *   the parent started still reports back even if a human messaged the child
- *   while it ran; an inline steer joins the running turn and reuses its id, so
- *   this asks whether the turn contains a parent dispatch, not whether the
- *   parent wrote its last message), or
- * - the parent owns the mission at completion time.
- *
- * Ownership is read at completion time; ADE keeps no per-schedule provenance.
- * "Who is waiting for this result now" is what the wake answers, so work the
- * child scheduled while a human owned the mission still wakes the parent if
- * the parent re-dispatched before it fired.
- */
-export const parentShouldWakeForChildTurn = (args: {
-  history: readonly AgentChatEventEnvelope[];
-  parentSessionId: string;
-  turnId: string;
-}): boolean => {
-  const { history, parentSessionId, turnId } = args;
-  const dispatchedThisTurn = history.some((envelope) => {
-    const event = envelope.event;
-    return event.type === "user_message"
-      // A queued row carries the *running* turn's id, so a parent message that
-      // arrived mid-turn and has not been delivered yet would otherwise look
-      // like the dispatch of a turn it never started.
-      && event.deliveryState !== "queued"
-      && event.turnId === turnId
-      && stampedByParent(event, parentSessionId);
-  });
-  if (dispatchedThisTurn) return true;
-  return stampedByParent(lastDirective(history), parentSessionId);
 };

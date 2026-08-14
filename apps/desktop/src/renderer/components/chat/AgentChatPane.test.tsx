@@ -25,7 +25,12 @@ import type {
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
-import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import {
+  AI_STATUS_CACHE_UPDATED_EVENT,
+  getAiStatusCached,
+  invalidateAiDiscoveryCache,
+  type AiStatusCacheUpdatedEventDetail,
+} from "../../lib/aiDiscoveryCache";
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
@@ -1354,6 +1359,361 @@ describe("AgentChatPane remote startup", () => {
     await Promise.resolve();
 
     expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A Work tab unions chats from every machine on the account, so the machine a
+   * chat runs on is frequently NOT the one the project tab is bound to. What the
+   * prompt box offers — which models exist, and their thinking levels — is a
+   * fact about the machine that will run the turn.
+   *
+   * The bridge here answers differently per machine, exactly as two real Macs
+   * would: unpinned calls land on the bound machine (that is what preload's
+   * bound path does), pinned calls on the chat's own. Before the composer
+   * carried the pin, the picker for a chat on the Studio was filled from this
+   * Mac's catalog and offered `ollama/bound-only`, a model the Studio cannot run.
+   */
+  it("fills the prompt box from the chat's own machine, not the bound one", async () => {
+    const boundRoot = "/tmp/project-under-test";
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const catalogFor = (localModelId: string, displayName: string) => ({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "ollama",
+        displayName: "Ollama",
+        providers: [{
+          key: "ollama",
+          displayName: "Ollama",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "ollama",
+            label: "Ollama",
+            models: [{
+              id: localModelId,
+              runtimeModelId: localModelId,
+              provider: "ollama",
+              providerKey: "ollama",
+              groupKey: "ollama",
+              displayName,
+              isDefault: false,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    });
+
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    installAdeMocks({ sessions: [session] });
+
+    const modelCatalog = vi.fn(async (_args?: unknown, pin?: { targetId?: string } | null) => (
+      pin?.targetId === "target-studio"
+        ? catalogFor("ollama/studio-only", "Studio Only")
+        : catalogFor("ollama/bound-only", "Bound Only")
+    ));
+    (window.ade.agentChat as any).modelCatalog = modelCatalog;
+
+    useAppStore.setState({
+      project: { rootPath: boundRoot, displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+
+    // The catalog request is addressed to the machine the chat runs on.
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "cached" }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
+    });
+
+    // ...and the rows the user can pick under the local-models rail come from
+    // that machine: the Studio's ollama endpoint, never this Mac's.
+    fireEvent.click(await screen.findByRole("tab", { name: /^Ollama$/i }));
+    await waitFor(() => {
+      expect(document.querySelector('[data-model-id="ollama/studio-only"]')).toBeTruthy();
+    });
+    expect(document.querySelector('[data-model-id="ollama/bound-only"]')).toBeNull();
+  });
+
+  it("applies shared AI status cache updates so Cursor unlocks without remount or force refresh", async () => {
+    const projectRoot = "/tmp/project-under-test";
+    const unauthorizedStatus: AiSettingsStatus = {
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+      ],
+      availableModelIds: ["openai/gpt-5.4"],
+    } as AiSettingsStatus;
+    const authorizedStatus: AiSettingsStatus = {
+      ...unauthorizedStatus,
+      availableProviders: {
+        ...unauthorizedStatus.availableProviders,
+        cursor: true,
+      },
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+        { type: "api-key", provider: "cursor" },
+      ],
+      availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+    } as AiSettingsStatus;
+
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session], aiStatus: unauthorizedStatus });
+    useAppStore.setState({
+      project: { rootPath: projectRoot } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      lanes: [{
+        id: session.laneId,
+        name: "Lane 1",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-1",
+        worktreePath: `${projectRoot}/lane-1`,
+      } as any],
+      selectedLaneId: session.laneId,
+    });
+    seedCursorRuntimeModelCatalog();
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+    expect(await screen.findByText("Connect Cursor")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    vi.mocked(window.ade.ai.getStatus).mockClear();
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(authorizedStatus);
+
+    // Simulate Settings writing the shared cache, then broadcasting UPDATED.
+    await act(async () => {
+      await getAiStatusCached({ projectRoot, force: true });
+    });
+    const forceCallsAfterSharedRefresh = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+      (call) => call[0]?.force === true,
+    ).length;
+    expect(forceCallsAfterSharedRefresh).toBeGreaterThanOrEqual(1);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent<AiStatusCacheUpdatedEventDetail>(
+        AI_STATUS_CACHE_UPDATED_EVENT,
+        { detail: { projectRoot } },
+      ));
+    });
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Connect Cursor")).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: /Set up Cursor/i })).toBeNull();
+
+    const forceCallsAfterPickerOpen = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+      (call) => call[0]?.force === true,
+    ).length;
+    // Pane must not issue another force probe after the shared-cache writer.
+    expect(forceCallsAfterPickerOpen).toBe(forceCallsAfterSharedRefresh);
+  });
+
+  it("settles an AI status invalidate with a non-force refill, not a force probe", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const projectRoot = "/tmp/project-under-test";
+      const unauthorizedStatus: AiSettingsStatus = {
+        mode: "subscription",
+        availableProviders: {
+          claude: {
+            binary: { present: false, source: "missing", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: true,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+        ],
+        availableModelIds: ["openai/gpt-5.4"],
+      } as AiSettingsStatus;
+      const authorizedStatus: AiSettingsStatus = {
+        ...unauthorizedStatus,
+        availableProviders: {
+          ...unauthorizedStatus.availableProviders,
+          cursor: true,
+        },
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+          { type: "api-key", provider: "cursor" },
+        ],
+        availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+      } as AiSettingsStatus;
+
+      const session = buildSession("session-1", { status: "idle" });
+      installAdeMocks({ sessions: [session], aiStatus: unauthorizedStatus });
+      useAppStore.setState({
+        project: { rootPath: projectRoot } as any,
+        projectBinding: LOCAL_PROJECT_BINDING,
+        lanes: [{
+          id: session.laneId,
+          name: "Lane 1",
+          laneType: "worktree",
+          branchRef: "refs/heads/lane-1",
+          worktreePath: `${projectRoot}/lane-1`,
+        } as any],
+        selectedLaneId: session.laneId,
+      });
+      seedCursorRuntimeModelCatalog();
+
+      renderPane(session);
+      await screen.findByRole("button", { name: /^Select model/ });
+
+      vi.mocked(window.ade.ai.getStatus).mockClear();
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(authorizedStatus);
+
+      await act(async () => {
+        invalidateAiDiscoveryCache(projectRoot);
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      await waitFor(() => {
+        expect(vi.mocked(window.ade.ai.getStatus)).toHaveBeenCalled();
+      });
+      const forceCalls = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+        (call) => call[0]?.force === true,
+      );
+      expect(forceCalls).toHaveLength(0);
+
+      const trigger = screen.getByRole("button", { name: /^Select model/ });
+      fireEvent.pointerDown(trigger, { button: 0 });
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+      await waitFor(() => {
+        expect(screen.queryByText("Connect Cursor")).toBeNull();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles an OpenCode AI status invalidate with refreshOpenCodeInventory", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const projectRoot = "/tmp/project-under-test";
+      const openCodeStatus: AiSettingsStatus = {
+        mode: "subscription",
+        availableProviders: {
+          claude: {
+            binary: { present: false, source: "missing", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: false,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        detectedAuth: [],
+        availableModelIds: ["opencode/openai/gpt-5.4"],
+        opencodeBinaryInstalled: true,
+      } as AiSettingsStatus;
+
+      const session = buildSession("session-opencode-1", {
+        status: "idle",
+        provider: "opencode",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      installAdeMocks({ sessions: [session], aiStatus: openCodeStatus });
+      useAppStore.setState({
+        project: { rootPath: projectRoot } as any,
+        projectBinding: LOCAL_PROJECT_BINDING,
+        lanes: [{
+          id: session.laneId,
+          name: "Lane 1",
+          laneType: "worktree",
+          branchRef: "refs/heads/lane-1",
+          worktreePath: `${projectRoot}/lane-1`,
+        } as any],
+        selectedLaneId: session.laneId,
+      });
+
+      renderPane(session);
+      await screen.findByRole("button", { name: /^Select model/ });
+
+      vi.mocked(window.ade.ai.getStatus).mockClear();
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(openCodeStatus);
+
+      await act(async () => {
+        invalidateAiDiscoveryCache(projectRoot);
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      await waitFor(() => {
+        expect(vi.mocked(window.ade.ai.getStatus)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            refreshOpenCodeInventory: true,
+          }),
+        );
+      });
+      const forceCalls = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+        (call) => call[0]?.force === true,
+      );
+      expect(forceCalls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("skips mount-time session delta fetches for remote chats", async () => {

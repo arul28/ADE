@@ -183,6 +183,17 @@ the named pipe is healthy.
   account identifiers, and paths independently for every provider.
 - Provider credentials are machine-local. Never copy a credential store into an
   evidence bundle or across a cross-machine handoff.
+- The shared credential store (`credentials.json.enc`) is sealed with the bare
+  machine key on every platform, never with DPAPI- or keychain-derived material.
+  It is co-owned by the desktop app, the brain and the CLI, and any binding one
+  of them can derive but another cannot locks that other one out permanently.
+  Windows DPAPI (`CurrentUser`) is symmetric between the desktop app and the
+  scheduled-task brain because both run as the signed-in user — but the DPAPI
+  helper is a PowerShell spawn that can time out, and a timeout used to throw
+  out of a plain credential read. Verify that a DPAPI failure degrades to an
+  "unreadable, may be recoverable" report and never terminates the brain.
+- Single-writer secrets that want OS-level protection belong in the Electron
+  safeStorage store (`credentials.safe.enc`), which only the desktop app reads.
 
 ## Standalone brain or installation is damaged
 

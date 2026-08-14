@@ -789,7 +789,7 @@ async function openPairedRemoteSession(
   };
 }
 
-async function openPairedTransport(
+export async function openPairedTransport(
   target: RemoteRuntimeTarget,
   budget = createRemoteLaunchBudget(),
   getAccountRelayProof: AccountRelayProofResolver = getCurrentAccountRelayProof,

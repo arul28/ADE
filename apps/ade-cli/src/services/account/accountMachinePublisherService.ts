@@ -29,6 +29,7 @@ import {
   createMachineIdentitySigningStore,
   MACHINE_IDENTITY_SIGNING_FILE_NAME,
 } from "../sync/machineIdentitySigningStore";
+import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
@@ -1218,6 +1219,7 @@ export function createAccountMachinePublisherService(options: {
   const publishNow = (): Promise<void> => {
     if (disposed) return Promise.resolve();
     if (inFlight) return inFlight;
+    const stopTracking = trackBrainLoopWatchdogCommand("account.machine_publish");
     const current = publish()
       .catch((error) => {
         const attemptAt = now();
@@ -1232,6 +1234,7 @@ export function createAccountMachinePublisherService(options: {
         });
       })
       .finally(() => {
+        stopTracking();
         if (inFlight === current) inFlight = null;
       });
     inFlight = current;

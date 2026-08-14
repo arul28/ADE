@@ -8,6 +8,7 @@ import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
 import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
+import { formatUserMessageTranscriptBody } from "./composerDrafts";
 import { terminalReasonLabel } from "./terminalReason";
 
 export type { HighlightedToken } from "./highlightCache";
@@ -700,7 +701,11 @@ export function renderChatLines(args: {
         id,
         tone: "user",
         header: deliveryHeader,
-        body: event.displayText ?? event.text,
+        body: formatUserMessageTranscriptBody({
+          text: event.text,
+          displayText: event.displayText,
+          attachments: event.attachments,
+        }),
       });
       continue;
     }

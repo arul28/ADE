@@ -45,7 +45,10 @@ wake. Write it for every completion, including the quiet ones: a
 parent that was never woken is otherwise indistinguishable in the logs from a
 child that never finished, which is how the original mis-attribution went
 unnoticed. A final delivery failure keeps its own
-`agent_chat.spawn_completion_delivery_failed` line. Neither is a PostHog event.
+`agent_chat.spawn_completion_delivery_failed` line. Explicit take over / promote
+writes `agent_chat.spawn_kind_changed` with `sessionId`, `parentSessionId`,
+`previousSpawnKind`, `spawnKind`, and `source` (`takeover`, `promote`, or
+`parent_dispatch`). None of these spawn-coordination lines is a PostHog event.
 
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
@@ -211,12 +214,23 @@ stay in local logs.
 
 Clicking "Repair" on the Connections pane's unreadable-session banner records
 the existing `ade_feature_used` event at the IPC owner boundary (where the
-restart outcome is known) with `feature: "connections"`,
-`action: "brain_repair"`, and a coarse `outcome` (`completed` or `failed`). It
-carries no error text, paths, or machine identifiers — the thrown error stays in
-the renderer. A per-outcome one-hour deduplication key bounds a click-loop to at
-most 24 accepted events per installation per UTC day, inside the existing
-`ade_feature_used` and shared ceilings.
+outcome is known) with `feature: "connections"`, `action: "brain_repair"`, and a
+coarse `outcome`. The control now repairs the shared credential store — converge
+its key binding, restore anything a peer process set aside — before restarting
+the background service, so the outcome has three values rather than two:
+`completed` (the store is readable, whether or not anything had to be restored),
+`sign_in_required` (the repair ran, but nothing on this computer can open what
+was set aside), and `failed` (the repair itself threw). The distinction is the
+point — collapsing "recovered your session" and "your session is gone" into one
+value answers neither question. Both the credential-repair handler and the older
+restart-only handler emit the same action and dedupe key, because they are the
+same product fact reached through a new and an old preload. It carries no error
+text, paths, key material, or machine identifiers — the thrown error stays in the
+renderer. A per-outcome one-hour deduplication key bounds a click-loop to at most
+24 accepted events per outcome — 72 across all three — per installation per UTC
+day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits
+and the shared 200-event ceiling; no ceiling was raised. The dashboard spec is
+deliberately untouched: no card asks this question yet.
 
 Clicking "Reconnect this computer" on the Account pane's removed-machine banner
 records the existing `ade_feature_used` event at the IPC owner boundary (the

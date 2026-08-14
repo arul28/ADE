@@ -253,16 +253,13 @@ final class NotchPanelController {
         }
         if event.type == .leftMouseDown {
             if inside {
+                // Compact, expanded, and takeover all carry real SwiftUI
+                // controls. Do not consume the mouse-down here — that would
+                // beat the group badges, the trailing signal, and every panel
+                // button to the click. Empty compact space still expands via
+                // the strip's own tap gesture.
                 panel.allowsKeyActivation = true
                 panel.makeKey()
-                if !global {
-                    // Only the strip resolves a click here. The takeover cards
-                    // and the panel carry real controls, and consuming their
-                    // mouse-downs at this level would beat the buttons to them.
-                    if model.interaction.presentation == .compact {
-                        model.toggleExpanded()
-                    }
-                }
             } else if model.interaction.isExplicitlyInteractive {
                 model.dismissExpanded()
             }

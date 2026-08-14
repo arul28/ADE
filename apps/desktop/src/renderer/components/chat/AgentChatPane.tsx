@@ -62,6 +62,7 @@ import {
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
+import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
 import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
@@ -114,9 +115,13 @@ import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
-import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
+import {
+  DEFAULT_RUNTIME_CATALOG_SCOPE,
+  getSharedRuntimeCatalog,
+} from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
   AgentChatMessageList,
@@ -262,7 +267,16 @@ import {
   listAgentChatSessionsCached,
 } from "../../lib/agentChatSessionListCache";
 import { getAgentChatSlashCommandsCached } from "../../lib/agentChatSlashCommandsCache";
-import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
+import {
+  AI_STATUS_CACHE_INVALIDATED_EVENT,
+  AI_STATUS_CACHE_UPDATED_EVENT,
+  getAgentChatModelsCached,
+  getAiStatusCached,
+  invalidateAiDiscoveryCache,
+  peekAiStatusCached,
+  type AiStatusCacheInvalidatedEventDetail,
+  type AiStatusCacheUpdatedEventDetail,
+} from "../../lib/aiDiscoveryCache";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
@@ -3503,6 +3517,18 @@ export function AgentChatPane({
     setModelPickerOpenRequest(undefined);
   }, []);
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
+  /**
+   * Runtime-catalog bucket for this pane's composer — the binding key of the
+   * machine that will run the turn, or `""` for the machine this window's
+   * project tab is bound to.
+   *
+   * It is state rather than a derived value because the composer's machine
+   * depends on `useDraftMachineRouting`, which is mounted far below the model
+   * memos that need the key. The effect that publishes it runs right after the
+   * binding resolves, so a machine switch costs one extra render — the same
+   * shape as `runtimeCatalogVersion`.
+   */
+  const [modelCatalogScopeKey, setModelCatalogScopeKey] = useState(DEFAULT_RUNTIME_CATALOG_SCOPE);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
   /**
@@ -3525,17 +3551,14 @@ export function AgentChatPane({
   // Seed availableModelIds, aiStatus, and providerConnections synchronously
   // from the cached AI status (if any). This avoids a "not configured" flash
   // in the model picker every time a chat pane mounts: the previously-known
-  // configured set is shown immediately, and `refreshAvailableModels` below
-  // re-verifies asynchronously and corrects any stale entries. We only block
-  // sends when the *fresh* status confirms the provider is unauthenticated;
-  // the seeded value is purely cosmetic for the picker's "Ready / not
-  // configured" labels.
+  // configured set is shown immediately. Cache update/invalidation listeners
+  // and `refreshAvailableModels` keep the seed in sync after Settings auth
+  // or other shared-cache writers without remounting the pane.
   const seedAiStatus = useMemo<AiStatusSnapshot | null>(
     () => peekAiStatusCached(projectRoot),
     // projectRoot is stable for the lifetime of a project session — recompute
-    // only when the user actually switches projects. We intentionally do not
-    // depend on cache mutations; refreshAvailableModels overrides state once
-    // the async re-check resolves.
+    // only when the user actually switches projects. Cache mutations are
+    // applied via AI_STATUS_CACHE_* listeners below, not this memo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projectRoot],
   );
@@ -5002,6 +5025,12 @@ export function AgentChatPane({
   }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+  const subagentModelChipForView = subagentView
+    ? formatSubagentModelChip(subagentModelAttribution({
+      snapshotModel: subagentViewSnapshot?.model ?? subagentMetadata?.model,
+      sessionModelLabel: selectedModelDesc?.displayName ?? selectedSession?.model ?? null,
+    }))
+    : null;
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
@@ -5464,14 +5493,21 @@ export function AgentChatPane({
       includeActiveSessionModel: !modelSelectionConstrained,
     });
     if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind);
-    const catalog = getSharedRuntimeCatalog();
+    // Union in the runtime catalog's dynamic ids (ollama, LM Studio, opencode,
+    // cursor) for the composer's OWN machine — reading the bound machine's
+    // catalog here would offer models the target machine cannot run.
+    const catalog = getSharedRuntimeCatalog(modelCatalogScopeKey);
     if (!catalog) return filterCursorModelIdsForDraftKind(base, workDraftKind);
-    const runtimeIds = descriptorsFromAgentChatModelCatalog(catalog).availableModelIds;
+    const runtimeIds = descriptorsFromAgentChatModelCatalog(
+      catalog,
+      undefined,
+      modelCatalogScopeKey,
+    ).availableModelIds;
     if (!runtimeIds.length) return filterCursorModelIdsForDraftKind(base, workDraftKind);
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
     return filterCursorModelIdsForDraftKind([...merged], workDraftKind);
-  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
+  }, [availableModelIds, availableModelIdsOverride, modelCatalogScopeKey, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus
       ? familiesFromStatus(aiStatus, { allowCliOnlyModels: workDraftKind === "cli" })
@@ -5601,9 +5637,13 @@ export function AgentChatPane({
     ?? (selectedSession?.cursorCloudAgentId ? "cloud" : "local");
   const handoffAvailableModelIds = useMemo(() => {
     const merged = new Set<string>(availableModelIds);
-    const catalog = getSharedRuntimeCatalog();
+    const catalog = getSharedRuntimeCatalog(modelCatalogScopeKey);
     if (catalog) {
-      for (const id of descriptorsFromAgentChatModelCatalog(catalog).availableModelIds) {
+      for (const id of descriptorsFromAgentChatModelCatalog(
+        catalog,
+        undefined,
+        modelCatalogScopeKey,
+      ).availableModelIds) {
         merged.add(id);
       }
     }
@@ -5616,12 +5656,12 @@ export function AgentChatPane({
       .map((model) => model.id);
     const extras = filtered.filter((modelId) => !ordered.includes(modelId));
     extras.sort((left, right) => {
-      const leftLabel = resolveModelDescriptorWithRuntimeCatalog(left)?.displayName ?? left;
-      const rightLabel = resolveModelDescriptorWithRuntimeCatalog(right)?.displayName ?? right;
+      const leftLabel = resolveModelDescriptorWithRuntimeCatalog(left, modelCatalogScopeKey)?.displayName ?? left;
+      const rightLabel = resolveModelDescriptorWithRuntimeCatalog(right, modelCatalogScopeKey)?.displayName ?? right;
       return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
     });
     return [...ordered, ...extras];
-  }, [availableModelIds, runtimeCatalogVersion, selectedSessionModelId]);
+  }, [availableModelIds, modelCatalogScopeKey, runtimeCatalogVersion, selectedSessionModelId]);
   const canShowHandoff = Boolean(
     lockSessionId
       && selectedSessionId
@@ -5776,27 +5816,54 @@ export function AgentChatPane({
     awaitingInput: selectedSessionAwaitingInput,
   });
 
-  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
-    ++availableModelsRefreshSeqRef.current;
-    const selectedModelProvider = modelId.trim()
-      ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
-      : null;
-    const shouldRefreshOpenCodeInventory =
-      sessionProvider === "opencode"
-      && (
-        selectedSession?.provider === "opencode"
-        || selectedModelProvider === "opencode"
-      );
+  const applyAiStatusSnapshot = useCallback((status: AiStatusSnapshot) => {
+    setAiStatus(status);
+    setProviderConnections({
+      claude: status.providerConnections?.claude ?? null,
+      codex: status.providerConnections?.codex ?? null,
+      cursor: status.providerConnections?.cursor ?? null,
+      droid: status.providerConnections?.droid ?? null,
+    });
+    const orderedAvailable = orderAvailableModelIds(deriveConfiguredModelIds(status, { includeDroid: true }));
+    setAvailableModelIds(orderedAvailable);
+    return orderedAvailable;
+  }, []);
+
+  const resolveAiStatusRuntimeScope = useCallback(() => {
     const runtimePin = selectedSessionIdRef.current
       ? chatRuntimePinRef.current
       : draftExecutionBindingRef.current;
     if (!selectedSessionIdRef.current && draftExecutionBindingRequiredRef.current && !runtimePin) {
+      return null;
+    }
+    return {
+      runtimePin,
+      runtimeProjectRoot: runtimePin?.rootPath ?? projectRoot,
+    };
+  }, [projectRoot]);
+
+  const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
+    const selectedModelProvider = modelId.trim()
+      ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
+      : null;
+    return sessionProvider === "opencode"
+      && (
+        selectedSession?.provider === "opencode"
+        || selectedModelProvider === "opencode"
+      );
+  }, [modelId, selectedSession?.provider, sessionProvider]);
+
+  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
+    ++availableModelsRefreshSeqRef.current;
+    const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
+    const scope = resolveAiStatusRuntimeScope();
+    if (!scope) {
       setAiStatus(null);
       setProviderConnections(null);
       setAvailableModelIds([]);
       return [];
     }
-    const runtimeProjectRoot = runtimePin?.rootPath ?? projectRoot;
+    const { runtimePin, runtimeProjectRoot } = scope;
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
@@ -5807,17 +5874,7 @@ export function AgentChatPane({
         force: options?.force === true,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
-      setAiStatus(status);
-      setProviderConnections({
-        claude: status.providerConnections?.claude ?? null,
-        codex: status.providerConnections?.codex ?? null,
-        cursor: status.providerConnections?.cursor ?? null,
-        droid: status.providerConnections?.droid ?? null,
-      });
-      const available = deriveConfiguredModelIds(status, { includeDroid: true });
-      const orderedAvailable = orderAvailableModelIds(available);
-      setAvailableModelIds(orderedAvailable);
-      return orderedAvailable;
+      return applyAiStatusSnapshot(status);
     } catch {
       setAiStatus(null);
       setProviderConnections(null);
@@ -5871,7 +5928,82 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
+  }, [
+    applyAiStatusSnapshot,
+    resolveAiStatusRuntimeScope,
+    shouldRefreshOpenCodeInventoryForStatus,
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    let settleTimer: number | null = null;
+    let stale = false;
+    let settleGeneration = 0;
+
+    const applyFromPeek = () => {
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return false;
+      const updated = peekAiStatusCached(scope.runtimeProjectRoot, scope.runtimePin);
+      if (!updated) return false;
+      applyAiStatusSnapshot(updated);
+      stale = false;
+      return true;
+    };
+
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail;
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return;
+      if ((detail?.projectRoot ?? null) !== (scope.runtimeProjectRoot ?? null)) return;
+      applyFromPeek();
+    };
+
+    const onInvalidated = (event: Event) => {
+      const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return;
+      if (detail && !detail.allProjects && detail.projectRoot !== (scope.runtimeProjectRoot ?? null)) return;
+      stale = true;
+      const generation = ++settleGeneration;
+      if (settleTimer != null) {
+        window.clearTimeout(settleTimer);
+      }
+      // Wait briefly for a paired UPDATED from another writer (Settings). If
+      // nothing arrives and this tile is active, refill once without force.
+      // Prefer peek after the refill so a newer invalidate cannot apply an
+      // orphaned in-flight status; getAiStatusCached already coalesces IPC.
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        if (!active || !stale || !isTileActive || generation !== settleGeneration) return;
+        const settledScope = resolveAiStatusRuntimeScope();
+        if (!settledScope) return;
+        const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
+        void getAiStatusCached({
+          projectRoot: settledScope.runtimeProjectRoot,
+          pin: settledScope.runtimePin,
+          ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
+        }).then(() => {
+          if (!active || !stale || generation !== settleGeneration) return;
+          applyFromPeek();
+        }).catch(() => undefined);
+      }, 250);
+    };
+
+    window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+    window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
+    return () => {
+      active = false;
+      settleGeneration += 1;
+      if (settleTimer != null) window.clearTimeout(settleTimer);
+      window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
+      window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
+    };
+  }, [
+    applyAiStatusSnapshot,
+    isTileActive,
+    resolveAiStatusRuntimeScope,
+    shouldRefreshOpenCodeInventoryForStatus,
+  ]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -7366,6 +7498,10 @@ export function AgentChatPane({
         if (meta.cursorModeId !== undefined) summaryPatch.cursorModeId = meta.cursorModeId;
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
+        if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        if (meta.subagentTakeoverPromptShownAt !== undefined) {
+          summaryPatch.subagentTakeoverPromptShownAt = meta.subagentTakeoverPromptShownAt;
+        }
         if (Object.keys(summaryPatch).length > 0) {
           patchSessionSummary(envelope.sessionId, summaryPatch);
         }
@@ -7375,7 +7511,9 @@ export function AgentChatPane({
         // (mirrors the plan-mode transition special-case below). summaryPatch's
         // keys are exactly `title` plus the mode fields (each gated on the same
         // `meta.X !== undefined` check), so any non-title key means a mode changed.
-        const modeChanged = Object.keys(summaryPatch).some((key) => key !== "title");
+        const modeChanged = Object.keys(summaryPatch).some((key) =>
+          key !== "title" && key !== "spawnKind" && key !== "subagentTakeoverPromptShownAt"
+        );
         if (modeChanged && envelope.sessionId === selectedSessionIdRef.current) {
           if (meta.interactionMode !== undefined) {
             setInteractionMode(meta.interactionMode ?? initialNativeControls.interactionMode);
@@ -11344,6 +11482,33 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
+  /**
+   * The composer's machine, but only when it is NOT the one this window's
+   * project tab is bound to.
+   *
+   * Which models a prompt box offers, which of them are configured, and their
+   * thinking levels are facts about the machine that will run the turn — a
+   * Work tab unions chats from every machine on the account, so the bound
+   * machine is frequently not that machine. `null` keeps the bound path (and
+   * its shared catalog + local IPC fallback) exactly as before, which is the
+   * common case and costs nothing.
+   */
+  const composerModelRuntimePin = useMemo(
+    () => (
+      activeComposerRuntimeBinding && activeComposerRuntimeBinding.key !== projectBinding?.key
+        ? activeComposerRuntimeBinding
+        : null
+    ),
+    [activeComposerRuntimeBinding, projectBinding?.key],
+  );
+  const composerModelCatalogScopeKey = composerModelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  // Layout effect, not effect: this publishes the machine the model memos above
+  // read from, so running it after paint would show one frame of the previous
+  // machine's model list when the composer switches machines. Setting the same
+  // key is a no-op re-render, so the common case still costs nothing.
+  useLayoutEffect(() => {
+    setModelCatalogScopeKey(composerModelCatalogScopeKey);
+  }, [composerModelCatalogScopeKey]);
   const draftAttachmentMachine = useMemo(() => ({
     id: selectedDraftMachineId,
     name: selectedDraftMachine?.name ?? (
@@ -11522,6 +11687,7 @@ export function AgentChatPane({
       resolveSpawnedChatTitle={resolveSpawnedChatTitle}
       capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
+      sessionModelLabel={selectedModelDesc?.displayName ?? selectedSession?.model ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       claudeGoal={selectedSession?.provider === "claude" ? selectedClaudeGoal : null}
       goalPending={selectedCodexGoalPending}
@@ -11808,11 +11974,13 @@ export function AgentChatPane({
                 availableModelIds={handoffAvailableModelIds}
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
+                runtimePin={composerModelRuntimePin}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
                 reasoningEffort={handoffReasoningEffort}
                 onChange={setHandoffReasoningEffort}
+                catalogScopeKey={composerModelCatalogScopeKey}
               />
             </div>
             <div className="text-[10px] leading-4 text-fg/40">{handoffForkCopy.footnote}</div>
@@ -11843,9 +12011,11 @@ export function AgentChatPane({
                 surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
+                runtimePin={composerModelRuntimePin}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
+                catalogScopeKey={composerModelCatalogScopeKey}
                 reasoningEffort={handoffReasoningEffort}
                 onChange={setHandoffReasoningEffort}
               />
@@ -12401,6 +12571,55 @@ export function AgentChatPane({
   const lifecycleBanner = composerSessionId ? (
     <ChatLifecycleBanner sessionId={composerSessionId} />
   ) : null;
+  const takeoverBanner = composerSessionId
+    && selectedSession?.spawnKind === "subagent"
+    && selectedSession.orchestrationParentSessionId
+    && !selectedSession.subagentTakeoverPromptShownAt
+    ? (
+      <ChatSubagentTakeoverBanner
+        parentTitle={spawnLineage?.parentTitle ?? null}
+        onTakeOver={() => {
+          const sessionId = composerSessionId;
+          const previousShownAt = selectedSession.subagentTakeoverPromptShownAt ?? null;
+          patchSessionSummary(sessionId, {
+            spawnKind: "peer",
+            subagentTakeoverPromptShownAt: new Date().toISOString(),
+          });
+          void window.ade.agentChat.updateSession({
+            sessionId,
+            spawnKind: "peer",
+          }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
+            patchSessionSummary(sessionId, {
+              spawnKind: updated.spawnKind,
+              subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt,
+            });
+          }).catch((err) => {
+            patchSessionSummary(sessionId, {
+              spawnKind: "subagent",
+              subagentTakeoverPromptShownAt: previousShownAt,
+            });
+            setError(err instanceof Error ? err.message : String(err));
+          });
+        }}
+        onKeepReporting={() => {
+          const sessionId = composerSessionId;
+          const shownAt = new Date().toISOString();
+          patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: shownAt });
+          void window.ade.agentChat.updateSession({
+            sessionId,
+            subagentTakeoverPromptShown: true,
+          }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
+            patchSessionSummary(sessionId, {
+              subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
+            });
+          }).catch((err) => {
+            patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: null });
+            setError(err instanceof Error ? err.message : String(err));
+          });
+        }}
+      />
+    )
+    : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
 
@@ -12435,7 +12654,8 @@ export function AgentChatPane({
             onPromptHistoryNavigate={handlePromptHistoryNavigate}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
-            cursorRuntime={selectedSession?.cursorRuntime ?? null}
+            cursorRuntime={cursorRuntime}
+            modelRuntimePin={composerModelRuntimePin}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
@@ -12467,7 +12687,7 @@ export function AgentChatPane({
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
-            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat}
+            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat || Boolean(subagentView)}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             hideModelControls={hideModelControls}
@@ -12478,7 +12698,7 @@ export function AgentChatPane({
               ?? subagentView.agentType
               ?? subagentViewSnapshot?.description
               ?? subagentView.agentId
-              ?? subagentView.taskId}`
+              ?? subagentView.taskId}${subagentModelChipForView ? ` · ${subagentModelChipForView}` : ""}`
               : null}
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
@@ -13025,6 +13245,7 @@ export function AgentChatPane({
       {awayDigestStrip}
       <LaneBranchDriftStrip laneId={laneId} />
       {lifecycleBanner}
+      {takeoverBanner}
       {composerElement}
     </div>
   );
@@ -13523,6 +13744,7 @@ export function AgentChatPane({
                         {awayDigestStrip}
                         <LaneBranchDriftStrip laneId={laneId} />
                         {lifecycleBanner}
+                        {takeoverBanner}
                         {composerElement}
                       </div>
                     ) : null}

@@ -2560,6 +2560,7 @@ struct WorkChatInfoDetailsSheet: View {
   let provider: String?
   let selectedTaskId: String?
   let probingTaskId: String?
+  let sessionModel: String?
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
   let onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)?
@@ -2588,6 +2589,7 @@ struct WorkChatInfoDetailsSheet: View {
     selectedTaskId: String?,
     probingTaskId: String?,
     expandedTaskIds: Binding<Set<String>>,
+    sessionModel: String? = nil,
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
     onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? = nil,
     onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)? = nil
@@ -2600,6 +2602,7 @@ struct WorkChatInfoDetailsSheet: View {
     self.provider = provider
     self.selectedTaskId = selectedTaskId
     self.probingTaskId = probingTaskId
+    self.sessionModel = sessionModel
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
     self.onCancelScheduledWork = onCancelScheduledWork
@@ -2912,6 +2915,7 @@ struct WorkChatInfoDetailsSheet: View {
       selected: selectedTaskId == snapshot.taskId,
       probing: probingTaskId == snapshot.taskId,
       expanded: expandedTaskIds.contains(snapshot.taskId),
+      sessionModel: sessionModel,
       onSelect: { Task { await onSelect(snapshot) } }
     )
   }
@@ -3049,6 +3053,7 @@ private struct WorkChatInfoSubagentRow: View {
   let selected: Bool
   let probing: Bool
   let expanded: Bool
+  let sessionModel: String?
   let onSelect: () -> Void
 
   private var elapsed: String? { workSubagentElapsedLabel(snapshot) }
@@ -3072,8 +3077,8 @@ private struct WorkChatInfoSubagentRow: View {
               .foregroundStyle(titleColor)
               .lineLimit(1)
               .truncationMode(.tail)
-            if let subtitle {
-              Text(subtitle)
+            if let subtitleText {
+              subtitleText
                 .font(.caption2)
                 .foregroundStyle(ADEColor.textMuted)
                 .lineLimit(1)
@@ -3130,12 +3135,23 @@ private struct WorkChatInfoSubagentRow: View {
     .buttonStyle(.plain)
   }
 
-  private var subtitle: String? {
-    var parts: [String] = []
-    if let elapsed { parts.append(elapsed) }
-    if let runtime = workSubagentRuntimeLabel(snapshot) { parts.append(runtime) }
-    if let detailText { parts.append(truncated(detailText, limit: 58)) }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  private var subtitleText: Text? {
+    var parts: [Text] = []
+    if let elapsed { parts.append(Text(elapsed)) }
+    if let attribution = workSubagentModelAttribution(snapshotModel: snapshot.model, sessionModel: sessionModel) {
+      var model = Text(attribution.label)
+      if attribution.inherited {
+        model = model + Text(" · inherited").foregroundStyle(ADEColor.textMuted.opacity(0.62))
+      }
+      parts.append(model)
+    }
+    if let effort = snapshot.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !effort.isEmpty {
+      parts.append(Text(effort))
+    }
+    if let detailText { parts.append(Text(truncated(detailText, limit: 58))) }
+    guard let first = parts.first else { return nil }
+    return parts.dropFirst().reduce(first) { $0 + Text(" · ") + $1 }
   }
 
   private var titleColor: Color {
@@ -3512,19 +3528,6 @@ private func workSubagentStatusTint(_ status: WorkSubagentSnapshot.Status) -> Co
   case .failed: return ADEColor.danger
   case .stopped: return ADEColor.warning
   }
-}
-
-private func workSubagentRuntimeLabel(_ snapshot: WorkSubagentSnapshot) -> String? {
-  var parts: [String] = []
-  if let model = snapshot.model?.trimmingCharacters(in: .whitespacesAndNewlines),
-     !model.isEmpty {
-    parts.append(model)
-  }
-  if let effort = snapshot.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
-     !effort.isEmpty {
-    parts.append(effort)
-  }
-  return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 private func workSubagentElapsedLabel(_ snapshot: WorkSubagentSnapshot) -> String? {

@@ -262,6 +262,7 @@ import type {
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSessionRepairResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -9703,6 +9704,55 @@ export function registerIpc({
       arg: { machineKey?: string },
     ): Promise<AdeAccountMachineRemovalResult> => {
       return await accountBridge.removeMachine(arg?.machineKey ?? "");
+    },
+  );
+
+  // What the "Can't read your sign-in" Repair control runs. Order matters: the
+  // credential file is repaired FIRST, then the brain restarts, so the
+  // replacement process reads an already-converged store. A restart alone —
+  // which is all this surface used to do — could not fix any credential-store
+  // condition, which is the only condition that surface appears for.
+  ipcMain.handle(
+    IPC.accountRepairSession,
+    async (): Promise<AdeAccountSessionRepairResult> => {
+      // Same product fact as the restart-only handler above, so it keeps the
+      // existing `brain_repair` action and dedupe key rather than forking the
+      // funnel — this control replaced that one, it did not join it. The
+      // outcome is the only thing that got finer: whether the click recovered a
+      // session or only confirmed one is unrecoverable is the question the old
+      // completed/failed pair could not answer.
+      const captureRepairOutcome = (outcome: "completed" | "sign_in_required" | "failed") => {
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: { feature: "connections", action: "brain_repair", outcome },
+          projectId: null,
+          dedupeKey: `brain_repair:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      };
+      let repair: Omit<AdeAccountSessionRepairResult, "brainRestarted">;
+      try {
+        repair = accountBridge.repairCredentialStore();
+      } catch (error) {
+        captureRepairOutcome("failed");
+        throw error;
+      }
+      let brainRestarted: boolean | null = null;
+      if (projectRecoveryService) {
+        try {
+          await projectRecoveryService.restartBrain();
+          brainRestarted = true;
+        } catch {
+          // The store repair is the load-bearing half and it already happened.
+          // Report the restart honestly instead of discarding the repair.
+          brainRestarted = false;
+        }
+      }
+      captureRepairOutcome(
+        repair.outcome === "sign_in_required" ? "sign_in_required" : "completed",
+      );
+      return { ...repair, brainRestarted };
     },
   );
 

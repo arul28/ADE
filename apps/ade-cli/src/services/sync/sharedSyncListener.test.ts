@@ -9,6 +9,10 @@ import {
   parseWindowsPortHolders,
   SYNC_RELAY_BRIDGE_PROOF_HEADER,
 } from "./sharedSyncListener";
+import {
+  resolveAdeServeCliScriptPath,
+  resolveAdeServeCommand,
+} from "../../serviceManager/common";
 
 async function connect(
   port: number,
@@ -70,6 +74,152 @@ describe("shared sync listener upgrade policy", () => {
         holderPids: [999_999],
         retriesSkipped: 7,
       }));
+    } finally {
+      await listener.close();
+      await new Promise<void>((resolve) => holder.close(() => resolve()));
+    }
+  });
+
+  it("reaps a same-channel serve holder even when launchd still tracks that pid", async () => {
+    const holderPid = 888_777;
+    const startTime = "Fri Aug  1 04:00:00 2026";
+    const serve = resolveAdeServeCommand();
+    const cliScriptPath = resolveAdeServeCliScriptPath(serve);
+    const command = `${serve.command} ${cliScriptPath} serve`;
+    const probePorts = [8998, 8997, 8996, 8995];
+    let holder: http.Server | null = null;
+    let probePort: number | null = null;
+    for (const candidate of probePorts) {
+      const candidateServer = http.createServer();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (error: Error) => {
+            candidateServer.off("listening", onListening);
+            reject(error);
+          };
+          const onListening = () => {
+            candidateServer.off("error", onError);
+            resolve();
+          };
+          candidateServer.once("error", onError);
+          candidateServer.once("listening", onListening);
+          candidateServer.listen(candidate, "127.0.0.1");
+        });
+        holder = candidateServer;
+        probePort = candidate;
+        break;
+      } catch {
+        candidateServer.close();
+      }
+    }
+    if (holder == null || probePort == null) {
+      throw new Error("Could not bind a port in the ADE sync range for the stale-holder test.");
+    }
+    const boundHolder = holder;
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    const inspectPort = vi.fn(async (port: number) => ({
+      port,
+      holders: [{ pid: holderPid, command, startTime }],
+    }));
+    const terminatePid = vi.fn(async () => {
+      await new Promise<void>((resolve) => boundHolder.close(() => resolve()));
+    });
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger,
+      inspectPort,
+      activeServicePid: () => holderPid,
+      terminatePid,
+    });
+    try {
+      const port = await listener.ensureListening([probePort, 0]);
+      expect(port).toBe(probePort);
+      expect(terminatePid).toHaveBeenCalledWith(holderPid);
+      expect(logger.info).toHaveBeenCalledWith("sync_listener.zombie_reaped", expect.objectContaining({
+        port: probePort,
+        pid: holderPid,
+        servicePid: holderPid,
+      }));
+    } finally {
+      await listener.close();
+      if (boundHolder.listening) {
+        await new Promise<void>((resolve) => boundHolder.close(() => resolve()));
+      }
+    }
+  });
+
+  it("migrates onto a free port and closes the previous bind", async () => {
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+    });
+    try {
+      const originalPort = await listener.ensureListening([0]);
+      const probePorts = [8994, 8993, 8992, 8991].filter((port) => port !== originalPort);
+      let target: http.Server | null = null;
+      let targetPort: number | null = null;
+      for (const candidate of probePorts) {
+        const candidateServer = http.createServer();
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const onError = (error: Error) => {
+              candidateServer.off("listening", onListening);
+              reject(error);
+            };
+            const onListening = () => {
+              candidateServer.off("error", onError);
+              resolve();
+            };
+            candidateServer.once("error", onError);
+            candidateServer.once("listening", onListening);
+            candidateServer.listen(candidate, "127.0.0.1");
+          });
+          target = candidateServer;
+          targetPort = candidate;
+          break;
+        } catch {
+          candidateServer.close();
+        }
+      }
+      if (target == null || targetPort == null) {
+        throw new Error("Could not reserve a port in the ADE sync range for the migrate test.");
+      }
+      await new Promise<void>((resolve) => target!.close(() => resolve()));
+      const migrated = await listener.tryMigrateToPort(targetPort);
+      expect(migrated).toBe(targetPort);
+      expect(listener.getPort()).toBe(targetPort);
+      const accepted = await connect(targetPort, "/");
+      accepted.close();
+      const stale = new WebSocket(`ws://127.0.0.1:${originalPort}/`);
+      stale.on("error", () => {});
+      await once(stale, "error");
+    } finally {
+      await listener.close();
+    }
+  });
+
+  it("keeps the current bind when the migrate target is still occupied", async () => {
+    const holder = http.createServer();
+    holder.listen(0, "127.0.0.1");
+    await once(holder, "listening");
+    const address = holder.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP holder.");
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      inspectPort: async (port) => ({
+        port,
+        holders: [{
+          pid: 999_998,
+          command: "/Applications/ADE.app/Contents/MacOS/ADE",
+          startTime: "Fri Aug  1 04:00:00 2026",
+        }],
+      }),
+    });
+    try {
+      const originalPort = await listener.ensureListening([0]);
+      expect(await listener.tryMigrateToPort(address.port)).toBeNull();
+      expect(listener.getPort()).toBe(originalPort);
+      expect(await listener.tryMigrateToPort(originalPort)).toBe(originalPort);
     } finally {
       await listener.close();
       await new Promise<void>((resolve) => holder.close(() => resolve()));

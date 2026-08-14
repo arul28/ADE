@@ -91,6 +91,61 @@ final class HubProjectPresentationTests: XCTestCase {
         XCTAssertNotEqual(waiting, working, "the status dot must not stick on a stale value")
     }
 
+    func testSnoozedRunningChatFilesAsIdle() {
+        var row = chat(id: "c-snooze", status: .running, awaitingInput: false)
+        row.snoozedUntil = "2126-07-10T00:00:00Z"
+        row.snoozedAt = "2026-07-27T00:00:00Z"
+        let presentation = HubChatRowPresentation.make(chat: row)
+
+        XCTAssertEqual(presentation.stateGroup, .idle)
+        XCTAssertNil(hubChatStateLabel(presentation.stateGroup))
+    }
+
+    func testSnoozedFailedChatStaysFailed() {
+        var row = chat(id: "c-failed", status: .failed, awaitingInput: false)
+        row.snoozedUntil = "2126-07-10T00:00:00Z"
+        let presentation = HubChatRowPresentation.make(chat: row)
+
+        XCTAssertEqual(presentation.stateGroup, .failed)
+    }
+
+    func testSnoozedRunningChatDoesNotCountTowardRunning() {
+        var snoozed = chat(id: "c-snooze", status: .running, awaitingInput: false)
+        snoozed.snoozedUntil = "2126-07-10T00:00:00Z"
+        snoozed.snoozedAt = "2026-07-27T00:00:00Z"
+        let awaiting = chat(id: "c-wait", status: .awaiting, awaitingInput: true)
+        let working = chat(id: "c-run", status: .running, awaitingInput: false)
+
+        XCTAssertFalse(snoozed.countsTowardRunning)
+        XCTAssertFalse(awaiting.countsTowardRunning)
+        XCTAssertTrue(working.countsTowardRunning)
+    }
+
+    func testLocalSnoozeOverlayWinsOverRemoteRunning() {
+        let remote = chat(id: "c-1", status: .running, awaitingInput: false)
+        var local = remote
+        local.snoozedUntil = "2126-07-10T00:00:00Z"
+        local.snoozedAt = "2026-07-27T00:00:00Z"
+        var merged = remote
+        merged.applyLocalSnoozeOverlay(local)
+
+        XCTAssertFalse(merged.countsTowardRunning)
+        XCTAssertEqual(hubChatStateGroup(merged), .idle)
+    }
+
+    func testRemoteSnoozeOverlaySurvivesLocalRowWithoutOverlay() {
+        var remote = chat(id: "c-1", status: .running, awaitingInput: false)
+        remote.snoozedUntil = "2126-07-10T00:00:00Z"
+        remote.snoozedAt = "2026-07-27T00:00:00Z"
+        let local = chat(id: "c-1", status: .running, awaitingInput: false)
+        var merged = remote
+        merged.applyLocalSnoozeOverlay(local)
+
+        XCTAssertEqual(merged.snoozedUntil, remote.snoozedUntil)
+        XCTAssertFalse(merged.countsTowardRunning)
+        XCTAssertEqual(hubChatStateGroup(merged), .idle)
+    }
+
     // MARK: - Fixtures
 
     private func project() -> MobileProjectSummary {

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
 import {
   invalidateWindowsDpapiMaterial,
+  readExistingWindowsDpapiMaterial,
   readOrCreateWindowsDpapiMaterial,
   readOrCreateWindowsDpapiMaterialAsync,
 } from "./windowsDpapiMaterial";
@@ -99,12 +100,10 @@ export type OsBoundKeyMaterialBinding =
 /**
  * The single decision every entry point below dispatches on.
  *
- * Read, read-async, invalidate and "is material expected?" MUST agree: an
- * invalidation that dropped the macOS resolver's cache on Windows would leave
- * the credential store's self-heal retrying against the same stale DPAPI
- * material, and an `expectsOsBoundKeyMaterial()` that still said "darwin only"
- * would misreport a Windows key failure as an ordinary decrypt failure.
- * Deriving all four from one pure function is what keeps them in step.
+ * Read, read-async and invalidate MUST agree: an invalidation that dropped the
+ * macOS resolver's cache on Windows would leave the credential store's
+ * self-heal retrying against the same stale DPAPI material. Deriving every
+ * entry point from one pure function is what keeps them in step.
  *
  * The env-gate applies on BOTH platforms: a test process, or an explicit
  * opt-out, must never reach `security` or `powershell.exe`.
@@ -120,10 +119,21 @@ export function resolveOsBoundKeyMaterialBinding(
   return "none";
 }
 
-/** Is OS-held material expected to back this process's credential key? */
-export function expectsOsBoundKeyMaterial(): boolean {
-  const binding = resolveOsBoundKeyMaterialBinding();
-  return binding === "windows_dpapi" || binding === "macos_keychain";
+/**
+ * Could SOME process on this platform hold OS material for a credential store —
+ * regardless of whether THIS one can?
+ *
+ * Deliberately platform-only, with no env gate. The credential store uses it to
+ * decide whether ciphertext it cannot open might still be openable by a peer,
+ * and the answer must not depend on this process's own opt-out: a desktop app
+ * launched with `ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING=1` is exactly the
+ * process that would otherwise write off a store the un-opted-out brain — or a
+ * later launch of itself — can still read.
+ */
+export function platformSupportsOsBoundKeyMaterial(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "darwin" || platform === "win32";
 }
 
 function decodeMacKeychainSecret(raw: string): Buffer {
@@ -212,6 +222,17 @@ export function resolveMacKeychainMaterialOutcome(
   return { material: null, reason: "unavailable" };
 }
 
+/** Find-only: reports what the keychain already holds and never adds an item. */
+function readMacKeychainMaterialSync(): OsBoundKeyMaterialResolution {
+  if (process.platform !== "darwin") return { material: null, reason: "unavailable" };
+  const existing = defaultMacKeychainCommands().find();
+  if (existing.kind === "found") return { material: decodeMacKeychainSecret(existing.value) };
+  return {
+    material: null,
+    reason: existing.kind === "not_found" ? "not_found" : "unavailable",
+  };
+}
+
 function readOrCreateMacKeychainMaterial(): OsBoundKeyMaterialResolution {
   if (process.platform !== "darwin") return { material: null, reason: "unavailable" };
   return resolveMacKeychainMaterialOutcome(defaultMacKeychainCommands());
@@ -265,6 +286,11 @@ export type OsBoundKeyMaterialResolver = {
   read(): Buffer | null;
   /** Read-only resolution: never creates the item. */
   readAsync(): Promise<Buffer | null>;
+  /**
+   * Synchronous read-only resolution, for diagnostics that must not create the
+   * item or wait on an asynchronous read.
+   */
+  readExisting(): Buffer | null;
   /** Drops the cache so the next resolution re-asks the OS. */
   invalidate(): void;
 };
@@ -283,6 +309,8 @@ export type OsBoundKeyMaterialResolver = {
 export function createMacKeychainMaterialResolver(args: {
   read: () => OsBoundKeyMaterialResolution;
   readAsync: () => Promise<OsBoundKeyMaterialResolution>;
+  /** Defaults to a find-only `security` call that never adds the item. */
+  readExisting?: () => OsBoundKeyMaterialResolution;
   now?: () => number;
   negativeCacheMs?: number;
 }): OsBoundKeyMaterialResolver {
@@ -322,6 +350,14 @@ export function createMacKeychainMaterialResolver(args: {
       const readEpoch = epoch;
       return record(readEpoch, args.read());
     },
+    readExisting(): Buffer | null {
+      if (cached) return cached;
+      if (withinBackoff()) return null;
+      const readExisting = args.readExisting;
+      if (!readExisting) return null;
+      const readEpoch = epoch;
+      return record(readEpoch, readExisting());
+    },
     async readAsync(): Promise<Buffer | null> {
       if (cached) return cached;
       if (withinBackoff()) return null;
@@ -348,6 +384,7 @@ export function createMacKeychainMaterialResolver(args: {
 const defaultMacKeychainMaterialResolver = createMacKeychainMaterialResolver({
   read: readOrCreateMacKeychainMaterial,
   readAsync: readMacKeychainMaterialAsync,
+  readExisting: readMacKeychainMaterialSync,
 });
 
 /**
@@ -377,10 +414,12 @@ export function invalidateDefaultOsBoundKeyMaterialCache(keyBindingDir: string):
 /**
  * Creating resolution for the platform's OS binding.
  *
- * DPAPI failures propagate rather than degrading to `null`. `null` means "no OS
- * binding", which derives the bare machine key — so swallowing a transient
- * PowerShell timeout would read a DPAPI-bound store as empty and, on the write
- * path, silently re-seal it unbound.
+ * DPAPI failures propagate rather than degrading to `null` here, so the caller
+ * can tell "this platform has no OS binding" from "asking the OS failed". The
+ * credential store catches them and classifies the read as `no_os_key_material`
+ * — which is recoverable — rather than treating a transient PowerShell timeout
+ * as corruption. It can no longer re-seal anything unbound: the shared store is
+ * always sealed with the machine key.
  */
 export function readDefaultOsBoundKeyMaterial(keyBindingDir: string): Buffer | null {
   switch (resolveOsBoundKeyMaterialBinding()) {
@@ -407,6 +446,29 @@ export async function readDefaultOsBoundKeyMaterialAsync(
       return await readOrCreateWindowsDpapiMaterialAsync(keyBindingDir);
     case "macos_keychain":
       return await defaultMacKeychainMaterialResolver.readAsync();
+    default:
+      return null;
+  }
+}
+
+/**
+ * Read-only resolution for diagnostics: existing material or null, never a
+ * create.
+ *
+ * `readDefaultOsBoundKeyMaterial` is a CREATING resolver on both platforms — it
+ * mints and stores a macOS keychain item, or mints, DPAPI-protects and writes a
+ * Windows key file. A health check that used it would create the very state it
+ * was asked to report on, and would block for the platform's create budget
+ * (up to 30 s of PowerShell cold start on Windows) to do it.
+ */
+export function readExistingOsBoundKeyMaterial(keyBindingDir: string): Buffer | null {
+  switch (resolveOsBoundKeyMaterialBinding()) {
+    case "env_passphrase":
+      return readCredentialPassphraseFromEnv();
+    case "windows_dpapi":
+      return readExistingWindowsDpapiMaterial(keyBindingDir);
+    case "macos_keychain":
+      return defaultMacKeychainMaterialResolver.readExisting();
     default:
       return null;
   }

@@ -16,6 +16,10 @@ import type {
 } from "../services/runtime/brainLoopWatchdog";
 import { readBrainLoopWatchdogLastWedge } from "../services/runtime/brainLoopWatchdog";
 import { BRAIN_WATCHDOG_KILL_COMMAND } from "../services/runtime/brainWatchdogCheck";
+import {
+  inspectCredentialStoreHealth,
+  type CredentialStoreHealth,
+} from "../services/credentials/credentialStore";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
 import type {
@@ -32,7 +36,8 @@ export type DoctorRow = {
     | "sync_port"
     | "publish"
     | "relay"
-    | "account";
+    | "account"
+    | "credentials";
   label: string;
   status: DoctorRowStatus;
   detail: string;
@@ -75,6 +80,12 @@ export type DoctorInput = {
     source: string | null;
     error: string | null;
   };
+  /**
+   * Read straight off disk rather than through the brain. The failure this row
+   * exists for is a brain that cannot start, so a credential check that needs a
+   * running brain to answer would be silent in exactly the case it is for.
+   */
+  credentials: CredentialStoreHealth | null;
 };
 
 export type DoctorCommandOptions = {
@@ -135,6 +146,7 @@ export type DoctorCommandResult = {
   publishHealth: DoctorInput["publishHealth"];
   relayHealth: DoctorInput["relayHealth"];
   account: DoctorInput["account"];
+  credentials: DoctorInput["credentials"];
 };
 
 type DoctorBrainProbe = {
@@ -621,22 +633,22 @@ function syncPortRow(input: DoctorInput): DoctorRow {
     key: "sync_port",
     label: "Sync port",
     status: "warn",
-    detail: `bound on ${input.syncPort} instead of 8787${
+    // Sticky lastPort used to keep a replacement brain on 8788 forever.
+    // Bind order now retries 8787 first, and a live listener migrates back
+    // when 8787 frees. `ade brain restart` is still the explicit hammer.
+    detail: [
+      `bound on ${input.syncPort} instead of 8787`,
       holders.length
-        ? ` · base holders: ${holders.join("; ")}`
+        ? `base holders: ${holders.join("; ")}`
         // "No visible holders" reads as "the ports are free", which is exactly
         // the wrong conclusion: the holder is usually tailscaled, and it runs
         // as root so this probe cannot see it. Point at the check that can.
-        : " · no holders visible to this user (a root-owned holder such as"
+        : "no holders visible to this user (a root-owned holder such as"
           + " tailscaled is invisible here — check `tailscale serve status`"
-          + " and `netstat -an -p tcp`)"
-    }${
-      // The usual cause is ADE's own stranded `tailscale serve` entries from
-      // earlier runs. The host now reclaims those on its next publish, so the
-      // fix is a brain restart, not 60-odd manual `serve --tcp=N off` calls.
-      holders.length ? "" : " · ADE reclaims its own stale serve entries on the"
-        + " next publish; `ade brain restart` should return it to 8787"
-    }`,
+          + " and `netstat -an -p tcp`)",
+      "ADE retries 8787 first and migrates back when it is free;"
+        + " `ade brain restart` also returns it to 8787",
+    ].join(" · "),
   };
 }
 
@@ -752,6 +764,64 @@ function accountRow(account: DoctorInput["account"]): DoctorRow {
   };
 }
 
+/**
+ * The credential file the desktop app, the brain and the CLI all share.
+ *
+ * Its two bad states have different next steps, and saying the wrong one costs
+ * the user their session: a store a peer process can still open is repaired by
+ * opening the app, while one nothing can open needs a fresh sign-in.
+ */
+function readCredentialStoreHealthForDoctor(secretsDir: string): CredentialStoreHealth | null {
+  try {
+    return inspectCredentialStoreHealth({
+      credentialsPath: path.join(secretsDir, "credentials.json.enc"),
+      machineKeyPath: path.join(secretsDir, ".machine-key"),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
+  const label = "Credentials";
+  if (!health) {
+    return { key: "credentials", label, status: "warn", detail: "credential store not checked" };
+  }
+  if (health.state === "unreadable") {
+    return {
+      key: "credentials",
+      label,
+      status: "fail",
+      detail: health.reason === "no_os_key_material"
+        // Platform-neutral on purpose: the same state is a macOS keychain item
+        // the brain cannot reach and a Windows DPAPI blob it cannot unprotect.
+        ? "sealed with a key this process cannot read"
+          + " · open the ADE app on this computer to unlock it"
+        : `cannot be read (${health.reason}) · sign in again in the ADE app`,
+    };
+  }
+  if (health.quarantine) {
+    const setAside = health.quarantine.at;
+    return {
+      key: "credentials",
+      label,
+      status: "warn",
+      detail: health.quarantine.recoverable
+        ? `an earlier credential file was set aside ${setAside} · open the ADE app on this computer to restore it`
+        : `an unreadable credential file was set aside ${setAside} · sign in again in the ADE app`,
+    };
+  }
+  if (health.state === "missing") {
+    return { key: "credentials", label, status: "ok", detail: "no stored credentials" };
+  }
+  return {
+    key: "credentials",
+    label,
+    status: "ok",
+    detail: `readable · ${health.sealedBinding === "os" ? "keychain-sealed (converging)" : "machine-sealed"}`,
+  };
+}
+
 export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
   return [
     appRow(input.app),
@@ -761,6 +831,7 @@ export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
     publishRow(input.publishHealth, input.nowMs),
     relayRow(input.relayHealth),
     accountRow(input.account),
+    credentialsRow(input.credentials),
   ];
 }
 
@@ -823,6 +894,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     publishHealth,
     relayHealth,
     account: brainProbe.account,
+    credentials: readCredentialStoreHealthForDoctor(layout.secretsDir),
   };
   const rows = evaluateDoctorRows(input);
   return {
@@ -838,5 +910,6 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     publishHealth,
     relayHealth,
     account: input.account,
+    credentials: input.credentials,
   };
 }

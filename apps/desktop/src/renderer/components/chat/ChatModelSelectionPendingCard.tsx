@@ -25,7 +25,7 @@ import {
   resolveProviderGroupForModel,
   type ProviderFamily,
 } from "../../../shared/modelRegistry";
-import type { AgentChatProvider } from "../../../shared/types";
+import type { AgentChatProvider, OpenProjectBinding } from "../../../shared/types";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { cn } from "../ui/cn";
 
@@ -38,6 +38,14 @@ export type ChatModelSelectionPendingCardProps = {
   availableModelIds?: string[];
   /** Auth status fan-out for the picker rail. */
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /**
+   * The machine this chat runs on, when it is not the one the project tab is
+   * bound to. The model chosen here runs on that machine, so its picker rows
+   * and thinking levels must come from that machine's runtime catalog.
+   */
+  runtimePin?: OpenProjectBinding | null;
+  /** Catalog bucket matching {@link runtimePin}; empty means the bound machine. */
+  catalogScopeKey?: string;
   /** Disable while a response is in flight. */
   responding: boolean;
   onConfirm: (selection: ModelSelection) => void;
@@ -83,6 +91,8 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
   metadata,
   availableModelIds,
   providerAuthStatus,
+  runtimePin = null,
+  catalogScopeKey,
   responding,
   onConfirm,
   onCancel,
@@ -230,6 +240,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
           surfaceKey="orchestration-model-selection-pending"
           {...(availableModelIds ? { availableModelIds } : {})}
           {...(providerAuthStatus ? { providerAuthStatus } : {})}
+          runtimePin={runtimePin}
           disabled={responding}
           hidePermissionRail
           compact
@@ -243,6 +254,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
           onChange={setReasoningEffort}
           disabled={responding}
           compact
+          {...(catalogScopeKey ? { catalogScopeKey } : {})}
         />
       </div>
 

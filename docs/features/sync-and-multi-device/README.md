@@ -535,7 +535,11 @@ Runtime support files outside `services/sync/`:
   that an exchange *started* against a specific token generation and is cleared
   once the replacement is durable, so a surviving entry means "the stored token
   may already have been consumed" and the following `invalid_grant` is not
-  definitive. It is stored as `account.session.rotation.v1`, a sibling of the
+  definitive. `tryBegin` compare-and-swaps that same entry so a live peer already
+  exchanging the grant is waited out rather than raced at Clerk — two POSTs
+  against a single-use refresh token is what produced daily `invalid_grant` /
+  mark_dead sign-outs. A dead peer's journal is taken over and treated as
+  interrupted. It is stored as `account.session.rotation.v1`, a sibling of the
   session record, and is deliberately kept in the same file-backed credential
   bucket — migrating it into the Electron-only store would hide an interrupted
   desktop rotation from the brain and the CLI, which is exactly the process pair
@@ -863,8 +867,17 @@ Desktop connection UI:
   agent, so `repair.available` feature-detects before any surface offers the
   button. A rejected restart renders "Repair failed — quit and reopen ADE."
   with the technical detail in the `title`; `onSettled` runs on both paths so the
-  caller's banner is re-derived either way. Both the This Mac card and the
-  Machines panel's route-publish row mount the same hook and button.
+  caller's banner is re-derived either way. The button accepts an optional
+  `disabled` so a sibling action (Account **Reconnect this computer**) can block
+  Repair while it is in flight. The This Mac card, the Machines panel's
+  route-publish row, and Account `YourMacsCard` mount the same hook and button.
+- `apps/desktop/src/renderer/components/account/YourMacsCard.tsx` — Account
+  **Your computers** directory UI (extracted from `AccountPage`). When this
+  computer is missing from the signed-in list it offers **Reconnect** (directory
+  re-pair via `repairMachinePairing` / device login) beside **Repair**, with
+  session-state-aware copy from `describeThisComputerMissing` that does not
+  treat absence as proven removal. See
+  [onboarding and settings](../onboarding-and-settings/README.md).
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,
   preload routing, remote-runtime connection/timeout reconciliation, and the
@@ -989,7 +1002,15 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `forceHostRole` only as a legacy override; normal callers leave it
   false so a second runtime becomes a viewer instead of stealing the
   sync authority role. Its route-health derivation lives in
-  `syncRouteHealth.ts`, shared with the projectless path.
+  `syncRouteHealth.ts`, shared with the projectless path. Host port
+  candidates come from `buildSyncHostPortCandidates` (8787 always first;
+  a sticky `lastPort` of 8788 is tried next, never instead). When the
+  shared listener lands off 8787, the service schedules a canonical-port
+  hot-migrate (`tryMigrateToPort`) — first probe at 2 s, then every 15 s —
+  so a replacement brain that briefly fell back to 8788 steals 8787 back
+  once the wedged holder dies, updates `lastPort` / the lease, refreshes
+  LAN discovery, and republishes the account-directory endpoints without
+  a restart.
 - `syncRouteHealth.ts` — `deriveListenerHealth` and `buildRelayRouteHealth`,
   the one derivation of how a machine describes its own inbound routes. Both
   `syncService.getStatus` (project scope) and `buildProjectlessSyncSnapshot`
@@ -1238,7 +1259,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `running`). `attentionCount` (which drives hub badges and attention-first
   project sorting) counts only chat rows and shells attached to a chat — a
   standalone CLI session that exited non-zero must not pin its project to
-  the top forever, since mobile has no way to clear it. Previews
+  the top forever, since mobile has no way to clear it. `runningCount` counts
+  chats whose status is `running` and that are **not snoozed**; a snoozed
+  running chat is idle on Activity, so including it would disagree with the
+  Hub tree and the island. Each chat carries optional `snoozedUntil` /
+  `snoozedAt` so older hosts omit them and older phones ignore them. Previews
   are hard-truncated (~120 chars). Also exports
   `createForeignChatTranscriptResolver({ projectRegistry })` — the resolver
   behind cross-project chat quick-look and its security boundary: it maps a
@@ -1248,44 +1273,60 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   (never booting a runtime). `ade serve` wires it as the host's
   `foreignChatProvider`.
 - `sharedSyncListener.ts` — the brain-level WebSocket listener shared
-  across per-project host services. Binds once (preferred-port retry:
-  up to ~8 attempts over ~3.2 s on the saved port before falling back to a
-  port scan, so a transient brain restart does not drift the port phones saved).
-  Port diagnosis uses asynchronous `lsof` / `ps`; once a live holder is
-  confirmed, the listener skips the remaining duplicate retries for that port
-  and emits one conflict warning before advancing. WebSocket
-  upgrades are accepted only on the sync root path (`/`). When an Origin header
-  is present, it must name the canonical hosted web client
-  (`https://app.ade-app.dev`) or one of the explicit local Vite origins;
-  foreign origins are rejected and logged at debug. An absent Origin remains
-  valid for non-browser clients such as iOS URLSession, ADE CLI peers, and the
-  relay bridge, whose private bridge-proof header is validated separately.
-  On an `EADDRINUSE` for a port in the sync range (`DEFAULT_SYNC_HOST_PORT`
-  8787 through `SYNC_HOST_MAX_PORT` 8999) it runs **sync-port zombie
-  reaping**: it diagnoses the port's holders (`inspectSyncListenerPort`),
-  and if a stale ADE brain owns it, re-confirms the same pid + process
-  start-time on a second diagnosis (guarding against pid reuse), terminates
-  that holder, logs `sync_listener.zombie_reaped`, and retries the freed port
-  once — so a dead-but-port-holding sibling brain cannot force the new brain
-  onto a drifted port that phones never saved. The same diagnosis feeds the
-  `ade doctor` Sync-port row, which is explicit that it cannot see a root-owned
-  holder: a stranded `tailscale serve` entry from an earlier run holds the port
-  through `tailscaled`, so a user-level probe reports no holders even though the
-  port is taken (`tailscale serve status` and `netstat -an -p tcp` show it).
-  Those leftovers are reclaimed on the next tailnet publish. The listener is
-  handed between hosts on project switch: the new host adopts
-  the open sockets — peer metadata carried over, pairing auth
-  re-validated against the pairing store, changeset cursors recomputed
-  from the peer's per-site cursor map, chat/terminal/roster subscriptions
-  and transcript offsets riding the handoff snapshot, and frames buffered
-  during the handoff window replayed — so phones survive project
-  switches without reconnecting. Sockets left unowned park with
-  buffered frames and close with code 4002 after a 30 s grace. A
-  machine-wide fallback handler may accept new sockets when no project
-  host owns the listener, but it is suppressed during the handoff grace
-  after a project host detaches so reconnecting phones still park for
-  adoption by the next project host. A self-owned server path remains
-  for tests/standalone hosts.
+  across per-project host services. Bind order always tries
+  `DEFAULT_SYNC_HOST_PORT` (8787) first via `buildSyncHostPortCandidates`,
+  even when device registry `lastPort` is 8788 — a sticky fallback used to
+  win and leave phones on a port they never saved. Preferred-port retry
+  runs up to ~8 attempts over ~3.2 s on the first candidate before the
+  rest of the scan, so a transient brain restart does not drift the port.
+  Port diagnosis lives in `syncListenerPortInspect.ts` (`lsof` / `ps` on
+  POSIX, trusted PowerShell on Windows) and is re-exported for
+  `ade doctor`. Once a live holder is confirmed, the listener skips the
+  remaining duplicate retries for that port and emits one conflict warning
+  before advancing. WebSocket upgrades are accepted only on the sync root
+  path (`/`). When an Origin header is present, it must name the canonical
+  hosted web client (`https://app.ade-app.dev`) or one of the explicit local
+  Vite origins; foreign origins are rejected and logged at debug. An absent
+  Origin remains valid for non-browser clients such as iOS URLSession, ADE
+  CLI peers, and the relay bridge, whose private bridge-proof header is
+  validated separately. On an `EADDRINUSE` for a port in the sync range
+  (8787 through `SYNC_HOST_MAX_PORT` 8999) it runs **sync-port zombie
+  reaping**: it diagnoses the port's holders, and if a stale ADE brain owns
+  it, re-confirms the same pid + process start-time on a second diagnosis
+  (guarding against pid reuse), terminates that holder, logs
+  `sync_listener.zombie_reaped`, and retries the freed port once. Reap
+  exclusion is **this process only** — launchd's tracked main pid is often
+  the wedged predecessor still bound to 8787; excluding it is how a
+  replacement brain used to stick on 8788 with two listeners on one machine
+  (dual-brain split). Cross-channel conflicts (ADE vs ADE Beta) are left
+  alone; the "ADE is already running with phone sync" dialog is intentional.
+  When already listening on a fallback port, `tryMigrateToPort(8787)` binds
+  the canonical port alongside the current listener, closes the old one on
+  success, and keeps the existing bind when 8787 is still busy (migrate
+  probes are single-shot, not the 3.2 s initial-bind storm). The same
+  diagnosis feeds the `ade doctor` Sync-port row, which is explicit that it
+  cannot see a root-owned holder: a stranded `tailscale serve` entry from an
+  earlier run holds the port through `tailscaled`, so a user-level probe
+  reports no holders even though the port is taken (`tailscale serve status`
+  and `netstat -an -p tcp` show it). Those leftovers are reclaimed on the
+  next tailnet publish; doctor also notes that ADE retries 8787 first and
+  migrates back when it frees. The listener is handed between hosts on
+  project switch: the new host adopts the open sockets — peer metadata
+  carried over, pairing auth re-validated against the pairing store,
+  changeset cursors recomputed from the peer's per-site cursor map,
+  chat/terminal/roster subscriptions and transcript offsets riding the
+  handoff snapshot, and frames buffered during the handoff window replayed —
+  so phones survive project switches without reconnecting. Sockets left
+  unowned park with buffered frames and close with code 4002 after a 30 s
+  grace. A machine-wide fallback handler may accept new sockets when no
+  project host owns the listener, but it is suppressed during the handoff
+  grace after a project host detaches so reconnecting phones still park for
+  adoption by the next project host. A self-owned server path remains for
+  tests/standalone hosts.
+- `syncListenerPortInspect.ts` — platform port-holder diagnosis used by
+  zombie reap and `ade doctor` (`inspectSyncListenerPort`). Extracted from
+  `sharedSyncListener` so the probe path can stay small and the listener
+  module stays focused on bind/migrate/handoff.
 - `brainProjectActionsSyncHandler.ts` — machine-wide fallback sync
   handler used by `ade serve` before any project host is active. It takes a
   `secretsDir` (not individual PIN/pairing file paths) and resolves its stores
@@ -1364,6 +1405,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
   implementation lives in `apps/ios/ADE/Services/SyncService.swift`.
 - `syncProtocol.ts` — canonical Node envelope codec and protocol boundary.
+  Owns the supported protocol range
+  (`SYNC_PROTOCOL_MIN_SUPPORTED...SYNC_PROTOCOL_VERSION`), the typed mismatch
+  error, close code `4406`, `DEFAULT_SYNC_HOST_PORT` (`8787`),
+  `SYNC_HOST_MAX_PORT` (`8999`), and `buildSyncHostPortCandidates(preferredPort?)`
+  — bind order always puts 8787 first so a sticky `lastPort` of 8788 cannot skip
+  the canonical port phones and other computers keep saved.
 - `syncBinaryFrame.ts` — binary envelope container ("ADE1" magic, u32 header
   length, header JSON, raw compressed body) plus the magic sniff that keeps a
   text frame delivered as binary data on the text path.
@@ -1376,11 +1423,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `DEFAULT_SYNC_MAX_FRAME_BYTES` (720 KiB) can be split into
   `envelope_chunk` frames; reassembly accepts at most eight chunk sets, 512
   parts, a 128-byte `chunkId`, and 32 MiB total buffered data, and expires an
-  incomplete set after 30 seconds. It also owns the supported protocol range
-  (`SYNC_PROTOCOL_MIN_SUPPORTED...SYNC_PROTOCOL_VERSION`), the typed
-  mismatch error, and close code `4406`. Default host port is `8787`, and
-  `SYNC_HOST_MAX_PORT` (`8999`) bounds the sync range the shared listener
-  will zombie-reap a stale ADE holder from.
+  incomplete set after 30 seconds.
 - `abortSignal.ts` — the shared cancellation helper (`runWithAbortSignal`,
   `abortSignalError`) used across the sync command paths so a registration- or
   caller-carried `AbortSignal` rejects in-flight work with a consistent
@@ -1741,13 +1784,17 @@ Account Activity and push:
   the brain: run/PR/session-removal tracking, the protocol-2 publish, the
   signed-out/degraded machine-snapshot fallback, and the durable machine-revoked
   gate (`getMachineRevocation` / `clearMachineRevocation`) that a removed machine
-  latches so it stops delivering across restarts.
+  latches so it stops delivering across restarts. The 30 s heartbeat rebuilds
+  the roster and skips the write via `activityRosterFingerprint` when nothing
+  moved; after four unchanged rebuilds the rebuild backs off to at most every
+  two minutes while presence posts stay on cadence.
 - `apps/ade-cli/src/services/push/attentionItemBuilder.ts` — the Activity
   projection itself, lifted out of the publisher's closure so it can be
   exercised with a plain context record instead of a booted publisher.
   `(runs, recentRuns, prActivities, roster) → AttentionItem[]`: identity-chat and
   child-shell filtering, phase derivation (including holding a completed turn at
-  `running` while background subagents live), the title/preview tables, the
+  `running` while background subagents live, and demoting a snoozed running chat
+  to `stale`/`idle` unless it is failed or needs-you), the title/preview tables, the
   2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
   delivery, machine-revocation, and machine-acknowledgment state. Machine
@@ -1784,7 +1831,10 @@ Account Activity and push:
   already heard about it. `chatActivityMode` is in the content fingerprint (it is
   a visible distinction) and deliberately out of the alert fingerprint, because
   planning and working flip several times a turn and neither flip is a new phase
-  worth notifying about.
+  worth notifying about. `activityRosterFingerprint` hashes the selected and
+  overflow ids plus those per-item publish fingerprints so a heartbeat can skip
+  the D1 write when the roster did not move; item `revision` is excluded because
+  it is a republish timestamp.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
   destination, availability, preference, and native-presentation contract.
   `ATTENTION_CONTRACT_VERSION` is the *item* contract; the publish protocol
@@ -1795,13 +1845,15 @@ Account Activity and push:
   the abort-on-first-failing-chunk policy), and
   `AttentionAcknowledgmentOutcome`.
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  cross-language conformance fixture for the five-group state table. The mapping
+  cross-language conformance fixture for the six-group state table. The mapping
   is implemented four times (renderer TypeScript, native notch Swift, iOS Swift,
   and the hermetic relay Worker) because the surfaces cannot share code, and
   documentation alone did not keep them in step. Every implementation runs these
   cases through its own mapper. Canonical source of truth:
   `activityStateGroup` in
   `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
+  There are six groups, not five: `idle` was split out of `done` because a
+  session that went quiet mid-work is not a session that finished.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
   Activity event: its group (agents / pull requests), its icon key, and its
   default delivery policy. Desktop settings, the Activity columns, and the
@@ -1819,14 +1871,16 @@ Account Activity and push:
   toast stream.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
   the global-header count (the `needs-you` group and nothing else) and its
-  popover preview, which shows every state section except `done`.
+  popover preview, which shows every state section except the two resting bands
+  (`idle` and `done`).
 - `apps/desktop/src/renderer/components/activity/ActivityPane.tsx` — the
   `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (the agent feed,
   one section per state group, split per machine and divided where an offline
   machine's rows become last-known state), `ActivityInboxColumn.tsx` (the
   Notifications column: PR/CI and review outcomes grouped by project),
-  `ActivityFilters.tsx` (machine / chat type / model, every option derived from
-  the snapshot on screen), and `ActivityDetailSheet.tsx`.
+  `ActivityFilters.tsx` (machine / project / chat type / model, plus a
+  single-select state-group glyph strip whose counts come from the unfiltered
+  snapshot), and `ActivityDetailSheet.tsx`.
 - `apps/desktop/src/renderer/components/activity/ActivitySectionHeader.tsx`,
   `activitySectionCollapse.ts`, `ActivityStateGlyphMark.tsx`,
   `ActivityAllClear.tsx`, and `useAllClearBeat.ts` — the shared section header
@@ -2043,7 +2097,7 @@ phone flow:
    `connection: null`, meaning reuse existing pairing credentials).
 4. After the result is flushed, `completeProjectConnection` runs: the
    old host stops first and the new host starts on the same port under
-   the preferred-port retry, adopting any sockets that stayed open.
+   the 8787-first preferred-port retry, adopting any sockets that stayed open.
    A phone that initiated the switch tears down and reconnects against
    the same port; a phone that was merely connected while another
    client switched projects is adopted in place and never disconnects.
@@ -2906,6 +2960,14 @@ feature is merged or because a deliberately isolated-port host is running.
 | Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
+
+- **Phone-sync port 8787 is canonical.** Bind order always tries 8787 first,
+  even when device-registry `lastPort` is 8788. Zombie reap may terminate a
+  same-channel wedged predecessor still holding 8787 (excluding only this
+  process pid). A live listener that landed on a fallback keeps probing
+  `tryMigrateToPort(8787)` so phones that saved 8787 reconnect without a
+  restart. The "ADE is already running with phone sync" dialog is the
+  cross-channel case (ADE vs ADE Beta) and is intentional.
 
 - **Cross-machine session handoff is not database sync or provider-session
   migration.** It publishes the exact Git commit and sends a bounded,

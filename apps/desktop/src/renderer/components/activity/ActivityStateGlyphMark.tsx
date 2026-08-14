@@ -3,6 +3,7 @@ import {
   CheckCircle,
   Circle,
   CircleDashed,
+  Clock,
   NotePencil,
   Warning,
 } from "@phosphor-icons/react";
@@ -37,6 +38,10 @@ export function ActivityStateGlyphMark({
       return <Warning size={size} weight="fill" aria-hidden className="shrink-0" />;
     case "planning":
       return <NotePencil size={size} weight="bold" aria-hidden className="shrink-0" />;
+    case "stale":
+      // The `idle` group's glyph identity. Regular weight, not bold: idle is
+      // the one band that must not compete with the live ones for the eye.
+      return <Clock size={size} weight="regular" aria-hidden className="shrink-0" />;
     case "done":
       return <CheckCircle size={size} weight="bold" aria-hidden className="shrink-0" />;
     default:

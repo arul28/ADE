@@ -1,21 +1,10 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { LaneIcon, LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { formatLaneLabel } from "../format";
-import { theme } from "../theme";
+import { laneIconGlyph, theme } from "../theme";
 
-const LANE_ICON_GLYPH: Record<NonNullable<LaneIcon>, string> = {
-  star: "★",
-  flag: "⚑",
-  bolt: "↯",
-  shield: "▣",
-  tag: "❯",
-};
-
-export function laneIconGlyph(icon: LaneIcon | null | undefined): string {
-  if (!icon) return "▎";
-  return LANE_ICON_GLYPH[icon] ?? "▎";
-}
+export { laneIconGlyph };
 
 function HeaderComponent({
   projectName,

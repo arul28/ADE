@@ -12,6 +12,7 @@ import {
   activityItemContext,
   activityItemDeepLink,
   activityItemElapsed,
+  activityItemMark,
   activityPaneEntries,
   buildActivityPaneModel,
   groupForItem,
@@ -212,6 +213,52 @@ describe("account-wide Activity pane", () => {
     );
 
     expect(model.items.map((entry) => entry.id)).toEqual(["live"]);
+  });
+
+  it("files a failed overlay as failing, never as live working", () => {
+    const failed = item({ id: "failed", phase: "failed", eventKind: "agent_failed" });
+    const working = item({ id: "working", phase: "running" });
+    expect(groupForItem(failed)).toBe("failing");
+    expect(groupForItem(working)).toBe("live");
+    expect(activityItemMark(failed)).toMatchObject({ group: "failed", glyph: "×", tone: "error" });
+    expect(activityItemMark(working)).toMatchObject({ group: "working", glyph: "●", tone: "running" });
+  });
+
+  it("files a snoozed overlay as idle recent, never as live working or failed", () => {
+    // Publisher demotes snoozed (non-failed, non-needs-you) rows to stale +
+    // idle tier. The pane must consume that overlay, not revive it as LIVE NOW
+    // or paint it with the failed diamond the old phase switch used for stale.
+    const snoozed = item({
+      id: "snoozed",
+      phase: "stale",
+      activityTier: "idle",
+    });
+    const staleAmbient = item({ id: "stale", phase: "stale" });
+    expect(groupForItem(snoozed)).toBe("recent");
+    expect(groupForItem(staleAmbient)).toBe("recent");
+    expect(activityItemMark(snoozed)).toMatchObject({ group: "idle", glyph: "○", tone: "neutral" });
+    expect(activityItemMark(staleAmbient)).toMatchObject({ group: "idle", glyph: "○", tone: "neutral" });
+    const model = buildActivityPaneModel(snapshot([
+      snoozed,
+      staleAmbient,
+      item({ id: "working", phase: "running" }),
+    ]));
+    expect(model.liveCount).toBe(1);
+    expect(model.groups.find((group) => group.id === "live")?.items.map((entry) => entry.id))
+      .toEqual(["working"]);
+    expect(model.groups.find((group) => group.id === "recent")?.items.map((entry) => entry.id))
+      .toEqual(["snoozed", "stale"]);
+  });
+
+  it("marks planning apart from working and keeps needs-you off the live hues", () => {
+    expect(activityItemMark(item({
+      phase: "running",
+      chatActivityMode: "planning",
+    }))).toMatchObject({ group: "planning", glyph: "◐", tone: "violet" });
+    expect(activityItemMark(item({ phase: "needs_you", eventKind: "agent_needs_you" })))
+      .toMatchObject({ group: "needs-you", glyph: "!", tone: "attention" });
+    expect(activityItemMark(item({ phase: "completed", eventKind: "agent_completed" })))
+      .toMatchObject({ group: "done", glyph: "✓", tone: "done" });
   });
 
   it("files idle-tier roster history as recent instead of counting it as waiting", () => {

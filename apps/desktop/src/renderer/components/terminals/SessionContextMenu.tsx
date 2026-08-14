@@ -14,6 +14,7 @@ import { LaneActionsSubmenu } from "./LaneActionsSubmenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 import {
   setSessionSettleOverride,
+  setChatSpawnKind,
   snoozeSessionForDuration,
   unsettleSession,
   wakeSessionNow,
@@ -435,6 +436,25 @@ function SessionContextMenuPanel({
         )}
 
         {settleRow}
+
+        {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { void setChatSpawnKind(session, "peer", binding); onClose(); }}
+          >
+            Demote to peer
+          </button>
+        ) : null}
+        {isChat && session.orchestrationParentSessionId && session.spawnKind === "peer" ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { void setChatSpawnKind(session, "subagent", binding); onClose(); }}
+          >
+            Promote to subagent
+          </button>
+        ) : null}
 
         {/* ── Go to: the surfaces outside this menu that show the same session. ── */}
         <MenuSeparator />

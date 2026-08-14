@@ -62,6 +62,8 @@ import type {
   AgentChatRecoverTurnArgs,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatUpdateSessionArgs,
+  AgentChatSetSpawnKindArgs,
+  AgentChatDismissSubagentTakeoverPromptArgs,
   AddGitHubPrStackPullRequestsArgs,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
@@ -2587,7 +2589,32 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
+  if (value.spawnKind === "subagent" || value.spawnKind === "peer") {
+    parsed.spawnKind = value.spawnKind;
+  }
+  if (value.subagentTakeoverPromptShown === true) {
+    parsed.subagentTakeoverPromptShown = true;
+  }
   return parsed;
+}
+
+function parseAgentChatSetSpawnKindArgs(value: Record<string, unknown>): AgentChatSetSpawnKindArgs {
+  const spawnKind = requireString(value.spawnKind, "chat.setSpawnKind requires spawnKind.");
+  if (spawnKind !== "subagent" && spawnKind !== "peer") {
+    throw new Error("chat.setSpawnKind requires spawnKind to be subagent or peer.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.setSpawnKind requires sessionId."),
+    spawnKind,
+  };
+}
+
+function parseAgentChatDismissSubagentTakeoverPromptArgs(
+  value: Record<string, unknown>,
+): AgentChatDismissSubagentTakeoverPromptArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.dismissSubagentTakeoverPrompt requires sessionId."),
+  };
 }
 
 function parseAgentChatCodexGetGoalArgs(value: Record<string, unknown>): AgentChatCodexGetGoalArgs {
@@ -4659,6 +4686,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("chat.updateSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
+  register("chat.setSpawnKind", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").setSpawnKind(parseAgentChatSetSpawnKindArgs(payload)));
+  register("chat.dismissSubagentTakeoverPrompt", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").dismissSubagentTakeoverPrompt(
+      parseAgentChatDismissSubagentTakeoverPromptArgs(payload),
+    ));
   register("chat.getCodexGoal", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getCodexGoal(parseAgentChatCodexGetGoalArgs(payload)));
   register("chat.setCodexGoal", { viewerAllowed: true, queueable: false }, async (payload) =>

@@ -985,7 +985,13 @@ private struct WorkSessionRowTitle: View {
 /// row redraws a single `Text` each second instead of invalidating every visible
 /// row — which is why the elapsed VALUE is deliberately absent from
 /// `WorkSessionRowRenderSignature` while `showsElapsed` is present.
-private struct WorkSessionRowStatusSlot: View {
+/// The one status slot, shared with the Activity drawer.
+///
+/// Internal rather than private on purpose: the Activity rows render the same
+/// anatomy as a Work session card, and a lookalike slot built next to this one
+/// is precisely how the two surfaces came to describe one session with
+/// different words, weights and tick behaviour.
+struct WorkSessionRowStatusSlot: View {
   let label: String
   let tone: ActivityTone
   let glyph: ActivityGlyph?

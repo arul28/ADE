@@ -656,6 +656,7 @@ export const IPC = {
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
   accountRepairMachinePairing: "ade.account.repairMachinePairing",
+  accountRepairSession: "ade.account.repairSession",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",

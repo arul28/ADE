@@ -319,10 +319,13 @@ at 64 (the relay's own bound) and report a three-way `acknowledged` / `stale` /
 `unreached` outcome. The renderer keeps this source warm in `AppShell`, presents
 it first through the global-header Activity popover, and uses `/activity` for the
 larger two-column Activity pane. Activity is an agent feed: the session column
-carries agent items grouped by the five shared state groups (needs-you, failed,
-planning, working, done), while pull requests, checks, and review outcomes render
-in a separate Notifications column. The pane adds filters and item detail, and
-ADE Notch mirrors the same ordering as a compact native strip and panel.
+carries agent items grouped by the six shared state groups (needs-you, failed,
+planning, working, idle, done), while pull requests, checks, and review outcomes
+render in a separate Notifications column. The header popover hides the two
+resting bands; the pane adds filters (including a single-select state-group
+glyph strip) and item detail, and ADE Notch mirrors the same ordering as a
+compact native strip of clickable state-glyph badges plus an Agents/Events
+panel.
 
 The product and UI name is **Activity**, but the cross-process, network,
 persistence, telemetry, and native-helper contracts intentionally retain their
@@ -358,8 +361,9 @@ Shared DTOs and cross-client policies are imported from `apps/desktop/src/shared
 `/activity` is also machine-global rather than project-scoped. It reads the
 consolidated account stream through `attention.call`, groups the shared
 `AttentionItem` wire contract in the Activity right pane — its five headings are
-a projection of the shared state-group table through
-`ACTIVITY_PANE_GROUP_BY_STATE_GROUP` rather than a second phase ladder — and
+a projection of the shared six-group table through
+`ACTIVITY_PANE_GROUP_BY_STATE_GROUP` rather than a second phase ladder (`idle`
+and stale rows file under `RECENT`, never `LIVE NOW`) — and
 opens an item's exact ADE destination before acknowledging it. Signed-out or degraded operation may show
 the connected host's real machine snapshot. A host without the capability stays
 connected and reports host-specific update/restart guidance instead of a blank
@@ -1109,8 +1113,8 @@ Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-su
 |--------|----------|-----------|
 | GitHub PAT | `.ade/secrets/github/*.bin` | `safeStorage.encryptString` (OS-backed) |
 | API provider keys | `.ade/secrets/api-keys.json` | Plaintext `0600` |
-| ADE project secrets | `.ade/secrets/project-secrets.v1.enc` | AES-GCM encrypted file store, OS-bound on supported hosts |
-| Machine credential store (shared) | `.ade/secrets/credentials.json.enc` + `.machine-key` | AES-GCM file store; key HKDF-derived from the machine key and a macOS-keychain secret. Read by the brain, the `ade` CLI, and desktop |
+| ADE project secrets | `.ade/secrets/project-secrets.v1.enc` | AES-GCM encrypted file store sealed with its own machine key; also co-owned by the brain |
+| Machine credential store (shared) | `.ade/secrets/credentials.json.enc` + `.machine-key` | AES-GCM file store sealed with the machine key. Read and written by the brain, the `ade` CLI, and desktop |
 | Machine credential store (Electron) | `.ade/secrets/credentials.safe.enc` | `safeStorage.encryptString`; readable only by Electron |
 | Claude OAuth creds | Claude's own store | Inherited |
 | Codex auth tokens | Codex's own store | Inherited |
@@ -1129,14 +1133,44 @@ migrated duplicates out of the file store, and deleting the legacy files only
 when nothing is retained. Writing either key through the safeStorage store
 throws rather than silently signing the brain out of a machine whose app is
 signed in, and a legacy store that cannot be decrypted aborts the migration
-instead of being replaced with an empty one. Keychain material is resolved
-race-safely (`osBoundKeyMaterial.ts`): the create is non-clobbering, an
-inconclusive `security` result fails closed rather than minting a replacement
-secret, and a decrypt failure against cached material re-reads the keychain once
-before the store is declared unreadable. A brain that still cannot read it
-publishes nothing to the account directory; that state is user-repairable from
-Connections and reported once per episode as `ade_account_session_unreadable`
-(see [logging](./logging.md)).
+instead of being replaced with an empty one. The shared file store is sealed with the bare machine key, never with
+OS-held material, and the envelope records that binding (`binding: "machine"`,
+still `version: 1` and outside the AAD so an older build keeps reading it). The
+reason is that the file is co-owned by processes with unequal access to the OS:
+the brain runs as a launchd agent (or a Windows scheduled task) with no UI, so a
+keychain item whose ACL belongs to the desktop app is unreadable to it and
+`security` fails closed. Sealing under either process's OS binding locked the
+other out — and because reads used to re-seal the file with the current
+process's key, opening the app was enough to strand the brain permanently.
+Readers still try both keys, ordered by the declared binding, and re-seal only
+*toward* `machine`, so a store an older build left OS-bound converges the first
+time a process that can open it reads it. OS binding survives as a read-only
+compatibility path with no writer; single-writer secrets that want OS protection
+belong in the Electron `safeStorage` store.
+
+Key material itself is resolved race-safely (`osBoundKeyMaterial.ts`): the
+create is non-clobbering, an inconclusive `security` result fails closed rather
+than minting a replacement secret, and a decrypt failure against cached material
+re-reads the keychain once before the store is declared unreadable.
+
+An unreadable store never fails a process. Reads report a state and a coarse
+reason (`decrypt_failure`, `no_os_key_material`, `store_format`); a write copies
+the ciphertext aside to a timestamped sibling with a
+`credentials.json.enc.quarantine.json` marker and starts a fresh store, so the
+"never write an empty store over real credentials" invariant is kept by
+preserving the bytes rather than by refusing to run — refusing is what
+crash-looped the brain, whose first startup act mints the sync bootstrap token.
+Quarantine copies rather than renames because Windows cannot rename a file while
+another process holds it open. A quarantine whose key a peer may still hold is
+marked recoverable and merged back — only for keys the live store lacks — by the
+first process that can decrypt it; when the process that holds the OS material
+tries and fails, the marker is demoted so surfaces stop promising a repair that
+cannot happen. `ade doctor` reports this straight from disk, because the case it
+exists for is a brain that cannot start. A brain that still cannot read the
+store publishes nothing to the account directory; that state is user-repairable
+from Connections — the control runs the store repair before restarting the
+brain — and reported once per episode as `ade_account_session_unreadable` (see
+[logging](./logging.md)).
 
 ADE project-secret dotenv imports are explicit transfers, not background
 sync: the desktop reads a user-selected local file (1 MB cap) and sends its

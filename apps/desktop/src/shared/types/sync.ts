@@ -809,6 +809,13 @@ export type SyncRosterChat = {
   attentionMessage?: string | null;
   lastTurnFailedAt?: string | null;
   exitCode?: number | null;
+  /**
+   * Snooze overlay. Optional so older hosts omit it and older phones ignore it.
+   * A snoozed chat is still the phase it was; Activity must not count it as
+   * working just because `status` stayed `running`.
+   */
+  snoozedUntil?: string | null;
+  snoozedAt?: string | null;
 };
 
 export type SyncRosterLane = {
@@ -1808,6 +1815,8 @@ export type SyncRemoteCommandAction =
   | "chat.respondToInput"
   | "chat.restart"
   | "chat.updateSession"
+  | "chat.setSpawnKind"
+  | "chat.dismissSubagentTakeoverPrompt"
   | "chat.getCodexGoal"
   | "chat.setCodexGoal"
   | "chat.setCodexGoalStatus"

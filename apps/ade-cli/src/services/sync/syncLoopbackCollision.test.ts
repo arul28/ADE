@@ -213,10 +213,10 @@ describe("sync loopback collision recovery", () => {
     try {
       await expect(listener.ensureListening([port])).resolves.toBe(port);
       expect(holder.pid).toBeGreaterThan(0);
-      expect(logger.info).toHaveBeenCalledWith("sync_listener.zombie_reaped", {
+      expect(logger.info).toHaveBeenCalledWith("sync_listener.zombie_reaped", expect.objectContaining({
         port,
         pid: holder.pid,
-      });
+      }));
       if (holder.exitCode == null) await once(holder, "exit");
     } finally {
       await listener.close();
@@ -257,9 +257,9 @@ describe("sync loopback collision recovery", () => {
           listenerBound: true,
           loopbackAdeValidated: true,
         });
-        // The occupied preferred port is now skipped before ADE binds or probes
-        // it, so loopback validation has no failure to record.
-        expect(status.routeHealth.listener.lastFailureAt).toBeNull();
+        // 8787 is always probed first now. A live or shadowed 8787 on this
+        // machine can record a loopback failure even when lastPort was the
+        // foreign listener; the bound port still has to be ADE-validated.
         expect(status.localDevice.lastPort).toBe(resolvedPort);
         expect(status.pairingConnectInfo?.port).toBe(resolvedPort);
         expect(status.tailnetDiscovery).toMatchObject({

@@ -63,6 +63,7 @@ describe("activity priority", () => {
       "failed",
       "planning",
       "working",
+      "idle",
       "done",
     ]);
     expect(activitySections([], NOW).map(({ id, items }) => [id, items])).toEqual([
@@ -70,12 +71,18 @@ describe("activity priority", () => {
       ["failed", []],
       ["planning", []],
       ["working", []],
+      ["idle", []],
       ["done", []],
     ]);
   });
 
-  /** Done is full-list only; everything live or actionable stays in the glance. */
-  it("keeps done out of the popover section list and nothing else", () => {
+  /**
+   * The two resting bands are full-list only; everything live or actionable
+   * stays in the glance. Idle joins done here for the same reason done was
+   * excluded: on a real account both are large, and a dropdown that opens onto
+   * them buries the rows that wanted a human.
+   */
+  it("keeps both resting bands out of the popover section list", () => {
     expect(ACTIVITY_POPOVER_SECTION_IDS).toEqual([
       "needs-you",
       "failed",
@@ -84,7 +91,7 @@ describe("activity priority", () => {
     ]);
   });
 
-  it("maps phases into the five state bands", () => {
+  it("maps phases into the six state bands", () => {
     const sections = activitySections([
       activityItem("done", "completed"),
       activityItem("working", "running"),
@@ -98,7 +105,10 @@ describe("activity priority", () => {
       "needs-you": ["needs"],
       failed: ["broke"],
       planning: ["planning"],
-      working: ["working", "quiet"],
+      working: ["working"],
+      // Gone quiet is its own band: it is neither live work nor a finished
+      // outcome, and filing it with either one is what made the counts lie.
+      idle: ["quiet"],
       done: ["done"],
     });
   });
@@ -116,7 +126,7 @@ describe("activity priority", () => {
     expect(sectionMap(sections).working).toEqual(["odd"]);
   });
 
-  it("files explicit idle rows in the done ambient tail", () => {
+  it("files explicit idle rows under idle, never under done", () => {
     const sections = activitySections([
       activityItem("idle-running", "running", { activityTier: "idle" }),
       activityItem("fresh-done", "completed", {
@@ -129,11 +139,12 @@ describe("activity priority", () => {
     ], NOW);
 
     expect(sectionMap(sections).working).toEqual([]);
-    expect(sectionMap(sections).done).toEqual([
-      "fresh-done",
-      "idle-running",
-      "idle-stale",
-    ]);
+    // `done` keeps only work that actually finished, so the section stops
+    // being a bucket that fills with week-old roster rows.
+    expect(sectionMap(sections).done).toEqual(["fresh-done"]);
+    // Within idle, the shared priority sorter still orders by preserved phase
+    // before recency — the band is quiet, but it is not unordered.
+    expect(sectionMap(sections).idle).toEqual(["idle-running", "idle-stale"]);
   });
 
   /**

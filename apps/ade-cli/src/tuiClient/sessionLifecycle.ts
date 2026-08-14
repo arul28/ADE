@@ -36,7 +36,9 @@ export type SessionLifecycleCommand =
   | "wake"
   | "settle"
   | "unsettle"
-  | "keep-active";
+  | "keep-active"
+  | "demote"
+  | "promote";
 
 /** Slash names this module owns, mapped to their verb. `/chat settle` and
  *  `/chat unsettle` keep their own (active-only) dispatch in app.tsx. */
@@ -46,6 +48,8 @@ export const SESSION_LIFECYCLE_COMMAND_BY_NAME: Readonly<Record<string, SessionL
   "/session settle": "settle",
   "/session unsettle": "unsettle",
   "/session keep-active": "keep-active",
+  "/session demote": "demote",
+  "/session promote": "promote",
 };
 
 export function sessionLifecycleCommandFor(name: string): SessionLifecycleCommand | null {

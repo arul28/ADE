@@ -26,6 +26,24 @@ describe("mapDroidSdkMessageToChatEvents — AGI mission workers", () => {
     expect((events[0] as { description: string }).description).toContain("Worker");
   });
 
+  it("includes a worker model when the payload reports one", () => {
+    const events = map({
+      type: "mission_worker_started",
+      workerSessionId: "worker-model-1",
+      model: "gpt-5.4",
+    });
+    expect(events[0]).toMatchObject({
+      type: "subagent_started",
+      taskId: "worker-model-1",
+      model: "gpt-5.4",
+    });
+  });
+
+  it("omits model when the worker payload does not report one", () => {
+    const events = map({ type: "mission_worker_started", workerSessionId: "worker-abc123def" });
+    expect(events[0]).not.toHaveProperty("model");
+  });
+
   it("maps a clean mission_worker_completed to a completed subagent_result with the exit code", () => {
     const events = map({ type: "mission_worker_completed", workerSessionId: "worker-1", exitCode: 0 });
     expect(events).toHaveLength(1);

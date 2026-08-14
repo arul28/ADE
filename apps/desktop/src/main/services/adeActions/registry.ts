@@ -675,6 +675,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "generateAutoLaneIdentity",
     "unarchiveSession",
     "updateSession",
+    "setSpawnKind",
+    "dismissSubagentTakeoverPrompt",
     "warmupModel",
   ],
   keybindings: ["get", "set"],
@@ -1196,6 +1198,16 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Explicitly reconnect, reconstruct, or supersede a chat whose provider thread could not be resumed.",
       input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",
       example: "ade actions run chat.recoverContinuity --input-json '{\"sessionId\":\"chat-123\",\"mode\":\"retry_original\"}'",
+    },
+    setSpawnKind: {
+      description: "Demote a subagent chat to a peer (reports stop) or promote a peer back to a subagent (reports resume). Taking over posts a quiet note on the parent.",
+      input: "object { sessionId: string, spawnKind: \"subagent\" | \"peer\" }",
+      example: "ade actions run chat.setSpawnKind --input-json '{\"sessionId\":\"chat-123\",\"spawnKind\":\"peer\"}' --text",
+    },
+    dismissSubagentTakeoverPrompt: {
+      description: "Record that the subagent takeover banner was shown and answered or dismissed, so it does not reappear.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.dismissSubagentTakeoverPrompt --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
   },
   "external-sessions": {

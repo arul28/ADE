@@ -200,7 +200,46 @@ export type TuiSessionLifecycleFields = Pick<
   | "snoozedAt"
   | "wokeAt"
   | "wokeReason"
->;
+>
+  /**
+   * Work-list presentation columns: the fields the desktop Work row reads that
+   * a chat summary simply does not carry. Without `runtimeState` /
+   * `activeBackgroundTaskCount` / `chatActivityMode` the shared presentation
+   * module cannot say "Working 8m", "Background work ×2", "Monitoring" or
+   * "Planning" — it would flatten every live row to one word.
+   *
+   * Optional (not a bare `Pick`) on purpose: `lifecycleFields()` spreads over
+   * the chat summary, so a required key would have to be written on every merge
+   * and would clobber the chat's own value with a placeholder whenever the
+   * `session.list` row is missing.
+   */
+  & Partial<Pick<
+    TerminalSessionSummary,
+    | "runtimeState"
+    | "toolType"
+    | "attentionSource"
+    | "exitCode"
+    | "laneName"
+    | "pinned"
+    | "chatActivityMode"
+    | "activeBackgroundTaskCount"
+    | "backgroundWork"
+  >>
+  & {
+    /**
+     * The whole `session.list` row this chat was enriched from, or null when it
+     * has none (a chat the runtime has not projected yet).
+     *
+     * It rides along rather than being flattened because
+     * `AgentChatSessionSummary` types `status`, `title` and `lastActivityAt`
+     * DIFFERENTLY from `TerminalSessionSummary` — intersecting those three would
+     * silently narrow them (`AgentChatSessionStatus & TerminalSessionStatus` is
+     * `never`) and spreading them would overwrite good chat values with nulls.
+     * The Work list projects this back into a session-summary shape in
+     * `workRow.ts`, which is also the one place that knows the fallbacks.
+     */
+    workSummary?: TerminalSessionSummary | null;
+  };
 
 export type TuiChatSessionSummary = AgentChatSessionSummary & TuiSessionLifecycleFields;
 export type TuiChatTerminalSession = ChatTerminalSession
@@ -227,6 +266,16 @@ function lifecycleFields(
     snoozedAt: summary?.snoozedAt ?? null,
     wokeAt: summary?.wokeAt ?? null,
     wokeReason: summary?.wokeReason ?? null,
+    runtimeState: summary?.runtimeState,
+    toolType: summary?.toolType,
+    attentionSource: summary?.attentionSource ?? null,
+    exitCode: summary?.exitCode ?? null,
+    laneName: summary?.laneName,
+    pinned: summary?.pinned,
+    chatActivityMode: summary?.chatActivityMode ?? null,
+    activeBackgroundTaskCount: summary?.activeBackgroundTaskCount,
+    backgroundWork: summary?.backgroundWork,
+    workSummary: summary ?? null,
   };
 }
 
@@ -1054,6 +1103,17 @@ export async function tagChat(connection: AdeCodeConnection, sessionId: string, 
   return await connection.action("chat", "updateSession", {
     sessionId,
     tag,
+  });
+}
+
+export async function setChatSpawnKind(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  spawnKind: "subagent" | "peer",
+): Promise<AgentChatSession> {
+  return await connection.action("chat", "setSpawnKind", {
+    sessionId,
+    spawnKind,
   });
 }
 

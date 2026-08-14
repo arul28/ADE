@@ -388,6 +388,55 @@ describe("connectToAde embedded mode", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("allows a mismatched local runtime when ADE_CODE_SKIP_RUNTIME_CHECK=1", async () => {
+    const previous = process.env.ADE_CODE_SKIP_RUNTIME_CHECK;
+    process.env.ADE_CODE_SKIP_RUNTIME_CHECK = "1";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-skip-runtime-"));
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
+    const requests: string[] = [];
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string };
+          requests.push(request.method);
+          const result = request.method === "ade/initialize"
+            ? {
+                runtimeInfo: {
+                  defaultRole: "cto",
+                  projectRoot: "/other/project",
+                  buildHash: "installed-brain",
+                },
+              }
+            : null;
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    try {
+      const connection = await connectToAde({
+        project,
+        socketPath,
+        requireSocket: true,
+      });
+      await connection.close();
+      expect(requests).toEqual(["ade/initialize", "ade/initialized"]);
+    } finally {
+      if (previous === undefined) delete process.env.ADE_CODE_SKIP_RUNTIME_CHECK;
+      else process.env.ADE_CODE_SKIP_RUNTIME_CHECK = previous;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("registers the project and injects projectId when attached to the machine daemon", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-"));
     const socketPath = localTestSocketPath(tmpDir, "ade.sock");
@@ -1277,6 +1326,8 @@ describe("ade-code TUI state", () => {
       lastLaneByProject: {},
       draftKind: "chat",
       draftKindByProject: {},
+      lastModelByProject: {},
+      providerSettingsByProject: {},
     });
   });
 
@@ -1291,6 +1342,8 @@ describe("ade-code TUI state", () => {
       lastLaneByProject: {},
       draftKind: "cli",
       draftKindByProject: {},
+      lastModelByProject: {},
+      providerSettingsByProject: {},
     });
 
     expect(loadAdeCodeState()).toEqual({
@@ -1300,6 +1353,8 @@ describe("ade-code TUI state", () => {
       lastLaneByProject: {},
       draftKind: "cli",
       draftKindByProject: {},
+      lastModelByProject: {},
+      providerSettingsByProject: {},
     });
   });
 });

@@ -13,12 +13,14 @@ export type ClosedCliSessionSummary = AgentChatSessionSummary & {
   terminalRuntimeState?: ChatTerminalSession["runtimeState"];
 } & TuiSessionLifecycleFields;
 
-export type DrawerChatAction = "new-chat" | "closed-toggle";
-
-export type DrawerChatListItem =
-  | { kind: "chat"; session: AgentChatSessionSummary }
-  | { kind: "closed-toggle"; laneId: string; count: number; expanded: boolean }
-  | { kind: "closed-chat"; session: ClosedCliSessionSummary };
+/**
+ * The one pseudo-row the sessions pane used to hold instead of a chat: its
+ * per-lane "+ new chat" affordance. New chats now start from `/new chat` or
+ * the chat-info row. The drawer also had a `"closed-toggle"` member for
+ * its per-lane closed-CLI group; the pane files ended CLI sessions through the
+ * shared filing rule instead, so that member no longer exists.
+ */
+export type WorkChatAction = "new-chat";
 
 export const RIGHT_CHAT_CLOSED_TOGGLE_ID = "__closed_cli_toggle__";
 
@@ -120,42 +122,12 @@ export function deriveClosedCliSessions(
   );
 }
 
-export function deriveOpenDrawerSessions(
+export function deriveOpenWorkSessions(
   displaySessions: AgentChatSessionSummary[],
   closedCliSessions: AgentChatSessionSummary[],
 ): AgentChatSessionSummary[] {
   const closedCliSessionIds = new Set(closedCliSessions.map((session) => session.sessionId));
   return displaySessions.filter((session) => !closedCliSessionIds.has(session.sessionId));
-}
-
-export function buildDrawerChatItems(args: {
-  openSessions: AgentChatSessionSummary[];
-  closedSessions: ClosedCliSessionSummary[];
-  closedToggleVisible: boolean;
-  closedExpanded: boolean;
-  laneId: string | null;
-}): DrawerChatListItem[] {
-  const items: DrawerChatListItem[] = args.openSessions.map((session) => ({ kind: "chat", session }));
-  if (args.closedToggleVisible && args.laneId) {
-    items.push({
-      kind: "closed-toggle",
-      laneId: args.laneId,
-      count: args.closedSessions.length,
-      expanded: args.closedExpanded,
-    });
-    if (args.closedExpanded) {
-      items.push(...args.closedSessions.map((session): DrawerChatListItem => ({ kind: "closed-chat", session })));
-    }
-  }
-  return items;
-}
-
-export function sessionFromDrawerChatItem(item: DrawerChatListItem | null | undefined): AgentChatSessionSummary | null {
-  return item?.kind === "chat" || item?.kind === "closed-chat" ? item.session : null;
-}
-
-export function drawerChatActionForItem(item: DrawerChatListItem | null | undefined): DrawerChatAction | null {
-  return item?.kind === "closed-toggle" ? "closed-toggle" : null;
 }
 
 // Exit 130 (Ctrl+C) and 143 (SIGTERM) are user-initiated closes — the daemon

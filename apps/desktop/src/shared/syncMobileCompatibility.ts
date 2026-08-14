@@ -25,6 +25,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "session.snoozeSession",
   "session.wakeSession",
   "session.clearWokeMarker",
+  // Subagent takeover. The phone hides Take over / Keep reporting / Demote /
+  // Promote unless `chat.setSpawnKind` is advertised. Optional so an older
+  // phone against a newer host does not go limited, and an older host simply
+  // omits the actions.
+  "chat.setSpawnKind",
+  "chat.dismissSubagentTakeoverPrompt",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",

@@ -493,6 +493,18 @@ extension WorkRootScreen {
     }
   }
 
+  func demoteSessionToPeer(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      _ = try await syncService.updateChatSession(sessionId: session.id, spawnKind: "peer")
+    }
+  }
+
+  func promoteSessionToSubagent(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      _ = try await syncService.updateChatSession(sessionId: session.id, spawnKind: "subagent")
+    }
+  }
+
   /// The woke marker exists to explain why a snoozed row came back. Visiting
   /// the row is the explanation being read, so drop it then — quietly, since a
   /// failure here must never block navigation.

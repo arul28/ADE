@@ -13,23 +13,43 @@ import {
 } from "../../../../shared/modelRegistry";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
-
-const runtimeCatalogDescriptorsById = new Map<string, ModelDescriptor>();
+import {
+  DEFAULT_RUNTIME_CATALOG_SCOPE,
+  clearRuntimeCatalogScopeDescriptors,
+  peekRuntimeCatalogScopeDescriptors,
+  runtimeCatalogScopeDescriptors,
+} from "./runtimeCatalogCache";
 
 export function resetRuntimeCatalogDescriptorCacheForTests(): void {
-  runtimeCatalogDescriptorsById.clear();
+  clearRuntimeCatalogScopeDescriptors();
 }
 
-export function getRuntimeCatalogModelDescriptor(modelId: string | null | undefined): ModelDescriptor | undefined {
+/**
+ * A catalog descriptor states machine-specific facts — reasoning tiers, context
+ * window, availability — so it is only ever read from the machine that reported
+ * it. There is deliberately NO fallback to another machine's bucket: answering
+ * a miss with the bound machine's descriptor is exactly the cross-machine leak
+ * this bucketing exists to prevent (it would hand a composer on machine B the
+ * thinking-level ladder machine A reported for the same model id). A miss falls
+ * through to the static registry, and past that to an unknown-model placeholder
+ * — correct-but-generic beats confident-and-wrong.
+ */
+export function getRuntimeCatalogModelDescriptor(
+  modelId: string | null | undefined,
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
+): ModelDescriptor | undefined {
   const id = modelId?.trim();
   if (!id) return undefined;
-  return runtimeCatalogDescriptorsById.get(id);
+  return peekRuntimeCatalogScopeDescriptors(scopeKey)?.get(id);
 }
 
-export function resolveModelDescriptorWithRuntimeCatalog(modelId: string | null | undefined): ModelDescriptor | undefined {
+export function resolveModelDescriptorWithRuntimeCatalog(
+  modelId: string | null | undefined,
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
+): ModelDescriptor | undefined {
   const id = modelId?.trim();
   if (!id) return undefined;
-  return getRuntimeCatalogModelDescriptor(id) ?? resolveModelDescriptor(id);
+  return getRuntimeCatalogModelDescriptor(id, scopeKey) ?? resolveModelDescriptor(id);
 }
 
 export function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
@@ -121,6 +141,7 @@ export function mergeSelectorModels(
   selectedModelId?: string,
   filter?: (model: ModelDescriptor) => boolean,
   catalogMode: "all" | "available-only" = "all",
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
 ): ModelDescriptor[] {
   const merged = new Map<string, ModelDescriptor>();
   const selectedId = String(selectedModelId ?? "").trim();
@@ -138,7 +159,7 @@ export function mergeSelectorModels(
   }
 
   for (const rawId of availableIdSet) {
-    const descriptor = resolveModelDescriptorWithRuntimeCatalog(rawId);
+    const descriptor = resolveModelDescriptorWithRuntimeCatalog(rawId, scopeKey);
     if (descriptor) {
       if (descriptor.deprecated) continue;
       if (filter && !filter(descriptor)) continue;
@@ -151,7 +172,7 @@ export function mergeSelectorModels(
   }
 
   if (selectedId && !merged.has(selectedId)) {
-    const selectedDescriptor = resolveModelDescriptorWithRuntimeCatalog(selectedId);
+    const selectedDescriptor = resolveModelDescriptorWithRuntimeCatalog(selectedId, scopeKey);
     if (selectedDescriptor && !selectedDescriptor.deprecated && (!filter || filter(selectedDescriptor))) {
       merged.set(selectedDescriptor.id, rebucketOpenCodeFamily(selectedDescriptor));
     } else if (!selectedDescriptor) {
@@ -193,10 +214,12 @@ function pickerFamilyForCatalogGroup(groupKey: string, fallbackFamily?: string):
 export function descriptorsFromAgentChatModelCatalog(
   catalog: AgentChatModelCatalog | null | undefined,
   filter?: (model: ModelDescriptor) => boolean,
+  scopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
 ): { models: RuntimeCatalogModelDescriptor[]; availableModelIds: string[] } {
   if (!catalog) return { models: [], availableModelIds: [] };
   const merged = new Map<string, RuntimeCatalogModelDescriptor>();
   const available = new Set<string>();
+  const scopedDescriptors = runtimeCatalogScopeDescriptors(scopeKey);
   for (const group of catalog.groups ?? []) {
     for (const provider of group.providers ?? []) {
       for (const subsection of provider.subsections ?? []) {
@@ -257,7 +280,7 @@ export function descriptorsFromAgentChatModelCatalog(
           };
           if (filter && !filter(descriptor)) continue;
           merged.set(descriptor.id, descriptor);
-          runtimeCatalogDescriptorsById.set(descriptor.id, descriptor);
+          scopedDescriptors.set(descriptor.id, descriptor);
           if (model.isAvailable) available.add(descriptor.id);
         }
       }

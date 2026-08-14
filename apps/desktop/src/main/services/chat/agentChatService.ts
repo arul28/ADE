@@ -92,7 +92,10 @@ import {
 } from "./claudeWorkflowProgress";
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
-import { parentShouldWakeForChildTurn } from "./spawnMissionOwnership";
+import {
+  countHumanChildMessagesForTurn,
+  formatHumanChildMessageAnnotation,
+} from "./spawnMissionOwnership";
 import {
   classifyCodexResumeFailure,
   type ResumeFailureClassification,
@@ -239,6 +242,9 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
   AgentChatSpawnCompletion,
+  AgentChatSpawnKind,
+  AgentChatSetSpawnKindArgs,
+  AgentChatDismissSubagentTakeoverPromptArgs,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
@@ -1082,6 +1088,7 @@ type PersistedChatState = {
   orchestrationRole?: "lead" | "worker" | "validator";
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
+  subagentTakeoverPromptShownAt?: string | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -1455,6 +1462,8 @@ type ClaudeActiveSubagent = {
    * so must never appear as a row in the Subagents roster.
    */
   nonAgentTaskRun?: boolean;
+  /** Child model from Task/Agent input or SDK messages — never the parent session model. */
+  model?: string;
 };
 
 type ClaudeContextGuardrailState = {
@@ -1519,6 +1528,7 @@ type ClaudeRuntime = {
     name?: string;
     description?: string;
     isBackground?: boolean;
+    model?: string;
   }>;
   /**
    * Per-workflow-task emit state for the SDK's undocumented
@@ -3544,6 +3554,32 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
+function optionalSubagentModelFields(model?: string | null, reasoningEffort?: string | null): {
+  model?: string;
+  reasoningEffort?: string;
+} {
+  const modelId = stringOrNull(model) ?? undefined;
+  const effort = stringOrNull(reasoningEffort) ?? undefined;
+  return {
+    ...(modelId ? { model: modelId } : {}),
+    ...(effort ? { reasoningEffort: effort } : {}),
+  };
+}
+
+function openCodeChildSessionModel(info: unknown): string | null {
+  const record = asRecord(info);
+  if (!record) return null;
+  if (typeof record.model === "string") return stringOrNull(record.model);
+  const nested = asRecord(record.model);
+  if (nested) {
+    const providerID = stringOrNull(nested.providerID) ?? stringOrNull(nested.providerId);
+    const modelID = stringOrNull(nested.modelID) ?? stringOrNull(nested.modelId) ?? stringOrNull(nested.id);
+    if (providerID && modelID) return `opencode/${providerID}/${modelID}`;
+    return modelID;
+  }
+  return stringOrNull(record.modelID) ?? stringOrNull(record.modelId);
+}
+
 export function parseCodexServerVersion(userAgent: unknown): CodexServerVersion | null {
   if (typeof userAgent !== "string") return null;
   const match = /(\d+)\.(\d+)\.(\d+)/.exec(userAgent);
@@ -4462,6 +4498,7 @@ function extractTaskToolInput(input: unknown): {
   name?: string;
   description?: string;
   isBackground?: boolean;
+  model?: string;
 } | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
@@ -4474,13 +4511,20 @@ function extractTaskToolInput(input: unknown): {
   const description = typeof record.description === "string" && record.description.trim().length
     ? record.description.trim()
     : undefined;
+  const model = typeof record.model === "string" && record.model.trim().length
+    ? record.model.trim()
+    : undefined;
   const isBackground = isBackgroundTask(record);
+  // Model rides along on an already-identified Task/Agent input. It must not
+  // create a stash by itself — `isNonAgentTaskRun` treats any stash as agent
+  // metadata, which would pull a plain task_type "other" run into the roster.
   if (!subagentType && !name && !description && !isBackground) return null;
   return {
     ...(subagentType ? { subagentType } : {}),
     ...(name ? { name } : {}),
     ...(description ? { description } : {}),
     ...(isBackground ? { isBackground } : {}),
+    ...(model ? { model } : {}),
   };
 }
 
@@ -6436,6 +6480,7 @@ const ORCHESTRATION_SESSION_FIELD_NAMES = [
   "orchestrationRole",
   "orchestrationParentSessionId",
   "spawnKind",
+  "subagentTakeoverPromptShownAt",
   "orchestrationTag",
   "orchestrationStepId",
   "orchestrationBundlePath",
@@ -6466,6 +6511,10 @@ function hydrateOrchestrationFields(
   const spawnKind = record.spawnKind;
   if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
     out.spawnKind = spawnKind as "subagent" | "peer";
+  }
+  const shownAt = record.subagentTakeoverPromptShownAt;
+  if (typeof shownAt === "string" && shownAt.trim().length) {
+    out.subagentTakeoverPromptShownAt = shownAt.trim();
   }
   const tag = record.orchestrationTag;
   if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
@@ -6533,7 +6582,7 @@ function buildSpawnSelfReportGuidance(
 ): string | null {
   if (!session.orchestrationParentSessionId?.trim()) return null;
   if (session.spawnKind === "subagent") {
-    return "You were spawned as a subagent. While your parent owns your current mission, ADE automatically wakes it after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. If a human messages you directly, completions become quiet notes until your parent dispatches again. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
+    return "You were spawned as a subagent. ADE automatically wakes your parent after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. A human message does not close that report channel. If a human takes this chat over, ADE converts you to a peer and completions become quiet notes. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
   }
   if (session.spawnKind === "peer") {
     return "You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`.";
@@ -7186,6 +7235,11 @@ type AgentChatAutomationService = {
   cancelRunForDeletedChat: (args: { sessionId: string; runId?: string | null }) => void;
 };
 
+/** Live in-memory chat-event rings kept by the brain. Snapshot hydration must
+ *  not grow this set — that is how a long-lived brain reached ~1 GB and wedged
+ *  the event loop on GC. */
+export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -7490,7 +7544,9 @@ export function createAgentChatService(args: {
   // emitted event (see emitChatEvent → commitChatEvent) and merged with the
   // persisted transcript when a snapshot is requested. The transcript recovers
   // older project/tab-switch history; the ring contributes events that may not
-  // have reached fs.appendFile yet.
+  // have reached fs.appendFile yet. Session count is LRU-capped: a history
+  // snapshot must not copy the transcript into this map, or every hydrated
+  // chat parks up to 4 MB in the brain until process death.
   const CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION = 4_000;
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
@@ -7589,6 +7645,16 @@ export function createAgentChatService(args: {
         : envelopes,
       CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
     );
+
+  const touchEventHistoryRing = (sessionId: string, envelopes: AgentChatEventEnvelope[]): void => {
+    eventHistoryBySession.delete(sessionId);
+    eventHistoryBySession.set(sessionId, envelopes);
+    while (eventHistoryBySession.size > CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS) {
+      const oldestSessionId = eventHistoryBySession.keys().next().value;
+      if (typeof oldestSessionId !== "string" || oldestSessionId === sessionId) break;
+      eventHistoryBySession.delete(oldestSessionId);
+    }
+  };
   type TranscriptHistoryCacheEntry = {
     transcriptPath: string;
     size: number;
@@ -7638,7 +7704,7 @@ export function createAgentChatService(args: {
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
     current.push(envelope);
-    eventHistoryBySession.set(envelope.sessionId, boundRingEnvelopes(current));
+    touchEventHistoryRing(envelope.sessionId, boundRingEnvelopes(current));
   };
 
   const rememberTranscriptHistoryCache = (
@@ -10057,7 +10123,6 @@ export function createAgentChatService(args: {
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
-    eventHistoryBySession.set(sessionId, boundRingEnvelopes(merged.slice()));
 
     const parentVisibleMerged = merged.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry));
     const parentVisibleLength = parentVisibleMerged.length;
@@ -14858,6 +14923,7 @@ export function createAgentChatService(args: {
             background: true,
             ...(existing.taskType ? { taskType: existing.taskType } : {}),
             ...(existing.workflowName ? { workflowName: existing.workflowName } : {}),
+            ...optionalSubagentModelFields(existing.model),
             ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
             ...(runtime.sdkSessionId ? { providerSessionId: runtime.sdkSessionId } : {}),
           });
@@ -15615,7 +15681,7 @@ export function createAgentChatService(args: {
       // Single bulk ring update; the per-envelope recordChatEventInHistory
       // re-bounds the whole buffer each call (O(n²) across a large import).
       const current = eventHistoryBySession.get(managed.session.id) ?? [];
-      eventHistoryBySession.set(
+      touchEventHistoryRing(
         managed.session.id,
         boundRingEnvelopes([...current, ...storedEnvelopes]),
       );
@@ -18477,6 +18543,8 @@ export function createAgentChatService(args: {
     const agentType = compactString(msg.subagent_type) ?? existing?.agentType;
     const command = compactString(msg.command) ?? existing?.command;
     const description = compactString(msg.description) ?? existing?.description ?? "Background task";
+    const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+    const model = compactString(msg.model) ?? existing?.model ?? stashed?.model;
     const backgroundShell = classification.backgroundShell;
     const nativeCronScheduleId = taskType === "cron"
       ? resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg)
@@ -18610,6 +18678,7 @@ export function createAgentChatService(args: {
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...(model ? { model } : {}),
       });
       if (taskType === "cron") {
         const scheduledWorkId = nativeCronScheduleId;
@@ -18638,6 +18707,7 @@ export function createAgentChatService(args: {
         background,
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...optionalSubagentModelFields(model),
         turnId,
       });
       return true;
@@ -20798,6 +20868,8 @@ export function createAgentChatService(args: {
             ? taskMsg.agent_id.trim()
             : undefined;
           const parentAgentId = compactString(taskMsg.parent_agent_id);
+          const existingStarted = resolveClaudeActiveSubagent(runtime, taskId, agentId);
+          const model = compactString(taskMsg.model) ?? stashed?.model ?? existingStarted?.model;
           const classification = classifyClaudeTaskMessage(
             runtime,
             taskMsg as Record<string, unknown>,
@@ -20884,6 +20956,7 @@ export function createAgentChatService(args: {
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(model ? { model } : {}),
             });
           const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
             claudeTaskTodoMap(managed, runtime),
@@ -20911,6 +20984,7 @@ export function createAgentChatService(args: {
             background,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...optionalSubagentModelFields(model),
             turnId,
           });
           continue;
@@ -22820,6 +22894,7 @@ export function createAgentChatService(args: {
             const childDescription = (childInfo.title && childInfo.title.length)
               ? childInfo.title
               : "subagent";
+            const childModel = openCodeChildSessionModel(childInfo);
             const formatSummary = (): string => {
               const summary = childInfo.summary;
               return summary
@@ -22842,6 +22917,7 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 description: childDescription,
                 turnId,
+                ...optionalSubagentModelFields(childModel),
               });
             };
 
@@ -22863,6 +22939,7 @@ export function createAgentChatService(args: {
                 summary: formatSummary(),
                 ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
                 turnId,
+                ...optionalSubagentModelFields(childModel),
               });
             } else {
               // Deletion is distinct from normal completion (`session.idle`).
@@ -24781,12 +24858,18 @@ export function createAgentChatService(args: {
         if (!latest) return;
         const metadata = normalizeCodexSubagentThreadMetadata(response, latest);
         const previousLabel = latest.label;
+        const previousModel = latest.model;
+        const previousEffort = latest.reasoningEffort;
         latest.metadata = metadata;
         latest.label = metadata.label ?? latest.label;
         latest.parentThreadId = metadata.parentThreadId ?? latest.parentThreadId;
         latest.model = metadata.model ?? latest.model;
         latest.reasoningEffort = metadata.reasoningEffort ?? latest.reasoningEffort;
-        if (latest.label !== previousLabel) {
+        if (
+          latest.label !== previousLabel
+          || latest.model !== previousModel
+          || latest.reasoningEffort !== previousEffort
+        ) {
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId: threadId,
@@ -24796,6 +24879,7 @@ export function createAgentChatService(args: {
             description: latest.prompt ?? latest.label,
             summary: metadata.preview ?? metadata.prompt ?? latest.label,
             turnId: latest.parentTurnId ?? undefined,
+            ...optionalSubagentModelFields(latest.model, latest.reasoningEffort),
           });
         }
         logger.debug("agent_chat.codex_subagent_metadata_loaded", {
@@ -25661,6 +25745,10 @@ export function createAgentChatService(args: {
           description: String(item.description ?? item.title ?? "Delegated task"),
           background: isBackgroundTask(item as Record<string, unknown>),
           turnId,
+          ...optionalSubagentModelFields(
+            stringOrNull(item.model),
+            stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
+          ),
         });
       }
       if (eventKind === "completed") {
@@ -25690,6 +25778,8 @@ export function createAgentChatService(args: {
         background: existing?.background ?? false,
         label,
         status: kind === "interrupted" ? "stopped" : "running",
+        model: stringOrNull(item.model),
+        reasoningEffort: stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
       });
       refreshCodexSubagentThreadMetadata(managed, runtime, threadState.threadId);
       if (kind === "started") {
@@ -25715,6 +25805,7 @@ export function createAgentChatService(args: {
           description: existing?.description ?? label,
           background: existing?.background ?? false,
           turnId,
+          ...optionalSubagentModelFields(threadState.model, threadState.reasoningEffort),
         });
         return;
       }
@@ -25744,6 +25835,7 @@ export function createAgentChatService(args: {
         description: existing?.description ?? label,
         summary: kind === "interacted" ? "Agent received input" : "Agent active",
         turnId,
+        ...optionalSubagentModelFields(threadState.model, threadState.reasoningEffort),
       });
       return;
     }
@@ -28181,12 +28273,14 @@ export function createAgentChatService(args: {
           async (input: HookInput) => {
             if (input.hook_event_name === "SubagentStart") {
               const taskId = input.agent_id;
+              const model = stringOrNull((input as unknown as Record<string, unknown>).model);
               runtime.activeSubagents.set(taskId, {
                 taskId,
                 description: input.agent_type,
                 parentToolUseId: null,
                 agentId: input.agent_id,
                 agentType: input.agent_type,
+                ...(model ? { model } : {}),
               });
             }
             return { continue: true };
@@ -29907,11 +30001,9 @@ export function createAgentChatService(args: {
 
   /**
    * Child chat sessions spawned with a parent lineage. The relationship lives
-   * on the persisted child session, while parent-dispatch causality lives on
-   * the child's persisted user-message metadata — per turn for the turn that
-   * was dispatched, and across turns as mission ownership. Completion deliveries
-   * carry the child turn id in the parent transcript, providing durable dedupe
-   * without a process-local spawn tracker.
+   * on the persisted child session. Wake vs quiet is the child's `spawnKind`.
+   * Completion deliveries carry the child turn id in the parent transcript,
+   * providing durable dedupe without a process-local spawn tracker.
    */
   const spawnCompletionDeliveriesInFlight = new Set<string>();
 
@@ -29952,7 +30044,112 @@ export function createAgentChatService(args: {
       background: false,
       taskType: "subagent",
       spawnKind,
+      ...optionalSubagentModelFields(child.session.model),
     });
+  };
+
+  const parentChatStillExists = (parentSessionId: string): boolean => {
+    const live = managedSessions.get(parentSessionId);
+    if (live && !live.deleted) return true;
+    const row = sessionService.get(parentSessionId);
+    return Boolean(row && isChatToolType(row.toolType));
+  };
+
+  const emitSpawnKindMeta = (managed: ManagedChatSession): void => {
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      ...(managed.session.spawnKind ? { spawnKind: managed.session.spawnKind } : {}),
+      subagentTakeoverPromptShownAt: managed.session.subagentTakeoverPromptShownAt ?? null,
+    });
+  };
+
+  const postSpawnTakeoverNote = (child: ManagedChatSession, parentSessionId: string): void => {
+    const childTitle = sessionService.get(child.session.id)?.title?.trim()
+      || defaultChatSessionTitle(child.session.provider);
+    try {
+      const parent = ensureManagedSession(parentSessionId);
+      if (parent.deleted) return;
+      emitChatEvent(parent, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_takeover",
+        message: `The user took over "${childTitle}" — reports stop here.`,
+        detail: {
+          spawnTakeover: {
+            childSessionId: child.session.id,
+            childTitle,
+          },
+        },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.spawn_takeover_note_failed", {
+        childSessionId: child.session.id,
+        parentSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const applySpawnKindChange = ({
+    sessionId,
+    spawnKind,
+    source,
+  }: {
+    sessionId: string;
+    spawnKind: AgentChatSpawnKind;
+    source: "takeover" | "promote" | "parent_dispatch";
+  }): AgentChatSession => {
+    const managed = ensureManagedSession(sessionId);
+    const parentSessionId = managed.session.orchestrationParentSessionId?.trim() || "";
+    if (!parentSessionId || parentSessionId === sessionId) {
+      throw new Error("This chat is not a child of another chat.");
+    }
+    if (spawnKind === "subagent" && source !== "parent_dispatch" && !parentChatStillExists(parentSessionId)) {
+      throw new Error("The parent chat is gone, so this chat cannot report back.");
+    }
+    const previous = managed.session.spawnKind;
+    if (source === "takeover") {
+      managed.session.subagentTakeoverPromptShownAt = nowIso();
+    }
+    managed.session.spawnKind = spawnKind;
+    persistChatState(managed);
+    emitSpawnKindMeta(managed);
+    logger.info("agent_chat.spawn_kind_changed", {
+      sessionId,
+      parentSessionId,
+      previousSpawnKind: previous ?? null,
+      spawnKind,
+      source,
+    });
+    if (spawnKind === "peer" && previous !== "peer" && source === "takeover") {
+      postSpawnTakeoverNote(managed, parentSessionId);
+    }
+    return managed.session;
+  };
+
+  const setSpawnKind = ({ sessionId, spawnKind }: AgentChatSetSpawnKindArgs): AgentChatSession => {
+    if (spawnKind !== "subagent" && spawnKind !== "peer") {
+      throw new Error("Spawn type must be subagent or peer.");
+    }
+    return applySpawnKindChange({
+      sessionId,
+      spawnKind,
+      source: spawnKind === "peer" ? "takeover" : "promote",
+    });
+  };
+
+  const dismissSubagentTakeoverPrompt = (
+    { sessionId }: AgentChatDismissSubagentTakeoverPromptArgs,
+  ): AgentChatSession => {
+    const managed = ensureManagedSession(sessionId);
+    if (!managed.session.orchestrationParentSessionId?.trim()) {
+      return managed.session;
+    }
+    if (managed.session.subagentTakeoverPromptShownAt) return managed.session;
+    managed.session.subagentTakeoverPromptShownAt = nowIso();
+    persistChatState(managed);
+    emitSpawnKindMeta(managed);
+    return managed.session;
   };
 
   const reportChildSpawnEnded = (
@@ -29974,18 +30171,20 @@ export function createAgentChatService(args: {
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
-    // Wake decision lives in `spawnMissionOwnership` so the policy — which
-    // inputs count as a directive — is stated and tested in one place. Peers
-    // never wake, so they never pay for the transcript read. Read once, before
-    // the delivery retries: a retry must not re-decide ownership.
-    const parentShouldWake = spawnKind === "subagent" && parentShouldWakeForChildTurn({
-      history: mergeEnvelopeStreams(
-        readTranscriptEnvelopes(child),
-        eventHistoryBySession.get(childSessionId) ?? [],
-      ),
-      parentSessionId,
-      turnId: resolvedTurnId,
-    });
+    // Subagent completions always wake the parent. Human messages no longer
+    // steal that channel — only an explicit demote to peer does. Peers skip
+    // the transcript read because they never wake.
+    const parentShouldWake = spawnKind === "subagent";
+    const humanMessageCount = parentShouldWake
+      ? countHumanChildMessagesForTurn(
+          mergeEnvelopeStreams(
+            readTranscriptEnvelopes(child),
+            eventHistoryBySession.get(childSessionId) ?? [],
+          ),
+          resolvedTurnId,
+        )
+      : 0;
+    const humanAnnotation = formatHumanChildMessageAnnotation(humanMessageCount);
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
     const assistantSummary = [...child.recentConversationEntries]
       .reverse()
@@ -29993,15 +30192,19 @@ export function createAgentChatService(args: {
       ?.text
       .replace(/\s+/g, " ")
       .trim();
-    const summary = resultStatus === "completed" && assistantSummary
-      ? assistantSummary.length > 1_200
+    let baseSummary: string;
+    if (resultStatus === "completed" && assistantSummary) {
+      baseSummary = assistantSummary.length > 1_200
         ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
-        : assistantSummary
-      : resultStatus === "completed"
-        ? spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished."
-      : resultStatus === "stopped"
-        ? "Stopped before finishing."
-        : "Turn failed.";
+        : assistantSummary;
+    } else if (resultStatus === "completed") {
+      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished.";
+    } else if (resultStatus === "stopped") {
+      baseSummary = "Stopped before finishing.";
+    } else {
+      baseSummary = "Turn failed.";
+    }
+    const summary = humanAnnotation ? `${baseSummary}\n${humanAnnotation}` : baseSummary;
     const childTitle = sessionService.get(childSessionId)?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
@@ -30011,6 +30214,7 @@ export function createAgentChatService(args: {
       childTurnId: resolvedTurnId,
       status: resultStatus,
       summary,
+      ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
     };
 
     const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
@@ -30063,7 +30267,7 @@ export function createAgentChatService(args: {
               type: "system_notice",
               noticeKind: "info",
               status: "spawn_completed",
-              message: `${spawnKind === "subagent" ? "Subagent" : "Peer"} "${childTitle}" turn finished`,
+              message: `Peer "${childTitle}" turn finished`,
               detail: { spawnCompletion },
             });
           }
@@ -32984,6 +33188,18 @@ export function createAgentChatService(args: {
     allowPendingInput?: boolean;
   }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
+    const dispatchParentId = metadata?.spawnDispatch?.parentSessionId?.trim();
+    if (
+      dispatchParentId
+      && managed.session.spawnKind === "peer"
+      && managed.session.orchestrationParentSessionId?.trim() === dispatchParentId
+    ) {
+      applySpawnKindChange({
+        sessionId,
+        spawnKind: "subagent",
+        source: "parent_dispatch",
+      });
+    }
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
     const trimmedText = text.trim();
     const trimmed = trimmedText.length
@@ -42603,6 +42819,8 @@ export function createAgentChatService(args: {
     cursorModeId,
     cursorConfigValues,
     permissionMode,
+    spawnKind: requestedSpawnKind,
+    subagentTakeoverPromptShown,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
@@ -43064,6 +43282,17 @@ export function createAgentChatService(args: {
     if (manuallyNamed !== undefined && title === undefined) {
       managed.manuallyNamed = manuallyNamed;
       if (manuallyNamed) managed.runtimeTitleAdopted = false;
+    }
+
+    if (requestedSpawnKind === "subagent" || requestedSpawnKind === "peer") {
+      applySpawnKindChange({
+        sessionId,
+        spawnKind: requestedSpawnKind,
+        source: requestedSpawnKind === "peer" ? "takeover" : "promote",
+      });
+    }
+    if (subagentTakeoverPromptShown === true) {
+      dismissSubagentTakeoverPrompt({ sessionId });
     }
 
     persistChatState(managed);
@@ -45034,6 +45263,7 @@ export function createAgentChatService(args: {
       orchestrationRole?: "lead" | "worker" | "validator" | null;
       orchestrationParentSessionId?: string | null;
       spawnKind?: AgentChatSession["spawnKind"] | null;
+      subagentTakeoverPromptShownAt?: string | null;
       orchestrationTag?: string | null;
       orchestrationStepId?: string | null;
       orchestrationBundlePath?: string | null;
@@ -45603,6 +45833,10 @@ export function createAgentChatService(args: {
     ensureSessionSurface,
     hasActiveWorkloads,
     hasRetainableSessions,
+    residentChatEventHistorySessionCount: () => eventHistoryBySession.size,
+    seedLiveChatEventHistory(envelopes: AgentChatEventEnvelope[]): void {
+      for (const envelope of envelopes) recordChatEventInHistory(envelope);
+    },
     countActiveForLane,
     disposeForLane,
     getChatTranscript,
@@ -45638,6 +45872,8 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession,
+    setSpawnKind,
+    dismissSubagentTakeoverPrompt,
     reconcileThreadPointerFromRedundantSources,
     isTranscriptPathActive,
     warmupModel,

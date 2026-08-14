@@ -268,12 +268,17 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       await call("chat.respondToInput", args, undefined, false);
     },
     models: (args: unknown) => call("chat.models", args, []),
-    modelCatalog: (args?) =>
-      call<AgentChatModelCatalog>("chat.modelCatalog", args, {
+    modelCatalog: (args?, pin?) => {
+      // A catalog describes the machine that served it, so a foreign pin cannot
+      // be answered from this adapter's single connection. The picker treats a
+      // rejection as "no catalog" and falls back to the pin-scoped model list.
+      assertWebRuntimePinRoutable("agentChat.modelCatalog", pin, infra);
+      return call<AgentChatModelCatalog>("chat.modelCatalog", args, {
         groups: [],
         fetchedAt: new Date(0).toISOString(),
         stale: true,
-      }),
+      });
+    },
     archive: async (args: unknown) => {
       await call("chat.archive", args, undefined, false);
     },

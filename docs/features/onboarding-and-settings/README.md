@@ -74,7 +74,9 @@ Main process:
 - `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
   crash-safe refresh-rotation journal (`account.session.rotation.v1`), kept in
   the same file-backed credential bucket as the session it describes so the
-  brain, the CLI, and the desktop all see an interrupted rotation.
+  brain, the CLI, and the desktop all see an interrupted rotation. `tryBegin`
+  compare-and-swaps that entry so a live peer's in-flight Clerk refresh is a
+  mutex, not a race.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, suggested config
   application, plus passive glossary help state. The active renderer
@@ -217,24 +219,12 @@ Renderer — onboarding:
   account-directory targets and their paired credentials are owner-tagged and
   removed with that account.
 - `apps/desktop/src/renderer/components/account/AccountPage.tsx` — optional
-  account status/sign-in/out and account-machine directory. The signed-out page
-  receives an explicit in-app return route from the sidebar or Connections and
-  falls back safely to `/work` when opened directly. It routes pairing work
-  back to the beginner-facing Connections panel rather than owning a second
-  machine-connection flow. Signed-in machine menus can rename an account
-  machine or clear its custom name. The custom name is account-wide and wins
-  for display without replacing the hostname that the machine continues to
-  report; list refreshes propagate the new display name through Connections,
-  desktop pairing, ADE Code, hosted web, and iOS. When this computer is missing
-  from the signed-in machine list, the page offers **Reconnect this computer**.
-  Removing a machine is terminal — heartbeats never re-register it — so the
-  affordance calls `repairMachinePairing` on the brain, and when the account
-  directory demands proof of a fresh interactive sign-in it runs the *device*
-  login flow (the only one the directory observes, and therefore the only one
-  that can end with the single-use pairing grant a re-pair needs) before trying
-  again. The copy stays honest about the in-between outcome where the machine
-  rejoined the roster but push delivery has not resumed. "Not signed in" is not
-  one state: `AdeAccountStatus.sessionState` carries the daemon's
+  account status/sign-in/out shell. The signed-out page receives an explicit
+  in-app return route from the sidebar or Connections and falls back safely to
+  `/work` when opened directly. It routes pairing work back to the
+  beginner-facing Connections panel rather than owning a second
+  machine-connection flow. "Not signed in" is not one state:
+  `AdeAccountStatus.sessionState` carries the daemon's
   `active | signed_out | expired | unreadable` tri-state (older runtimes are
   derived from `sessionReadState`), and `accountSessionState` /
   `accountSessionNotice` in `renderer/lib/account.ts` are the single place the
@@ -244,6 +234,30 @@ Renderer — onboarding:
   with sign-in — a new session overwrites the stored one — so it leads with the
   shared `BrainRepairButton` (or a plain retry where no brain can be restarted)
   and demotes sign-in to "Sign in anyway".
+- `apps/desktop/src/renderer/components/account/YourMacsCard.tsx` — signed-in
+  **Your computers** directory card extracted from `AccountPage`. It lists
+  account machines (this computer pinned first), rename/clear custom name,
+  remove, and the missing-directory recovery row. Custom names are account-wide
+  and win for display without replacing the hostname the machine continues to
+  report; list refreshes propagate the new display name through Connections,
+  desktop pairing, ADE Code, hosted web, and iOS. Absence from the directory is
+  not proof of removal: a publish gap, a split sync listener, or an expired
+  sign-in all produce the same empty row. `describeThisComputerMissing`
+  therefore branches on `sessionState` — expired asks for Sign in then
+  Reconnect; unreadable asks to Repair the stored sign-in then Reconnect;
+  active/signed_out names both causes and offers both actions — and never
+  claims the computer was removed as fact. **Reconnect this computer** and
+  **Repair** sit side by side: Reconnect calls `repairMachinePairing` on the
+  brain (and runs the *device* login flow when the directory demands proof of a
+  fresh interactive sign-in — the only flow that ends with the single-use
+  pairing grant a re-pair needs); Repair restarts this Mac's background service
+  via the shared `BrainRepairButton` (`disabled` while Reconnect is in flight).
+  Removing a machine is terminal — heartbeats never re-register it — so
+  Reconnect is the only way back onto the roster. Outcome copy stays honest
+  about the in-between case where the machine rejoined but push delivery has
+  not resumed. `ConfirmSheet`, `describeThisComputerMissing`, and
+  `reconnectNeedsFreshSignIn` live here; `AccountPage` re-exports the pure
+  helpers for existing tests.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube
@@ -1235,7 +1249,18 @@ not-signed-in states distinctly; the branch logic lives once in
 `accountSessionState` / `accountSessionNotice`
 (`apps/desktop/src/renderer/lib/account.ts`), and the `unreadable` copy leads
 with the shared `BrainRepairButton` (or a plain retry where there is no brain to
-restart) with sign-in demoted to "Sign in anyway". The CLI's `account-auth` text
+restart) with sign-in demoted to "Sign in anyway".
+
+Repair has to actually repair. Restarting the background service — all this
+control used to do — cannot fix any credential-store condition, which is the
+only condition this surface appears for: the replacement process reads the same
+unreadable file. `account.repairSession` therefore repairs the shared credential
+store first (converge its key binding, merge back anything a peer process had to
+set aside) and restarts the brain after, then reports which of three things
+happened: the store is readable again, the store is readable but nothing on this
+computer can open what was set aside so a fresh sign-in is required, or the
+repair itself failed. The store mechanics are in
+[ARCHITECTURE](../../ARCHITECTURE.md) under the machine credential stores. The CLI's `account-auth` text
 formatter makes the same three distinctions rather than printing one
 "Not signed in — local use does not require an account." for all of them.
 
@@ -1271,16 +1296,21 @@ and overridable with `ADE_ACCOUNT_SESSION_SOURCE`), and the
 grant can be followed across processes with no token material in any log file
 or journal entry.
 
-**Rotation is crash-safe.** `accountSessionRotationJournal.ts` records that a
-refresh exchange *started* against a specific token generation and clears it
-once the replacement is durable. A surviving entry means the stored token may
-already have been consumed by a process that died before it could persist the
-replacement, so the `invalid_grant` that follows is not definitive. The waits
-around this are ordered deliberately: the peer-rotation wait
-(`DEFAULT_REFRESH_ROTATION_WAIT_MS`) is the credential store's own
-`CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus a 5 s margin, because a wait shorter
-than the lock timeout could expire while the winning peer is still legitimately
-queued behind the lock — and the loser would then declare a live session dead.
+**Rotation is crash-safe, and a live peer's journal is a mutex.**
+`accountSessionRotationJournal.ts` records that a refresh exchange *started*
+against a specific token generation and clears it once the replacement is
+durable. A surviving entry means the stored token may already have been
+consumed by a process that died before it could persist the replacement, so
+the `invalid_grant` that follows is not definitive. `tryBegin` compare-and-swaps
+that same entry: a live peer already exchanging the grant is waited out, not
+raced at Clerk — two POSTs against a single-use refresh token is what produced
+the daily `invalid_grant` / mark_dead sign-outs. A dead peer's journal is taken
+over and treated as interrupted. The waits around this are ordered
+deliberately: the peer-rotation wait (`DEFAULT_REFRESH_ROTATION_WAIT_MS`) is
+the credential store's own `CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus a 5 s
+margin, because a wait shorter than the lock timeout could expire while the
+winning peer is still legitimately queued behind the lock — and the loser
+would then declare a live session dead.
 
 ## Gotchas
 
@@ -1293,6 +1323,12 @@ queued behind the lock — and the loser would then declare a live session dead.
   on trust before returning a config that can spawn processes. Callers
   that skip trust (`{ skipTrust: true }`) do so only after trust has
   been confirmed in the same session.
+- **Phone-sync port 8787.** Bind order always tries 8787 first, even when
+  `lastPort` is 8788. A replacement brain that lands on 8788 keeps retrying
+  8787 at runtime so phones that saved 8787 reconnect without a restart.
+  The "ADE is already running with phone sync" dialog is the cross-channel
+  case (ADE vs ADE Beta) and is intentional. Full bind/reap/migrate contract:
+  [sync and multi-device](../sync-and-multi-device/README.md).
 - **Config reload.** On save, dependent services receive reload
   callbacks (the config service iterates listeners). A hot reload is
   best-effort — some changes only take full effect on app restart

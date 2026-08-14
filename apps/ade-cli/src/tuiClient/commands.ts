@@ -56,7 +56,12 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/steer interrupt", description: "Interrupt Claude and run the latest staged steer", placement: "inline", providers: ["claude"], category: "Steer" },
   { name: "/steer", description: "Show staged steer messages", placement: "right", category: "Steer" },
   { name: "/new lane", description: "Create a new lane", placement: "right", category: "Lanes" },
-  { name: "/new chat", description: "Create a new chat", placement: "right", argumentHint: "[title]", category: "Chats" },
+  { name: "/new chat", description: "Create a new chat in the current lane", placement: "right", argumentHint: "[title]", category: "Chats" },
+  { name: "/new", description: "Create a new chat in the current lane", placement: "right", argumentHint: "[title]", category: "Chats" },
+  // Provider-agnostic: the browser lists every external CLI transcript ADE can
+  // see. Only actionable while a NEW chat is being started (the import becomes
+  // that chat), which the dispatch explains rather than silently no-opping.
+  { name: "/import", description: "Import an external CLI session into a new chat", placement: "right", category: "Chats" },
   { name: "/rename", description: "Rename the active chat", placement: "right", argumentHint: "[title]", category: "Chats" },
   { name: "/chat rename", description: "Rename the active chat", placement: "right", argumentHint: "[title]", category: "Chats" },
   { name: "/chat archive", description: "Archive the active chat", placement: "right", category: "Chats" },
@@ -72,17 +77,21 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   // visibility overlay, not a phase — see tuiClient/sessionLifecycle.ts.
   // The bare group name is registered so submitting it prints usage instead of
   // leaking "/session" into the chat as a message.
-  { name: "/session", description: "Run a session lifecycle command", placement: "right", argumentHint: "<snooze|wake|settle|unsettle|keep-active>", category: "Chats" },
+  { name: "/session", description: "Run a session lifecycle command", placement: "right", argumentHint: "<snooze|wake|settle|unsettle|keep-active|demote|promote>", category: "Chats" },
   { name: "/session snooze", description: "Snooze a session out of the Activity list until a deadline", placement: "right", argumentHint: "[session-id] [30m|1h|4h|1d]", category: "Chats" },
   { name: "/session wake", description: "Wake a snoozed session back into the Activity list", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/session settle", description: "Mark a session settled", placement: "right", argumentHint: "[session-id] [outcome]", category: "Chats" },
   { name: "/session unsettle", description: "Remove a session's settled state", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/session keep-active", description: "Pin a session active against a later settle", placement: "right", argumentHint: "[session-id]", category: "Chats" },
+  { name: "/session demote", description: "Take over a subagent so it stops reporting to its parent", placement: "right", argumentHint: "[session-id]", category: "Chats" },
+  { name: "/session promote", description: "Restore a peer as a subagent so it reports to its parent again", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/tag", description: "Tag the active Claude chat", placement: "right", argumentHint: "<tag|clear>", providers: ["claude"], category: "Model" },
   { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"], category: "Model" },
   { name: "/plugin", description: "List, reload, or manage Claude plugins", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"], category: "Model" },
   { name: "/status", description: "Show project, lane, and runtime state", placement: "right", category: "Nav" },
-  { name: "/activity", description: "Show account-wide work that needs you", placement: "right", category: "Nav" },
+  { name: "/activity", description: "Show account-wide Activity across machines", placement: "right", category: "Nav" },
+  { name: "/project", description: "Switch project on this machine", placement: "right", argumentHint: "[name|path]", category: "Nav" },
+  { name: "/machines", description: "Hop to another paired ADE machine", placement: "right", argumentHint: "[name]", category: "Nav" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },
   { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/info", description: "Open active chat info, plan, goal, and agents", placement: "right", category: "Nav" },
@@ -103,6 +112,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/diff", description: "Show active lane diff", placement: "right", category: "Lanes" },
   { name: "/log", description: "Show recent commits", placement: "right", category: "Lanes" },
   { name: "/reparent", description: "Move the active lane under another lane", placement: "right", argumentHint: "<parent-lane-id|parent-name> [stack-base-ref]", category: "Lanes" },
+  { name: "/lane details", description: "Open lane activity details for the active or selected lane", placement: "right", argumentHint: "[lane-id|name]", category: "Lanes" },
   { name: "/lane rename", description: "Rename the active lane", placement: "right", argumentHint: "[name]", category: "Lanes" },
   { name: "/lane archive", description: "Archive the active lane", placement: "right", category: "Lanes" },
   { name: "/lane reclaim-preview", description: "Preview space ADE can reclaim from a lane", placement: "right", argumentHint: "[lane-id|name]", category: "Lanes" },
@@ -316,7 +326,7 @@ export function paletteCommands(
     }
     return a.name.localeCompare(b.name);
   });
-  return filtered.slice(0, 100);
+  return queryToken ? filtered.slice(0, 100) : filtered;
 }
 
 export function commandPlacement(command: ParsedCommand): CommandPlacement {

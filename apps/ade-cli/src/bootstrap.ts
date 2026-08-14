@@ -1568,6 +1568,7 @@ export async function createAdeRuntime(args: {
   // Attention click back to this exact machine, even when another machine has
   // a project at the same path.
   const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
+  const { resolveDeviceDisplayName } = await import("./services/sync/deviceRegistryService");
   const cloudRelayFilePath = path.join(
     resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
     "sync-cloud-relay.json",
@@ -1592,7 +1593,16 @@ export async function createAdeRuntime(args: {
           return status.signedIn ? status.userId?.trim() || null : null;
         },
       }),
-      machineName: os.hostname(),
+      // The name the user actually recognizes — the macOS ComputerName ("Arul's
+      // Mac Studio"), same as the sync device registry publishes. `os.hostname()`
+      // is the network hostname ("Mac.lan"), and Activity showing that made the
+      // machine look like a different one from the one in the sync UI. Passed as
+      // a getter, not a value: `resolveDeviceDisplayName` answers with the
+      // hostname fallback synchronously and swaps in the ComputerName when its
+      // async probe lands, so a value captured here would latch the fallback for
+      // the life of the brain. Off darwin it resolves to `os.hostname()` anyway,
+      // so Windows/Linux keep exactly the name they publish today.
+      machineName: () => resolveDeviceDisplayName(),
       getAccountOwnerId: () => {
         const status = accountAuthService.getStatus();
         return status.signedIn ? status.userId?.trim() || null : null;

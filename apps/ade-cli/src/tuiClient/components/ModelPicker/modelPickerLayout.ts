@@ -21,7 +21,7 @@ import type {
 import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 import { normalizeProvider, providerFamilyLabel as providerLabel, titleCaseProviderName } from "../../providerMetadata";
 
-const PROVIDER_ORDER: readonly AdeCodeProvider[] = [
+export const PROVIDER_ORDER: readonly AdeCodeProvider[] = [
   "claude",
   "codex",
   "droid",
@@ -310,7 +310,19 @@ function applyInterfaceAvailability(entry: ModelPickerEntry, interfaceMode: AdeC
   return supported ? entry : { ...entry, isAvailable: false };
 }
 
-export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerState {
+export type CollectModelPickerEntriesInput = Pick<
+  BuildLayoutInput,
+  "models" | "catalog" | "favorites" | "activeReasoningEffort" | "aiStatus" | "interfaceMode"
+>;
+
+/**
+ * The deduped, interface-filtered model pool the picker surfaces work from:
+ * runtime catalog (or the flat model list when no catalog is loaded) layered
+ * over the static registry fallback. Exported so the /model WIZARD derives its
+ * provider / family / model steps from exactly the same pool the legacy layout
+ * uses — one source of truth for "which models exist right now".
+ */
+export function collectModelPickerEntries(input: CollectModelPickerEntriesInput): ModelPickerEntry[] {
   const favoritesSet = new Set(input.favorites);
   const runtimeEntries = input.catalog
     ? entriesFromCatalog(input.catalog, favoritesSet, input.aiStatus, input.activeReasoningEffort, input.interfaceMode)
@@ -323,7 +335,12 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
     entriesById.set(entry.modelId, entry);
   }
   const interfaceMode = input.interfaceMode ?? "chat";
-  const allEntries = [...entriesById.values()].map((entry) => applyInterfaceAvailability(entry, interfaceMode));
+  return [...entriesById.values()].map((entry) => applyInterfaceAvailability(entry, interfaceMode));
+}
+
+export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerState {
+  const favoritesSet = new Set(input.favorites);
+  const allEntries = collectModelPickerEntries(input);
   // The TUI picker always shows the full provider catalog. Availability is
   // represented on each row (dimmed/SIGN IN), matching desktop, instead of
   // hiding models behind a separate "show all" switch.

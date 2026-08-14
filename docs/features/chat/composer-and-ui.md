@@ -39,7 +39,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. A parent turn's terminal event does not stop a background row, and background snapshots whose `sourceTaskId` belongs to a real subagent are omitted so native Agents do not appear twice. Shared by desktop, ADE Code, and mirrored by iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary for checkpoint-backed `turn_diff_summary` events, with lazy diff expansion. File rows render the lane-relative path (dimmed directory + filename) rather than a bare basename, so several `index.ts` in one turn stay distinguishable; the directory truncates first and the full path stays in the row tooltip. |
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on older servers, and restores files through ADE's git plan. |
-| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. Spawned-chat rows are identified by `childSessionId`, show the live child title supplied by `AgentChatPane` / `WorkViewArea`, keep the runtime as a small kind chip, and navigate to the child rather than opening the provider-subagent drawer. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
+| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Every subagent row shows a sentence-case model chip (`subagentModelAttribution`): a reported envelope `model` is ground truth, and a missing model falls back to the parent session label marked **inherited**. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. Spawned-chat rows are identified by `childSessionId`, show the live child title supplied by `AgentChatPane` / `WorkViewArea`, keep the runtime as a small kind chip, and navigate to the child rather than opening the provider-subagent drawer. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Complete chat proof drawer with image lightbox, inline video, availability/error states, and irreversible artifact deletion. Preview reads stay runtime-routed for remote projects, and the surface has no review or Finder/reveal controls. Inline transcript proof is owned by `AgentChatMessageList` + `ChatProofFilmstrip`: a collapsed count on the producing turn expands in chronology instead of pinning the newest items to the thread tail. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
 | `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer. Two mount points: under the chat composer and inside the Work right-edge sidebar. Tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. Accepts an optional `laneId` prop, forwarded into `iosSimulator.launch` so the resulting `IosSimulatorSession` records its launching lane. Simulator controls are not blocked when another chat session owns the simulator — ownership only affects which session receives context insertions, not whether the user can interact with the device. See [iOS Simulator feature](../ios-simulator/README.md). |
@@ -372,7 +372,28 @@ that could not work without it.
   Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`). Cursor
   runtime rows carry `cursorAvailability`, so chat surfaces hide
   CLI-only models while Work CLI setup includes them and hides
-  SDK-only/chat-only rows. When a
+  SDK-only/chat-only rows.
+
+  **Everything a prompt box offers is scoped to the machine set in that
+  prompt box.** A Work tab unions chats from every machine on the account,
+  so the machine a chat runs on is frequently not the one the project tab
+  is bound to — and a runtime catalog is a machine fact (local ollama /
+  LM Studio endpoints, the installed `cursor-agent`, the opencode
+  inventory). `AgentChatPane` derives `composerModelRuntimePin` from
+  `activeComposerRuntimeBinding` (the session's `chatRuntimePin`, or the
+  draft shelf's machine) whenever it differs from the bound binding, and
+  passes it to `AgentChatComposer` as `modelRuntimePin`. The picker routes
+  `agentChat.modelCatalog(args, pin)` to that machine — the same pin
+  `agentChat.models` already takes — and caches the result under that
+  binding key, so machine A's local models can never appear in, or supply
+  thinking levels to, a composer targeting machine B. A `null` pin (the
+  common same-machine case) keeps the bound path, its shared catalog
+  bucket and the preload local-IPC fallback exactly as before, so the
+  scoping costs no extra probes for ordinary use. Provider *availability*
+  (`aiStatus`) was already pin-keyed in `aiDiscoveryCache.ts`; this brings
+  the catalog onto the same rule. On ADE Web a foreign pin is rejected by
+  `assertWebRuntimePinRoutable` (single-machine adapter) and the picker
+  falls back to the pin-scoped model list. When a
   caller passes `availableModelIdsOverride`, `AgentChatPane` constrains
   selection to exactly those ids: `filterChatModelIdsForSession({
   includeActiveSessionModel: false })` skips the usual "preserve the
@@ -696,11 +717,11 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | `ModelPickerRail.tsx` | Left-rail tabs (Favorites / Recents / per-provider groups). Reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
 | `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). Also renders the muted Fast chip when the surface supplied `onFastModeChange` and `modelSupportsFastMode()` holds for that row's descriptor; toggling it changes neither the selection nor the popover's open state. |
 | `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. |
-| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. |
+| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. All four take the same optional catalog scope key as `runtimeCatalogCache.ts`: descriptors are remembered per machine because a catalog's `reasoningEfforts` (the thinking-level ladder) and context window are machine-reported. There is deliberately **no fallback to another machine's bucket** — answering a miss from the bound machine is the same cross-machine leak the bucketing exists to prevent. A miss falls through to the static registry and then to `createUnknownModelPlaceholder`: correct-but-generic beats confident-and-wrong. |
 | `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |
 | `modelPickerSearch.ts` | `scoreModelPickerSearch` — fuzzy search across display name, family, provider, and ids; ranks favorites/recents above strict matches. |
 | `providerEmptyState.tsx` | Per-provider empty/auth/install CTA copy. Surfaces "Install OpenCode" when the binary is missing, "Sign in to Cursor" when auth is missing, etc. |
-| `runtimeCatalogCache.ts` | Renderer-side shared catalog cache. Tracks per-provider freshness (30 min for `opencode`/`cursor`/`droid`, 30 s for `lmstudio`/`ollama`) and dedupes concurrent `modelCatalog` requests by `${mode}:${refreshProvider}` keys. |
+| `runtimeCatalogCache.ts` | Renderer-side catalog cache, **bucketed per machine** by binding key (`DEFAULT_RUNTIME_CATALOG_SCOPE` = `""` is the bound machine; capped at 8 scopes). Each bucket tracks its own per-provider freshness (30 min for `opencode`/`cursor`/`droid`, 30 s for `lmstudio`/`ollama`), so one machine's refresh cannot mark another's providers fresh. Each bucket also owns the descriptors parsed from its catalog, so one cap and one eviction govern both and a dropped scope cannot leave descriptors behind; the bound machine's bucket is never evicted. Concurrent `modelCatalog` requests dedupe by `${scopeKey}|${mode}:${refreshProvider}:${cursorSource}`. Bucketing also fixes a stale read that predates cross-machine Work: nothing clears the cache when the project binding changes, so a single global catalog kept describing the previous machine after a switch. |
 | `useProviderAuthStatus.ts` | Resolves `AuthStatus` (`ok` / `limited` / `unauthed` / `unknown`) per `ProviderFamily` from the runtime-binding-scoped `aiDiscoveryCache`. A picker with no explicit `providerAuthStatus` seeds from the cached value, joins the shared single-flight refresh, and reacts to cache update/invalidation events; callers that already supply status opt out of the full fetch. The separate cheap OpenCode-binary probe is deduplicated by runtime/project scope. |
 | `useAuthOnlyFilter.ts` | Hides models whose provider is not authenticated, with a toggle for the catalog browse mode. |
 | `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to the per-project `ade.db` tables `model_picker_favorites` and `model_picker_recents` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. Desktop, TUI, and iOS share the CRR-backed store; the legacy `~/.ade/modelPicker.json` file is only a one-time migration source. |
@@ -723,9 +744,15 @@ provider availability from only `availableModelIds`. The ids are a discovered
 inventory and can lag authentication; for CLI-backed providers, a positive
 provider-auth status is enough to expose registry models. The full status read
 starts only while picker content is mounted, uses the shared project cache, and
-does not poll. Local and cross-machine fork handoffs additionally apply a
-same-provider descriptor filter, so they can show newly registered models from
-that provider without allowing a cross-provider fork.
+does not poll. When a caller **does** pass `providerAuthStatus` (Work chat's
+`AgentChatPane`), it opts the picker out of the live auth hook — so that caller
+must itself listen for `ade:ai-status-cache-updated` / `invalidated`, apply
+`peekAiStatusCached` on update, and at most settle an orphan invalidate with one
+coalesced non-force `getAiStatusCached` for the active tile. Otherwise Settings
+auth looks Connected while the Work picker stays Off until remount. Local and
+cross-machine fork handoffs additionally apply a same-provider descriptor
+filter, so they can show newly registered models from that provider without
+allowing a cross-provider fork.
 
 ### Attachment handling
 
@@ -959,7 +986,13 @@ to the latest user message (see
 When the Claude Agent SDK spawns background subagents, the service
 emits `subagent_started`, `subagent_progress`, and `subagent_result`
 events. `ChatSubagentsPanel` renders running/completed/failed/stopped
-subagents with usage metrics. Running subagent and background-command durations
+subagents with usage metrics. Each roster row shows a sentence-case model
+chip from `subagentModelAttribution`: a reported envelope `model` is ground
+truth, and a missing model falls back to the parent session label marked
+**inherited** (display-only — the parent model is never written onto the
+envelope). Inspecting a subagent switches the Chat Info / takeover header to
+that child's attribution and locks the composer model picker without changing
+the parent session's `modelId`. Running subagent and background-command durations
 tick from wall-clock time once per second instead of freezing on the last SDK
 usage snapshot; terminal rows retain their final duration. The same panel also renders the current
 Codex goal, plan, `todo_update` task list, and the Schedule section
