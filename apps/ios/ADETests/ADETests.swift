@@ -24900,9 +24900,23 @@ final class TerminalSessionInputStatusTests: XCTestCase {
       text: "Mac% ",
       replacing: true,
       startOffset: 0,
-      endOffset: 5
+      endOffset: 5,
+      paintFromScreen: false
     ))
 
+    XCTAssertNil(controller.inputStatusMessage)
+  }
+
+  func testScreenHydrateMarksPainted() {
+    let controller = TerminalSessionController()
+    controller.handleStreamEventForTesting(.hydrate(
+      text: "\u{1B}[?1049h\u{1B}[Hclaude",
+      replacing: true,
+      startOffset: 33_554_432,
+      endOffset: 48_000_000,
+      paintFromScreen: true
+    ))
+    XCTAssertTrue(controller.hasPainted)
     XCTAssertNil(controller.inputStatusMessage)
   }
 }

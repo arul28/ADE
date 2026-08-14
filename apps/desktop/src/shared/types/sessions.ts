@@ -416,6 +416,12 @@ export type PtyDataEvent = {
    * transcript writes disabled, or the transcript byte cap was reached).
    */
   offset?: number | null;
+  /**
+   * True when `data` is SerializeAddon current-screen CSI (including alt-screen
+   * enter). Replacing hydrates must write it verbatim — transcript-grid
+   * normalization strips 1049h and can leave the pane blank.
+   */
+  screen?: boolean;
 };
 
 export type PtyExitEvent = {
@@ -540,7 +546,26 @@ export type TerminalSerializedSnapshot = {
   baseY: number;
   viewportY: number;
   serialized: string;
+  /**
+   * Current-screen CSI (`serialize({ scrollback: 0 })`). Distinct from
+   * `serialized`, which includes normal-buffer scrollback and can exceed the
+   * 256k mobile hydrate cap. Optional so older on-disk snapshots still parse.
+   */
+  screenSerialized?: string;
   visibleRows: TerminalSnapshotRow[];
+};
+
+/**
+ * Current-screen paint for mobile/web hydrate. Unlike the on-disk serialized
+ * snapshot this omits `visibleRows` (a 375×53 cell grid is >1 MiB) and is the
+ * CSI SerializeAddon output of the live headless xterm, including alt-screen
+ * enter when the PTY is on the alternate buffer.
+ */
+export type TerminalScreenSnapshot = {
+  cols: number;
+  rows: number;
+  bufferType: "normal" | "alternate";
+  serialized: string;
 };
 
 export type ChatTerminalPreviewArgs = {

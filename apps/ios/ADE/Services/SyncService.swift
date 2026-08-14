@@ -3361,8 +3361,10 @@ enum SyncChatCommandScope: Equatable {
 enum TerminalStreamEvent {
   /// Snapshot payload from `terminal_subscribe`. `replacing == false` means a
   /// delta resume (bytes from the requested `sinceOffset` to the end) that
-  /// must be appended, not re-rendered from scratch.
-  case hydrate(text: String, replacing: Bool, startOffset: Int?, endOffset: Int?)
+  /// must be appended, not re-rendered from scratch. `paintFromScreen` means
+  /// `text` is SerializeAddon CSI, not the transcript window — do not page
+  /// history through it.
+  case hydrate(text: String, replacing: Bool, startOffset: Int?, endOffset: Int?, paintFromScreen: Bool)
   case chunk(text: String, endOffset: Int?)
   case exit(code: Int?)
   case inputFailure(message: String)
@@ -10545,17 +10547,20 @@ final class SyncService: ObservableObject {
           text: snapshot.transcript,
           replacing: false,
           startOffset: snapshot.startOffset,
-          endOffset: snapshot.endOffset
+          endOffset: snapshot.endOffset,
+          paintFromScreen: false
         ))
       }
       terminalBufferUpdatedAt[sessionId] = Date()
     } else {
+      let hydrateText = snapshot.replacingHydrateText
       updateTerminalBuffer(sessionId: sessionId, transcript: snapshot.transcript, immediate: true)
       terminalStreamHandlers[sessionId]?(.hydrate(
-        text: snapshot.transcript,
+        text: hydrateText,
         replacing: true,
         startOffset: snapshot.startOffset,
-        endOffset: snapshot.endOffset
+        endOffset: snapshot.endOffset,
+        paintFromScreen: snapshot.hasScreenPaint
       ))
     }
     if snapshot.live == false {

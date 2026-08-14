@@ -11368,6 +11368,7 @@ describe("chat event replay buffer (resumable chat streams)", () => {
 describe("terminal byte-offset streaming, history paging, and resize ownership", () => {
   // 5000 ASCII bytes so byte offsets equal string indices in assertions.
   const TRANSCRIPT_CONTENT = "0123456789".repeat(500);
+  const SCREEN_CSI = "\x1b[?1049h\x1b[Hhello";
 
   beforeEach(() => {
     publishMock.mockReset();
@@ -11413,6 +11414,11 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     const restoreDesktopSizeBySessionId = vi.fn().mockReturnValue(true);
     const hasLivePty = vi.fn().mockReturnValue(true);
     const writeBySessionId = vi.fn().mockReturnValue(true);
+    const readScreenSnapshot = vi.fn((id: string) => (
+      id === "session-1"
+        ? { cols: 80, rows: 24, bufferType: "alternate" as const, serialized: SCREEN_CSI }
+        : null
+    ));
     let sessionAvailable = true;
     const base = createHostArgs(projectRoot, []);
     const host = createSyncHostService({
@@ -11446,6 +11452,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         resizeBySessionId,
         restoreDesktopSizeBySessionId,
         hasLivePty,
+        readScreenSnapshot,
         enrichSessions: (rows: unknown[]) => rows,
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
@@ -11459,6 +11466,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       resizeBySessionId,
       restoreDesktopSizeBySessionId,
       hasLivePty,
+      readScreenSnapshot,
       setSessionAvailable: (available: boolean) => { sessionAvailable = available; },
     };
   }
@@ -11519,6 +11527,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         startOffset: 4_988,
         endOffset: 5_000,
       });
+      expect((delta.payload as { screen?: unknown }).screen).toBeUndefined();
       expect(readTranscriptSnapshot).toHaveBeenCalledWith({
         sessionId: "session-1",
         maxBytes: 32_000,
@@ -11539,6 +11548,12 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         transcript: TRANSCRIPT_CONTENT.slice(5_000 - 1_024),
         startOffset: 5_000 - 1_024,
         endOffset: 5_000,
+        screen: {
+          cols: 80,
+          rows: 24,
+          bufferType: "alternate",
+          serialized: SCREEN_CSI,
+        },
       });
       expect((full.payload as { delta?: boolean }).delta).toBeUndefined();
       expect(readTranscriptTail).not.toHaveBeenCalled();
@@ -11577,6 +11592,151 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("omits an oversized current-screen serialize instead of slicing CSI", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readScreenSnapshot } = createTerminalHost(projectRoot);
+    readScreenSnapshot.mockReturnValue({
+      cols: 80,
+      rows: 24,
+      bufferType: "alternate",
+      serialized: "x".repeat(256_001),
+    });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-screen-cap",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-screen-cap",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "sub-screen-cap");
+      expect((snapshot.payload as { screen?: unknown }).screen).toBeUndefined();
+      expect((snapshot.payload as { transcript: string }).transcript).toBe(TRANSCRIPT_CONTENT);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps the sync socket open when snapshot catch-up overflows unreconstructable events", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveFirstSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot.mockImplementationOnce(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      resolveFirstSnapshot = resolve;
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-catchup-overflow",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "overflow-untracked",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "overflow terminal snapshot capture",
+      );
+      for (let i = 0; i < 257; i += 1) {
+        host.handlePtyData({
+          sessionId: "session-1",
+          ptyId: "pty-1",
+          data: "x",
+          offset: null,
+        });
+      }
+      resolveFirstSnapshot({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "overflow-untracked");
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: TRANSCRIPT_CONTENT,
+        screen: { serialized: SCREEN_CSI },
+      });
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+      expect(client.closeEvents).toEqual([]);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("sends the last captured transcript when capture attempts exhaust without ever failing", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    const captures: Array<(snapshot: { data: string; startOffset: number; endOffset: number }) => void> = [];
+    readTranscriptSnapshot.mockImplementation(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      captures.push(resolve);
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-capture-exhausted",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "exhausted-recapture",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => captures.length > 0 ? true : null,
+        "first exhausted-recapture snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "x",
+        offset: 6_000,
+      });
+      captures[0]!({ data: "CAPTURE-1", startOffset: 0, endOffset: 5_000 });
+      for (let attempt = 1; attempt < 4; attempt += 1) {
+        await waitForValue(
+          () => captures.length > attempt ? true : null,
+          `exhausted-recapture snapshot capture ${attempt + 1}`,
+        );
+        captures[attempt]!({
+          data: `CAPTURE-${attempt + 1}`,
+          startOffset: 0,
+          endOffset: 5_000,
+        });
+      }
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "exhausted-recapture");
+      expect(readTranscriptSnapshot).toHaveBeenCalledTimes(4);
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: "CAPTURE-4",
+        screen: { serialized: SCREEN_CSI },
+      });
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+      expect(client.closeEvents).toEqual([]);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
       await host.dispose();
       cleanup();
     }
