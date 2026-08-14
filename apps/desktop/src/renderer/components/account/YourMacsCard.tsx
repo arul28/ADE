@@ -49,6 +49,17 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
+import {
+  useOptionalWebWorkspace,
+  useWebMachines,
+} from "../../webclient/workspace/WebWorkspaceContext";
+import {
+  WEB_MACHINE_DOT_COLOR,
+  webMachineCatalogKeys,
+  webMachineRosterSummary,
+  webMachineRowStatusLine,
+  type WebMachineEntry,
+} from "../../webclient/workspace/webWorkspaceModel";
 
 const MACHINES_REFRESH_MS = 30_000;
 const ACCOUNT_MENU_WIDTH = 200;
@@ -107,7 +118,7 @@ export function ConfirmSheet({
       aria-modal="true"
       aria-label={title}
       onClick={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
+        if (event.target === event.currentTarget) onCancel();
       }}
       style={{
         position: "fixed",
@@ -145,9 +156,8 @@ export function ConfirmSheet({
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "16px 20px 18px" }}>
           <button
             type="button"
-            disabled={busy}
             onClick={onCancel}
-            style={outlineButton({ height: 34, fontSize: 12.5, padding: "0 14px", opacity: busy ? 0.6 : 1 })}
+            style={outlineButton({ height: 34, fontSize: 12.5, padding: "0 14px" })}
           >
             Cancel
           </button>
@@ -314,8 +324,61 @@ function lastSeenLabel(lastSeenAt: number | null): string {
 // Signed-in: Your computers — the account directory, this computer pinned first.
 // ---------------------------------------------------------------------------
 
+type ComputerDisplayRow = {
+  key: string;
+  name: string;
+  thisMac: boolean;
+  rememberedOnly: boolean;
+  statusColor: string;
+  statusGlow: boolean;
+  statusLine: string | null;
+  accountMachine: AdeAccountMachine | null;
+  environmentEnvId: string | null;
+  catalogKeys: string[];
+};
+
+function displayRowFromAccountMachine(
+  machine: AdeAccountMachine,
+  thisMac: boolean,
+): ComputerDisplayRow {
+  return {
+    key: machine.machineKey,
+    name: accountMachineDisplayName(machine) ?? "Unnamed computer",
+    thisMac,
+    rememberedOnly: false,
+    statusColor: machine.online ? COLORS.success : COLORS.textDim,
+    statusGlow: machine.online,
+    statusLine: thisMac
+      ? null
+      : machine.online
+        ? machineRouteHint(machine) ?? "Online"
+        : lastSeenLabel(machine.lastSeenAt),
+    accountMachine: machine,
+    environmentEnvId: null,
+    catalogKeys: [],
+  };
+}
+
+function displayRowFromWebMachine(machine: WebMachineEntry): ComputerDisplayRow {
+  return {
+    key: machine.key,
+    name: machine.name,
+    thisMac: false,
+    rememberedOnly: machine.rememberedOnly,
+    statusColor: WEB_MACHINE_DOT_COLOR[machine.status],
+    statusGlow: machine.status === "live",
+    statusLine: webMachineRowStatusLine(machine),
+    accountMachine: machine.accountMachine,
+    environmentEnvId: machine.environment?.envId ?? null,
+    catalogKeys: webMachineCatalogKeys(machine),
+  };
+}
+
 export function YourMacsCard() {
   const webMode = isWebClientMode();
+  const workspace = useOptionalWebWorkspace();
+  const webMachines = useWebMachines();
+  const usingWorkspaceRoster = webMode && workspace != null;
   const { status } = useAccountStatus();
   const missingCopy = describeThisComputerMissing(accountSessionState(status));
   const [result, setResult] = useState<AdeAccountMachinesResult | null>(null);
@@ -324,6 +387,7 @@ export function YourMacsCard() {
   const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
+  const [pendingForget, setPendingForget] = useState<ComputerDisplayRow | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
@@ -388,7 +452,20 @@ export function YourMacsCard() {
   }, []);
 
   // Load now, then keep fresh while visible and on window focus.
+  // Hosted web already owns the directory snapshot in the workspace; polling
+  // listMachines here would refresh the card without updating the chip.
+  const retryDirectory = workspace?.retryDirectory;
   useEffect(() => {
+    if (usingWorkspaceRoster && retryDirectory) {
+      void retryDirectory();
+      const interval = window.setInterval(() => void retryDirectory(), MACHINES_REFRESH_MS);
+      const onFocus = () => void retryDirectory();
+      window.addEventListener("focus", onFocus);
+      return () => {
+        window.clearInterval(interval);
+        window.removeEventListener("focus", onFocus);
+      };
+    }
     void load();
     const interval = window.setInterval(() => void load(), MACHINES_REFRESH_MS);
     const onFocus = () => void load();
@@ -397,7 +474,7 @@ export function YourMacsCard() {
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [load]);
+  }, [load, retryDirectory, usingWorkspaceRoster]);
 
   const isThisMac = useCallback(
     (machine: AdeAccountMachine): boolean => {
@@ -413,6 +490,11 @@ export function YourMacsCard() {
     // Pin this computer first; keep directory order otherwise.
     return list.sort((a, b) => (isThisMac(b) ? 1 : 0) - (isThisMac(a) ? 1 : 0));
   }, [result?.machines, isThisMac]);
+
+  const rows = useMemo<ComputerDisplayRow[]>(() => {
+    if (usingWorkspaceRoster) return webMachines.map(displayRowFromWebMachine);
+    return machines.map((machine) => displayRowFromAccountMachine(machine, isThisMac(machine)));
+  }, [isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
   const onlineCount = machines.filter((m) => m.online).length;
 
@@ -524,10 +606,11 @@ export function YourMacsCard() {
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(menuAnchor, openMenuKey);
   const menuItemRef = useRef<HTMLButtonElement | null>(null);
   const menuTriggerRef = useRef<HTMLElement | null>(null);
-  const openMenuMachine = useMemo(
-    () => machines.find((m) => m.machineKey === openMenuKey) ?? null,
-    [machines, openMenuKey],
+  const openMenuRow = useMemo(
+    () => rows.find((row) => row.key === openMenuKey) ?? null,
+    [openMenuKey, rows],
   );
+  const openMenuMachine = openMenuRow?.accountMachine ?? null;
   const closeMenu = useCallback(() => {
     const trigger = menuTriggerRef.current;
     setOpenMenuKey(null);
@@ -564,16 +647,20 @@ export function YourMacsCard() {
    */
   const saveRename = useCallback(
     async (machine: AdeAccountMachine, customName?: string | null) => {
-      const api = accountBridge();
-      if (!api?.renameMachine) return;
       const nextName = customName === undefined ? renameValue.trim() : customName;
       if (nextName !== null && !nextName) return;
       setRenameBusy(true);
       setRenameError(null);
       try {
-        await api.renameMachine(machine.machineKey, nextName);
+        if (workspace) {
+          await workspace.renameMachine(machine.machineKey, nextName);
+        } else {
+          const api = accountBridge();
+          if (!api?.renameMachine) return;
+          await api.renameMachine(machine.machineKey, nextName);
+          await load();
+        }
         setRenamingKey(null);
-        await load();
       } catch (err) {
         setRenameError(
           err instanceof Error ? err.message : "Couldn't rename this computer.",
@@ -582,11 +669,18 @@ export function YourMacsCard() {
         setRenameBusy(false);
       }
     },
-    [renameValue, load],
+    [load, renameValue, workspace],
   );
 
   let summary: string;
-  if (loading && !result) summary = "Checking your computers…";
+  if (usingWorkspaceRoster) {
+    if (workspace.directoryLoading && webMachines.length === 0) summary = "Checking your computers…";
+    else if (workspace.account.state === "signed_in") summary = webMachineRosterSummary(webMachines);
+    else if (workspace.account.state === "unconfigured") summary = "The account directory isn't set up yet";
+    else if (workspace.account.state === "signed_out" || workspace.account.state === "auth_expired") {
+      summary = "Sign in to see your computers";
+    } else summary = "Can't reach the account directory";
+  } else if (loading && !result) summary = "Checking your computers…";
   else if (result?.state === "ok") {
     summary =
       machines.length === 0
@@ -602,24 +696,53 @@ export function YourMacsCard() {
 
   const confirmRemoval = useCallback(async () => {
     const target = pendingRemoval;
-    const api = accountBridge();
-    if (!target || !api?.removeMachine) {
+    if (!target) {
       setPendingRemoval(null);
       return;
     }
     setRemoving(true);
     setRemoveError(null);
     try {
-      await api.removeMachine(target.machineKey);
+      if (workspace) {
+        await workspace.removeAccountMachine(target.machineKey);
+      } else {
+        const api = accountBridge();
+        if (!api?.removeMachine) {
+          setPendingRemoval(null);
+          return;
+        }
+        await api.removeMachine(target.machineKey);
+        invalidateAccountMachines();
+        await load();
+      }
       setPendingRemoval(null);
-      invalidateAccountMachines();
-      await load();
     } catch (err) {
       setRemoveError(err instanceof Error ? err.message : "Couldn't remove that computer from your account.");
     } finally {
       setRemoving(false);
     }
-  }, [pendingRemoval, load]);
+  }, [load, pendingRemoval, workspace]);
+
+  const confirmForget = useCallback(async () => {
+    const target = pendingForget;
+    if (!target || !workspace) {
+      setPendingForget(null);
+      return;
+    }
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      if (target.environmentEnvId) {
+        await workspace.forgetEnvironment(target.environmentEnvId);
+      }
+      workspace.forgetMachineCatalog(target.catalogKeys);
+      setPendingForget(null);
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : "Couldn't forget that computer on this browser.");
+    } finally {
+      setRemoving(false);
+    }
+  }, [pendingForget, workspace]);
 
   return (
     <div style={cardStyle({ padding: 0, overflow: "hidden" })}>
@@ -714,20 +837,15 @@ export function YourMacsCard() {
         </div>
       ) : null}
 
-      {result?.state === "ok" && machines.length > 0 ? (
+      {rows.length > 0 ? (
         <div style={{ borderTop: `1px solid ${COLORS.borderMuted}` }}>
-          {machines.map((machine) => {
-            const thisMac = isThisMac(machine);
-            const menuOpen = openMenuKey === machine.machineKey;
-            const renaming = renamingKey === machine.machineKey;
-            const rightText = thisMac
-              ? null
-              : machine.online
-                ? machineRouteHint(machine) ?? "Online"
-                : lastSeenLabel(machine.lastSeenAt);
+          {rows.map((row) => {
+            const machine = row.accountMachine;
+            const menuOpen = openMenuKey === row.key;
+            const renaming = Boolean(machine && renamingKey === machine.machineKey);
             return (
               <div
-                key={machine.machineKey}
+                key={row.key}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -743,14 +861,14 @@ export function YourMacsCard() {
                     height: 7,
                     borderRadius: "50%",
                     flexShrink: 0,
-                    background: machine.online ? COLORS.success : COLORS.textDim,
-                    boxShadow: machine.online
-                      ? `0 0 0 3px color-mix(in srgb, ${COLORS.success} 20%, transparent)`
+                    background: row.statusColor,
+                    boxShadow: row.statusGlow
+                      ? `0 0 0 3px color-mix(in srgb, ${row.statusColor} 20%, transparent)`
                       : undefined,
                   }}
                 />
                 <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-                {renaming ? (
+                {renaming && machine ? (
                   <form
                     onSubmit={(event) => {
                       event.preventDefault();
@@ -759,7 +877,7 @@ export function YourMacsCard() {
                     style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}
                   >
                     <input
-                      aria-label={`Name for ${accountMachineDisplayName(machine) ?? "this computer"}`}
+                      aria-label={`Name for ${row.name}`}
                       autoFocus
                       maxLength={80}
                       value={renameValue}
@@ -824,27 +942,32 @@ export function YourMacsCard() {
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {accountMachineDisplayName(machine) ?? "Unnamed computer"}
+                      {row.name}
                     </span>
-                    {thisMac ? (
+                    {row.thisMac ? (
                       <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
                         {THIS_MACHINE_NAME}
+                      </span>
+                    ) : null}
+                    {row.rememberedOnly ? (
+                      <span style={inlineBadge(COLORS.textMuted, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                        This browser
                       </span>
                     ) : null}
                   </>
                 )}
                 <span style={{ flex: 1 }} />
-                {rightText ? (
+                {row.statusLine && !renaming ? (
                   <span
                     style={{
                       fontFamily: SANS_FONT,
                       fontSize: 11,
-                      color: machine.online ? COLORS.success : COLORS.textMuted,
+                      color: row.statusGlow ? COLORS.success : COLORS.textMuted,
                       flexShrink: 0,
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {rightText}
+                    {row.statusLine}
                   </span>
                 ) : null}
                 {renaming ? (
@@ -852,14 +975,11 @@ export function YourMacsCard() {
                 ) : (
                   <button
                     type="button"
-                    // Every row gets this button now, including the local one:
-                    // this list is the only place the local machine is shown,
-                    // so it is the only place its name can be changed.
-                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "Unnamed computer"}`}
+                    aria-label={`Options for ${row.name}`}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     onClick={(event) =>
-                      menuOpen ? closeMenu() : openMenu(machine.machineKey, event.currentTarget)
+                      menuOpen ? closeMenu() : openMenu(row.key, event.currentTarget)
                     }
                     style={{
                       ...outlineButton({ height: 26, width: 26, padding: 0 }),
@@ -972,7 +1092,8 @@ export function YourMacsCard() {
         </div>
       ) : null}
 
-      {result?.state === "unavailable" || result?.state === "not_configured" ? (
+      {(!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))
+        || (usingWorkspaceRoster && (workspace.account.state === "directory_unavailable" || workspace.account.state === "unconfigured")) ? (
         <div
           style={{
             borderTop: `1px solid ${COLORS.borderMuted}`,
@@ -986,14 +1107,17 @@ export function YourMacsCard() {
           <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
             {webMode
               ? "Use the machine menu above to switch computers."
-              : result.state === "not_configured"
+              : result?.state === "not_configured" || workspace?.account.state === "unconfigured"
               ? "Your computers still connect from Connections — the shared directory just isn't live yet."
               : "Your computers still connect from Connections while the directory reconnects."}
           </span>
-          {result.state === "unavailable" ? (
+          {result?.state === "unavailable" || workspace?.account.state === "directory_unavailable" ? (
             <button
               type="button"
-              onClick={() => void load()}
+              onClick={() => {
+                if (workspace) void workspace.retryDirectory();
+                else void load();
+              }}
               style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
             >
               Retry
@@ -1002,7 +1126,7 @@ export function YourMacsCard() {
         </div>
       ) : null}
 
-      {openMenuKey && openMenuMachine && menuAnchor
+      {openMenuKey && openMenuRow && menuAnchor
         ? createPortal(
             <>
               <div
@@ -1032,6 +1156,7 @@ export function YourMacsCard() {
                   boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
                 }}
               >
+                {openMenuMachine ? (
                 <button
                   ref={menuItemRef}
                   type="button"
@@ -1058,13 +1183,14 @@ export function YourMacsCard() {
                 >
                   Rename…
                 </button>
+                ) : null}
                 {/*
                   Always offered for the local row, not only when the banner
                   fires. Detection needs the directory to answer `ok`, so a
                   machine whose directory read is failing — or whose account has
                   no rows at all — would otherwise have no way back at all.
                 */}
-                {isThisMac(openMenuMachine) && canReconnect ? (
+                {openMenuMachine && isThisMac(openMenuMachine) && canReconnect ? (
                   <button
                     type="button"
                     role="menuitem"
@@ -1103,7 +1229,7 @@ export function YourMacsCard() {
                   machine", and pointing it at yourself would be a different
                   and far more destructive action wearing the same label.
                 */}
-                {!isThisMac(openMenuMachine) ? (
+                {openMenuMachine && !isThisMac(openMenuMachine) ? (
                   <button
                     type="button"
                     role="menuitem"
@@ -1131,6 +1257,35 @@ export function YourMacsCard() {
                     Remove from account…
                   </button>
                 ) : null}
+                {openMenuRow.rememberedOnly || openMenuRow.environmentEnvId ? (
+                  <button
+                    ref={openMenuMachine ? undefined : menuItemRef}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      const row = openMenuRow;
+                      closeMenu();
+                      setRemoveError(null);
+                      setPendingForget(row);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: RADII.sm,
+                      border: "none",
+                      background: "transparent",
+                      color: COLORS.danger,
+                      fontFamily: SANS_FONT,
+                      fontSize: 12.5,
+                      textAlign: "left",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Forget on this browser…
+                  </button>
+                ) : null}
               </div>
             </>,
             document.body,
@@ -1152,7 +1307,22 @@ export function YourMacsCard() {
           busy={removing}
           onConfirm={() => void confirmRemoval()}
           onCancel={() => {
-            if (!removing) setPendingRemoval(null);
+            setPendingRemoval(null);
+            setRemoving(false);
+          }}
+        />
+      ) : null}
+      {pendingForget ? (
+        <ConfirmSheet
+          title={`Forget ${pendingForget.name} on this browser?`}
+          body="This tab will stop retrying that computer. It stays on your account if it is still signed in there."
+          confirmLabel="Forget"
+          danger
+          busy={removing}
+          onConfirm={() => void confirmForget()}
+          onCancel={() => {
+            setPendingForget(null);
+            setRemoving(false);
           }}
         />
       ) : null}

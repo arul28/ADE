@@ -37,6 +37,14 @@ const OAUTH_PENDING_TTL_MS = 10 * 60_000;
 const REFRESH_SKEW_MS = 2 * 60_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 3_000;
 const DIRECTORY_MUTATION_TIMEOUT_MS = 8_000;
+const REMOVAL_TIMEOUT_MESSAGE =
+  "Removal timed out. Refresh Your computers — if it's still listed, try again.";
+const ACTIVITY_PURGE_FAILED_MESSAGE =
+  "Removed from your account, but its Activity could not be cleared. Try removing it again to finish.";
+
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && (cause.name === "AbortError" || cause.name === "TimeoutError");
+}
 
 /**
  * `key`/`length` are optional: they are only needed to sweep abandoned stashes,
@@ -792,6 +800,17 @@ export class BrowserAccountClient {
         await this.expireSession();
         throw new Error("ADE account session expired.");
       }
+      // Directory delete happens before the Activity purge. 404 means a retry
+      // after a half-finished removal; 502 means the machine is already off
+      // the roster and only Activity is left. Both must drop the local row.
+      if (response.status === 404 || response.status === 502) {
+        this.snapshot = {
+          ...this.snapshot,
+          machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
+        };
+        if (response.status === 502) throw new Error(ACTIVITY_PURGE_FAILED_MESSAGE);
+        return { ok: true, machineKey };
+      }
       if (!response.ok) throw new Error(`Couldn't remove that machine (${response.status}).`);
       await response.body?.cancel().catch(() => undefined);
       this.snapshot = {
@@ -799,6 +818,11 @@ export class BrowserAccountClient {
         machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
       };
       return { ok: true, machineKey };
+    } catch (cause) {
+      if (isAbortError(cause) || controller.signal.aborted) {
+        throw new Error(REMOVAL_TIMEOUT_MESSAGE);
+      }
+      throw cause;
     } finally {
       clearTimeout(timer);
     }
