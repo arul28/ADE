@@ -55,6 +55,9 @@ import type {
   OpenCodeProviderAuthMethods,
   PiAuthStatusEvent,
   PiLoginProvider,
+  CursorSdkAuthEvent,
+  CursorSdkAuthStatus,
+  CursorSdkLoginResult,
 } from "../../../shared/types";
 
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
@@ -330,10 +333,11 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   // Must outlive the longest flow it drains. A Pi device-code sign-in is
   // budgeted at ten minutes host-side, so expiring at five stranded the UI on
   // "Waiting for Pi…" while prompts and the completion event were still coming.
-  const OAUTH_STATUS_MAX_MS = 11 * 60_000;
+  const OAUTH_STATUS_MAX_MS = 21 * 60_000;
   const AUTH_TERMINAL_STATES: Record<string, Set<string>> = {
     opencodeOAuthStatus: new Set(["connected", "failed", "cancelled", "timeout"]),
     piAuthStatus: new Set(["success", "error"]),
+    cursorAuthStatus: new Set(["success", "error", "cancelled", "logged-out"]),
   };
   /** Entries are `${kind}:${providerId}` so both flows can drain at once. */
   const oauthActiveProviders = new Set<string>();
@@ -383,7 +387,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       const kind = typeof payload?.kind === "string" ? payload.kind : "";
       const terminalStates = AUTH_TERMINAL_STATES[kind];
       if (!terminalStates || !payload.event || typeof payload.event !== "object") continue;
-      const statusEvent = payload.event as OpenCodeOAuthStatusEvent | PiAuthStatusEvent;
+      const statusEvent = payload.event as OpenCodeOAuthStatusEvent | PiAuthStatusEvent | CursorSdkAuthEvent;
       events.emit(kind as never, statusEvent as never);
       if (typeof statusEvent.providerId === "string" && terminalStates.has(statusEvent.state)) {
         oauthActiveProviders.delete(`${kind}:${statusEvent.providerId}`);
@@ -505,6 +509,41 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     piLoginCancel: (args: unknown) => call<void>("ai.piLoginCancel", args, undefined, false),
     onPiAuthStatus: (cb: (status: PiAuthStatusEvent) => void) =>
       events.on("piAuthStatus" as never, cb as never),
+    cursorAuthStatus: () =>
+      call<CursorSdkAuthStatus>("ai.cursorAuthStatus", undefined, {
+        sdkStatus: "logged-out",
+        adeKeyPresent: false,
+        loginInProgress: false,
+      }),
+    cursorAuthLogin: async () => {
+      await startOAuthDrain("cursorAuthStatus", "cursor");
+      try {
+        return await call<CursorSdkLoginResult>(
+          "ai.cursorAuthLogin",
+          undefined,
+          unavailableOnHost("Cursor sign-in is unavailable in the web client while offline"),
+          false,
+        );
+      } catch (error) {
+        oauthActiveProviders.delete("cursorAuthStatus:cursor");
+        if (oauthActiveProviders.size === 0) stopOAuthDrain();
+        throw error;
+      }
+    },
+    cursorAuthLogout: () =>
+      call<{ ok: boolean; error?: string }>(
+        "ai.cursorAuthLogout",
+        undefined,
+        { ok: false, error: "Cursor sign-out is unavailable in the web client while offline" },
+        false,
+      ),
+    cursorAuthCancel: () => call<void>("ai.cursorAuthCancel", undefined, undefined, false),
+    onCursorAuthStatus: (cb: (status: CursorSdkAuthEvent) => void) =>
+      events.on("cursorAuthStatus" as never, cb as never),
+    cursorCloudOpenChat: (args: unknown) =>
+      call("ai.openCursorCloudChat", args, unavailableOnHost("Opening a Cursor Cloud chat is unavailable in the web client while offline"), false),
+    cursorCloudWatchMirror: (args: unknown) =>
+      call("ai.watchCursorCloudMirror", args, undefined, false),
   };
 
   const github: Record<string, unknown> = {

@@ -57,7 +57,7 @@ import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../.
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
-import { navigateToAppTarget, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { navigateToAppTarget, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { normalizePath } from "../../lib/pathUtils";
 import { chatMarkdownUrlTransform } from "./chatMarkdown";
 import {
@@ -96,6 +96,7 @@ import {
   collapseChatTranscriptEventsIncrementalWithContext,
   countRowsAppendedSince,
   deriveWebSearchResultDisplay,
+  formatDoneTurnTokenLine,
   formatStructuredValue,
   groupChatTranscriptRows,
   mergeAdjacentActivityBundleRows,
@@ -3403,25 +3404,7 @@ function renderEvent(
       );
     }
     if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") {
-      return (
-        <div
-          className="inline-flex max-w-full items-center gap-2 rounded-full border border-violet-300/22 px-3 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]"
-          style={{ background: "rgba(167,139,250,0.07)", color: "rgba(216,200,255,0.85)" }}
-        >
-          <CloudArrowUp size={11} weight="fill" style={{ color: "#A78BFA" }} />
-          <span className="font-medium">Promoted to cloud</span>
-          <a
-            href="#/cloud"
-            onClick={(e) => {
-              e.preventDefault();
-              try { window.location.hash = "#/cloud"; } catch { /* noop */ }
-            }}
-            className="inline-flex items-center gap-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-200/70 hover:text-violet-100"
-          >
-            open in /cloud
-          </a>
-        </div>
-      );
+      return null;
     }
     // A chat whose provider thread couldn't be resumed after a disk-full incident
     // carries a persisted continuity-recovery detail — render the dedicated card
@@ -3816,27 +3799,22 @@ function renderEvent(
   /* ── Cloud status lifecycle ── */
   if (event.type === "cloud_status") {
     const status = (event.status ?? "").toLowerCase();
+    const failed = status === "error" || status === "cancelled" || status === "expired";
+    if (!failed && !event.prUrl) return null;
     const inProgress = status === "creating" || status === "running";
     const live = inProgress && Boolean(options?.turnActive);
-    const failed = status === "error" || status === "cancelled" || status === "expired";
     const tone = inProgress
       ? "text-violet-200/80"
       : failed
         ? "text-red-300/75"
         : "text-emerald-300/70";
-    const label = status === "creating"
-      ? "Provisioning cloud VM"
-      : status === "running"
-        ? "Running in cloud"
-        : status === "finished"
-          ? "Cloud run finished"
-          : status === "cancelled"
-            ? "Cloud run cancelled"
-            : status === "expired"
-              ? "Cloud run expired"
-              : status === "error"
-                ? "Cloud run failed"
-                : `Cloud · ${status}`;
+    const label = failed
+      ? (status === "cancelled"
+        ? "Cloud run cancelled"
+        : status === "expired"
+          ? "Cloud run expired"
+          : "Cloud run failed")
+      : "Pull request";
     return (
       <div className={cn(
         "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
@@ -4223,6 +4201,7 @@ function DoneTurnDivider({
   const ranFor = durationMs !== null && durationMs > 1500
     ? `ran ${formatTurnDuration(durationMs)}`
     : null;
+  const tokenLine = formatDoneTurnTokenLine(event.usage);
   const hasToolActivity = toolEntries.length > 0;
   const content = (
     <span
@@ -4252,6 +4231,12 @@ function DoneTurnDivider({
           <>
             <span className="opacity-40">·</span>
             <span>{ranFor}</span>
+          </>
+        ) : null}
+        {tokenLine ? (
+          <>
+            <span className="opacity-40">·</span>
+            <span>{tokenLine}</span>
           </>
         ) : null}
       {hasToolActivity ? (
@@ -5644,6 +5629,10 @@ function AgentChatMessageListMain({
     let turnStartMs: number | null = null;
     for (const env of allGroupedRows) {
       const ts = Date.parse(env.timestamp);
+      if (env.event.type === "user_message" && Number.isFinite(ts)) {
+        turnStartMs = ts;
+        continue;
+      }
       if (turnStartMs === null && Number.isFinite(ts)) turnStartMs = ts;
       if (env.event.type === "done") {
         const start = turnStartMs ?? ts;

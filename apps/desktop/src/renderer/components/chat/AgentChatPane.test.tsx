@@ -772,6 +772,13 @@ function installAdeMocks(options?: {
     files: {
       listWorkspaces: vi.fn().mockResolvedValue([]),
     },
+    projectSecrets: {
+      list: vi.fn().mockResolvedValue({
+        secrets: [],
+        storage: { path: "/tmp/secrets", encrypted: true, scope: "project" },
+      }),
+      get: vi.fn().mockRejectedValue(new Error("renderer must not read secret values")),
+    },
     lanes: {
       list: vi.fn().mockResolvedValue([]),
       listSnapshots: vi.fn().mockResolvedValue([]),
@@ -785,6 +792,7 @@ function installAdeMocks(options?: {
       listBranches: vi.fn().mockResolvedValue([
         { name: "main", isRemote: false, isCurrent: true, upstream: "origin/main" },
       ]),
+      getOriginRemote: vi.fn().mockResolvedValue({ remoteUrl: null, branch: null }),
       getActionRuntime: vi.fn().mockResolvedValue(null),
       onActionRuntimeEvent: vi.fn().mockImplementation(() => () => undefined),
     },
@@ -10085,5 +10093,736 @@ describe("AgentChatPane per-chat runtime routing", () => {
       machineB,
     ));
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+});
+
+/**
+ * Cursor Cloud lives in the composer itself: the machine picker's "Cursor Cloud" row is the
+ * whole entry point, the lane picker decides the branch, and the model picker decides the model.
+ * There is no separate cloud form and no cloud toggle glyph.
+ */
+describe("AgentChatPane Cursor Cloud composer mode", () => {
+  const CURSOR_MODEL_ID = "cursor/composer-cloud";
+
+  function seedCursorChatCatalog(): string {
+    const model = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud", {
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    rememberRuntimeCatalog({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: 1,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: [{
+              id: model.id,
+              runtimeModelId: model.providerModelId,
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: model.displayName,
+              isDefault: true,
+              isAvailable: true,
+              aliases: model.aliases,
+              serviceTiers: model.serviceTiers,
+              cursorAvailability: model.cursorAvailability,
+            }],
+          }],
+        }],
+      }],
+    } as AgentChatModelCatalog, { mode: "cached" });
+    return model.id;
+  }
+
+  function cursorAvailableAiStatus(): AiSettingsStatus {
+    return {
+      mode: "subscription",
+      availableProviders: { claude: false, codex: false, cursor: true, droid: false },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [],
+      availableModelIds: [CURSOR_MODEL_ID],
+      providerConnections: {
+        claude: null,
+        codex: null,
+        cursor: {
+          provider: "cursor",
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: true,
+          usageAvailable: true,
+          path: "/usr/local/bin/cursor-agent",
+          blocker: null,
+          lastCheckedAt: "2026-05-26T00:00:00.000Z",
+          sources: [{ kind: "cli", detected: true, authenticated: true, path: "/usr/local/bin/cursor-agent" }],
+        },
+        droid: null,
+      },
+    } as unknown as AiSettingsStatus;
+  }
+
+  function installCursorCloudMocks(overrides?: {
+    push?: ReturnType<typeof vi.fn>;
+    repos?: Array<{ url: string; name?: string }>;
+    laneBranch?: string;
+  }) {
+    const createRun = vi.fn().mockResolvedValue({
+      agent: { agentId: "cloud-agent-1", name: "Tidy the cloud composer" },
+      run: { runId: "run-1" },
+    });
+    const openChat = vi.fn().mockResolvedValue({
+      sessionId: "cloud-session-1",
+      session: buildSession("cloud-session-1", { laneId: "lane-1", provider: "cursor" }),
+    });
+    const listRepositories = vi.fn().mockResolvedValue(
+      overrides?.repos ?? [{ url: "https://github.com/acme/project.git", name: "project" }],
+    );
+    const push = overrides?.push ?? vi.fn().mockResolvedValue({ operationId: "op-1" });
+    const getOriginRemote = vi.fn().mockResolvedValue({
+      remoteUrl: "git@github.com:acme/project.git",
+      branch: overrides?.laneBranch ?? "current-lane",
+    });
+    const getOpenPrForBranch = vi.fn().mockResolvedValue(null);
+    Object.assign(window.ade.ai, {
+      cursorCloudListRepositories: listRepositories,
+      cursorCloudCreateRun: createRun,
+      cursorCloudOpenChat: openChat,
+      cursorCloudWatchMirror: vi.fn().mockResolvedValue(undefined),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+    Object.assign(window.ade.git, {
+      getOriginRemote,
+      push,
+      getOpenPrForBranch,
+    });
+    return { createRun, openChat, listRepositories, push, getOriginRemote, getOpenPrForBranch };
+  }
+
+  async function selectCursorCloudMachine() {
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ }));
+  }
+
+  function renderCursorCloudDraft(args?: Parameters<typeof renderAutoCreateDraftPane>[0]) {
+    // Pin the draft to the Cursor chat model the way a returning user's saved launch config does;
+    // cloud mode is only offered for a Cursor model.
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "chat",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: CURSOR_MODEL_ID,
+      reasoningEffort: null,
+      fastMode: false,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+    return renderAutoCreateDraftPane(args);
+  }
+
+  beforeEach(() => {
+    seedCursorChatCatalog();
+  });
+
+  it("offers Cursor Cloud in the machine picker and puts the cloud glyph on Send", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    installCursorCloudMocks();
+    renderCursorCloudDraft();
+
+    await screen.findByRole("button", { name: /Choose machine/ });
+    // No standalone cloud toggle: the machine picker is the only way in.
+    expect(screen.queryByRole("button", { name: /Send to Cursor Cloud$/ })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Send" })).toBeTruthy();
+
+    await selectCursorCloudMachine();
+
+    expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
+  });
+
+  it("keeps an existing lane's branch as the cloud agent's starting ref", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, openChat } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Fix the flaky test." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      promptText: "Fix the flaky test.",
+      repoUrl: "https://github.com/acme/project.git",
+      startingRef: "current-lane",
+      workOnCurrentBranch: true,
+      autoCreatePR: false,
+    }));
+    // Cursor's own name for the agent becomes the ADE session title.
+    await waitFor(() => expect(openChat).toHaveBeenCalledWith(expect.objectContaining({
+      cloudAgentId: "cloud-agent-1",
+      laneId: "lane-1",
+      agentName: "Tidy the cloud composer",
+    })));
+  });
+
+  it("creates the lane and pushes its branch before starting a cloud agent on auto-create", async () => {
+    const mocks = installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, push, getOriginRemote } = installCursorCloudMocks({ laneBranch: "ade/new-lane" });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(mocks.createLane).toHaveBeenCalled();
+    expect(push).toHaveBeenCalledWith({ laneId: "lane-created" });
+    expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-created" });
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      startingRef: "ade/new-lane",
+      workOnCurrentBranch: true,
+    }));
+  });
+
+  it("aborts the cloud send when the new branch cannot be pushed", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const push = vi.fn().mockRejectedValue(new Error("remote: permission denied"));
+    const { createRun } = installCursorCloudMocks({ push });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    expect((await screen.findAllByText(/remote: permission denied/)).length).toBeGreaterThan(0);
+    expect(createRun).not.toHaveBeenCalled();
+  });
+
+  it("reports the cloud launch stages while it waits on Cursor", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    let releaseCreate: (() => void) | null = null;
+    const { openChat } = installCursorCloudMocks();
+    window.ade.ai.cursorCloudCreateRun = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => { releaseCreate = resolve; });
+      return { agent: { agentId: "cloud-agent-1", name: "Named by Cursor" }, run: { runId: "run-1" } };
+    }) as any;
+    let releaseOpen: (() => void) | null = null;
+    window.ade.ai.cursorCloudOpenChat = vi.fn().mockImplementation(async (args: unknown) => {
+      await new Promise<void>((resolve) => { releaseOpen = resolve; });
+      return openChat(args);
+    }) as any;
+
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Take your time." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    expect(await screen.findByText(/Sending to Cursor Cloud/)).toBeTruthy();
+    await act(async () => { releaseCreate?.(); await Promise.resolve(); });
+    expect(await screen.findByText(/Connecting to Cursor Cloud/)).toBeTruthy();
+    await act(async () => { releaseOpen?.(); await Promise.resolve(); });
+  });
+
+  it("narrows the model picker to Cursor models in cloud mode", async () => {
+    const status = cursorAvailableAiStatus();
+    (status as unknown as { availableModelIds: string[] }).availableModelIds = [
+      CURSOR_MODEL_ID,
+      "gpt-5.4",
+    ];
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: status });
+    installCursorCloudMocks();
+    renderCursorCloudDraft();
+
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await findModelTrigger());
+    await waitFor(() => expect(screen.getAllByText(/Composer Cloud/).length).toBeGreaterThan(0));
+    expect(screen.queryByText("gpt-5.4")).toBeNull();
+  });
+
+  async function revealRowTooltip(row: HTMLElement) {
+    fireEvent.mouseEnter(row.parentElement ?? row);
+  }
+
+  it("re-reads the target lane branch at launch instead of the stale snapshot", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, getOriginRemote } = installCursorCloudMocks({ laneBranch: "stale-from-previous-lane" });
+    let branch = "stale-from-previous-lane";
+    getOriginRemote.mockImplementation(async () => ({
+      remoteUrl: "git@github.com:acme/project.git",
+      branch,
+    }));
+    renderCursorCloudDraft();
+
+    await waitFor(() => expect(getOriginRemote).toHaveBeenCalled());
+    branch = "fresh-target-lane";
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use the live branch." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      startingRef: "fresh-target-lane",
+      workOnCurrentBranch: true,
+    }));
+    expect(createRun).not.toHaveBeenCalledWith(expect.objectContaining({
+      startingRef: "stale-from-previous-lane",
+    }));
+  });
+
+  it("leaves the draft for the new session even when open-chat fails after create", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, openChat } = installCursorCloudMocks();
+    createRun.mockResolvedValue({
+      agent: {
+        agentId: "cloud-agent-1",
+        name: "Tidy the cloud composer",
+        webUrl: "https://cursor.com/agents?id=cloud-agent-1",
+      },
+      run: { runId: "run-1" },
+    });
+    openChat.mockRejectedValue(new Error("Failed to open the cloud chat"));
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Retry this draft." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(openChat).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Launch failed/)).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Send to Cursor Cloud" })).toBeNull();
+    });
+  });
+
+  it("reuses the cloud idempotency key when create fails", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun } = installCursorCloudMocks();
+    createRun.mockRejectedValue(new Error("Cursor Cloud create failed"));
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Retry this draft." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    expect((await screen.findAllByText(/Cursor Cloud create failed/)).length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+    await waitFor(() => expect(createRun).toHaveBeenCalledTimes(2));
+    const firstKey = createRun.mock.calls[0]?.[0]?.idempotencyKey;
+    const secondKey = createRun.mock.calls[1]?.[0]?.idempotencyKey;
+    expect(typeof firstKey).toBe("string");
+    expect(firstKey).toBe(secondKey);
+  });
+
+  it("clears cloud mode when parallel models turns on and disables the cloud row", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Advanced" })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "More composer controls" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Parallel models/i }));
+
+    expect(await screen.findByRole("button", { name: "Send to lanes" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send to Cursor Cloud" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Parallel models runs locally.")).toBeTruthy();
+  });
+
+  it("disables the cloud row while repos load and surfaces the real API-key error with retry", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { listRepositories } = installCursorCloudMocks();
+    listRepositories.mockReset();
+    listRepositories.mockRejectedValue(
+      new Error("Error invoking remote method 'ai:cursorCloudListRepositories': Add a Cursor API key before using Cursor Cloud agents."),
+    );
+    renderCursorCloudDraft();
+
+    await waitFor(() => expect(listRepositories.mock.calls.length).toBeGreaterThan(0));
+    await act(async () => { await Promise.resolve(); });
+    const callsBeforeOpen = listRepositories.mock.calls.length;
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    await waitFor(() => expect(listRepositories.mock.calls.length).toBeGreaterThan(callsBeforeOpen));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Add a Cursor API key before using Cursor Cloud agents.")).toBeTruthy();
+    expect(screen.queryByText(/Connect this repo to Cursor/)).toBeNull();
+  });
+
+  it("disables the cloud row with a checking reason while the repo list is in flight", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { listRepositories } = installCursorCloudMocks();
+    listRepositories.mockReset();
+    listRepositories.mockImplementation(() => new Promise(() => {}));
+    renderCursorCloudDraft();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Checking Cursor Cloud…")).toBeTruthy();
+    expect(listRepositories).toHaveBeenCalled();
+  });
+
+  it("disables Cursor Cloud when a remote draft machine is selected", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    installCursorCloudMocks();
+    const localBinding = {
+      kind: "local" as const,
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: "git@github.com:acme/project.git",
+    };
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio (12)",
+      projectId: "project-a",
+      rootPath: "/Volumes/work/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: "https://github.com/acme/project.git",
+    };
+    useAppStore.setState({
+      project: { rootPath: localBinding.rootPath, displayName: localBinding.displayName } as any,
+      projectBinding: localBinding,
+      openProjectTabRoots: [localBinding.rootPath],
+      openRemoteProjectTabs: [remoteBinding],
+      crossMachineLanesByMachineId: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: remoteBinding.runtimeName,
+          targetId: remoteBinding.targetId,
+          projectId: remoteBinding.projectId,
+          binding: remoteBinding,
+          online: true,
+          lanes: [{ id: "lane-1", name: "current-lane", laneType: "worktree" }] as any,
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+    (window.ade.project.listRecent as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      rootPath: localBinding.rootPath,
+      displayName: localBinding.displayName,
+      lastOpenedAt: "2026-07-28T12:00:00.000Z",
+      exists: true,
+      kind: "local",
+      gitOriginUrl: localBinding.gitOriginUrl,
+    }]);
+    window.ade.remoteRuntime = {
+      getConnectionSnapshot: vi.fn().mockResolvedValue({
+        connections: [{
+          state: "connected",
+          target: {
+            id: remoteBinding.targetId,
+            name: remoteBinding.runtimeName,
+            hostname: "studio",
+          },
+          projects: [{
+            projectId: remoteBinding.projectId,
+            rootPath: remoteBinding.rootPath,
+            displayName: remoteBinding.displayName,
+            gitOriginUrl: remoteBinding.gitOriginUrl,
+          }],
+        }],
+        connectedCount: 1,
+        updatedAt: Date.now(),
+      }),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    } as any;
+
+    renderCursorCloudDraft({
+      project: { rootPath: localBinding.rootPath, displayName: localBinding.displayName },
+      projectBinding: localBinding,
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Mac Studio/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /currently Mac Studio/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Cursor Cloud launches from this computer.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send to Cursor Cloud" })).toBeNull();
+  });
+
+  it("passes autoCreatePR when the Open a PR chip is on", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));
+    const autoPr = await screen.findByRole("menuitemcheckbox", { name: /Open a PR/ });
+    expect(autoPr.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(autoPr);
+    expect(autoPr.getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Open a PR when done." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      autoCreatePR: true,
+      promptText: "Open a PR when done.",
+    }));
+  });
+
+  it("sends without selected secrets and does not block on an empty picker", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, openChat } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    expect(await screen.findByRole("button", { name: "Advanced" })).toBeTruthy();
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "No secrets this time." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      promptText: "No secrets this time.",
+      secretNames: [],
+      rememberSecretNames: false,
+      laneId: "lane-1",
+    }));
+    const createArgs = createRun.mock.calls[0]?.[0] as { sessionId?: string };
+    expect(createArgs.sessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    expect(openChat).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: createArgs.sessionId,
+      laneId: "lane-1",
+    }));
+  });
+
+  it("passes selected secret names and remember-for-lane, hiding CURSOR_ names", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun } = installCursorCloudMocks();
+    (window.ade.projectSecrets.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      secrets: [
+        { name: "NPM_TOKEN", createdAt: "", updatedAt: "", valueLength: 8 },
+        { name: "CURSOR_API_KEY", createdAt: "", updatedAt: "", valueLength: 8 },
+        { name: "GH_TOKEN", createdAt: "", updatedAt: "", valueLength: 8 },
+      ],
+      storage: { path: "/tmp/secrets", encrypted: true, scope: "project" },
+    });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));
+    expect(await screen.findByRole("menuitemcheckbox", { name: "NPM_TOKEN" })).toBeTruthy();
+    expect(screen.queryByRole("menuitemcheckbox", { name: "CURSOR_API_KEY" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "NPM_TOKEN" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Remember for this lane" }));
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use the token." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      secretNames: ["NPM_TOKEN"],
+      rememberSecretNames: true,
+    }));
+  });
+
+  it("attaches to an existing PR instead of auto-creating another", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, getOpenPrForBranch } = installCursorCloudMocks();
+    getOpenPrForBranch.mockResolvedValue({
+      prUrl: "https://github.com/acme/project/pull/12",
+      prNumber: 12,
+      title: "Fix flakes",
+      headRefName: "current-lane",
+    });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));
+    expect(await screen.findByText("Attach to PR #12")).toBeTruthy();
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Open a PR/ })).toBeNull();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Work on the existing PR." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      autoCreatePR: false,
+      prUrl: "https://github.com/acme/project/pull/12",
+      workOnCurrentBranch: true,
+      promptText: "Work on the existing PR.",
+    }));
+  });
+
+  it("shows a retry state when hydrating an empty cloud chat fails", async () => {
+    const session = buildSession("cloud-empty-1", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-749a9047-4f2a-470c-8425-5087b725ba65",
+    });
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    Object.assign(window.ade.ai, {
+      cursorCloudOpenChat: vi.fn().mockRejectedValue(new Error("conversation was empty")),
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByTestId("cursor-cloud-hydrate-failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByTestId("cursor-cloud-connecting")).toBeNull();
+    expect(screen.getByTestId("cursor-cloud-header-link")).toBeTruthy();
+    expect(screen.queryByText(/Live view of Cursor Cloud/)).toBeNull();
+  });
+
+  it("watches an open cloud chat while visible and unwatches on unmount", async () => {
+    const session = buildSession("cloud-watch-1", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-watch-1",
+    });
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    const watchMirror = vi.fn().mockResolvedValue(undefined);
+    Object.assign(window.ade.ai, {
+      cursorCloudWatchMirror: watchMirror,
+      cursorCloudOpenChat: vi.fn().mockResolvedValue({ sessionId: session.sessionId, session }),
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+
+    const view = renderPane(session);
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: true,
+    }));
+
+    view.unmount();
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: false,
+    }));
+  });
+
+  it("unwatches a cloud chat when the document is hidden", async () => {
+    const session = buildSession("cloud-watch-hidden", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-watch-hidden",
+    });
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    const watchMirror = vi.fn().mockResolvedValue(undefined);
+    Object.assign(window.ade.ai, {
+      cursorCloudWatchMirror: watchMirror,
+      cursorCloudOpenChat: vi.fn().mockResolvedValue({ sessionId: session.sessionId, session }),
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+
+    const view = renderPane(session);
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: true,
+    }));
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: false,
+    }));
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    view.unmount();
   });
 });

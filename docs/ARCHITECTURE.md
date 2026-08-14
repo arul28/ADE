@@ -831,7 +831,7 @@ ade.ai.*                     # AI integration status + provider auth (storeApiKe
                              # 11-minute transport budget (PI_LOGIN_IPC_TIMEOUT_MS) and piLoginSubmit's
                              # `value` argument is in the IPC redaction set.
                              # See features/chat/README.md for the channel table + fan-out wiring.
-ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories, listAgents, listRuns, getAgent, createRun, followUp, streamRun, cancelRun, archiveAgent / unarchiveAgent / deleteAgent, listArtifacts / downloadArtifact, openChat (mirror an existing cloud agent into an ADE chat session)
+ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories, listAgents, listRuns, getAgent, createRun, followUp, streamRun, cancelRun, archiveAgent / unarchiveAgent / deleteAgent, listArtifacts / downloadArtifact, openChat (mirror an existing cloud agent into an ADE chat session), watchMirror (presence-gated inbound hydrate; poll only while a client is looking)
 ade.automations.*
 ade.orchestration.*          # work-tab orchestration: runCreate, bundleRead, manifestReadSection,
                              # manifestPatch, planAppend, planWrite, spawnAgent, agentInject,

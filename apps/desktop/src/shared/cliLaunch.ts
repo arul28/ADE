@@ -994,6 +994,7 @@ function codexResumePermissionFlags(args: {
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--force"];
   if (permissionMode === "plan") return ["--mode", "plan"];
+  if (permissionMode === "edit") return ["--mode", "ask"];
   return [];
 }
 

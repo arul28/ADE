@@ -3,7 +3,7 @@ import { ArrowSquareOut, CloudArrowUp, X } from "@phosphor-icons/react";
 import type { CursorCloudRepository } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { openExternalUrl } from "../../lib/openExternal";
-import { repoMatchKey } from "../../lib/cursorCloudUtils";
+import { cursorCloudErrorMessage, repoMatchKey } from "../../lib/cursorCloudUtils";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
@@ -38,11 +38,6 @@ function repoLabel(url: string): string {
   const parts = trimmed.split("/");
   if (parts.length >= 2) return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
   return trimmed;
-}
-
-function errorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim() || "Cursor Cloud request failed.";
 }
 
 function prFallbackLabel(url: string): string {
@@ -114,7 +109,7 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
       .catch((err) => {
         if (cancelled) return;
         setReposLoaded(true);
-        setError(errorMessage(err));
+        setError(cursorCloudErrorMessage(err));
       });
     return () => { cancelled = true; };
   }, [laneGitRemote]);
@@ -261,7 +256,7 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
       onLaunched?.(created.agent.agentId);
       return { agentId: created.agent.agentId };
     } catch (err) {
-      setError(errorMessage(err));
+      setError(cursorCloudErrorMessage(err));
       return null;
     }
   }, [autoCreatePR, branch, laneGitRemote, modelId, onLaunched, onMissingFields, repoUrl, workOnCurrentBranch]);

@@ -3656,6 +3656,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       piLoginSubmit: resolvedArg({ ok: false, error: "browser" } as any),
       piLoginCancel: resolvedArg(undefined),
       onPiAuthStatus: () => () => {},
+      cursorAuthStatus: resolved({
+        sdkStatus: "logged-out",
+        adeKeyPresent: false,
+        loginInProgress: false,
+      } as any),
+      cursorAuthLogin: resolvedArg({ ok: false, error: "browser" } as any),
+      cursorAuthLogout: resolvedArg({ ok: false, error: "browser" } as any),
+      cursorAuthCancel: resolvedArg(undefined),
+      onCursorAuthStatus: () => () => {},
+      cursorCloudOpenChat: resolvedArg({ sessionId: "", session: null } as any),
+      cursorCloudWatchMirror: resolvedArg(undefined),
     },
     agentTools: {
       detect: resolved([]),

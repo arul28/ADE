@@ -7,6 +7,7 @@
 import {
   Calendar,
   ChatCircleText,
+  Cloud,
   CursorClick,
   FileText,
   GitBranch,
@@ -23,6 +24,7 @@ export type TriggerSource =
   | "schedule"
   | "github"
   | "linear"
+  | "cursor"
   | "lane"
   | "git"
   | "file"
@@ -86,6 +88,17 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
       { value: "linear.issue_assigned", label: "Issue assigned" },
       { value: "linear.issue_status_changed", label: "Status changed" },
       { value: "linear.issue_labeled", label: "Issue labeled" },
+    ],
+  },
+  {
+    value: "cursor",
+    label: "Cursor Cloud",
+    icon: Cloud,
+    accent: "#F54E00",
+    hint: "Cloud agent finished or errored",
+    events: [
+      { value: "cursor.cloud_finished", label: "Cloud agent finished" },
+      { value: "cursor.cloud_error", label: "Cloud agent errored" },
     ],
   },
   {
@@ -153,6 +166,7 @@ export function sourceForTriggerType(type: string): TriggerSource {
   if (type.startsWith("github.") || type.startsWith("git.pr_")) return "github";
   if (type === "git.commit" || type === "git.push") return "git";
   if (type.startsWith("linear.")) return "linear";
+  if (type.startsWith("cursor.")) return "cursor";
   if (type === "file.change") return "file";
   if (type === "lane.created" || type === "lane.archived" || type === LANE_MERGED_TRIGGER_TYPE) return "lane";
   if (type === "session-end") return "session";
@@ -198,6 +212,8 @@ export function defaultTriggerForSource(source: TriggerSource): AutomationTrigge
       return { type: "github.issue_opened" };
     case "linear":
       return { type: "linear.issue_created" };
+    case "cursor":
+      return { type: "cursor.cloud_finished" };
     case "lane":
       return { type: LANE_MERGED_TRIGGER_TYPE };
     case "git":
@@ -211,4 +227,6 @@ export function defaultTriggerForSource(source: TriggerSource): AutomationTrigge
     case "manual":
       return { type: "manual" };
   }
+  const _exhaustive: never = source;
+  return _exhaustive;
 }

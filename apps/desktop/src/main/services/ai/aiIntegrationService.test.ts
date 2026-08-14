@@ -67,6 +67,25 @@ vi.mock("./providerTaskRunner", () => ({
   runProviderTask: (...args: unknown[]) => mockState.runProviderTask(...args),
 }));
 
+const cursorCloudMocks = vi.hoisted(() => ({
+  loadCursorSdk: vi.fn(),
+  resolveCursorCloudCreateCloudExtras: vi.fn(),
+}));
+
+vi.mock("./cursorSdkLoader", () => ({
+  loadCursorSdk: (...args: unknown[]) => cursorCloudMocks.loadCursorSdk(...args),
+}));
+
+vi.mock("../chat/cursorCloudCreateOptions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../chat/cursorCloudCreateOptions")>();
+  return {
+    ...actual,
+    resolveCursorCloudCreateCloudExtras: (
+      ...args: Parameters<typeof actual.resolveCursorCloudCreateCloudExtras>
+    ) => cursorCloudMocks.resolveCursorCloudCreateCloudExtras(...args),
+  };
+});
+
 vi.mock("../opencode/openCodeInventory", () => ({
   clearOpenCodeInventoryCache: (...args: unknown[]) => mockState.clearOpenCodeInventoryCache(...args),
   peekOpenCodeInventoryCache: (...args: unknown[]) => mockState.peekOpenCodeInventoryCache(...args),
@@ -241,6 +260,8 @@ function usageInsertCalls(runCalls: DbRunCall[]): DbRunCall[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cursorCloudMocks.loadCursorSdk.mockReset();
+  cursorCloudMocks.resolveCursorCloudCreateCloudExtras.mockReset();
   mockState.runProviderTask.mockResolvedValue({
     text: "provider response",
     structuredOutput: null,
@@ -673,5 +694,57 @@ describe("aiIntegrationService", () => {
       source: "store",
     });
     expect(JSON.stringify(result)).not.toContain("crsr_test");
+  });
+
+  it("passes envVars on Cursor Cloud Agent.create and does not send metadata", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const send = vi.fn().mockResolvedValue({ id: "run-1", status: "RUNNING" });
+    const create = vi.fn().mockResolvedValue({
+      agentId: "agt_1",
+      send,
+    });
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { create } });
+    cursorCloudMocks.resolveCursorCloudCreateCloudExtras.mockReturnValue({
+      sessionId: "sess-1",
+      laneId: "lane-1",
+      projectId: "proj-1",
+      linearIssueId: "ADE-12",
+      envVars: { NPM_TOKEN: "npm-secret" },
+      extras: {
+        envVars: { NPM_TOKEN: "npm-secret" },
+      },
+    });
+
+    await service.createCursorCloudRun({
+      promptText: "Fix the flaky test.",
+      repoUrl: "https://github.com/acme/project.git",
+      sessionId: "sess-1",
+      laneId: "lane-1",
+      linearIssueId: "ADE-12",
+      secretNames: ["NPM_TOKEN"],
+    });
+
+    expect(cursorCloudMocks.resolveCursorCloudCreateCloudExtras).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-1",
+        laneId: "lane-1",
+        linearIssueId: "ADE-12",
+        secretNames: ["NPM_TOKEN"],
+      }),
+    );
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      cloud: expect.objectContaining({
+        envVars: { NPM_TOKEN: "npm-secret" },
+      }),
+    }));
+    const cloud = create.mock.calls[0]?.[0]?.cloud as Record<string, unknown>;
+    expect(cloud).not.toHaveProperty("metadata");
+    expect(cloud).not.toHaveProperty("webhook");
+    expect(send).toHaveBeenCalled();
   });
 });

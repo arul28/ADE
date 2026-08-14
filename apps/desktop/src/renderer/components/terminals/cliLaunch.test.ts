@@ -914,11 +914,22 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.initialInputDelayMs).toBeUndefined();
     });
 
-    it("launches Cursor edit mode through the default edit-capable agent mode", () => {
+    it("launches Cursor edit and Ask through Cursor --mode ask", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "edit", model: "cursor-fast" });
       expect(launch.command).toBe("cursor-agent");
-      expect(launch.args).toEqual(["--model", "cursor-fast"]);
-      expect(launch.startupCommand).toBe("cursor-agent --model cursor-fast");
+      expect(launch.args).toEqual(["--mode", "ask", "--model", "cursor-fast"]);
+      expect(launch.startupCommand).toBe("cursor-agent --mode ask --model cursor-fast");
+    });
+
+    it("rejects Cursor permissionMode auto rather than passing --mode auto", () => {
+      expect(() => validateLaunchProfilePermissionMode("cursor", "auto")).toThrow(
+        /permissionMode auto is only supported for Claude/u,
+      );
+      expect(() => buildTrackedCliLaunchCommand({
+        provider: "cursor",
+        permissionMode: "auto",
+        model: "cursor-fast",
+      })).toThrow(/permissionMode auto is only supported for Claude/u);
     });
 
     it("normalizes Cursor registry model ids and forces full-auto interactive workspaces", () => {
@@ -1353,7 +1364,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "chat-99",
       launch: { permissionMode: "edit" },
-    })).toBe("cursor-agent --resume chat-99");
+    })).toBe("cursor-agent --mode ask --resume chat-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",

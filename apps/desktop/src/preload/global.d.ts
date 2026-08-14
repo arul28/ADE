@@ -242,6 +242,9 @@ import type {
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
+  CursorSdkAuthEvent,
+  CursorSdkAuthStatus,
+  CursorSdkLoginResult,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -254,6 +257,9 @@ import type {
   CursorCloudRepository,
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
+  CursorCloudWatchMirrorRequest,
+  CursorAgentUsage,
+  CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
   AdeCliInstallResult,
@@ -1040,6 +1046,11 @@ declare global {
         }) => Promise<{ ok: boolean; error?: string }>;
         piLoginCancel: (args: { providerId: string }) => Promise<void>;
         onPiAuthStatus: (cb: (event: PiAuthStatusEvent) => void) => () => void;
+        cursorAuthStatus: () => Promise<CursorSdkAuthStatus>;
+        cursorAuthLogin: () => Promise<CursorSdkLoginResult>;
+        cursorAuthLogout: () => Promise<{ ok: boolean; error?: string }>;
+        cursorAuthCancel: () => Promise<void>;
+        onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void) => () => void;
         cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;
@@ -1054,12 +1065,16 @@ declare global {
         cursorCloudCreateRun: (
           args: CursorCloudCreateRunRequest,
         ) => Promise<CursorCloudCreateRunResult>;
+        cursorCloudGetLaneSecretNames: (laneId: string) => Promise<string[]>;
         cursorCloudArchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudUnarchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudDeleteAgent: (agentId: string) => Promise<void>;
         cursorCloudGetAgent: (
           agentId: string,
         ) => Promise<CursorCloudAgentSummary | null>;
+        cursorCloudGetUsage: (
+          args: CursorAgentUsageRequest,
+        ) => Promise<CursorAgentUsage>;
         cursorCloudStreamRun: (
           args: CursorCloudStreamRunRequest,
         ) => Promise<CursorCloudStreamRunResult>;
@@ -1080,6 +1095,9 @@ declare global {
         cursorCloudOpenChat: (
           args: CursorCloudOpenChatRequest,
         ) => Promise<CursorCloudOpenChatResult>;
+        cursorCloudWatchMirror: (
+          args: CursorCloudWatchMirrorRequest,
+        ) => Promise<void>;
       };
       transcription: {
         transcribe: (

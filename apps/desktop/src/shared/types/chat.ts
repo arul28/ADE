@@ -2025,6 +2025,11 @@ export type AgentChatCreateArgs = {
   runtimeMode?: AgentChatRuntimeMode;
   goal?: string | null;
   recoveredFromSessionId?: string;
+  /**
+   * Predetermined session id. Used so a Cursor Cloud Agent.create can stamp
+   * ade_session_id before the ADE chat row exists.
+   */
+  sessionId?: string;
   // Orchestration-mode fields — set when spawning into an orchestration run.
   orchestrationRunId?: string;
   orchestrationRole?: OrchestrationRole;
@@ -2440,6 +2445,12 @@ export type AgentChatCloudOverrides = {
   workOnCurrentBranch?: boolean;
   prUrl?: string | null;
   skipReviewerRequest?: boolean;
+  /** Linear identifier kept on the ADE session; not sent as cloud.metadata. */
+  linearIssueId?: string | null;
+  /** Project secret names to inject as cloud.envVars. Values are resolved in main. */
+  secretNames?: string[];
+  /** Persist secretNames as the next preselection for this lane. */
+  rememberSecretNames?: boolean;
 };
 
 export type AgentChatSendArgs = {

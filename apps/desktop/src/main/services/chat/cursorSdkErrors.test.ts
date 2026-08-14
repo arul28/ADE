@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { cursorSdkResultWithStreamFailure } from "./cursorSdkErrors";
+import { cursorSdkResultWithStreamFailure, isCursorSdkSandboxUnsupportedError } from "./cursorSdkErrors";
 import { classifyCursorSdkErrorText, isCursorSdkTransportErrorText } from "./cursorSdkProtocol";
+
+describe("isCursorSdkSandboxUnsupportedError", () => {
+  it("matches the SDK ConfigurationError when sandboxing is unavailable", () => {
+    expect(isCursorSdkSandboxUnsupportedError(new Error(
+      "Local SDK sandboxing was requested, but sandboxing is not supported in this environment. Disable local.sandboxOptions.enabled or remove ~/.cursor/sandbox.json to run without sandboxing.",
+    ))).toBe(true);
+    const named = new Error("sandbox requested");
+    named.name = "ConfigurationError";
+    expect(isCursorSdkSandboxUnsupportedError(named)).toBe(true);
+  });
+
+  it("does not treat unrelated configuration errors as sandbox-unsupported", () => {
+    expect(isCursorSdkSandboxUnsupportedError(new Error(
+      "Unknown tool name \"not-a-tool\" in AgentOptions.tools",
+    ))).toBe(false);
+    expect(isCursorSdkSandboxUnsupportedError(new Error("invalid model"))).toBe(false);
+  });
+});
 
 describe("classifyCursorSdkErrorText", () => {
   it("classifies write ECANCELED as a transport failure", () => {

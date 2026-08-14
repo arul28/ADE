@@ -860,6 +860,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
+  /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
+  var cursorCloudAgentId: String? = nil
   var identityKey: String?
   var surface: String?
   var automationId: String?
@@ -924,6 +926,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
+      && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal

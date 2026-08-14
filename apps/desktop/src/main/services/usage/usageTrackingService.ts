@@ -88,6 +88,7 @@ import {
   runLedgerScanWithCompleteness,
   sanitizeClaudeProjectPath,
 } from "./ledgers/localUsageLedgers";
+import { listCursorBilledUsage } from "./cursorBilledUsageStore";
 import { isPathInside, pathComparisonKey } from "../shared/pathCompare";
 import {
   buildRollupRows,
@@ -2471,7 +2472,13 @@ export function createUsageTrackingService({
   ];
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
-  const scanCursorCostLogs = dependencies?.scanCursorLogs ?? scanCursorLogs;
+  const scanCursorCostLogs = async (): Promise<TokenEntry[]> => {
+    const scanned = await (dependencies?.scanCursorLogs ?? scanCursorLogs)();
+    const billed = db ? listCursorBilledUsage(db) : [];
+    if (!billed.length) return scanned;
+    const seen = new Set(scanned.map((entry) => entry.messageId));
+    return [...scanned, ...billed.filter((entry) => !seen.has(entry.messageId))];
+  };
   const scanCursorAgentCostLogs = dependencies?.scanCursorAgentLogs ?? scanCursorAgentLogs;
   const scanOpenClawCostLogs = dependencies?.scanOpenClawLogs ?? scanOpenClawLogs;
   const scanOpenCodeCostLogs = dependencies?.scanOpenCodeLogs ?? scanOpenCodeLogs;

@@ -121,6 +121,9 @@ import type {
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
+  CursorSdkAuthEvent,
+  CursorSdkAuthStatus,
+  CursorSdkLoginResult,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -133,6 +136,9 @@ import type {
   CursorCloudRepository,
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
+  CursorCloudWatchMirrorRequest,
+  CursorAgentUsage,
+  CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
   OpenCodeRuntimeSnapshot,
@@ -1755,6 +1761,7 @@ const remoteOpenCodeOAuthStatusCallbacks = new Set<
   (payload: OpenCodeOAuthStatusEvent) => void
 >();
 const remotePiAuthStatusCallbacks = new Set<(payload: PiAuthStatusEvent) => void>();
+const remoteCursorAuthStatusCallbacks = new Set<(payload: CursorSdkAuthEvent) => void>();
 const remoteLaneDiagnosticsEventCallbacks = new Set<
   (payload: RuntimeDiagnosticsEvent) => void
 >();
@@ -1880,6 +1887,11 @@ const subscribeLocalPiAuthStatusEvents =
     IPC.aiPiAuthStatus,
     "Pi sign-in status",
   );
+const subscribeLocalCursorAuthStatusEvents =
+  createLocalIpcEventSubscription<CursorSdkAuthEvent>(
+    IPC.aiCursorAuthEvent,
+    "Cursor sign-in status",
+  );
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
@@ -1955,6 +1967,7 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteLaneOAuthEventCallbacks.size > 0 ||
     remoteOpenCodeOAuthStatusCallbacks.size > 0 ||
     remotePiAuthStatusCallbacks.size > 0 ||
+    remoteCursorAuthStatusCallbacks.size > 0 ||
     remoteLaneDiagnosticsEventCallbacks.size > 0 ||
     remotePtyDataEventCallbacks.size > 0 ||
     remotePtyExitEventCallbacks.size > 0 ||
@@ -2328,6 +2341,19 @@ function dispatchRemoteRuntimeEventPayload(
           cb(event as unknown as PiAuthStatusEvent);
         } catch (error) {
           console.error("preload remote Pi sign-in status listener failed", error);
+        }
+      }
+    }
+  }
+
+  if (payload.kind === "cursorAuthStatus" && isRecord(payload.event)) {
+    const event = payload.event;
+    if (event.providerId === "cursor" && typeof event.state === "string") {
+      for (const cb of [...remoteCursorAuthStatusCallbacks]) {
+        try {
+          cb(event as unknown as CursorSdkAuthEvent);
+        } catch (error) {
+          console.error("preload remote Cursor sign-in status listener failed", error);
         }
       }
     }
@@ -2887,6 +2913,16 @@ function subscribeRemotePiAuthStatusEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remotePiAuthStatusCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteCursorAuthStatusEvents(
+  cb: (payload: CursorSdkAuthEvent) => void,
+): () => void {
+  remoteCursorAuthStatusCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteCursorAuthStatusCallbacks.delete(cb);
   };
 }
 
@@ -4321,6 +4357,38 @@ contextBridge.exposeInMainWorld("ade", {
         removeLocal();
       };
     },
+    cursorAuthStatus: async (): Promise<CursorSdkAuthStatus> =>
+      callProjectRuntimeActionOr("ai", "cursorAuthStatus", {}, () =>
+        ipcRenderer.invoke(IPC.aiCursorAuthStatus),
+      ),
+    cursorAuthLogin: async (): Promise<CursorSdkLoginResult> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "cursorAuthLogin", {}, () =>
+            ipcRenderer.invoke(IPC.aiCursorAuthLogin),
+          ),
+      ),
+    cursorAuthLogout: async (): Promise<{ ok: boolean; error?: string }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "cursorAuthLogout", {}, () =>
+            ipcRenderer.invoke(IPC.aiCursorAuthLogout),
+          ),
+      ),
+    cursorAuthCancel: async (): Promise<void> =>
+      callProjectRuntimeActionOr("ai", "cursorAuthCancel", {}, () =>
+        ipcRenderer.invoke(IPC.aiCursorAuthCancel),
+      ),
+    onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void) => {
+      const removeLocal = subscribeLocalCursorAuthStatusEvents(cb);
+      const removeRemote = subscribeRemoteCursorAuthStatusEvents(cb);
+      return () => {
+        removeRemote();
+        removeLocal();
+      };
+    },
     cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>
       callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", {}, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),
@@ -4349,6 +4417,13 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<CursorCloudCreateRunResult> =>
       callProjectRuntimeActionOr("ai", "createCursorCloudRun", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudCreateRun, args),
+      ),
+    cursorCloudGetLaneSecretNames: async (laneId: string): Promise<string[]> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "getCursorCloudLaneSecretNames",
+        { args: { laneId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudGetLaneSecretNames, { laneId }),
       ),
     cursorCloudArchiveAgent: async (agentId: string): Promise<void> =>
       callProjectRuntimeActionOr(
@@ -4379,6 +4454,15 @@ contextBridge.exposeInMainWorld("ade", {
         "getCursorCloudAgent",
         { args: { agentId } },
         () => ipcRenderer.invoke(IPC.aiCursorCloudGetAgent, { agentId }),
+      ),
+    cursorCloudGetUsage: async (
+      args: CursorAgentUsageRequest,
+    ): Promise<CursorAgentUsage> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "getCursorAgentUsage",
+        { args },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudGetUsage, args),
       ),
     cursorCloudStreamRun: async (
       args: CursorCloudStreamRunRequest,
@@ -4423,6 +4507,12 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<CursorCloudOpenChatResult> =>
       callProjectRuntimeActionOr("ai", "openCursorCloudChat", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
+      ),
+    cursorCloudWatchMirror: async (
+      args: CursorCloudWatchMirrorRequest,
+    ): Promise<void> =>
+      callProjectRuntimeActionOr("ai", "watchCursorCloudMirror", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudWatchMirror, args),
       ),
   },
   transcription: {

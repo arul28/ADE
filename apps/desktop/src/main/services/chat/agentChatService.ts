@@ -544,6 +544,22 @@ import {
   type CursorSdkPooled,
 } from "./cursorSdkPool";
 import {
+  cloudConversationHasTurns,
+  CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS,
+  CURSOR_CLOUD_CONVERSATION_RETRY_MS,
+  flattenCloudConversationMessages,
+  fingerprintAlreadyHydrated,
+  isCloudRunStillLive,
+  cloudRunsFromList,
+  readCloudTextField,
+  cloudTurnFingerprint,
+  transcriptCloudFingerprints,
+  unwrapCloudConversationTurn,
+  releaseCursorCloudAttachLease,
+  type CursorCloudMirrorRefreshResult,
+} from "./cursorCloudConversation";
+import { createCursorCloudMirrorWatch } from "./cursorCloudMirrorWatch";
+import {
   acquireDroidSdkConnection,
   releaseDroidSdkConnection,
   type DroidSdkPooled,
@@ -588,6 +604,13 @@ import {
   mapCursorSdkRunResultToDoneEvent,
 } from "./cursorSdkEventMapper";
 import {
+  mapCursorAgentUsageToTokenEntry,
+  mapCursorAgentUsageToTokensEvent,
+  selectCursorAgentTurnUsage,
+} from "../usage/cursorUsageMapping";
+import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
+import type { CursorCloudIngressEventRecord } from "../automations/cursorCloudIngressService";
+import {
   createDroidSdkEventMapperState,
   mapDroidSdkMessageToChatEvents,
   mapDroidSdkRunResultToDoneEvent,
@@ -618,6 +641,7 @@ import {
   type CursorSdkHookRequest,
   type CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
+import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
   DroidSdkAskUserResponse,
@@ -1868,30 +1892,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-/**
- * `Cursor SDK Run.conversation()` returns a list of message-shaped records.
- * The shape can vary across SDK versions, so we walk it tolerantly: any
- * record that already looks like an SDK message gets fed back through
- * `mapCursorSdkMessageToChatEvents`; anything that just exposes
- * `{ role, text }` becomes a user/assistant text event directly.
- */
-function flattenCloudConversationMessages(conversation: unknown): unknown[] {
-  if (!conversation) return [];
-  if (Array.isArray(conversation)) return conversation;
-  const record = asRecord(conversation);
-  if (!record) return [];
-  if (Array.isArray(record.messages)) return record.messages;
-  if (Array.isArray(record.content)) return record.content;
-  if (Array.isArray(record.items)) return record.items;
-  return [];
-}
-
-function isCloudRunStillLive(status: string | null | undefined): boolean {
-  if (!status) return false;
-  const lower = status.toLowerCase();
-  return lower === "creating" || lower === "running" || lower === "queued";
 }
 
 function pickCodexTurnId(...values: unknown[]): string | undefined {
@@ -4627,7 +4627,10 @@ function handoffProviderLabel(provider: AgentChatProvider): string {
   return providerDisplayLabel(provider, String(provider));
 }
 
-const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat", "Pi Chat"]);
+// "Cursor cloud agent" is the placeholder ADE stamps on a freshly created cloud agent before
+// Cursor has named it. Treating it as a default keeps it from being adopted as a session title
+// (and from standing ADE's own auto-naming down behind a name that says nothing).
+const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat", "Pi Chat", "Cursor cloud agent"]);
 const DEFAULT_SESSION_TITLES_NORMALIZED = new Set(
   [...DEFAULT_SESSION_TITLES, "OpenCode Chat", "Open Code Chat"]
     .map((title) => title.toLowerCase()),
@@ -30151,6 +30154,7 @@ export function createAgentChatService(args: {
     runtimeMode,
     goal: requestedGoal,
     recoveredFromSessionId,
+    sessionId: requestedSessionId,
     orchestrationRunId: requestedOrchestrationRunId,
     orchestrationRole: requestedOrchestrationRole,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
@@ -30181,9 +30185,11 @@ export function createAgentChatService(args: {
     if (normalizedIdempotencyKey.length > 256 || normalizedIdempotencyKey.includes("\0")) {
       throw new Error("Invalid chat idempotency key.");
     }
-    const sessionId = normalizedIdempotencyKey
-      ? deterministicChatSessionId(normalizedIdempotencyKey)
-      : randomUUID();
+    const requestedSessionIdTrimmed = typeof requestedSessionId === "string" ? requestedSessionId.trim() : "";
+    const sessionId = requestedSessionIdTrimmed
+      || (normalizedIdempotencyKey
+        ? deterministicChatSessionId(normalizedIdempotencyKey)
+        : randomUUID());
     const startedAt = nowIso();
     const transcriptPath = path.join(transcriptsDir, `${sessionId}.chat.jsonl`);
     const metadataPath = metadataPathFor(sessionId);
@@ -33521,28 +33527,10 @@ export function createAgentChatService(args: {
     return built.text;
   };
 
-  const buildCursorSdkModeDirective = (policy: CursorSdkPermissionPolicy): string | null => {
-    if (policy.chatMode === "ask") {
-      return [
-        "System context: Cursor Ask mode is active.",
-        "Answer from inspection only. Do not modify files.",
-        "Do not run shell commands unless ADE explicitly allows a read-only inspection.",
-        cursorSdkAdeControlDirective(),
-      ].join(" ");
-    }
-    if (policy.chatMode === "plan") {
-      return [
-        "System context: Cursor Plan mode is active.",
-        "Produce a concrete implementation plan before changing files.",
-        "Do not modify files or run side-effecting shell commands until the user switches mode or grants approval.",
-        cursorSdkAdeControlDirective(),
-      ].join(" ");
-    }
-    if (policy.approvalPolicy === "never") {
-      return `System context: Cursor Full auto is active. Continue autonomously inside the active lane while respecting ADE hard safety guards. ${cursorSdkAdeControlDirective()}`;
-    }
-    return `System context: Cursor Agent mode is active. Use ADE approval outcomes from approval messages. ${cursorSdkAdeControlDirective()}`;
-  };
+  // Permission mode is enforced by SDK AgentOptions (tools / autoReview /
+  // sandboxOptions) plus ADE hook path guards. This injects only the ADE
+  // control-protocol reminder — never advisory "you are in Ask/Plan" text.
+  const buildCursorSdkModeDirective = (): string => cursorSdkAdeControlDirective();
 
   const buildCursorSdkPendingInputRequest = (
     itemId: string,
@@ -34435,6 +34423,7 @@ export function createAgentChatService(args: {
         return null;
       })();
       if (!cloudStatus) return;
+      if (cloudStatus === "creating" || cloudStatus === "running" || cloudStatus === "finished") return;
       const turnId = runtime.cloudRuns.get(event.runId)?.turnId
         ?? runtime.activeTurnId
         ?? "";
@@ -34992,7 +34981,7 @@ export function createAgentChatService(args: {
         managed.pendingReconstructionContext = null;
       }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
-      const modeDirective = buildCursorSdkModeDirective(policy);
+      const modeDirective = buildCursorSdkModeDirective();
       if (modeDirective) {
         composed = `${modeDirective}\n\n${composed}`;
       }
@@ -35127,11 +35116,21 @@ export function createAgentChatService(args: {
       const resultRecord = asRecord(result);
       const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
       adoptRuntimeSessionTitle(managed, resultRecord, "cursor_sdk_run_result");
-      const doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
+      let doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
         turnId,
         model: turnModel,
         ...(turnModelId ? { modelId: turnModelId } : {}),
       });
+      const localAgentId = runtime.sdkAgentId;
+      if (localAgentId) {
+        doneEvent = await fetchAndApplyCursorUsage({
+          managed,
+          agentId: localAgentId,
+          turnId,
+          runtime: "local",
+          done: doneEvent,
+        });
+      }
       if (runtime.interrupted || resultStatus === "cancelled") {
         markSessionIdleWithFreshCache(managed);
         cancelQueuedSteers(managed, runtime, "interrupted");
@@ -35514,6 +35513,70 @@ export function createAgentChatService(args: {
     await emitProofCard("terminal");
   };
 
+  const CURSOR_GET_USAGE_TIMEOUT_MS = 12_000;
+
+  const fetchAndApplyCursorUsage = async (args: {
+    managed: ManagedChatSession;
+    agentId: string;
+    runId?: string | null;
+    turnId: string;
+    runtime: "local" | "cloud";
+    done: Extract<AgentChatEvent, { type: "done" }>;
+  }): Promise<Extract<AgentChatEvent, { type: "done" }>> => {
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) return args.done;
+    try {
+      const raw = await Promise.race([
+        runCursorSdkCloudRequest({
+          projectRoot,
+          workspacePath: args.managed.laneWorktreePath || projectRoot,
+          apiKey,
+          type: "agent.getUsage",
+          payload: {
+            agentId: args.agentId,
+            ...(args.runtime === "cloud" && args.runId?.trim() ? { runId: args.runId.trim() } : {}),
+          },
+          logger,
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Cursor getUsage timed out.")), CURSOR_GET_USAGE_TIMEOUT_MS);
+        }),
+      ]);
+      const snapshot = selectCursorAgentTurnUsage(raw, {
+        agentId: args.agentId,
+        runId: args.runtime === "cloud" ? args.runId : null,
+      });
+      const tokensEvent = mapCursorAgentUsageToTokensEvent(snapshot, {
+        turnId: args.turnId,
+        runtime: args.runtime,
+        ...(snapshot.runId || args.runId ? { itemId: snapshot.runId ?? args.runId ?? undefined } : {}),
+      });
+      if (tokensEvent) emitChatEvent(args.managed, tokensEvent);
+      if (db) {
+        const billed = mapCursorAgentUsageToTokenEntry(snapshot, { projectPath: projectRoot });
+        if (billed) recordCursorBilledUsage(db, billed);
+      }
+      const usage = {
+        ...(snapshot.inputTokens != null ? { inputTokens: snapshot.inputTokens } : {}),
+        ...(snapshot.outputTokens != null ? { outputTokens: snapshot.outputTokens } : {}),
+        ...(snapshot.cacheReadTokens != null ? { cacheReadTokens: snapshot.cacheReadTokens } : {}),
+        ...(snapshot.cacheWriteTokens != null ? { cacheCreationTokens: snapshot.cacheWriteTokens } : {}),
+        ...(snapshot.reasoningTokens != null ? { reasoningTokens: snapshot.reasoningTokens } : {}),
+      };
+      if (Object.keys(usage).length === 0) return args.done;
+      return { ...args.done, usage: { ...args.done.usage, ...usage } };
+    } catch (error) {
+      logger.warn("agent_chat.cursor_get_usage_failed", {
+        sessionId: args.managed.session.id,
+        agentId: args.agentId,
+        runId: args.runId ?? null,
+        runtime: args.runtime,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return args.done;
+    }
+  };
+
   const resolveCloudRepoUrl = async (
     managed: ManagedChatSession,
     overrides: AgentChatCloudOverrides | undefined,
@@ -35658,12 +35721,44 @@ export function createAgentChatService(args: {
         const modelParams = runtime.modelSdkId
           ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
           : undefined;
+        let linearIssueId = args.cloudOverrides?.linearIssueId?.trim() || null;
+        if (!linearIssueId) {
+          try {
+            const summary = await laneService.getSummary(managed.session.laneId);
+            linearIssueId = summary?.linearIssue?.identifier?.trim() || null;
+          } catch {
+            linearIssueId = null;
+          }
+        }
+        if (!linearIssueId) {
+          try {
+            const links = laneService.listLinearIssuesForSession?.({ chatSessionId: managed.session.id }) ?? [];
+            linearIssueId = links[0]?.issue?.identifier?.trim() || null;
+          } catch {
+            linearIssueId = null;
+          }
+        }
+        const launch = resolveCursorCloudCreateCloudExtras({
+          projectRoot,
+          db: db ? { get: db.get, all: db.all } : null,
+          projectConfigService,
+          sessionId: managed.session.id,
+          laneId: managed.session.laneId,
+          linearIssueId,
+          secretNames: args.cloudOverrides?.secretNames,
+          rememberSecretNames: args.cloudOverrides?.rememberSecretNames === true,
+        });
         const payload: CursorSdkCloudSendStreamPayload = {
           apiKey,
           promptText,
           repoUrl,
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "create"),
           mode: sdkMode,
+          sessionId: launch.sessionId,
+          laneId: launch.laneId,
+          projectId: launch.projectId,
+          linearIssueId: launch.linearIssueId,
+          ...(Object.keys(launch.envVars).length > 0 ? { envVars: launch.envVars } : {}),
           ...(manualAgentName ? { agentName: manualAgentName } : {}),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
@@ -35714,9 +35809,19 @@ export function createAgentChatService(args: {
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         runtime: "cloud",
       });
-      const doneEventTagged: Extract<AgentChatEvent, { type: "done" }> = {
+      let doneEventTagged: Extract<AgentChatEvent, { type: "done" }> = {
         ...doneEvent,
       };
+      if (runStartedAgentId) {
+        doneEventTagged = await fetchAndApplyCursorUsage({
+          managed,
+          agentId: runStartedAgentId,
+          runId: runStartedRunId,
+          turnId,
+          runtime: "cloud",
+          done: doneEventTagged,
+        });
+      }
 
       if (runtime.interrupted || resultStatus === "cancelled") {
         markSessionIdleWithFreshCache(managed);
@@ -35868,84 +35973,284 @@ export function createAgentChatService(args: {
     return { runId: last ?? "", status: "running" };
   };
 
+  const handleCursorCloudStatusChange = async (
+    record: CursorCloudIngressEventRecord,
+  ): Promise<void> => {
+    const agentId = record.agentId.trim();
+    if (!agentId) return;
+    const statusUpper = record.status.trim().toUpperCase();
+    const cloudStatus = ((): AgentChatCloudRunStatus | null => {
+      const lower = record.status.trim().toLowerCase();
+      if (
+        lower === "creating"
+        || lower === "running"
+        || lower === "finished"
+        || lower === "error"
+        || lower === "cancelled"
+        || lower === "expired"
+      ) {
+        return lower;
+      }
+      return null;
+    })();
+
+    let managed: ManagedChatSession | null = null;
+    for (const candidate of managedSessions.values()) {
+      if (candidate.session.cursorCloudAgentId === agentId) {
+        managed = candidate;
+        break;
+      }
+    }
+    if (!managed) {
+      const rows = sessionService.list({ toolTypes: ["cursor"], limit: 500 });
+      for (const row of rows) {
+        if (!isChatToolType(row.toolType)) continue;
+        const persisted = readPersistedState(row.id);
+        if (persisted?.cursorCloudAgentId !== agentId) continue;
+        try {
+          managed = ensureManagedSession(row.id);
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_session_wake_failed", {
+            sessionId: row.id,
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+    }
+    if (!managed) {
+      logger.info("agent_chat.cursor_cloud_status_unmatched", {
+        agentId,
+        status: record.status,
+        eventId: record.eventId,
+      });
+      return;
+    }
+
+    const turnId = managed.session.cursorPromotedTurnId
+      ?? (managed.runtime?.kind === "cursor" ? managed.runtime.activeTurnId : null)
+      ?? "";
+    let runId = managed.runtime?.kind === "cursor" ? (managed.runtime.activeCloudRunId ?? "") : "";
+    const apiKey = getCursorSdkApiKey();
+    if (!runId && apiKey) {
+      try {
+        const runs = await runCursorSdkCloudRequest<{
+          items?: Array<{ runId?: string; id?: string }>;
+        }>({
+          projectRoot,
+          workspacePath: managed.laneWorktreePath || projectRoot,
+          apiKey,
+          type: "cloud.runs.list",
+          payload: { agentId, limit: 1 },
+          logger,
+        });
+        const latest = Array.isArray(runs?.items) ? runs.items[0] : null;
+        runId = typeof latest?.runId === "string" && latest.runId.trim()
+          ? latest.runId.trim()
+          : typeof latest?.id === "string" && latest.id.trim()
+            ? latest.id.trim()
+            : "";
+      } catch (error) {
+        logger.warn("agent_chat.cursor_cloud_runs_list_failed", {
+          sessionId: managed.session.id,
+          agentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (cloudStatus && (cloudStatus === "error" || cloudStatus === "cancelled" || cloudStatus === "expired" || record.prUrl)) {
+      emitChatEvent(managed, {
+        type: "cloud_status",
+        turnId,
+        runId: runId || record.eventId,
+        status: cloudStatus,
+        detail: record.summary,
+        ...(record.branchName ? { gitBranch: record.branchName } : {}),
+        ...(record.prUrl ? { prUrl: record.prUrl } : {}),
+      });
+    }
+
+    if (statusUpper === "FINISHED" && apiKey && runId) {
+      void attachAndHydrateCursorCloudChat({
+        managed,
+        agentId,
+        workspacePath: managed.laneWorktreePath || projectRoot,
+        apiKey,
+      }).catch(() => undefined);
+      void materializeCloudArtifacts(managed, {
+        agentId,
+        runId,
+        turnId,
+        apiKey,
+      }).catch(() => undefined);
+      void fetchAndApplyCursorUsage({
+        managed,
+        agentId,
+        runId,
+        turnId,
+        runtime: "cloud",
+        done: {
+          type: "done",
+          turnId,
+          status: "completed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          runtime: "cloud",
+        },
+      }).catch(() => undefined);
+    }
+
+    if (statusUpper !== "FINISHED") {
+      persistChatState(managed);
+      return;
+    }
+
+    const laneId = managed.session.laneId?.trim() || "";
+    const worktree = managed.laneWorktreePath?.trim() || "";
+    const branchName = record.branchName?.replace(/^refs\/heads\//, "").trim() || "";
+    if (!laneId) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        reason: "no_lane",
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!worktree) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        reason: "no_worktree",
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!branchName) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        reason: "no_branch",
+      });
+      persistChatState(managed);
+      return;
+    }
+    const checked = await runGit(["check-ref-format", "--branch", branchName], {
+      cwd: worktree,
+      timeoutMs: 8_000,
+    });
+    if (checked.exitCode !== 0) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        branchName,
+        reason: "invalid_branch",
+      });
+      persistChatState(managed);
+      return;
+    }
+    const fetch = await runGit(["fetch", "origin", branchName], {
+      cwd: worktree,
+      timeoutMs: 60_000,
+    });
+    if (fetch.exitCode !== 0) {
+      logger.warn("agent_chat.cursor_cloud_fetch_failed", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        branchName,
+        error: fetch.stderr.trim() || "unknown Git error",
+      });
+    } else {
+      logger.info("agent_chat.cursor_cloud_branch_fetched", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        branchName,
+      });
+    }
+    persistChatState(managed);
+  };
+
   /**
    * Hydrate a freshly-created session's chat-event store from a cloud
    * agent's prior conversation. Each emitted event is tagged
    * `runtime: "cloud"` so the renderer knows it came from cloud.
+   *
+   * SDK 1.0.27 returns `{ type: "agentConversationTurn", turn: { userMessage, steps } }`
+   * (and `shellConversationTurn`). Older flattened `{ type: "agent" | "shell" }`
+   * payloads are still accepted.
    */
-  // Walk a Cursor SDK `run.conversation()` result. The SDK returns a discriminated
-  // union of `ConversationTurn`s ({ type: "agent" | "shell", ... }) — NOT a flat
-  // messages array. Each agent turn may carry an optional `userMessage` followed
-  // by typed `steps` (assistantMessage / toolCall / thinking). Shell turns are
-  // standalone command/output records.
   const hydrateCursorCloudConversationEvents = (
     managed: ManagedChatSession,
     conversation: unknown,
     meta: { turnId: string },
-  ): void => {
+  ): boolean => {
     const turns = flattenCloudConversationMessages(conversation);
-    if (!turns.length) return;
+    if (!turns.length) return false;
+    const existingFingerprints = transcriptCloudFingerprints([
+      ...(eventHistoryBySession.get(managed.session.id) ?? []),
+      ...readTranscriptEnvelopes(managed),
+    ]);
     let turnCounter = 0;
     const nextTurnId = () => `${meta.turnId}-t${++turnCounter}`;
+    let emittedVisible = false;
 
     for (const rawTurn of turns) {
-      const turn = asRecord(rawTurn);
-      if (!turn) continue;
+      const unwrapped = unwrapCloudConversationTurn(rawTurn);
+      if (!unwrapped) continue;
+      const fingerprint = cloudTurnFingerprint(unwrapped);
+      if (fingerprint && fingerprintAlreadyHydrated(existingFingerprints, fingerprint)) continue;
+      if (fingerprint) existingFingerprints.add(fingerprint);
       const turnId = nextTurnId();
-      const turnType = typeof turn.type === "string" ? turn.type : "";
 
-      if (turnType === "shell") {
-        const args = asRecord(turn.command) ?? turn;
-        const command = typeof args.command === "string" ? args.command : "";
-        const output = asRecord(turn.output);
-        const exitCode = typeof output?.exitCode === "number" ? output.exitCode : null;
-        const stdout = typeof output?.stdout === "string" ? output.stdout : "";
-        const stderr = typeof output?.stderr === "string" ? output.stderr : "";
-        const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
-        if (!command) continue;
+      if (unwrapped.kind === "shell") {
+        emittedVisible = true;
+        const combined = [unwrapped.stdout, unwrapped.stderr].filter(Boolean).join("\n").trim();
         emitChatEvent(managed, {
           type: "command",
-          command,
-          cwd: managed.laneWorktreePath,
+          command: unwrapped.command,
+          cwd: unwrapped.cwd ?? managed.laneWorktreePath,
           output: combined,
           itemId: `cursor-cloud-shell-${turnCounter}`,
           turnId,
-          status: exitCode == null ? "running" : exitCode === 0 ? "completed" : "failed",
-          ...(exitCode != null ? { exitCode } : {}),
+          status: unwrapped.exitCode == null ? "running" : unwrapped.exitCode === 0 ? "completed" : "failed",
+          ...(unwrapped.exitCode != null ? { exitCode: unwrapped.exitCode } : {}),
           runtime: "cloud",
         });
         continue;
       }
 
-      // agent turn (or unknown — best-effort)
-      const userMessage = asRecord(turn.userMessage);
-      const userText = typeof userMessage?.text === "string" ? userMessage.text.trim() : "";
-      if (userText) {
+      if (unwrapped.userText) {
+        emittedVisible = true;
         emitChatEvent(managed, {
           type: "user_message",
-          text: userText,
+          text: unwrapped.userText,
           turnId,
           runtime: "cloud",
         });
       }
 
-      const steps = Array.isArray(turn.steps) ? turn.steps : [];
-      for (const rawStep of steps) {
+      for (const rawStep of unwrapped.steps) {
         const step = asRecord(rawStep);
         if (!step) continue;
         const stepType = typeof step.type === "string" ? step.type : "";
 
         if (stepType === "assistantMessage") {
-          const message = asRecord(step.message);
-          const text = typeof message?.text === "string" ? message.text : "";
+          const text = readCloudTextField(step.message);
           if (!text) continue;
+          emittedVisible = true;
           emitChatEvent(managed, { type: "text", text, turnId, runtime: "cloud" });
           continue;
         }
 
-        if (stepType === "thinking") {
-          const message = asRecord(step.message);
-          const text = typeof message?.text === "string" ? message.text : "";
+        if (stepType === "thinkingMessage" || stepType === "thinking") {
+          const text = readCloudTextField(step.message);
           if (!text) continue;
           emitChatEvent(managed, { type: "reasoning", text, turnId, runtime: "cloud" });
           continue;
@@ -35959,7 +36264,6 @@ export function createAgentChatService(args: {
           const status = typeof result?.status === "string" ? result.status : "running";
           const itemId = typeof step.id === "string" ? step.id : `cursor-cloud-tool-${turnCounter}-${stepType}`;
 
-          // Shell tool calls collapse cleanly into the chat's command block UI.
           if (toolType === "shell") {
             const argsRecord = asRecord(toolArgs);
             const command = typeof argsRecord?.command === "string" ? argsRecord.command : "";
@@ -36005,11 +36309,259 @@ export function createAgentChatService(args: {
         }
       }
     }
+
+    if (!emittedVisible) {
+      logger.warn("agent_chat.cursor_cloud_hydrate_empty", {
+        sessionId: managed.session.id,
+        turnCount: turns.length,
+        sampleTypes: turns.slice(0, 4).map((raw) => {
+          const record = asRecord(raw);
+          return typeof record?.type === "string" ? record.type : typeof raw;
+        }),
+      });
+    }
+    return emittedVisible;
   };
+
+  const cursorCloudHydrateInFlight = new Set<string>();
+  const cursorCloudHydratedRunIds = new Map<string, Set<string>>();
+
+  type CursorCloudLatestRun = {
+    runId: string;
+    status: string;
+    modelSdkId: string | null;
+  };
+
+  const readCursorCloudRuns = async (args: {
+    agentId: string;
+    workspacePath: string;
+    apiKey: string;
+    limit?: number;
+  }): Promise<CursorCloudLatestRun[]> => {
+    const runs = await runCursorSdkCloudRequest<unknown>({
+      projectRoot,
+      workspacePath: args.workspacePath,
+      apiKey: args.apiKey,
+      type: "cloud.runs.list",
+      payload: { agentId: args.agentId, limit: args.limit ?? 8 },
+      logger,
+    });
+    return cloudRunsFromList(runs);
+  };
+
+  const fetchCursorCloudRunConversation = async (args: {
+    agentId: string;
+    runId: string;
+    workspacePath: string;
+    apiKey: string;
+  }): Promise<unknown> => runCursorSdkCloudRequest<unknown>({
+    projectRoot,
+    workspacePath: args.workspacePath,
+    apiKey: args.apiKey,
+    type: "cloud.run.conversation",
+    payload: { agentId: args.agentId, runId: args.runId },
+    logger,
+  });
+
+  const attachAndHydrateCursorCloudChat = async (args: {
+    managed: ManagedChatSession;
+    agentId: string;
+    workspacePath: string;
+    apiKey: string;
+  }): Promise<boolean> => {
+    const { managed, agentId, workspacePath, apiKey } = args;
+    if (cursorCloudHydrateInFlight.has(managed.session.id)) return false;
+    cursorCloudHydrateInFlight.add(managed.session.id);
+    const hydrateTurnId = randomUUID();
+    let emittedVisible = false;
+    try {
+      let runs: CursorCloudLatestRun[] = [];
+      const conversationByRunId = new Map<string, unknown>();
+      for (let attempt = 0; attempt < CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS; attempt += 1) {
+        try {
+          runs = await readCursorCloudRuns({ agentId, workspacePath, apiKey });
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_open_chat_runs_failed", {
+            sessionId: managed.session.id,
+            agentId,
+            attempt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        const hydrated = cursorCloudHydratedRunIds.get(managed.session.id) ?? new Set<string>();
+        const runsToFetch = runs.filter((run) => (
+          isCloudRunStillLive(run.status) || !hydrated.has(run.runId)
+        ));
+        for (const run of runsToFetch) {
+          try {
+            conversationByRunId.set(
+              run.runId,
+              await fetchCursorCloudRunConversation({
+                agentId,
+                runId: run.runId,
+                workspacePath,
+                apiKey,
+              }),
+            );
+          } catch (error) {
+            logger.warn("agent_chat.cursor_cloud_open_chat_conversation_failed", {
+              sessionId: managed.session.id,
+              agentId,
+              runId: run.runId,
+              attempt,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        const latestRun = runs[0] ?? null;
+        const latestConversation = latestRun ? conversationByRunId.get(latestRun.runId) : null;
+        if (cloudConversationHasTurns(latestConversation) || !isCloudRunStillLive(latestRun?.status)) {
+          break;
+        }
+        await sleepMs(CURSOR_CLOUD_CONVERSATION_RETRY_MS);
+      }
+
+      const latestRun = runs[0] ?? null;
+      if (latestRun?.modelSdkId) {
+        syncCursorSessionDescriptor(managed, latestRun.modelSdkId);
+      }
+
+      const hydrated = cursorCloudHydratedRunIds.get(managed.session.id) ?? new Set<string>();
+      for (const run of [...runs].reverse()) {
+        const conversation = conversationByRunId.get(run.runId);
+        if (!conversation) continue;
+        if (hydrateCursorCloudConversationEvents(managed, conversation, { turnId: hydrateTurnId })) {
+          emittedVisible = true;
+        }
+        if (!isCloudRunStillLive(run.status)) hydrated.add(run.runId);
+      }
+      cursorCloudHydratedRunIds.set(managed.session.id, hydrated);
+
+      if (emittedVisible) {
+        flushBufferedReasoning(managed);
+        flushBufferedText(managed);
+        if (!isCloudRunStillLive(latestRun?.status)) {
+          emitChatEvent(managed, {
+            type: "done",
+            turnId: hydrateTurnId,
+            status: "completed",
+            runtime: "cloud",
+            ...(managed.session.model ? { model: managed.session.model } : {}),
+            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          });
+        }
+        persistChatState(managed);
+      }
+
+      const existingRuntime = managed.runtime?.kind === "cursor" ? managed.runtime : null;
+      const alreadyAttached = Boolean(
+        latestRun?.runId
+        && existingRuntime?.activeCloudRunId === latestRun.runId
+        && existingRuntime.cloudRuns.has(latestRun.runId),
+      );
+      if (managed && latestRun?.runId && isCloudRunStillLive(latestRun.status) && !alreadyAttached) {
+        try {
+          const runtime = await ensureCursorSdkRuntime(managed);
+          runtime.cloudRuns.set(latestRun.runId, {
+            agentId,
+            runId: latestRun.runId,
+            turnId: hydrateTurnId,
+            modelSdkId: latestRun.modelSdkId ?? null,
+          });
+          runtime.activeCloudRunId = latestRun.runId;
+          runtime.activeTurnId = hydrateTurnId;
+          void runtime.sdk.request("cloud.run.attach", {
+            apiKey,
+            agentId,
+            runId: latestRun.runId,
+          }).catch((error) => {
+            logger.warn("agent_chat.cursor_cloud_attach_failed", {
+              sessionId: managed.session.id,
+              agentId,
+              runId: latestRun.runId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            if (managed.runtime?.kind !== "cursor") return;
+            releaseCursorCloudAttachLease(managed.runtime, {
+              runId: latestRun.runId,
+              turnId: hydrateTurnId,
+            });
+          });
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_open_chat_attach_setup_failed", {
+            sessionId: managed.session.id,
+            agentId,
+            runId: latestRun.runId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (latestRun?.runId) {
+        void materializeCloudArtifacts(managed, {
+          agentId,
+          runId: latestRun.runId,
+          turnId: hydrateTurnId,
+          apiKey,
+        }).catch(() => undefined);
+      }
+      return emittedVisible;
+    } finally {
+      cursorCloudHydrateInFlight.delete(managed.session.id);
+    }
+  };
+
+  const resolveManagedCursorCloudSession = (sessionId: string): ManagedChatSession | null => {
+    const existing = managedSessions.get(sessionId);
+    if (existing) return existing;
+    try {
+      return sessionService.get(sessionId) ? ensureManagedSession(sessionId) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const refreshWatchedCursorCloudMirror = async (
+    sessionId: string,
+  ): Promise<CursorCloudMirrorRefreshResult> => {
+    const managed = resolveManagedCursorCloudSession(sessionId);
+    if (!managed) return "skipped";
+    const agentId = managed.session.cursorCloudAgentId?.trim();
+    if (!agentId) return "skipped";
+    if (cursorCloudHydrateInFlight.has(managed.session.id)) return "skipped";
+    if (managed.runtime?.kind === "cursor" && managed.runtime.activeCloudRunId) return "skipped";
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) return "skipped";
+    try {
+      const emitted = await attachAndHydrateCursorCloudChat({
+        managed,
+        agentId,
+        workspacePath: managed.laneWorktreePath || projectRoot,
+        apiKey,
+      });
+      return emitted ? "new" : "unchanged";
+    } catch (error) {
+      logger.warn("agent_chat.cursor_cloud_mirror_watch_failed", {
+        sessionId: managed.session.id,
+        agentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "skipped";
+    }
+  };
+
+  const cursorCloudMirror = createCursorCloudMirrorWatch({
+    refresh: refreshWatchedCursorCloudMirror,
+  });
+  const watchCursorCloudMirror = cursorCloudMirror.watch;
+  const clearCursorCloudMirrorWatches = cursorCloudMirror.clearAll;
 
   const openCursorCloudChat = async (args: {
     cloudAgentId: string;
     laneId: string;
+    agentName?: string | null;
+    sessionId?: string | null;
+    modelId?: string | null;
   }): Promise<{ sessionId: string; session: AgentChatSession }> => {
     const trimmedAgent = args.cloudAgentId.trim();
     const trimmedLane = args.laneId.trim();
@@ -36029,139 +36581,65 @@ export function createAgentChatService(args: {
     if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
     const laneRoot = laneInfo.worktreePath;
 
-    // 1. Pull the latest run summary for the agent so we know which run's
-    //    conversation to hydrate and (if it's still RUNNING) which run to
-    //    attach to. We use the cloud-oneshot path because the per-session
-    //    worker isn't booted yet.
-    let runs: { items: Array<{ runId?: string; id?: string; status?: string; model?: { id?: string } | null; modelId?: string }> };
-    try {
-      runs = await runCursorSdkCloudRequest<{ items: Array<{ runId?: string; id?: string; status?: string; model?: { id?: string } | null; modelId?: string }> }>({
-        projectRoot,
-        workspacePath: laneRoot,
-        apiKey,
-        type: "cloud.runs.list",
-        payload: { agentId: trimmedAgent, limit: 1 },
-        logger,
-      });
-    } catch (error) {
-      throw new Error(
-        `Could not load Cursor Cloud agent '${trimmedAgent}': ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    const rawLatestRun = Array.isArray(runs?.items) ? runs.items[0] : null;
-    const latestRun = rawLatestRun ? {
-      runId: typeof rawLatestRun.runId === "string" ? rawLatestRun.runId : (typeof rawLatestRun.id === "string" ? rawLatestRun.id : ""),
-      status: typeof rawLatestRun.status === "string" ? rawLatestRun.status : "",
-      modelSdkId:
-        (typeof rawLatestRun.model?.id === "string" && rawLatestRun.model.id.trim())
-          ? rawLatestRun.model.id.trim()
-          : (typeof rawLatestRun.modelId === "string" && rawLatestRun.modelId.trim())
-            ? rawLatestRun.modelId.trim()
-            : null,
-    } : null;
-
-    // 2. Pull the existing run conversation. We map turns to chat events so the
-    //    user sees the back-and-forth, rather than a flat transcript blob.
-    let conversation: unknown = null;
-    if (latestRun?.runId) {
+    const requestedId = args.sessionId?.trim() || "";
+    let managed: ManagedChatSession | null = null;
+    if (requestedId) {
       try {
-        conversation = await runCursorSdkCloudRequest<unknown>({
-          projectRoot,
-          workspacePath: laneRoot,
-          apiKey,
-          type: "cloud.run.conversation",
-          payload: { agentId: trimmedAgent, runId: latestRun.runId },
-          logger,
-        });
-      } catch (error) {
-        logger.warn("agent_chat.cursor_cloud_open_chat_conversation_failed", {
-          agentId: trimmedAgent,
-          runId: latestRun?.runId ?? null,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        managed = managedSessions.get(requestedId)
+          ?? (sessionService.get(requestedId) ? ensureManagedSession(requestedId) : null);
+      } catch {
+        managed = null;
+      }
+    }
+    if (!managed) {
+      for (const candidate of managedSessions.values()) {
+        if (candidate.session.cursorCloudAgentId === trimmedAgent) {
+          managed = candidate;
+          break;
+        }
       }
     }
 
-    // 3. Resolve a Cursor model id from the latest run, falling back to the
-    //    SDK default. createSession requires a known cursor/<id> descriptor.
-    const sdkId = latestRun?.modelSdkId ?? "composer-2";
-    const resolvedModelId = `cursor/${sdkId}`;
-
-    // 4. Create the new ADE session bound to this cloud agent.
-    const synthPromotedTurnId = randomUUID();
-    const created = await createSession({
-      laneId: trimmedLane,
-      provider: "cursor",
-      model: sdkId,
-      modelId: resolvedModelId,
-    });
-    const managed = managedSessions.get(created.id);
-    if (managed) {
-      managed.session.cursorCloudAgentId = trimmedAgent;
-      managed.session.cursorRuntime = "cloud";
-      managed.session.cursorPromotedTurnId = synthPromotedTurnId;
-
-      // 5. Hydrate the chat events store from the cloud conversation. Each
-      //    event is tagged runtime: "cloud" so the renderer treats it as
-      //    cloud-sourced. We mirror the existing event mapper output.
-      const hydratedTurnId = synthPromotedTurnId;
-      hydrateCursorCloudConversationEvents(managed, conversation, {
-        turnId: hydratedTurnId,
+    if (!managed) {
+      const requestedModel = typeof args.modelId === "string" ? args.modelId.trim() : "";
+      const sdkId = requestedModel.replace(/^cursor\//, "") || "composer-2";
+      const created = await createSession({
+        laneId: trimmedLane,
+        provider: "cursor",
+        model: sdkId,
+        modelId: `cursor/${sdkId}`,
+        ...(requestedId ? { sessionId: requestedId } : {}),
       });
-      persistChatState(managed);
+      managed = managedSessions.get(created.id) ?? null;
     }
+    if (!managed) throw new Error("Could not open a Cursor Cloud chat session.");
 
-    // 6. If the existing run is still live, attach to its stream so events
-    //    flow into the new session as they arrive. We boot the per-session
-    //    worker (ensureCursorSdkRuntime wires the bridge) and dispatch a
-    //    cloud.run.attach request — same `streamCloudRun` helper as
-    //    cloud.send.stream/cloud.followup, just without sending a prompt.
-    if (managed && latestRun?.runId && isCloudRunStillLive(latestRun.status)) {
-      try {
-        const runtime = await ensureCursorSdkRuntime(managed);
-        runtime.cloudRuns.set(latestRun.runId, {
-          agentId: trimmedAgent,
-          runId: latestRun.runId,
-          turnId: synthPromotedTurnId,
-          modelSdkId: latestRun.modelSdkId ?? null,
-        });
-        runtime.activeCloudRunId = latestRun.runId;
-        runtime.activeTurnId = synthPromotedTurnId;
-        // Fire-and-forget: streamCloudRun runs in the worker until the run
-        // completes; we don't await so this call returns promptly.
-        void runtime.sdk.request("cloud.run.attach", {
-          apiKey,
-          agentId: trimmedAgent,
-          runId: latestRun.runId,
-        }).catch((error) => {
-          logger.warn("agent_chat.cursor_cloud_attach_failed", {
-            sessionId: managed.session.id,
-            agentId: trimmedAgent,
-            runId: latestRun.runId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      } catch (error) {
-        logger.warn("agent_chat.cursor_cloud_open_chat_attach_setup_failed", {
-          sessionId: managed.session.id,
-          agentId: trimmedAgent,
-          runId: latestRun.runId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    managed.session.cursorCloudAgentId = trimmedAgent;
+    managed.session.cursorRuntime = "cloud";
+    if (typeof args.agentName === "string" && args.agentName.trim()) {
+      adoptRuntimeSessionTitle(managed, args.agentName.trim(), "cursor_cloud_agent");
     }
+    persistChatState(managed);
 
-    // 7. Materialize artifacts from the existing run so the file tray works.
-    if (managed && latestRun?.runId) {
-      void materializeCloudArtifacts(managed, {
+    // New launches return the ADE session immediately so the renderer can
+    // leave the draft pane. Reopening an existing empty cloud chat waits for
+    // hydrate so Retry/backfill does not time out on a fire-and-forget fetch.
+    const hydratePromise = attachAndHydrateCursorCloudChat({
+      managed,
+      agentId: trimmedAgent,
+      workspacePath: laneRoot,
+      apiKey,
+    }).catch((error) => {
+      logger.warn("agent_chat.cursor_cloud_open_chat_hydrate_failed", {
+        sessionId: managed.session.id,
         agentId: trimmedAgent,
-        runId: latestRun.runId,
-        turnId: synthPromotedTurnId,
-        apiKey,
-      }).catch(() => undefined);
-    }
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (requestedId) throw error;
+    });
+    if (requestedId) await hydratePromise;
 
-    return { sessionId: created.id, session: created };
+    return { sessionId: managed.session.id, session: managed.session };
   };
 
   const droidPoolKeyFor = (managed: ManagedChatSession): string => [
@@ -42014,6 +42492,9 @@ export function createAgentChatService(args: {
 
   const disposeAll = async (): Promise<void> => {
     clearInterval(sessionCleanupTimer);
+    clearCursorCloudMirrorWatches();
+    cursorCloudHydrateInFlight.clear();
+    cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
@@ -42030,6 +42511,9 @@ export function createAgentChatService(args: {
 
   const forceDisposeAll = (): void => {
     clearInterval(sessionCleanupTimer);
+    clearCursorCloudMirrorWatches();
+    cursorCloudHydrateInFlight.clear();
+    cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
@@ -45167,7 +45651,9 @@ export function createAgentChatService(args: {
     previewSessionToolNames,
     cancelCursorCloudRun,
     cursorCloudFollowUp,
+    handleCursorCloudStatusChange,
     openCursorCloudChat,
+    watchCursorCloudMirror,
     subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
       eventSubscribers.add(callback);
       return () => {

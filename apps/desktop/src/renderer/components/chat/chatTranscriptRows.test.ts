@@ -14,6 +14,7 @@ import {
   deriveWebSearchResultDisplay,
   extractLocalhostUrlsFromText,
   eventHasPayload,
+  formatDoneTurnTokenLine,
   formatStructuredValue,
   groupChatTranscriptRows,
   mergeAdjacentActivityBundleRows,
@@ -1407,6 +1408,27 @@ describe("deriveTurnDividerData", () => {
     expect(turns.get("turn-1")!.insertions).toBe(1);
     expect(turns.get("turn-2")!.filesChanged).toBe(1);
     expect(turns.get("turn-2")!.insertions).toBe(2);
+  });
+});
+
+describe("formatDoneTurnTokenLine", () => {
+  it("formats in/out/cached tokens like the Claude and Codex divider line", () => {
+    expect(formatDoneTurnTokenLine({
+      inputTokens: 1200,
+      outputTokens: 80,
+      cacheReadTokens: 400,
+    })).toBe("in 1.2k · out 80 · cached 400 ✶");
+  });
+
+  it("omits empty buckets and never includes cost or dollar amounts", () => {
+    const line = formatDoneTurnTokenLine({
+      inputTokens: 12,
+      outputTokens: 0,
+      cacheReadTokens: null,
+    });
+    expect(line).toBe("in 12");
+    expect(line).not.toMatch(/\$|usd|cost/i);
+    expect(formatDoneTurnTokenLine({ inputTokens: 0, outputTokens: 0 })).toBeNull();
   });
 });
 

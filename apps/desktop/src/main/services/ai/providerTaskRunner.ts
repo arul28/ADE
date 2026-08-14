@@ -15,6 +15,8 @@ import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import { isCursorSdkSandboxUnsupportedError } from "../chat/cursorSdkErrors";
+import { buildCursorSdkLocalRunOptions, resolveCursorSdkPolicy } from "../chat/cursorSdkPolicy";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 
 export type ProviderTaskRunnerArgs = {
@@ -366,21 +368,47 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     throw new Error("Cursor tasks require a Cursor API key. Add one in Settings > AI Providers.");
   }
   const { Agent } = await loadCursorSdk();
-  const agent = args.sessionId?.trim()
-    ? await Agent.resume(args.sessionId.trim(), {
-        apiKey,
-        model: { id: args.descriptor.providerModelId },
-        local: { cwd: args.cwd, sandboxOptions: { enabled: false } },
-      })
-    : await Agent.create({
-        apiKey,
-        model: { id: args.descriptor.providerModelId },
-        name: `ADE ${args.feature}`,
-        local: { cwd: args.cwd, sandboxOptions: { enabled: false } },
-      });
+  const policy = resolveCursorSdkPolicy({
+    cursorModeId:
+      args.permissionMode === "full-auto"
+        ? "full-auto"
+        : args.permissionMode === "read-only"
+          ? "ask"
+          : "agent",
+  });
+  let sandboxSupported = true;
+  const buildOptions = () => {
+    const local = buildCursorSdkLocalRunOptions(policy, { sandboxSupported });
+    return {
+      apiKey,
+      model: { id: args.descriptor.providerModelId },
+      name: `ADE ${args.feature}`,
+      mode: local.mode,
+      ...(local.tools ? { tools: local.tools } : {}),
+      ...(local.disallowedTools ? { disallowedTools: local.disallowedTools } : {}),
+      local: {
+        cwd: args.cwd,
+        sandboxOptions: { enabled: local.sandboxEnabled },
+        autoReview: local.autoReview,
+      },
+    };
+  };
+  const createOrResume = async () => {
+    const options = buildOptions();
+    return args.sessionId?.trim()
+      ? await Agent.resume(args.sessionId.trim(), options)
+      : await Agent.create(options);
+  };
+  let agent;
+  try {
+    agent = await createOrResume();
+  } catch (error) {
+    if (!sandboxSupported || !isCursorSdkSandboxUnsupportedError(error)) throw error;
+    sandboxSupported = false;
+    agent = await createOrResume();
+  }
   const run = await agent.send(combinedPrompt, {
     model: { id: args.descriptor.providerModelId },
-    local: { force: args.permissionMode === "full-auto" },
   });
   const timeoutMs = args.timeoutMs ?? 120_000;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;

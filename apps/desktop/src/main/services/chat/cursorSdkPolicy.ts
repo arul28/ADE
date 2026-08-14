@@ -8,6 +8,7 @@ import {
   ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES,
 } from "../../../shared/orchestrationRuntimePolicy";
 import type {
+  CursorSdkAgentMode,
   CursorSdkApprovalPolicy,
   CursorSdkChatMode,
   CursorSdkHookDecision,
@@ -50,6 +51,51 @@ const SHELL_TOOL_NAMES = new Set(["shell", "bash", "terminal", "run_command", "c
 const TASK_TOOL_NAMES = new Set(["task", "subagent", "spawn_agent"]);
 const NETWORK_TOOL_NAMES = new Set(["mcp", "fetch", "web", "web_search"]);
 
+/**
+ * SDK public tool names for ADE ask/plan (read-only). Passed as `AgentOptions.tools`
+ * on local create/resume only. `"task"` is omitted so subagents cannot pick up a
+ * write-capable toolset of their own.
+ */
+export const CURSOR_SDK_READONLY_TOOLS = ["read", "grep", "glob", "ls"] as const;
+
+export type CursorSdkReadonlyTool = (typeof CURSOR_SDK_READONLY_TOOLS)[number];
+
+export type CursorSdkLocalRunOptions = {
+  mode: CursorSdkAgentMode;
+  tools?: string[];
+  disallowedTools?: string[];
+  autoReview: boolean;
+  sandboxEnabled: boolean;
+};
+
+/**
+ * SDK `AgentOptions.mode` for a policy. Cursor only accepts `"agent"` | `"plan"`.
+ * ADE `ask` maps to SDK `plan` plus the read-only tool allowlist. Never `"auto"`.
+ */
+export function cursorSdkLocalAgentMode(
+  policy: Pick<CursorSdkPermissionPolicy, "chatMode">,
+): CursorSdkAgentMode {
+  return policy.chatMode === "agent" ? "agent" : "plan";
+}
+
+/**
+ * Local create/resume permission fields. `sandboxSupported: false` keeps hook
+ * denials while disabling `sandboxOptions.enabled` after a ConfigurationError.
+ */
+export function buildCursorSdkLocalRunOptions(
+  policy: CursorSdkPermissionPolicy,
+  args?: { sandboxSupported?: boolean },
+): CursorSdkLocalRunOptions {
+  const sandboxEnabled = policy.sandbox === "cursor-native" && args?.sandboxSupported !== false;
+  return {
+    mode: cursorSdkLocalAgentMode(policy),
+    ...(policy.tools?.length ? { tools: [...policy.tools] } : {}),
+    ...(policy.disallowedTools?.length ? { disallowedTools: [...policy.disallowedTools] } : {}),
+    autoReview: policy.autoReview,
+    sandboxEnabled,
+  };
+}
+
 export function resolveCursorSdkChatMode(session: CursorSessionModeInput): CursorSdkChatMode {
   const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim().toLowerCase() : "";
   if (explicit === "ask" || explicit === "plan") return explicit;
@@ -81,6 +127,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       fullAuto: true,
       hardGuards: true,
       orchestrationLead,
+      autoReview: false,
     };
   }
 
@@ -89,10 +136,12 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     return {
       chatMode,
       approvalPolicy: "read-only",
-      sandbox: "ade",
+      sandbox: "cursor-native",
       fullAuto: false,
       hardGuards: true,
       orchestrationLead,
+      autoReview: false,
+      tools: CURSOR_SDK_READONLY_TOOLS,
     };
   }
 
@@ -103,6 +152,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     fullAuto: false,
     hardGuards: true,
     orchestrationLead,
+    autoReview: true,
   };
 }
 

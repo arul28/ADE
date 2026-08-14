@@ -303,6 +303,10 @@ describe("isCtoOnlyAdeAction", () => {
   it("keeps AI credential mutations CTO-only", () => {
     expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
     expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "cursorAuthLogin")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "cursorAuthLogout")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "cursorAuthCancel")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "cursorAuthStatus")).toBe(false);
     expect(isCtoOnlyAdeAction("ai", "listApiKeys")).toBe(false);
   });
 
@@ -2376,6 +2380,10 @@ describe("runtime AI actions", () => {
       "storeApiKey",
       "deleteApiKey",
       "listApiKeys",
+      "cursorAuthStatus",
+      "cursorAuthLogin",
+      "cursorAuthLogout",
+      "cursorAuthCancel",
     ]) {
       expect(aiService[action]).toEqual(expect.any(Function));
       expect(listAllowedAdeActionNames("ai", aiService)).toContain(action);

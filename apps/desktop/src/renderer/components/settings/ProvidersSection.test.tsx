@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
-import type { AgentChatEventEnvelope, AiSettingsStatus, PiAuthStatusEvent } from "../../../shared/types";
+import type { AgentChatEventEnvelope, AiSettingsStatus, CursorSdkAuthEvent, PiAuthStatusEvent } from "../../../shared/types";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -254,11 +254,13 @@ describe("ProvidersSection", () => {
   let emitChatEvent: ((envelope: AgentChatEventEnvelope) => void) | null = null;
   let emitOAuthStatus: ((event: { providerId: string; state: string; error?: string }) => void) | null = null;
   let emitPiAuthStatus: ((event: PiAuthStatusEvent) => void) | null = null;
+  let emitCursorAuthStatus: ((event: CursorSdkAuthEvent) => void) | null = null;
 
   beforeEach(() => {
     emitChatEvent = null;
     emitOAuthStatus = null;
     emitPiAuthStatus = null;
+    emitCursorAuthStatus = null;
 
     globalThis.window.ade = {
       ai: {
@@ -303,6 +305,20 @@ describe("ProvidersSection", () => {
           emitPiAuthStatus = cb;
           return () => {
             if (emitPiAuthStatus === cb) emitPiAuthStatus = null;
+          };
+        }),
+        cursorAuthStatus: vi.fn().mockResolvedValue({
+          sdkStatus: "logged-out",
+          adeKeyPresent: false,
+          loginInProgress: false,
+        }),
+        cursorAuthLogin: vi.fn().mockResolvedValue({ ok: true, email: "ada@cursor.com" }),
+        cursorAuthLogout: vi.fn().mockResolvedValue({ ok: true }),
+        cursorAuthCancel: vi.fn().mockResolvedValue(undefined),
+        onCursorAuthStatus: vi.fn((cb: (event: CursorSdkAuthEvent) => void) => {
+          emitCursorAuthStatus = cb;
+          return () => {
+            if (emitCursorAuthStatus === cb) emitCursorAuthStatus = null;
           };
         }),
       },
@@ -526,6 +542,119 @@ describe("ProvidersSection", () => {
       screen.getByLabelText("Dismiss error message").click();
     });
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("presents Cursor Sign in and API key as equal peers", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+
+    renderProvidersSection();
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText("Sign in with Cursor or use a Cursor API key.")).toBeTruthy();
+    expect(screen.getByLabelText("Sign in with Cursor")).toBeTruthy();
+    expect(screen.getByLabelText("Add Cursor API key")).toBeTruthy();
+    expect(screen.queryByLabelText("Sign out of Cursor")).toBeNull();
+  });
+
+  it("signs in with Cursor, shows the login URL while pending, then signs out", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    const loggedOut = buildStatus(true, []);
+    const loggedOutConnections = loggedOut.providerConnections;
+    if (!loggedOutConnections) {
+      throw new Error("expected providerConnections on logged-out Cursor status");
+    }
+    const loggedIn: AiSettingsStatus = {
+      ...loggedOut,
+      availableProviders: { ...loggedOut.availableProviders, cursor: true },
+      providerConnections: {
+        ...loggedOutConnections,
+        cursor: {
+          provider: "cursor",
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: true,
+          usageAvailable: false,
+          path: "@cursor/sdk",
+          blocker: null,
+          lastCheckedAt: "2026-03-17T19:00:00.000Z",
+          accountEmail: "ada@cursor.com",
+          sources: [
+            {
+              kind: "local-credentials",
+              detected: true,
+              source: "cursor-oauth",
+            },
+          ],
+        },
+      },
+    };
+    getStatusMock.mockResolvedValue(loggedOut);
+
+    let resolveLogin: ((value: { ok: true; email: string }) => void) | null = null;
+    const cursorAuthLogin = window.ade.ai.cursorAuthLogin as ReturnType<typeof vi.fn>;
+    cursorAuthLogin.mockImplementation(
+      () => new Promise<{ ok: true; email: string }>((resolve) => {
+        resolveLogin = resolve;
+      }),
+    );
+    const cursorAuthStatus = window.ade.ai.cursorAuthStatus as ReturnType<typeof vi.fn>;
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+
+    renderProvidersSection();
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      screen.getByLabelText("Sign in with Cursor").click();
+    });
+
+    act(() => {
+      emitCursorAuthStatus?.({
+        providerId: "cursor",
+        state: "pending",
+        url: "https://cursor.com/loginDeepControl?uuid=abc",
+      });
+    });
+
+    expect(await screen.findByText("https://cursor.com/loginDeepControl?uuid=abc")).toBeTruthy();
+    expect(screen.getByLabelText("Cancel Cursor sign-in")).toBeTruthy();
+
+    getStatusMock.mockResolvedValue(loggedIn);
+    listApiKeysMock.mockResolvedValue(["cursor"]);
+    cursorAuthStatus.mockResolvedValue({
+      sdkStatus: "logged-in",
+      email: "ada@cursor.com",
+      adeKeyPresent: true,
+      credentialSource: "cursor-oauth",
+      loginInProgress: false,
+    });
+
+    await act(async () => {
+      resolveLogin?.({ ok: true, email: "ada@cursor.com" });
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.cursorAuthLogin).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
+    });
+    expect(await screen.findByText("Signed in as ada@cursor.com")).toBeTruthy();
+    expect(screen.getByLabelText("Sign out of Cursor")).toBeTruthy();
+
+    await act(async () => {
+      screen.getByLabelText("Sign out of Cursor").click();
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.cursorAuthLogout).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("forces a provider status refresh after verifying a stored Cursor API key", async () => {
@@ -1348,7 +1477,7 @@ describe("ProvidersSection", () => {
         expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
       });
 
-      expect(current.queryByText("Uses CURSOR_API_KEY.")).toBeNull();
+      expect(current.queryByText("Sign in with Cursor or use a Cursor API key.")).toBeNull();
       expect(current.queryByLabelText("Add Cursor API key")).toBeNull();
       expect(current.queryByLabelText("Verify Cursor API key")).toBeNull();
       // The other providers are untouched.
@@ -1367,7 +1496,7 @@ describe("ProvidersSection", () => {
         const current = within(view.container);
 
         expect(
-          (await current.findAllByText("Uses CURSOR_API_KEY.")).length,
+          (await current.findAllByText("Sign in with Cursor or use a Cursor API key.")).length,
           `${platform}-${arch}`,
         ).toBeGreaterThan(0);
         expect(current.queryByLabelText("Add Cursor API key"), `${platform}-${arch}`).toBeTruthy();

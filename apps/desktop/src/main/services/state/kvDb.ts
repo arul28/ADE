@@ -814,6 +814,8 @@ const RETAINED_EVENT_LOG_TABLES: ReadonlyArray<readonly [table: string, column: 
  *   `delivery_id` it has already stored, and the cursor is explicitly reset on
  *   `cursorExpired`. Pruning it lets a backlog drain re-dispatch automations —
  *   re-running agent work and re-posting Linear comments.
+ * - `cursor_cloud_ingress_events` is the same replay guard for Cursor Cloud
+ *   statusChange deliveries.
  * - `cto_session_logs` is two-way reconciled against an append-only
  *   `.ade/cto/sessions.jsonl` that has no retention of its own, so every prune
  *   is undone by the next CTO read — and on a CRR table each cycle writes a
@@ -3353,6 +3355,23 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_linear_ingress_events_project_created on linear_ingress_events(project_id, created_at desc)");
   db.run("create index if not exists idx_linear_ingress_events_project_event on linear_ingress_events(project_id, event_id)");
+
+  db.run(`
+    create table if not exists cursor_cloud_ingress_events (
+      id text primary key,
+      project_id text not null,
+      source text not null,
+      delivery_id text not null,
+      event_id text not null,
+      agent_id text,
+      status text,
+      summary text not null,
+      payload_json text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_cursor_cloud_ingress_events_project_created on cursor_cloud_ingress_events(project_id, created_at desc)");
+  db.run("create index if not exists idx_cursor_cloud_ingress_events_project_event on cursor_cloud_ingress_events(project_id, event_id)");
 
   // Phase 4 W2: Worker agent config revisions (audit trail)
   db.run(`

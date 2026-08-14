@@ -537,6 +537,9 @@ import type {
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
+  CursorSdkAuthEvent,
+  CursorSdkAuthStatus,
+  CursorSdkLoginResult,
   SyncDesktopConnectionDraft,
   SyncCloudRelayStatus,
   SyncDeviceRecord,
@@ -609,7 +612,10 @@ import type {
   CursorCloudRepository,
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
+  CursorCloudWatchMirrorRequest,
   CursorCloudStreamRunResult,
+  CursorAgentUsage,
+  CursorAgentUsageRequest,
   AgentToolsCacheSnapshot,
   AutoUpdatePreferences,
   UpdateInstallImpact,
@@ -671,6 +677,13 @@ import {
   submitPiLoginPrompt,
   type PiLoginResult,
 } from "../ai/piAuthService";
+import {
+  addCursorSdkAuthStatusListener,
+  cancelCursorSdkLogin,
+  getCursorSdkAuthStatus,
+  loginCursorSdk,
+  logoutCursorSdk,
+} from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
@@ -713,6 +726,7 @@ import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createAutomationIngressService } from "../automations/automationIngressService";
 import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
+import type { CursorCloudIngressService } from "../automations/cursorCloudIngressService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -990,6 +1004,7 @@ export type AppContext = {
   automationPlannerService: ReturnType<typeof createAutomationPlannerService> | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: LinearIngressService | null;
+  cursorCloudIngressService?: CursorCloudIngressService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
@@ -4871,6 +4886,52 @@ export function registerIpc({
     cancelPiLogin(arg);
   });
 
+  addCursorSdkAuthStatusListener((event: CursorSdkAuthEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.webContents.send(IPC.aiCursorAuthEvent, event);
+      } catch {
+        // ignore broadcast failures
+      }
+    }
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthStatus, async (): Promise<CursorSdkAuthStatus> => {
+    return await getCursorSdkAuthStatus();
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthLogin, async (): Promise<CursorSdkLoginResult> => {
+    const ctx = getCtx();
+    const result = await loginCursorSdk();
+    if (result.ok) {
+      try {
+        ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        ctx.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    return result;
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthLogout, async (): Promise<{ ok: boolean; error?: string }> => {
+    const ctx = getCtx();
+    const result = await logoutCursorSdk();
+    try {
+      ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+    } catch (error) {
+      ctx.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+        error: getErrorMessage(error),
+      });
+    }
+    return result;
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthCancel, async (): Promise<void> => {
+    cancelCursorSdkLogin();
+  });
+
   ipcMain.handle(IPC.aiRefreshModelsDev, async (): Promise<{ lastFetchedAt: number | null }> => {
     const ctx = getCtx();
     try {
@@ -4975,6 +5036,15 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(
+    IPC.aiCursorCloudGetLaneSecretNames,
+    async (_event, arg: { laneId: string }): Promise<string[]> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
+      return ctx.aiIntegrationService.getCursorCloudLaneSecretNames(arg.laneId);
+    },
+  );
+
   ipcMain.handle(IPC.aiCursorCloudArchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
@@ -4999,6 +5069,15 @@ export function registerIpc({
       const ctx = getCtx();
       requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.getCursorCloudAgent(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudGetUsage,
+    async (_event, arg: CursorAgentUsageRequest): Promise<CursorAgentUsage> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
+      return await ctx.aiIntegrationService.getCursorAgentUsage(arg);
     },
   );
 
@@ -5052,6 +5131,21 @@ export function registerIpc({
       return await ctx.agentChatService.openCursorCloudChat({
         cloudAgentId: arg.cloudAgentId,
         laneId: arg.laneId,
+        ...(arg.agentName ? { agentName: arg.agentName } : {}),
+        ...(arg.sessionId ? { sessionId: arg.sessionId } : {}),
+        ...(arg.modelId ? { modelId: arg.modelId } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudWatchMirror,
+    async (_event, arg: CursorCloudWatchMirrorRequest): Promise<void> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["agentChatService"] as const);
+      ctx.agentChatService.watchCursorCloudMirror({
+        sessionId: arg.sessionId,
+        watching: arg.watching,
       });
     },
   );

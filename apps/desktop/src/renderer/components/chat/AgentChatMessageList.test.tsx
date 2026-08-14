@@ -769,6 +769,24 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
+  it("hides routine cloud running/finished chips", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "cloud_status", turnId: "turn-1", runId: "run-1", status: "running" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:08.000Z",
+        event: { type: "cloud_status", turnId: "turn-1", runId: "run-1", status: "finished" },
+      },
+    ]);
+
+    expect(screen.queryByText("Running in cloud")).toBeNull();
+    expect(screen.queryByText("Cloud run finished")).toBeNull();
+  });
+
   it("drafts an agent request to reopen localhost servers in the chat terminal", async () => {
     const onInsertDraft = vi.fn();
     renderMessageList([
@@ -1330,6 +1348,34 @@ describe("AgentChatMessageList transcript rendering", () => {
     // The turn rule reads `10:04 · ran 3m 32s` — mono, tabular, lower case.
     expect(screen.getByText("ran 2m")).toBeTruthy();
     expect(screen.queryByText(/Worked for/)).toBeNull();
+  });
+
+  it("measures ran duration from the last user prompt, not the first cloud turn", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "first", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:05.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:18:49.000Z",
+        event: { type: "user_message", text: "follow up", turnId: "turn-2" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:18:59.000Z",
+        event: { type: "done", turnId: "turn-2", status: "completed" },
+      },
+    ]);
+
+    expect(screen.getByText("ran 10s")).toBeTruthy();
+    expect(screen.queryByText(/ran 18m/)).toBeNull();
   });
 
   it("renders provider health and thread error notices distinctly", () => {

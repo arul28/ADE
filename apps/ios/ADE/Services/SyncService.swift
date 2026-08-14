@@ -10884,6 +10884,22 @@ final class SyncService: ObservableObject {
     isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
   }
 
+  /// Presence-gated Cursor Cloud inbound sync. The host polls cursor.com only
+  /// while a client is looking at this chat; webhooks are not available yet.
+  func watchCursorCloudMirror(sessionId: String, watching: Bool) async {
+    let action = "ai.watchCursorCloudMirror"
+    guard canInvokeRemoteAction(action) else { return }
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    _ = try? await sendCommand(
+      action: action,
+      args: [
+        "sessionId": trimmedSessionId,
+        "watching": watching
+      ]
+    )
+  }
+
   /// Returns true when the requested subscription state is backed by an
   /// envelope dispatched now or, for a full snapshot, a recently dispatched
   /// envelope that is still inside the coalescing window.

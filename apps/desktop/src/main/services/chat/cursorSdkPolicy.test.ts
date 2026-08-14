@@ -4,7 +4,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   allowCursorHook,
+  buildCursorSdkLocalRunOptions,
   cursorProjectSlugForPath,
+  cursorSdkLocalAgentMode,
+  CURSOR_SDK_READONLY_TOOLS,
   denyCursorHook,
   evaluateCursorSdkHook,
   resolveCursorSdkPolicy,
@@ -17,17 +20,87 @@ describe("Cursor SDK policy", () => {
     expect(resolveCursorSdkPolicy({ cursorModeId: "ask" })).toMatchObject({
       chatMode: "ask",
       approvalPolicy: "read-only",
+      sandbox: "cursor-native",
       fullAuto: false,
+      autoReview: false,
+      tools: [...CURSOR_SDK_READONLY_TOOLS],
     });
     expect(resolveCursorSdkPolicy({ cursorModeId: "plan" })).toMatchObject({
       chatMode: "plan",
       approvalPolicy: "read-only",
+      sandbox: "cursor-native",
       fullAuto: false,
+      autoReview: false,
+      tools: [...CURSOR_SDK_READONLY_TOOLS],
     });
+    expect(resolveCursorSdkPolicy({ cursorModeId: "agent" })).toMatchObject({
+      chatMode: "agent",
+      approvalPolicy: "on-request",
+      sandbox: "ade",
+      fullAuto: false,
+      autoReview: true,
+    });
+    expect(resolveCursorSdkPolicy({ cursorModeId: "agent" }).tools).toBeUndefined();
+    expect(resolveCursorSdkPolicy({ cursorModeId: "agent" }).disallowedTools).toBeUndefined();
+    expect(resolveCursorSdkPolicy({ cursorModeId: "ask" }).disallowedTools).toBeUndefined();
     expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" })).toMatchObject({
       chatMode: "agent",
       approvalPolicy: "never",
+      sandbox: "off",
       fullAuto: true,
+      autoReview: false,
+    });
+    expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" }).tools).toBeUndefined();
+    expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" }).disallowedTools).toBeUndefined();
+  });
+
+  it("maps ADE modes onto SDK agent/plan + local tools/sandbox/autoReview and never names a mode auto", () => {
+    const expected: Record<string, {
+      mode: "agent" | "plan";
+      tools?: string[];
+      sandboxEnabled: boolean;
+      autoReview: boolean;
+    }> = {
+      agent: { mode: "agent", sandboxEnabled: false, autoReview: true },
+      ask: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxEnabled: true, autoReview: false },
+      plan: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxEnabled: true, autoReview: false },
+      "full-auto": { mode: "agent", sandboxEnabled: false, autoReview: false },
+    };
+    for (const modeId of ["agent", "ask", "plan", "full-auto"] as const) {
+      const policy = resolveCursorSdkPolicy({ cursorModeId: modeId });
+      const local = buildCursorSdkLocalRunOptions(policy);
+      expect(cursorSdkLocalAgentMode(policy)).toBe(expected[modeId]!.mode);
+      expect(cursorSdkLocalAgentMode(policy)).not.toBe("auto");
+      expect(local.mode).toBe(expected[modeId]!.mode);
+      expect(local.mode).not.toBe("auto");
+      expect(local.autoReview).toBe(expected[modeId]!.autoReview);
+      expect(local.sandboxEnabled).toBe(expected[modeId]!.sandboxEnabled);
+      if (expected[modeId]!.tools) {
+        expect(local.tools).toEqual(expected[modeId]!.tools);
+      } else {
+        expect(local.tools).toBeUndefined();
+      }
+      expect(local.disallowedTools).toBeUndefined();
+    }
+  });
+
+  it("copies disallowedTools onto local run options when the policy sets them", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "ask" });
+    const local = buildCursorSdkLocalRunOptions({
+      ...policy,
+      disallowedTools: ["shell", "edit", "task"],
+    });
+    expect(local.tools).toEqual(["read", "grep", "glob", "ls"]);
+    expect(local.disallowedTools).toEqual(["shell", "edit", "task"]);
+  });
+
+  it("disables native sandbox in local run options when the host does not support it", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "ask" });
+    expect(buildCursorSdkLocalRunOptions(policy, { sandboxSupported: false })).toMatchObject({
+      mode: "plan",
+      tools: ["read", "grep", "glob", "ls"],
+      autoReview: false,
+      sandboxEnabled: false,
     });
   });
 

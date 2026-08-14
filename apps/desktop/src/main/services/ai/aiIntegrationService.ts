@@ -19,6 +19,8 @@ import type {
   CursorCloudListRunsResult,
   CursorCloudRepository,
   CursorCloudRunSummary,
+  CursorAgentUsage,
+  CursorAgentUsageRequest,
 } from "../../../shared/types";
 import {
   decodeOpenCodeRegistryId,
@@ -84,6 +86,17 @@ import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import {
+  cursorUsageCostUsd,
+  mapCursorAgentUsageToTokenEntry,
+  selectCursorAgentTurnUsage,
+} from "../usage/cursorUsageMapping";
+import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
+import {
+  openCursorCloudCredentialStore,
+  readCursorCloudLaneSecretNames,
+  resolveCursorCloudCreateCloudExtras,
+} from "../chat/cursorCloudCreateOptions";
 
 export type AiTaskType =
   | "planning"
@@ -206,6 +219,12 @@ type RuntimeTaskDefaults = {
   modelId: string;
   timeoutMs: number;
 };
+
+function readCursorSdkAgentName(agent: object): string {
+  if (!("name" in agent)) return "";
+  const name: unknown = (agent as { name: unknown }).name;
+  return typeof name === "string" ? name.trim() : "";
+}
 
 const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
   narratives: true,
@@ -1199,6 +1218,17 @@ export function createAiIntegrationService(args: {
     const idempotencyKey = args.idempotencyKey?.trim() || undefined;
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
+    const launch = resolveCursorCloudCreateCloudExtras({
+      projectRoot,
+      db,
+      projectConfigService,
+      sessionId: args.sessionId,
+      laneId: args.laneId,
+      projectId: args.projectId,
+      linearIssueId: args.linearIssueId,
+      secretNames: args.secretNames,
+      rememberSecretNames: args.rememberSecretNames === true,
+    });
     const agent = await Agent.create({
       apiKey,
       ...(idempotencyKey ? { idempotencyKey } : {}),
@@ -1208,16 +1238,25 @@ export function createAiIntegrationService(args: {
         repos: [{
           url: repoUrl,
           ...(args.startingRef?.trim() ? { startingRef: args.startingRef.trim() } : {}),
+          ...(args.prUrl?.trim() ? { prUrl: args.prUrl.trim() } : {}),
         }],
         workOnCurrentBranch: args.workOnCurrentBranch === true,
         autoCreatePR: args.autoCreatePR === true,
         skipReviewerRequest: args.skipReviewerRequest !== false,
+        ...launch.extras,
       },
     });
-    const run = await agent.send(promptText, idempotencyKey ? { idempotencyKey } : undefined);
+    const modelId = args.modelId?.trim() || "";
+    const run = await agent.send(promptText, {
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(modelId ? { model: { id: modelId } } : {}),
+    });
+    // Cursor names its own agents; use that name when the SDK hands one back so callers can
+    // adopt it (chat titles) instead of ADE's placeholder.
+    const sdkAgentName = readCursorSdkAgentName(agent);
     const agentSummary: CursorCloudAgentSummary = {
       agentId: agent.agentId,
-      name: args.agentName?.trim() || "Cursor cloud agent",
+      name: args.agentName?.trim() || sdkAgentName || "Cursor cloud agent",
       summary: promptText.slice(0, 180),
       status: "running",
       archived: false,
@@ -1265,6 +1304,37 @@ export function createAiIntegrationService(args: {
     } catch {
       return null;
     }
+  };
+
+  const getCursorAgentUsage = async (args: CursorAgentUsageRequest): Promise<CursorAgentUsage> => {
+    const agentId = args.agentId.trim();
+    if (!agentId) throw new Error("Cursor agent id is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await loadCursorSdk();
+    const raw = await Agent.getUsage(agentId, {
+      apiKey,
+      ...(args.runId?.trim() ? { runId: args.runId.trim() } : {}),
+    });
+    const snapshot = selectCursorAgentTurnUsage(raw, { agentId, runId: args.runId });
+    const billed = mapCursorAgentUsageToTokenEntry(snapshot, { projectPath: projectRoot });
+    if (billed) recordCursorBilledUsage(db, billed);
+    return {
+      agentId: snapshot.agentId,
+      runId: snapshot.runId,
+      inputTokens: snapshot.inputTokens,
+      outputTokens: snapshot.outputTokens,
+      cacheReadTokens: snapshot.cacheReadTokens,
+      cacheWriteTokens: snapshot.cacheWriteTokens,
+      totalTokens: snapshot.totalTokens,
+      reasoningTokens: snapshot.reasoningTokens,
+      cost: snapshot.cost
+        ? {
+            rawCostCents: snapshot.cost.rawCostCents,
+            chargedCents: snapshot.cost.chargedCents,
+            costUsd: cursorUsageCostUsd(snapshot),
+          }
+        : null,
+    };
   };
 
   const listCursorCloudArtifacts = async (
@@ -2004,10 +2074,18 @@ export function createAiIntegrationService(args: {
     listCursorCloudAgents,
     listCursorCloudRuns,
     createCursorCloudRun,
+    getCursorCloudLaneSecretNames(laneId: string): string[] {
+      try {
+        return readCursorCloudLaneSecretNames(openCursorCloudCredentialStore(projectRoot), laneId);
+      } catch {
+        return [];
+      }
+    },
     archiveCursorCloudAgent,
     unarchiveCursorCloudAgent,
     deleteCursorCloudAgent,
     getCursorCloudAgent,
+    getCursorAgentUsage,
     listCursorCloudArtifacts,
     downloadCursorCloudArtifact,
 

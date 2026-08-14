@@ -93,4 +93,14 @@ describe("chatSessionProjection", () => {
     expect(projected.runtimeState).toBe("idle");
     expect(projected.activeBackgroundTaskCount).toBe(0);
   });
+
+  it("copies chat lastActivityAt and cursorCloudAgentId onto the Work row", () => {
+    const projected = projectChatOntoSession(session(), chat({
+      lastActivityAt: "2026-08-13T20:26:10.000Z",
+      cursorCloudAgentId: "bc-cloud-agent",
+    }));
+
+    expect(projected.lastActivityAt).toBe("2026-08-13T20:26:10.000Z");
+    expect(projected.cursorCloudAgentId).toBe("bc-cloud-agent");
+  });
 });

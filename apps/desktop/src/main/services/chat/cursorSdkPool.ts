@@ -88,6 +88,7 @@ type CursorSdkPoolEntry = {
   stateRoot: string;
   socketPath: string;
   cleanupStateRoot: boolean;
+  idleTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const pools = new Map<string, CursorSdkPoolEntry>();
@@ -448,6 +449,7 @@ export async function acquireCursorSdkConnection(args: {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const existing = pools.get(args.poolKey);
     if (existing && isCursorSdkPooledAlive(existing.pooled)) {
+      clearCursorSdkIdleTimer(existing);
       existing.ref += 1;
       return { pooled: existing.pooled, generation: existing.generation };
     }
@@ -837,6 +839,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     stateRoot: paths.stateRoot,
     socketPath: paths.socketPath,
     cleanupStateRoot: args.cleanupStateRoot === true,
+    idleTimer: null,
   });
   return pooled;
 }
@@ -889,8 +892,15 @@ function findCursorSdkPoolEntry(poolKey: string, generation?: number): CursorSdk
   return entry;
 }
 
+function clearCursorSdkIdleTimer(entry: CursorSdkPoolEntry): void {
+  if (!entry.idleTimer) return;
+  clearTimeout(entry.idleTimer);
+  entry.idleTimer = null;
+}
+
 /** Evict an entry from the map and tear its worker + runtime paths down. */
 function disposeCursorSdkPoolEntry(poolKey: string, entry: CursorSdkPoolEntry): void {
+  clearCursorSdkIdleTimer(entry);
   pools.delete(poolKey);
   entry.pooled.dispose();
   cleanupCursorSdkRuntimePaths(entry);
@@ -926,6 +936,25 @@ export function releaseCursorSdkConnection(poolKey: string, generation?: number)
   if (entry.ref <= 0) disposeCursorSdkPoolEntry(poolKey, entry);
 }
 
+export function releaseCursorSdkConnectionAfterIdle(
+  poolKey: string,
+  generation: number,
+  idleMs: number,
+): void {
+  const entry = findCursorSdkPoolEntry(poolKey, generation);
+  if (!entry) return;
+  entry.ref -= 1;
+  if (entry.ref < 0) entry.ref = 0;
+  if (entry.ref > 0) return;
+  clearCursorSdkIdleTimer(entry);
+  entry.idleTimer = setTimeout(() => {
+    const current = findCursorSdkPoolEntry(poolKey, generation);
+    if (!current || current.ref > 0) return;
+    disposeCursorSdkPoolEntry(poolKey, current);
+  }, idleMs);
+  (entry.idleTimer as { unref?: () => void }).unref?.();
+}
+
 export async function runCursorSdkCatalogRequest<T = unknown>(
   args: {
     projectRoot: string;
@@ -951,6 +980,7 @@ export async function runCursorSdkCatalogRequest<T = unknown>(
       fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,
+      autoReview: false,
     },
     logger: args.logger,
   });
@@ -972,9 +1002,12 @@ type CursorSdkCloudOneShotType = Extract<
       | "cloud.run.cancel"
       | "cloud.run.conversation"
       | "cloud.artifacts.list"
-      | "cloud.artifacts.download";
+      | "cloud.artifacts.download"
+      | "agent.getUsage";
   }
 >["type"];
+
+export const CURSOR_SDK_CLOUD_ONESHOT_IDLE_MS = 60_000;
 
 export async function runCursorSdkCloudRequest<T = unknown>(
   args: {
@@ -986,7 +1019,10 @@ export async function runCursorSdkCloudRequest<T = unknown>(
     logger?: Logger;
   },
 ): Promise<T> {
-  const poolKey = `cloud:${args.type}:${args.workspacePath}:${Date.now()}:${Math.random()}`;
+  // One worker per workspace, kept warm for a short idle window so list +
+  // conversation + watched polls reuse it instead of forking Node (and a
+  // throwaway state dir) on every tick.
+  const poolKey = `cloud-oneshot:${args.workspacePath}`;
   const { pooled, generation } = await acquireCursorSdkConnection({
     poolKey,
     projectRoot: args.projectRoot,
@@ -1002,12 +1038,13 @@ export async function runCursorSdkCloudRequest<T = unknown>(
       fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,
+      autoReview: false,
     },
     logger: args.logger,
   });
   try {
     return await pooled.request<T>(args.type, { apiKey: args.apiKey ?? null, ...args.payload });
   } finally {
-    releaseCursorSdkConnection(poolKey, generation);
+    releaseCursorSdkConnectionAfterIdle(poolKey, generation, CURSOR_SDK_CLOUD_ONESHOT_IDLE_MS);
   }
 }

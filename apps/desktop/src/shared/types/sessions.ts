@@ -282,6 +282,8 @@ export type TerminalSessionSummary = {
    */
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
+  /** Cursor Cloud agent id when this chat is a live view of a cloud agent. */
+  cursorCloudAgentId?: string | null;
 };
 
 export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";

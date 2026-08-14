@@ -556,4 +556,33 @@ describe("Cursor SDK event mapper", () => {
     // The current shape may or may not include runtime — just verify status is mapped.
     expect(done.status).toBe("completed");
   });
+
+  it("maps stream type usage to a tokens event without costUsd", () => {
+    const events = mapCursorSdkMessageToChatEvents({
+      type: "usage",
+      agent_id: "bc-agent-1",
+      run_id: "run-1",
+      usage: {
+        inputTokens: 12,
+        outputTokens: 8,
+        totalInputTokens: 12,
+        totalOutputTokens: 8,
+        cost: { rawCostCents: 4.2, chargedCents: 3.1 },
+        costUsd: 0.031,
+      },
+    }, mapperMeta({ runtime: "cloud" }));
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "tokens",
+        turnId: "turn-1",
+        itemId: "run-1",
+        runtime: "cloud",
+        inputTokens: 12,
+        outputTokens: 8,
+      }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain("costUsd");
+    expect(events[0] as { costUsd?: unknown }).not.toHaveProperty("costUsd");
+  });
 });

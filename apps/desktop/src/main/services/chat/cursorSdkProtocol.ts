@@ -35,6 +35,25 @@ export type CursorSdkPermissionPolicy = {
    * hook server in `cursorSdkWorker` through the existing policy plumbing.
    */
   orchestrationLead: boolean;
+  /**
+   * Cursor Auto-review for local tool calls (`local.autoReview`). Backs ADE's
+   * middle-trust `agent` mode. This is a boolean on `local`, not an SDK `mode`
+   * value — never pass `"auto"` as `AgentOptions.mode` (only `"agent"` | `"plan"`).
+   */
+  autoReview: boolean;
+  /**
+   * Local-only built-in tool allowlist (`AgentOptions.tools`). Omitted means
+   * the SDK default toolset. The SDK does not persist this: pass it again on
+   * every `resumeAgent`. Combining `tools` with `cloud` throws
+   * `ConfigurationError` — never set this on cloud create.
+   */
+  tools?: readonly string[];
+  /**
+   * Local-only built-in tool denylist (`AgentOptions.disallowedTools`). Deny
+   * wins when combined with `tools`. Same local-only / resume / no-cloud rules
+   * as `tools`.
+   */
+  disallowedTools?: readonly string[];
 };
 
 export type CursorSdkModelParameterValue = {
@@ -123,6 +142,11 @@ export type CursorSdkCloudSendStreamPayload = {
   skipReviewerRequest?: boolean;
   envType?: "cloud" | "pool" | "machine" | null;
   envName?: string | null;
+  sessionId?: string | null;
+  laneId?: string | null;
+  projectId?: string | null;
+  linearIssueId?: string | null;
+  envVars?: Record<string, string> | null;
 };
 
 export type CursorSdkCloudFollowupPayload = {
@@ -239,6 +263,11 @@ export type CursorSdkWorkerRequest =
       type: "cloud.artifacts.download";
       requestId: string;
       payload: { apiKey?: string | null; agentId: string; path: string };
+    }
+  | {
+      type: "agent.getUsage";
+      requestId: string;
+      payload: { apiKey?: string | null; agentId: string; runId?: string | null };
     }
   | { type: "hook_response"; requestId: string; payload: CursorSdkHookDecision };
 

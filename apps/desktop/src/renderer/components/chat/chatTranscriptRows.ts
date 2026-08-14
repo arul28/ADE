@@ -3043,7 +3043,41 @@ export function deriveTurnDividerData(events: AgentChatEventEnvelope[]): Map<str
       }
       if (event.costUsd != null) entry.costUsd = event.costUsd;
     }
+
+    if (event.type === "tokens") {
+      if (event.inputTokens != null) entry.inputTokens = event.inputTokens;
+      if (event.outputTokens != null) entry.outputTokens = event.outputTokens;
+      if (event.cacheReadTokens != null) entry.cacheReadTokens = event.cacheReadTokens;
+    }
   }
 
   return turns;
+}
+
+export function formatDoneTurnTokenLine(usage: {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  reasoningTokens?: number | null;
+} | null | undefined): string | null {
+  if (!usage) return null;
+  const format = (value: number | null | undefined): string | null => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+    return String(Math.round(value));
+  };
+  const segments: string[] = [];
+  const inLabel = format(usage.inputTokens);
+  const outLabel = format(usage.outputTokens);
+  const cacheLabel = format(usage.cacheReadTokens);
+  const cacheWriteLabel = format(usage.cacheCreationTokens);
+  const reasoningLabel = format(usage.reasoningTokens);
+  if (inLabel) segments.push(`in ${inLabel}`);
+  if (outLabel) segments.push(`out ${outLabel}`);
+  if (cacheLabel) segments.push(`cached ${cacheLabel} ✶`);
+  if (cacheWriteLabel) segments.push(`cache write ${cacheWriteLabel}`);
+  if (reasoningLabel) segments.push(`reasoning ${reasoningLabel}`);
+  return segments.length > 0 ? segments.join(" · ") : null;
 }

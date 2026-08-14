@@ -456,6 +456,7 @@ struct WorkSessionDestinationView: View {
   /// into `headerMenuModel` and re-renders the equatable-gated header menu.
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
   @Environment(\.dismiss) var dismiss
+  @Environment(\.scenePhase) private var scenePhase
 
   let sessionId: String
   let initialOpeningPrompt: String?
@@ -802,6 +803,13 @@ struct WorkSessionDestinationView: View {
       ?? initialChatSummary
       ?? lastKnownChatSummary
       ?? syncService.chatSummaryCache[sessionId]
+  }
+
+  var cursorCloudMirrorWatchKey: String {
+    let agentId = composerChatSummary?.cursorCloudAgentId?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let active = scenePhase == .active ? "active" : "inactive"
+    return "\(sessionId)|\(agentId)|\(active)"
   }
 
   var subagentProvider: String? {
@@ -1295,6 +1303,26 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: selectedSubagentPollingKey) {
         await pollSelectedSubagentTranscriptIfNeeded()
+      }
+      .task(id: cursorCloudMirrorWatchKey) {
+        let watchId = sessionId
+        let agentId = composerChatSummary?.cursorCloudAgentId?
+          .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard scenePhase == .active, !agentId.isEmpty else { return }
+        await syncService.watchCursorCloudMirror(sessionId: watchId, watching: true)
+        await withTaskCancellationHandler {
+          while !Task.isCancelled {
+            do {
+              try await Task.sleep(nanoseconds: 3_600_000_000_000)
+            } catch {
+              break
+            }
+          }
+        } onCancel: {
+          Task {
+            await syncService.watchCursorCloudMirror(sessionId: watchId, watching: false)
+          }
+        }
       }
       .onChange(of: chatSummary) { _, newValue in
         // Latch the last non-nil summary so the composer's model/permission

@@ -241,6 +241,9 @@ import { createProjectSecretService } from "./services/secrets/projectSecretServ
 import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
+import { createCursorCloudIngressService } from "./services/automations/cursorCloudIngressService";
+import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
+import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
@@ -3787,6 +3790,37 @@ app.whenReady().then(async () => {
       });
     }
 
+    const cursorCloudIngressService = createCursorCloudIngressService({
+      db,
+      projectId,
+      credentialStore: openCursorCloudCredentialStore(projectRoot),
+      getAccountAccessToken,
+      cursorStore: createKvIngressCursorStore(db),
+      dispatch: async (record) => {
+        await agentChatService.handleCursorCloudStatusChange(record).catch((error) => {
+          logger.warn("agent_chat.cursor_cloud_status_change_failed", {
+            eventId: record.eventId,
+            agentId: record.agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        if (!automationService) return;
+        await Promise.all(buildCursorCloudAutomationDispatches(record).map((dispatch) =>
+          automationService.dispatchIngressTrigger(dispatch).catch((error) => {
+            logger.warn("automations.cursor_cloud_relay_dispatch_failed", {
+              eventId: record.eventId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }),
+        ));
+      },
+      logger,
+    });
+    automationService?.setCursorCloudIngressAvailable(() => {
+      const status = cursorCloudIngressService.getStatus();
+      return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
+    });
+
     const deferredProjectStartCancels = new Set<() => void>();
     const scheduleDeferredProjectStart = (
       task: () => Promise<unknown> | unknown,
@@ -4317,6 +4351,20 @@ app.whenReady().then(async () => {
       );
     }
 
+    if (cursorCloudIngressService) {
+      scheduleBackgroundProjectTask(
+        "automations.cursor_cloud_ingress_start",
+        () => cursorCloudIngressService.start(),
+        (error) => {
+          logger.warn("automations.cursor_cloud_ingress_start_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        0,
+        "ADE_ENABLE_AUTOMATION_INGRESS",
+      );
+    }
+
     if (githubPollingService) {
       scheduleBackgroundProjectTask(
         "automations.github_polling_start",
@@ -4565,6 +4613,7 @@ app.whenReady().then(async () => {
       syncService,
       automationIngressService,
       linearIngressService,
+      cursorCloudIngressService,
       feedbackReporterService,
       usageTrackingService,
       storageInsightsService,
@@ -4822,6 +4871,7 @@ app.whenReady().then(async () => {
       automationPlannerService,
       automationIngressService,
       linearIngressService,
+      cursorCloudIngressService,
       githubPollingService,
       usageTrackingService,
       storageInsightsService,
@@ -5028,6 +5078,7 @@ app.whenReady().then(async () => {
       automationPlannerService: null,
       automationIngressService: null,
       linearIngressService: null,
+      cursorCloudIngressService: null,
       githubPollingService: null,
       usageTrackingService,
       budgetCapService: null,
@@ -5131,6 +5182,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.linearIngressService?.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.cursorCloudIngressService?.stop();
     } catch {
       // ignore
     }

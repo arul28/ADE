@@ -11,6 +11,7 @@ import {
   isCursorSdkPooledAlive,
   poisonCursorSdkConnection,
   releaseCursorSdkConnection,
+  releaseCursorSdkConnectionAfterIdle,
   resolveCursorSdkUserHome,
 } from "./cursorSdkPool";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
@@ -25,6 +26,7 @@ const TEST_POLICY = {
   fullAuto: false,
   hardGuards: true,
   orchestrationLead: false,
+  autoReview: true,
 } as const;
 const tempDirs: string[] = [];
 
@@ -450,6 +452,35 @@ describe("Cursor SDK pool paths", () => {
     expect(third.pooled).not.toBe(first.pooled);
     expect(forkMock).toHaveBeenCalledTimes(2);
 
+    releaseCursorSdkConnection(poolKey, third.generation);
+  });
+
+  it("reuses a oneshot worker during idle instead of colliding on cleanup", async () => {
+    const firstChild = new FakeSdkChild();
+    const secondChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+    const poolKey = `cloud-oneshot:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    releaseCursorSdkConnectionAfterIdle(poolKey, first.generation, 60_000);
+    const second = await acquireCursorSdkConnection(args);
+    expect(second.pooled).toBe(first.pooled);
+    expect(second.generation).toBe(first.generation);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+
+    releaseCursorSdkConnectionAfterIdle(poolKey, second.generation, 20);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const third = await acquireCursorSdkConnection(args);
+    expect(third.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
     releaseCursorSdkConnection(poolKey, third.generation);
   });
 

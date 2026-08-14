@@ -139,4 +139,15 @@ describe("WorkSurfaceHeader", () => {
     const el = screen.getByText("Fix the logout redirect");
     expect(el.getAttribute("data-title-landed")).toBeNull();
   });
+
+  it("renders an optional title accessory after the title", () => {
+    render(
+      <WorkSurfaceHeader
+        title="Cursor Chat"
+        titleAccessory={<button type="button">Cursor Cloud</button>}
+      />,
+    );
+    const accessory = screen.getByRole("button", { name: "Cursor Cloud" });
+    expect(accessory.previousSibling?.textContent).toBe("Cursor Chat");
+  });
 });

@@ -507,6 +507,14 @@ export function mapCursorSdkMessageToChatEvents(
         detail: record,
       }];
     }
+    case "usage": {
+      const tokens = mapTurnEndedTokensToEvent(record, {
+        turnId,
+        runtime,
+        ...(readString(record.run_id) ? { itemId: readString(record.run_id) ?? undefined } : {}),
+      });
+      return tokens ? [tokens] : [];
+    }
     default:
       return [];
   }
@@ -571,8 +579,18 @@ export function mapTurnEndedTokensToEvent(
   const record = asRecord(update);
   const usage = asRecord(record?.usage) ?? record;
   if (!usage) return null;
-  const inputTokens = readNumber(usage.inputTokens ?? usage.input_tokens);
-  const outputTokens = readNumber(usage.outputTokens ?? usage.output_tokens);
+  const inputTokens = readNumber(
+    usage.inputTokens
+      ?? usage.input_tokens
+      ?? usage.totalInputTokens
+      ?? usage.total_input_tokens,
+  );
+  const outputTokens = readNumber(
+    usage.outputTokens
+      ?? usage.output_tokens
+      ?? usage.totalOutputTokens
+      ?? usage.total_output_tokens,
+  );
   const cacheReadTokens = readNumber(usage.cacheReadTokens ?? usage.cache_read_tokens);
   const cacheWriteTokens = readNumber(
     usage.cacheWriteTokens

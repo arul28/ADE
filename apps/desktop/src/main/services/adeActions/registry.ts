@@ -18,6 +18,13 @@ import {
   startPiLogin,
   submitPiLoginPrompt,
 } from "../ai/piAuthService";
+import {
+  addCursorSdkAuthStatusListener,
+  cancelCursorSdkLogin,
+  getCursorSdkAuthStatus,
+  loginCursorSdk,
+  logoutCursorSdk,
+} from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
@@ -237,7 +244,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
-  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel"],
+  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
@@ -690,10 +697,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "piLoginStart",
     "piLoginSubmit",
     "piLoginCancel",
+    "cursorAuthStatus",
+    "cursorAuthLogin",
+    "cursorAuthLogout",
+    "cursorAuthCancel",
     "listCursorCloudRepositories",
     "listCursorCloudAgents",
     "listCursorCloudRuns",
     "createCursorCloudRun",
+    "getCursorCloudLaneSecretNames",
     "archiveCursorCloudAgent",
     "unarchiveCursorCloudAgent",
     "deleteCursorCloudAgent",
@@ -704,6 +716,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cancelCursorCloudRun",
     "cursorCloudFollowUp",
     "openCursorCloudChat",
+    "watchCursorCloudMirror",
   ],
   onboarding: [
     "complete",
@@ -2783,10 +2796,12 @@ function ensureAuthStatusRelayBridges(runtime: AdeRuntime): void {
   };
   const unsubscribeOpenCode = addOpenCodeOAuthStatusListener((event) => push("opencodeOAuthStatus", event));
   const unsubscribePi = addPiAuthStatusListener((event) => push("piAuthStatus", event));
+  const unsubscribeCursor = addCursorSdkAuthStatusListener((event) => push("cursorAuthStatus", event));
   const dispose = runtime.dispose;
   runtime.dispose = () => {
     unsubscribeOpenCode();
     unsubscribePi();
+    unsubscribeCursor();
     dispose();
   };
 }
@@ -2853,6 +2868,34 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     piLoginCancel: (args?: { providerId?: string }) => {
       cancelPiLogin({ providerId: requireNonEmptyString(args?.providerId, "providerId") });
     },
+    cursorAuthStatus: () => getCursorSdkAuthStatus(),
+    cursorAuthLogin: async () => {
+      const result = await loginCursorSdk();
+      if (result.ok) {
+        try {
+          aiIntegrationService.invalidateProviderReadinessCaches();
+        } catch (error) {
+          runtime.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return result;
+    },
+    cursorAuthLogout: async () => {
+      const result = await logoutCursorSdk();
+      try {
+        aiIntegrationService.invalidateProviderReadinessCaches();
+      } catch (error) {
+        runtime.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return result;
+    },
+    cursorAuthCancel: () => {
+      cancelCursorSdkLogin();
+    },
     refreshModelsDev: async () => {
       try {
         await refreshModelsDevNow();
@@ -2902,6 +2945,8 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       }),
     createCursorCloudRun: (args: Parameters<typeof aiIntegrationService.createCursorCloudRun>[0]) =>
       aiIntegrationService.createCursorCloudRun(args),
+    getCursorCloudLaneSecretNames: (args?: { laneId?: string }) =>
+      aiIntegrationService.getCursorCloudLaneSecretNames(requireNonEmptyString(args?.laneId, "laneId")),
     archiveCursorCloudAgent: (args?: { agentId?: string }) =>
       aiIntegrationService.archiveCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
     unarchiveCursorCloudAgent: (args?: { agentId?: string }) =>
@@ -2940,11 +2985,29 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         prompt: requireNonEmptyString(args?.prompt, "prompt"),
         ...(args?.modelId !== undefined ? { modelId: args.modelId } : {}),
       }),
-    openCursorCloudChat: (args?: { cloudAgentId?: string; laneId?: string }) =>
+    openCursorCloudChat: (args?: {
+      cloudAgentId?: string;
+      laneId?: string;
+      agentName?: string;
+      sessionId?: string;
+      modelId?: string;
+    }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").openCursorCloudChat({
         cloudAgentId: requireNonEmptyString(args?.cloudAgentId, "cloudAgentId"),
         laneId: requireNonEmptyString(args?.laneId, "laneId"),
+        ...(args?.agentName ? { agentName: args.agentName } : {}),
+        ...(args?.sessionId ? { sessionId: args.sessionId } : {}),
+        ...(args?.modelId ? { modelId: args.modelId } : {}),
       }),
+    watchCursorCloudMirror: (args?: { sessionId?: string; watching?: boolean }) => {
+      if (typeof args?.watching !== "boolean") {
+        throw new Error("Expected 'watching' to be a boolean.");
+      }
+      requireService(runtime.agentChatService, "Agent chat service not available.").watchCursorCloudMirror({
+        sessionId: requireNonEmptyString(args?.sessionId, "sessionId"),
+        watching: args.watching,
+      });
+    },
   };
 }
 
