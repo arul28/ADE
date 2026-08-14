@@ -2122,6 +2122,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Never-resolving send gates from a timed-out Cursor recycle test must not
+  // keep a real watchdog alive into the next case. Resolve whatever we can
+  // and drop the hook before restoring the clock.
+  mockState.onCursorSendPrompt = null;
+  mockState.onCursorCancel = null;
+  mockState.cursorSendPromptError = null;
+  mockState.droidPromptError = null;
   vi.useRealTimers();
   vi.restoreAllMocks();
   if (ORIGINAL_CURSOR_API_KEY === undefined) {
@@ -2365,8 +2372,13 @@ const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
  * so pump the fake clock instead of assuming a fixed number of ticks.
  */
 const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => {
-  for (let tick = 0; tick < 400 && !ready(); tick += 1) {
-    await vi.advanceTimersByTimeAsync(1);
+  // A silence-watchdog recycle can arm the next attempt's timer after the
+  // first 90s jump, so keep a couple of extra trips in the budget. 1ms ticks
+  // still flush microtasks between jumps.
+  for (let tick = 0; tick < 800 && !ready(); tick += 1) {
+    await vi.advanceTimersByTimeAsync(tick > 0 && tick % 200 === 0
+      ? CURSOR_SILENCE_WATCHDOG_TRIP_MS
+      : 1);
   }
   if (!ready()) throw new Error(`pumpUntil timed out waiting for: ${label}`);
 };
@@ -15071,8 +15083,10 @@ describe("createAgentChatService", () => {
         text: "Turn that dies.",
       }, { awaitDispatch: true }).catch(() => undefined);
       await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
+        expect(String(mockState.cursorSdkSendCalls[0]?.promptText ?? "")).toContain("Turn that dies.");
       });
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
       await service.steer({ sessionId: session.id, text: "Queued during the outage." });
       releaseTurn();
 
