@@ -61,6 +61,11 @@ import { navigateToAppTarget, openExternalUrl, openUrlInAdeBrowser } from "../..
 import { normalizePath } from "../../lib/pathUtils";
 import { chatMarkdownUrlTransform } from "./chatMarkdown";
 import {
+  CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
+  splitChatOutputContextSegments,
+} from "../../../shared/chatOutputContext";
+import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
+import {
   ChatWorkspacePathProvider,
   looksLikeWorkspacePath,
   parseWorkspacePathLocation,
@@ -797,6 +802,18 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
     break;
   }
   return { chips, rest: text.slice(i) };
+}
+
+function ChatOutputContextChip({ quote }: { quote: string }) {
+  return (
+    <span
+      className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-violet-50/90 align-baseline"
+      title={quote}
+      data-testid="user-message-chat-context-chip"
+    >
+      {CHAT_OUTPUT_CONTEXT_CHIP_LABEL}
+    </span>
+  );
 }
 
 function UserMessageSendConfirmations({
@@ -2739,25 +2756,35 @@ function renderEvent(
               );
             }
             const parsed = parseLeadingIosContextChips(event.text);
-            const body = !parsed.chips.length ? (
+            const contextSegments = splitChatOutputContextSegments(parsed.rest);
+            const hasOutputContext = contextSegments.some((segment) => segment.kind === "context");
+            const body = !parsed.chips.length && !hasOutputContext ? (
               <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                 {event.text}
               </div>
             ) : (
               <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
-                  {parsed.chips.map((label, idx) => (
-                    <span
-                      key={`ios-chip-${idx}`}
-                      className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
-                      title={label}
-                      data-testid="user-message-ios-context-chip"
-                    >
-                      <span className="max-w-[200px] truncate">{label}</span>
-                    </span>
-                  ))}
-                </span>
-                {parsed.rest}
+                {parsed.chips.length ? (
+                  <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
+                    {parsed.chips.map((label, idx) => (
+                      <span
+                        key={`ios-chip-${idx}`}
+                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
+                        title={label}
+                        data-testid="user-message-ios-context-chip"
+                      >
+                        <span className="max-w-[200px] truncate">{label}</span>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
+                {hasOutputContext
+                  ? contextSegments.map((segment, idx) => (
+                    segment.kind === "text"
+                      ? <React.Fragment key={`chat-context-text-${idx}`}>{segment.text}</React.Fragment>
+                      : <ChatOutputContextChip key={`chat-context-chip-${idx}`} quote={segment.quote} />
+                  ))
+                  : parsed.rest}
               </div>
             );
             // Only the plain prompt body clamps. The hidden-prompt brief and the
@@ -2807,7 +2834,7 @@ function renderEvent(
               />
             ) : null}
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0" data-assistant-output="true">
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
           </div>
         </div>
@@ -6826,6 +6853,7 @@ function AgentChatMessageListMain({
           <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · jump to latest` : "Jump to latest"}</span>
         </button>
       ) : null}
+      <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
     </div>
     </ChatWorkspacePathProvider>
   );

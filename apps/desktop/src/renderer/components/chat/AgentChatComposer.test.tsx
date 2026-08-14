@@ -11,6 +11,7 @@ import type {
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { useAppStore } from "../../state/appStore";
+import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
 function installMatchMediaMock(): void {
   if (typeof window.matchMedia === "function") return;
@@ -333,6 +334,26 @@ describe("AgentChatComposer", () => {
     // inherits text-align:center from centered empty-state ancestors when a
     // paste swaps the textarea for this rich editor.
     expect(screen.getByRole("textbox").className).toContain("text-left");
+  });
+
+  it("hydrates highlighted assistant output as an inline Chat context chip", async () => {
+    const writeClipboardText = vi.fn().mockResolvedValue(undefined);
+    (window as any).ade = { app: { writeClipboardText } };
+    const block = formatChatOutputContextBlock("retry the lane checkout")!;
+    const view = render(<AgentChatComposer {...buildComposerProps({
+      draft: `please ${block} thanks`,
+      turnActive: false,
+    })} />);
+
+    const chip = await waitFor(() => {
+      const el = view.container.querySelector<HTMLElement>("[data-composer-chip='chat-context']");
+      if (!el) throw new Error("chat context chip not rendered");
+      return el;
+    });
+    expect(chip.textContent).toContain("Chat context");
+    fireEvent.click(chip);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Copy/ }));
+    expect(writeClipboardText).toHaveBeenCalledWith("retry the lane checkout");
   });
 
   it("clear draft only triggers the draft-clear action during an active turn", () => {

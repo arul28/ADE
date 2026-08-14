@@ -13,7 +13,13 @@ export function ComposerSmartLinkMenu({
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState({ left: 8, top: 8 });
-  const url = anchor.dataset.smartLinkUrl ?? "";
+  const isChatContext = anchor.dataset.composerChip === "chat-context";
+  const copyText = isChatContext
+    ? (anchor.dataset.chatOutputQuote ?? "")
+    : (anchor.dataset.smartLinkUrl ?? "");
+  const copyLabel = isChatContext ? "Copy" : "Copy link";
+  const removeLabel = isChatContext ? "Remove" : "Remove link";
+  const menuLabel = isChatContext ? "Chat context actions" : "Link actions";
   const closeWithAnchorFocus = useCallback(() => {
     if (anchor.isConnected) anchor.focus({ preventScroll: true });
     onClose();
@@ -64,7 +70,7 @@ export function ComposerSmartLinkMenu({
     <div
       ref={menuRef}
       role="menu"
-      aria-label="Link actions"
+      aria-label={menuLabel}
       className="fixed z-[1000] flex -translate-y-full overflow-hidden rounded-lg border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_95%,black_5%)] shadow-[0_16px_42px_rgba(0,0,0,0.48)] backdrop-blur-xl"
       style={{ left: position.left, top: position.top, width: 224 }}
     >
@@ -73,12 +79,12 @@ export function ComposerSmartLinkMenu({
         role="menuitem"
         className="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium text-fg/78 transition-colors hover:bg-violet-500/[0.10] hover:text-violet-100"
         onClick={() => {
-          void window.ade.app.writeClipboardText(url);
+          void window.ade.app.writeClipboardText(copyText);
           closeWithAnchorFocus();
         }}
       >
         <Copy size={13} weight="bold" />
-        Copy link
+        {copyLabel}
       </button>
       <div className="w-px bg-white/[0.06]" />
       <button
@@ -91,7 +97,7 @@ export function ComposerSmartLinkMenu({
         }}
       >
         <Trash size={13} weight="bold" />
-        Remove link
+        {removeLabel}
       </button>
     </div>,
     document.body,
