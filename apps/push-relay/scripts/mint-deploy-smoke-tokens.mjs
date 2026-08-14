@@ -99,26 +99,38 @@ async function mintJwtFromSession(secretKey, sessionId) {
     { expires_in_seconds: SESSION_TOKEN_TTL_SECONDS },
   );
   if (!minted.ok) {
-    fail(`session token mint returned HTTP ${minted.status} (${redactClerkBody(minted.payload)})`);
+    fail(`session token mint returned HTTP ${minted.status} (${clerkErrorCodes(minted.payload)})`);
   }
   const jwt = sessionJwtFromPayload(minted.payload);
   if (!jwt) fail("session token mint returned no jwt");
   return jwt;
 }
 
-function isProductionCreateSessionBlock(status, payload) {
-  if (status !== 400 && status !== 403 && status !== 422) return false;
-  const blob = JSON.stringify(payload ?? {});
-  return /production/i.test(blob) || /not (?:available|supported)/i.test(blob);
+function clerkErrorCodes(payload) {
+  const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+  const codes = errors
+    .map((error) => typeof error?.code === "string" ? error.code : "")
+    .filter(Boolean);
+  return codes.length > 0 ? codes.join(",") : redactClerkBody(payload);
+}
+
+function isCreateSessionBlocked(status) {
+  return status === 400 || status === 403 || status === 422;
 }
 
 async function mintViaCreateSession(secretKey, userId) {
   const created = await clerkBackend(secretKey, "POST", "/sessions", { user_id: userId });
-  if (isProductionCreateSessionBlock(created.status, created.payload)) {
+  if (created.status === 401) {
+    fail(`create session returned HTTP 401 (${clerkErrorCodes(created.payload)})`);
+  }
+  if (created.status === 404) {
+    fail(`create session returned HTTP 404 (${clerkErrorCodes(created.payload)})`);
+  }
+  if (!created.ok && isCreateSessionBlocked(created.status)) {
     return null;
   }
   if (!created.ok) {
-    fail(`create session returned HTTP ${created.status} (${redactClerkBody(created.payload)})`);
+    fail(`create session returned HTTP ${created.status} (${clerkErrorCodes(created.payload)})`);
   }
   const sessionId = createdSessionId(created.payload);
   if (!sessionId) fail("create session returned no session id");
@@ -142,7 +154,7 @@ async function redeemSignInTicket(publishableKey, ticket) {
   });
   const payload = await readJson(response);
   if (!response.ok) {
-    fail(`sign-in ticket redeem returned HTTP ${response.status} (${redactClerkBody(payload)})`);
+    fail(`sign-in ticket redeem returned HTTP ${response.status} (${clerkErrorCodes(payload)})`);
   }
   const sessionId = createdSessionId(payload);
   if (!sessionId) fail("sign-in ticket redeem returned no session id");
@@ -154,8 +166,8 @@ async function mintViaSignInTicket(secretKey, publishableKey, userId) {
     user_id: userId,
     expires_in_seconds: SIGN_IN_TOKEN_TTL_SECONDS,
   });
-  if (!token.ok) {
-    fail(`sign-in token create returned HTTP ${token.status} (${redactClerkBody(token.payload)})`);
+      if (!token.ok) {
+    fail(`sign-in token create returned HTTP ${token.status} (${clerkErrorCodes(token.payload)})`);
   }
   const ticket = typeof token.payload?.token === "string" ? token.payload.token.trim() : "";
   if (!ticket) fail("sign-in token create returned no ticket");
