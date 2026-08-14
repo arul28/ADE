@@ -385,6 +385,19 @@ export function WebClientRoot({
     return installSessionLifecycleChrome(activeLifecycleClient);
   }, [activeLifecycleClient, displayedTargetId]);
 
+  const retryDirectory = useCallback(async () => {
+    setDirectoryLoading(true);
+    try {
+      const snapshot = await accountClient.loadMachines();
+      setAccount(snapshot);
+      const visible = await applyAccountPrivacy(snapshot);
+      sessionManager.replaceEnvironments(visible);
+      await installFederatedAdapter(snapshot);
+    } finally {
+      setDirectoryLoading(false);
+    }
+  }, [accountClient, applyAccountPrivacy, installFederatedAdapter, sessionManager]);
+
   useEffect(() => {
     let disposed = false;
 
@@ -502,18 +515,7 @@ export function WebClientRoot({
         sessionManager.replaceEnvironments(visible);
         await installFederatedAdapter(snapshot);
       },
-      async retryDirectory() {
-        setDirectoryLoading(true);
-        try {
-          const snapshot = await accountClient.loadMachines();
-          setAccount(snapshot);
-          const visible = await applyAccountPrivacy(snapshot);
-          sessionManager.replaceEnvironments(visible);
-          await installFederatedAdapter(snapshot);
-        } finally {
-          setDirectoryLoading(false);
-        }
-      },
+      retryDirectory,
       async connectAccountMachine(machine) {
         setConnectingMachineKey(machine.machineKey);
         try {
@@ -554,7 +556,8 @@ export function WebClientRoot({
         setAccount(snapshot);
         if (entry?.environment) {
           await adapter.forgetEnvironment(entry.environment.envId);
-        } else if (entry) {
+        }
+        if (entry) {
           for (const catalogKey of webMachineCatalogKeys(entry)) {
             sessionManager.forgetCatalog(catalogKey);
           }
@@ -584,6 +587,7 @@ export function WebClientRoot({
     federatedAdapter,
     installFederatedAdapter,
     refreshVisibleEnvironments,
+    retryDirectory,
     sessionManager,
     signIn,
     workspaceNotice,

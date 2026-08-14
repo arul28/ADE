@@ -137,11 +137,6 @@ function webMachineStatusLabel(status: WebMachineStatus): string {
   }
 }
 
-/** True when this tab still remembers a machine the account directory does not. */
-export function webMachineIsRememberedOnly(machine: Pick<WebMachineEntry, "accountMachine">): boolean {
-  return machine.accountMachine == null;
-}
-
 /**
  * One-glance status for a roster row. Remembered-only leftovers lead with that
  * fact so they cannot be mistaken for a computer still on the account.
