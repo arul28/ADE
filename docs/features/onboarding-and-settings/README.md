@@ -177,11 +177,6 @@ Renderer — onboarding:
   — name plus a first-class location row (default parent, Change folder,
   editable path). Create opens Work; it does not show a success interstitial
   or the removed project-setup dashboard.
-- `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
-  `RescanButton.tsx` — shared controls still used by Settings / help surfaces.
-- `apps/desktop/src/renderer/components/onboarding/DevToolsSection.tsx`
-  — legacy full-size dev tool detection surface retained for existing routes
-  that still mount it.
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
   — top-level passive help mount. It renders the one-time ADE welcome
   video gate plus `DidYouKnow`; guided per-tab tours and the old
@@ -428,8 +423,7 @@ Renderer — settings:
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
   `bundledAvailable`, and the resolved `installTargetPath` for the
-  bundled `ade` binary. In compact form (used by the Integrations tab and
-  the onboarding `DevToolsSection`) it shows the current install
+  bundled `ade` binary. It shows the current install
   path, an Install / Repair button that runs the platform
   install-path helper, and an "Add to PATH" hint when the install
   target isn't on the user's `$PATH`. Agents launched by ADE always
@@ -993,9 +987,8 @@ banner):
 - [configuration-schema.md](./configuration-schema.md) — shape of
   `.ade/ade.yaml` and `.ade/local.yaml` as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
-- [first-run.md](./first-run.md) — the first-run setup dashboard,
-  stack detection, existing-lane import, and the UX contract that lets
-  users skip optional integrations.
+- [first-run.md](./first-run.md) — first launch lands on Work. There is
+  no blocking project-setup dashboard; optional integrations live in Settings.
 
 ## Onboarding responsibilities
 
@@ -1042,8 +1035,7 @@ the General settings tab via `AdeCliSection`:
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
-   on macOS, equivalents on other platforms). The compact form embedded
-   in the Integrations tab and the onboarding `DevToolsSection` shows the
+   on macOS, equivalents on other platforms). Settings → General shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
 5. Register projects with the runtime. Opening a project on desktop

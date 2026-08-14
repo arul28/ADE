@@ -14,7 +14,6 @@ const TERMINAL_INSTALL_COMMAND = rendererPlatformAttribute() === "win32"
   : "curl -fsSL https://ade-app.dev/install.sh | sh";
 
 type Props = {
-  compact?: boolean;
   embedded?: boolean;
 };
 
@@ -23,7 +22,7 @@ type Notice = {
   text: string;
 } | null;
 
-export function AdeCliSection({ compact = false, embedded = false }: Props) {
+export function AdeCliSection({ embedded = false }: Props) {
   const [status, setStatus] = useState<AdeCliStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
@@ -174,7 +173,7 @@ export function AdeCliSection({ compact = false, embedded = false }: Props) {
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {body}
     </div>
   );

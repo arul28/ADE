@@ -14,7 +14,7 @@ import type {
   ProjectBrowseResult,
 } from "../../../shared/types";
 import { extractError } from "../../lib/format";
-import { abbreviateHome, arePathsEqual, normalizePath } from "../../lib/pathUtils";
+import { abbreviateHome, arePathsEqual, joinParentAndName } from "../../lib/pathUtils";
 import {
   COLORS,
   LABEL_STYLE,
@@ -30,7 +30,7 @@ export type CreateProjectFormProps = {
     rootPath: string;
     displayName: string;
     projectId?: string;
-  }) => void;
+  }) => void | Promise<void>;
   machineName?: string;
   getDefaultParentDir?: () => Promise<string>;
   browseDirectories?: (
@@ -61,13 +61,15 @@ function validateName(rawName: string): NameValidation {
   return { ok: true };
 }
 
-export function joinParentAndName(parent: string, name: string): string {
-  const trimmedParent = parent.trim();
-  const trimmedName = name.trim();
-  if (!trimmedParent) return trimmedName;
-  if (!trimmedName) return normalizePath(trimmedParent);
-  const stripped = trimmedParent.replace(/[\\/]+$/, "");
-  return normalizePath(`${stripped}/${trimmedName}`);
+function formatLocationDisplay(
+  parentDirLoading: boolean,
+  previewPath: string,
+  parentDir: string,
+): string {
+  if (parentDirLoading) return "Finding a default folder…";
+  if (previewPath) return abbreviateHome(previewPath);
+  if (parentDir) return abbreviateHome(parentDir);
+  return "Choose a folder";
 }
 
 const inputStyle: CSSProperties = {
@@ -97,6 +99,7 @@ export function CreateProjectForm({
   const [parentDir, setParentDir] = useState<string>("");
   const [parentDirLoading, setParentDirLoading] = useState(true);
   const [pending, setPending] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pathExists, setPathExists] = useState(false);
   const [pickerPending, setPickerPending] = useState(false);
@@ -137,13 +140,11 @@ export function CreateProjectForm({
     () => (parentDir && trimmedName ? joinParentAndName(parentDir, trimmedName) : ""),
     [parentDir, trimmedName],
   );
-  const locationDisplay = parentDirLoading
-    ? "Finding a default folder…"
-    : previewPath
-      ? abbreviateHome(previewPath)
-      : parentDir
-        ? abbreviateHome(parentDir)
-        : "Choose a folder";
+  const locationDisplay = formatLocationDisplay(
+    parentDirLoading,
+    previewPath,
+    parentDir,
+  );
 
   useEffect(() => {
     if (!previewPath || !validation.ok) {
@@ -203,6 +204,7 @@ export function CreateProjectForm({
     setSubmitAttempted(true);
     if (!validation.ok || !parentDir || pathExists) return;
     setPending(true);
+    setOpening(false);
     setError(null);
     try {
       const result = await create({
@@ -213,15 +215,19 @@ export function CreateProjectForm({
         "projectId" in result && typeof result.projectId === "string"
           ? result.projectId
           : undefined;
-      onCreated({
-        rootPath: result.rootPath,
-        displayName: trimmedName,
-        projectId,
-      });
+      setOpening(true);
+      await Promise.resolve(
+        onCreated({
+          rootPath: result.rootPath,
+          displayName: trimmedName,
+          projectId,
+        }),
+      );
     } catch (err) {
       setError(extractError(err));
     } finally {
       setPending(false);
+      setOpening(false);
     }
   }, [create, onCreated, parentDir, pathExists, trimmedName, validation.ok]);
 
@@ -264,13 +270,7 @@ export function CreateProjectForm({
 
       <Field label="Location">
         <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
-          <button
-            type="button"
-            onClick={() => {
-              void handleChooseParent();
-            }}
-            disabled={pickerPending || pending || !pickDirectory}
-            aria-label="Change project location"
+          <div
             title={previewPath || parentDir || "Choose a folder"}
             style={{
               ...inputStyle,
@@ -279,7 +279,6 @@ export function CreateProjectForm({
               alignItems: "center",
               justifyContent: "flex-start",
               textAlign: "left",
-              cursor: pickDirectory ? "pointer" : "default",
               fontFamily: MONO_FONT,
               fontSize: 12,
               color: parentDir ? COLORS.textPrimary : COLORS.textMuted,
@@ -295,7 +294,7 @@ export function CreateProjectForm({
             >
               {locationDisplay}
             </span>
-          </button>
+          </div>
           {pickDirectory ? (
             <button
               type="button"
@@ -379,7 +378,7 @@ export function CreateProjectForm({
           {pending ? (
             <>
               <CircleNotch size={12} weight="bold" className="animate-spin" />
-              Creating…
+              {opening ? "Opening…" : "Creating…"}
             </>
           ) : (
             "Create and open"

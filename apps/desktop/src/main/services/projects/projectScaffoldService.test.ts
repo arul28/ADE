@@ -103,6 +103,9 @@ describe("createLocalProject", () => {
     expect(argsList).not.toContainEqual(["add", "."]);
     expect(argsList.some((args) => args[0] === "commit")).toBe(false);
     expect(fs.existsSync(path.join(result.rootPath, ".ade", "ade.db"))).toBe(true);
+    expect(
+      fs.existsSync(path.join(result.rootPath, ".ade", "cache", "first-open-stability")),
+    ).toBe(true);
   });
 
   it("falls back to plain init + symbolic-ref when --initial-branch is unsupported", async () => {
@@ -125,7 +128,7 @@ describe("createLocalProject", () => {
     expect(argsList[2]).toEqual(["symbolic-ref", "HEAD", "refs/heads/main"]);
   });
 
-  it("does not commit even when git identity is missing", async () => {
+  it("never runs git commit during create", async () => {
     runGitMock.mockResolvedValue(gitOk());
     const parentDir = makeTempDir("ade-scaffold-no-commit-");
     const service = createProjectScaffoldService({
@@ -307,6 +310,10 @@ describe("cloneRepository", () => {
       "https://github.com/octocat/Hello-World",
       path.join(parentDir, "Hello-World"),
     ]);
+    expect(fs.existsSync(path.join(result.rootPath, ".ade", "ade.db"))).toBe(true);
+    expect(
+      fs.existsSync(path.join(result.rootPath, ".ade", "cache", "first-open-stability")),
+    ).toBe(true);
   });
 
   it("uses the explicit name override when provided", async () => {

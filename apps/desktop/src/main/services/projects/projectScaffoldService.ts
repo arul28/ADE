@@ -76,6 +76,17 @@ export function createProjectScaffoldService({
 }) {
   let cachedRepos: { tokenHash: string; expiresAt: number; repos: MyGitHubRepoSummary[] } | null = null;
 
+  const warmLocalDatabase = async (rootPath: string, eventName: string): Promise<void> => {
+    try {
+      await ensureProjectLocalDatabase(rootPath, logger);
+    } catch (dbErr) {
+      logger.warn(eventName, {
+        rootPath,
+        error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+      });
+    }
+  };
+
   const createLocalProject = async (input: CreateProjectInput): Promise<CreateProjectResult> => {
     const name = validateProjectName(input.name);
     const parentDir = (input.parentDir ?? "").trim();
@@ -90,9 +101,8 @@ export function createProjectScaffoldService({
     }
 
     // Track whether WE created the dir so failures only roll back our own work.
-    // Without this, a partial scaffold (init + README written, then `git add`
-    // fails) leaves a non-empty dir that the `target_exists` guard rejects on
-    // retry, permanently blocking the user.
+    // Without this, a partial scaffold (git init or README write) leaves a
+    // non-empty dir that the `target_exists` guard rejects on retry.
     const preexisted = fs.existsSync(rootPath);
     fs.mkdirSync(rootPath, { recursive: true });
 
@@ -118,14 +128,7 @@ export function createProjectScaffoldService({
       fs.writeFileSync(path.join(rootPath, "README.md"), `# ${name}\n`, "utf8");
       fs.writeFileSync(path.join(rootPath, ".gitignore"), GITIGNORE_CONTENT, "utf8");
       initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
-      try {
-        await ensureProjectLocalDatabase(rootPath, logger);
-      } catch (dbErr) {
-        logger.warn("project_scaffold.local_db_warm_failed", {
-          rootPath,
-          error: dbErr instanceof Error ? dbErr.message : String(dbErr),
-        });
-      }
+      await warmLocalDatabase(rootPath, "project_scaffold.local_db_warm_failed");
 
       return { rootPath };
     } catch (err) {
@@ -208,14 +211,7 @@ export function createProjectScaffoldService({
       }
 
       initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
-      try {
-        await ensureProjectLocalDatabase(rootPath, logger);
-      } catch (dbErr) {
-        logger.warn("project_scaffold.clone_local_db_warm_failed", {
-          rootPath,
-          error: dbErr instanceof Error ? dbErr.message : String(dbErr),
-        });
-      }
+      await warmLocalDatabase(rootPath, "project_scaffold.clone_local_db_warm_failed");
 
       return { rootPath };
     } catch (err) {

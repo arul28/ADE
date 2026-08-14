@@ -97,6 +97,7 @@ type ProjectActionOutcome = {
   rootPath: string;
   location: ProjectLocation;
   projectId?: string;
+  error?: string;
 };
 
 type Command = {
@@ -1682,21 +1683,21 @@ export function CommandPalette({
           await switchProjectToPath(result.rootPath);
         }
         navigate("/work");
+        onOpenChange(false);
       } catch (error) {
-        console.error("Failed to open new project", error);
+        throw new Error(extractError(error) || "Failed to open the new project");
       }
-      onOpenChange(false);
     },
     [navigate, onOpenChange, switchProjectToPath, switchRemoteProject],
   );
 
   const handleProjectActionSuccess = useCallback(
-    (
+    async (
       verb: "Created" | "Cloned",
       result: { rootPath: string; displayName: string; projectId?: string },
     ) => {
       if (verb === "Created") {
-        void openCreatedOrClonedProject(result, activeProjectLocation);
+        await openCreatedOrClonedProject(result, activeProjectLocation);
         return;
       }
       setActionOutcome({
@@ -1716,7 +1717,14 @@ export function CommandPalette({
       onOpenChange(false);
       return;
     }
-    await openCreatedOrClonedProject(actionOutcome, actionOutcome.location);
+    try {
+      await openCreatedOrClonedProject(actionOutcome, actionOutcome.location);
+    } catch (error) {
+      setActionOutcome({
+        ...actionOutcome,
+        error: extractError(error) || "Failed to open the new project",
+      });
+    }
   }, [actionOutcome, onOpenChange, openCreatedOrClonedProject]);
 
   const handleSuccessStay = useCallback(() => {
@@ -2049,6 +2057,7 @@ export function CommandPalette({
                         verb={actionOutcome.verb}
                         displayName={actionOutcome.displayName}
                         rootPath={actionOutcome.rootPath}
+                        error={actionOutcome.error}
                         onStay={handleSuccessStay}
                         onOpen={() => {
                           void handleSuccessOpen();
