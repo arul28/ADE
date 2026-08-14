@@ -126,6 +126,7 @@ import {
 import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
+  buildTranscriptReplayDocument,
   toReplayForkDisclosure,
 } from "./crossProviderReplayFork";
 import {
@@ -10797,6 +10798,10 @@ export function createAgentChatService(args: {
     if (!replay && !reconstruction) return null;
     if (replay) managed.pendingTranscriptReplay = null;
     if (reconstruction) managed.pendingReconstructionContext = null;
+    // Consumption has to be durable: `pendingTranscriptReplay` is restored on
+    // reconstruct, so clearing it in memory alone would replay the whole
+    // transcript a second time after a restart.
+    persistChatState(managed);
     const parts: string[] = [];
     if (replay) parts.push(replay);
     if (reconstruction) {
@@ -12768,9 +12773,11 @@ export function createAgentChatService(args: {
           }
         : {}),
       ...collectOrchestrationFields(managed.session, prevPersisted),
-      ...(managed.pendingTranscriptReplay?.trim()
-        ? { pendingTranscriptReplay: managed.pendingTranscriptReplay }
-        : {}),
+      // Always written (never omitted) so a consumed replay overwrites the
+      // stored text instead of surviving into the next reconstruct.
+      pendingTranscriptReplay: managed.pendingTranscriptReplay?.trim()
+        ? managed.pendingTranscriptReplay
+        : null,
       ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
       updatedAt: nowIso()
     };
@@ -33297,6 +33304,17 @@ export function createAgentChatService(args: {
       throw externalChatImportError(
         "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
         `Cross-provider replay import from ${args.provider} is not available yet; import as ${args.provider} first, then fork to the target model.`,
+      );
+    }
+
+    // A replay import with nothing to replay would create an empty chat and
+    // stage a blank prefix; discovery already hides empty transcripts, so fail
+    // loudly instead of importing a shell. Every import carries an "imported
+    // from" notice, so emptiness is judged by what the replay would render.
+    if (!buildTranscriptReplayDocument(envelopes).turnCount) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+        `External ${args.provider} session '${externalSessionId}' has no messages to replay.`,
       );
     }
 

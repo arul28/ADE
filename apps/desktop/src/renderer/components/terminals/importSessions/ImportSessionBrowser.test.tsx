@@ -3,7 +3,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExternalSessionSummary } from "./contract";
-import { ImportSessionBrowser } from "./ImportSessionBrowser";
+import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
+import { DEFAULT_FORK_MODEL, ImportSessionBrowser } from "./ImportSessionBrowser";
 
 const list = vi.fn();
 const getDetail = vi.fn();
@@ -134,5 +135,30 @@ describe("ImportSessionBrowser", () => {
     }));
     expect(screen.getByText("Copy as ADE chat")).toBeTruthy();
     expect(screen.getByTestId("model-picker")).toBeTruthy();
+  });
+
+  it("keeps the default fork model resolvable through the shared registry", () => {
+    // A silently unresolvable default would leave the fork action with no
+    // descriptor and no family, so the fork-as-chat card would misreport itself.
+    expect(resolveModelDescriptor(DEFAULT_FORK_MODEL)).toBeTruthy();
+  });
+
+  it("falls back to the default fork model when the recorded launch model is unknown", async () => {
+    list.mockResolvedValue([
+      summary({ launch: { model: "totally-not-a-registry-model" } }),
+    ]);
+    render(
+      <ImportSessionBrowser
+        open
+        onOpenChange={vi.fn()}
+        laneId="lane-1"
+        laneName="main"
+        onImported={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("Fix login")).toBeTruthy());
+    fireEvent.click(screen.getByText("Fix login"));
+    await waitFor(() => expect(screen.getByTestId("model-picker")).toBeTruthy());
+    expect(screen.getByTestId("model-picker").textContent).toBe(DEFAULT_FORK_MODEL);
   });
 });

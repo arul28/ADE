@@ -1427,12 +1427,21 @@ function assignClaudeLaunchSessionId(args: {
     commandArgs = ["--session-id", assignedId, ...args.commandArgs];
   }
 
+  // argv and the startup command line describe the same launch, so they have to
+  // agree about the id: the direct spawn can fail and fall back to typing
+  // `startupCommand` at the shell. An empty startup command stays empty —
+  // `create()` fills it with the real fallback line rather than a fabricated one.
   let startupCommand = args.startupCommand;
-  if (/^claude(?:\.exe)?\b/iu.test(args.startupCommand.trim())) {
+  if (args.startupCommand.trim()) {
     startupCommand = withClaudeSessionIdInCommandLine(args.startupCommand, assignedId);
-  } else if (!args.startupCommand.trim() && !args.command?.trim()) {
-    startupCommand = `claude --session-id ${assignedId}`;
-    commandArgs = ["--session-id", assignedId, ...args.commandArgs];
+    if (startupCommand === args.startupCommand) {
+      // The startup line does not invoke `claude` anywhere reachable; assigning
+      // an id only to argv would make the two disagree.
+      return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+    }
+  } else if (commandArgs === args.commandArgs) {
+    // Nothing carries the flag: no command, no startup line.
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
   }
   return { startupCommand, commandArgs, assignedId };
 }
@@ -3560,7 +3569,8 @@ export function createPtyService({
               resumeCmd = `opencode --session ${captured.sessionId}`;
               break;
             case "pi":
-              resumeCmd = commandArrayToLine(["pi", "--session", captured.sessionId]);
+              // Canonical POSIX form, matching the storage-backfill producer below.
+              resumeCmd = commandArrayToLine(["pi", "--session", captured.sessionId], { platform: "linux" });
               break;
             case "cursor":
               resumeCmd = `cursor-agent --resume ${captured.sessionId}`;

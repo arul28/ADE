@@ -7678,6 +7678,10 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.externalSessionsGetDetail, args);
     },
+    // Unlike `list`/`import`/`getDetail`, the watch pair never routes through the
+    // `external-sessions` ADE action domain: updates arrive on a per-sender
+    // Electron IPC channel with no remote-runtime equivalent, so live detail
+    // watching is local-machine only even when a project runtime is bound.
     watchDetail: async (args: ExternalSessionDetailWatchArgs): Promise<ExternalSessionDetail> => {
       return ipcRenderer.invoke(IPC.externalSessionsWatchDetail, args);
     },

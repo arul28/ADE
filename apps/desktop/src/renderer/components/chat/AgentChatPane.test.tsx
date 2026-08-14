@@ -8,6 +8,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
+  AgentChatHandoffResult,
   AgentChatModelCatalog,
   AgentChatParallelLaunchState,
   AgentChatSession,
@@ -513,7 +514,7 @@ function installAdeMocks(options?: {
   steerResult?: AgentChatSteerResult;
   listError?: Error;
   createError?: Error;
-  handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean } | Promise<{ session: AgentChatSession; usedFallbackSummary: boolean }>;
+  handoffResult?: AgentChatHandoffResult | Promise<AgentChatHandoffResult>;
   handoffError?: Error;
   sessions?: AgentChatSessionSummary[];
   eventHistory?: AgentChatEventHistorySnapshot | ((args: { sessionId: string; maxEvents?: number }) => Promise<AgentChatEventHistorySnapshot> | AgentChatEventHistorySnapshot);
@@ -5230,6 +5231,41 @@ describe("AgentChatPane submit recovery", () => {
         mode: "fork",
       }));
     });
+  });
+
+  it("shows replay truncation disclosure after fork handoff", async () => {
+    const session = buildSession("session-1", { status: "idle" }); // codex source
+    installAdeMocks({
+      includeClaudeModel: true,
+      sessions: [session],
+      handoffResult: {
+        session: buildCreatedSession("session-2", {
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-5",
+        }),
+        usedFallbackSummary: false,
+        replayFork: { truncated: true, keptTurnCount: 18, truncatedTurnCount: 4 },
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+
+    const localView = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+    fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
+
+    // The pre-fork hint only predicts truncation; the completed fork has to
+    // report what it actually dropped.
+    expect(await screen.findByText(/Forked chat replayed 18 turns/i)).toBeTruthy();
+    expect(screen.getByText(/4 oldest turns didn't fit/i)).toBeTruthy();
   });
 
   it("routes a brief handoff into a newly auto-created lane", async () => {

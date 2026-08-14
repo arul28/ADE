@@ -33,35 +33,47 @@ export type TranscriptReplayFit = {
   truncated: boolean;
 };
 
+/**
+ * `trim()` is only ever used to decide whether a value is empty — the rendered
+ * value stays byte-for-byte identical to the source, because a replay that
+ * reshapes whitespace is no longer verbatim.
+ */
+function nonEmpty(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  return value.trim() ? value : null;
+}
+
 function eventText(event: AgentChatEvent): string | null {
   switch (event.type) {
     case "user_message":
-      return (event.displayText ?? event.text)?.trim() || event.text.trim() || null;
+      return nonEmpty(event.displayText) ?? nonEmpty(event.text);
     case "text":
-      return event.text.trim() || null;
+      return nonEmpty(event.text);
     case "tool_result": {
-      const name = event.tool.trim() || "tool";
+      const name = nonEmpty(event.tool) ?? "tool";
       const result = typeof event.result === "string"
-        ? event.result.trim()
+        ? nonEmpty(event.result)
         : event.result == null
-          ? ""
+          ? null
           : (() => {
             try {
-              return JSON.stringify(event.result);
+              return nonEmpty(JSON.stringify(event.result));
             } catch {
-              return String(event.result);
+              return nonEmpty(String(event.result));
             }
           })();
       if (!result) return `[tool result: ${name}]`;
       return `[tool result: ${name}]\n${result}`;
     }
     case "command": {
-      const output = event.output?.trim() || "";
-      const command = event.command?.trim() || "command";
+      const output = nonEmpty(event.output);
+      const command = nonEmpty(event.command) ?? "command";
       return output ? `[command: ${command}]\n${output}` : `[command: ${command}]`;
     }
-    case "error":
-      return event.message.trim() ? `[error]\n${event.message.trim()}` : null;
+    case "error": {
+      const message = nonEmpty(event.message);
+      return message ? `[error]\n${message}` : null;
+    }
     default:
       return null;
   }
@@ -127,7 +139,7 @@ export function fitTranscriptReplayToBudget(
   document: TranscriptReplayDocument,
   maxChars: number,
 ): TranscriptReplayFit {
-  const budget = Math.max(document.header.length + 32, Math.floor(maxChars));
+  const budget = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : 0;
   if (document.text.length <= budget) {
     return {
       text: document.text,
@@ -138,16 +150,23 @@ export function fitTranscriptReplayToBudget(
     };
   }
 
+  // Newest-first, and a turn is retained only when the rendered replay actually
+  // fits: the newest turn can be larger than the whole budget on its own, and
+  // sending it anyway would overflow the target context window.
   const kept: TranscriptReplayTurn[] = [];
   for (let index = document.turns.length - 1; index >= 0; index -= 1) {
-    const candidate = [document.turns[index]!, ...kept];
-    const text = renderReplayDocument(document.header, candidate);
-    if (text.length > budget && kept.length > 0) break;
-    kept.unshift(document.turns[index]!);
-    if (text.length > budget) break;
+    const turn = document.turns[index]!;
+    if (renderReplayDocument(document.header, [turn, ...kept]).length > budget) break;
+    kept.unshift(turn);
   }
 
-  const text = renderReplayDocument(document.header, kept);
+  // With no turns retained the header alone is the bounded representation; when
+  // even that does not fit there is nothing safe left to prefix.
+  const text = kept.length
+    ? renderReplayDocument(document.header, kept)
+    : document.header.length <= budget
+      ? document.header
+      : "";
   const keptTurnCount = kept.length;
   const truncatedTurnCount = Math.max(0, document.turnCount - keptTurnCount);
   return {
@@ -155,7 +174,7 @@ export function fitTranscriptReplayToBudget(
     turnCount: document.turnCount,
     keptTurnCount,
     truncatedTurnCount,
-    truncated: truncatedTurnCount > 0,
+    truncated: text !== document.text,
   };
 }
 

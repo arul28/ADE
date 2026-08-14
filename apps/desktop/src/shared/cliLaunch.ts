@@ -460,6 +460,23 @@ export function shellCommandLineArgIndex(args: string[]): number {
   return commandIndex < args.length ? commandIndex : -1;
 }
 
+function stripSurroundingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length >= 2 && (trimmed.startsWith("\"") || trimmed.startsWith("'")) && trimmed.endsWith(trimmed[0]!)) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/**
+ * A command line can name Claude as a bare word, an absolute path, or a quoted
+ * Windows path. POSIX parsing eats the backslashes of a double-quoted Windows
+ * path, so the raw word — quotes stripped, backslashes intact — is checked too.
+ */
+function wordNamesClaude(parsedWord: string, rawWord: string): boolean {
+  return isClaudeBinaryCommand(parsedWord) || isClaudeBinaryCommand(stripSurroundingQuotes(rawWord));
+}
+
 /**
  * Locate the `claude` token of a shell command line, allowing leading
  * `KEY=value` env prefixes, and return the args that follow it.
@@ -475,10 +492,13 @@ export function claudeInvocationInCommandLine(
     // Keep malformed or unsupported shell input intact.
     return null;
   }
-  const claudeIndex = commandArgs.findIndex((arg, index) =>
-    arg === "claude"
-    && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
-  );
+  const spans = shellWordSpans(commandLine);
+  const claudeIndex = commandArgs.findIndex((arg, index) => {
+    const span = spans[index];
+    const raw = span ? commandLine.slice(span.start, span.end) : arg;
+    return wordNamesClaude(arg, raw)
+      && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix));
+  });
   if (claudeIndex < 0) return null;
   return { claudeIndex, claudeArgs: commandArgs.slice(claudeIndex + 1) };
 }

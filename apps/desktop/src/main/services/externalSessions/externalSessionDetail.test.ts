@@ -146,4 +146,64 @@ describe("externalSessionDetail", () => {
     stopExternalSessionDetailWatch(1, "w1");
     stopExternalSessionDetailWatch(1, "w1");
   });
+
+  it("leaves exactly one watcher when two starts for the same watch id interleave", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ext-race-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "session.jsonl");
+    writeJsonl(filePath, [{ type: "user", role: "user", text: "first", timestamp: 1 }]);
+    const releases: Array<() => void> = [];
+    vi.mocked(discoverClaudeSessions).mockImplementation(async () => {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return [
+        {
+          provider: "claude" as const,
+          id: "race-1",
+          cwd: "/tmp",
+          title: null,
+          preview: "first",
+          createdAt: 1,
+          updatedAt: Date.now(),
+          messageCount: 1,
+          sourcePath: filePath,
+        },
+      ];
+    });
+    const watchSpy = vi.spyOn(fs, "watch");
+    const watchFileSpy = vi.spyOn(fs, "watchFile");
+    const unwatchFileSpy = vi.spyOn(fs, "unwatchFile");
+
+    try {
+      const start = (): Promise<unknown> => startExternalSessionDetailWatch({
+        senderId: 7,
+        watchId: "race",
+        provider: "claude",
+        sessionId: "race-1",
+        onUpdate: () => undefined,
+      });
+      const first = start();
+      await vi.waitFor(() => expect(releases.length).toBe(1));
+      const second = start();
+      await vi.waitFor(() => expect(releases.length).toBe(2));
+      // The superseded start resolves last; it must not install a watcher on top
+      // of the newer one, which would leak the entry it overwrote.
+      releases[1]!();
+      await second;
+      releases[0]!();
+      await first;
+
+      expect(watchSpy).toHaveBeenCalledTimes(1);
+      expect(watchFileSpy).toHaveBeenCalledTimes(1);
+      expect(unwatchFileSpy).not.toHaveBeenCalled();
+
+      stopExternalSessionDetailWatch(7, "race");
+      expect(unwatchFileSpy).toHaveBeenCalledTimes(1);
+      expect(unwatchFileSpy).toHaveBeenCalledWith(filePath);
+    } finally {
+      stopExternalSessionDetailWatch(7, "race");
+      watchSpy.mockRestore();
+      watchFileSpy.mockRestore();
+      unwatchFileSpy.mockRestore();
+    }
+  });
 });

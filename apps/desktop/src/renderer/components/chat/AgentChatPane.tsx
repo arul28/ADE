@@ -25,6 +25,7 @@ import {
   type AutoLaneIdentitySuggestion,
   type AgentChatInteractionMode,
   type AgentChatDispatchSteerMode,
+  type AgentChatReplayForkDisclosure,
   type AgentChatSteerResult,
   type AgentChatStopMode,
   type AiProviderConnectionStatus,
@@ -3614,6 +3615,10 @@ export function AgentChatPane({
   const [preferencesReady, setPreferencesReady] = useState(() => hasWarmChatModelCatalog(projectRoot));
   const preferencesProjectRootRef = useRef<string | null | undefined>(projectRoot);
   const [error, setError] = useState<string | null>(null);
+  // What a completed replay fork actually did, as opposed to the pre-fork hint
+  // that only predicts it: the fork is supposed to replay verbatim, so dropped
+  // turns have to be reported, not merely foreshadowed.
+  const [replayForkDisclosure, setReplayForkDisclosure] = useState<AgentChatReplayForkDisclosure | null>(null);
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
@@ -9933,6 +9938,7 @@ export function AgentChatPane({
       ...current.filter((job) => job.sourceSessionId !== selectedSessionId),
     ]);
     setError(null);
+    setReplayForkDisclosure(null);
     setHandoffBusy(true);
     setChatActionsOpen(false);
     try {
@@ -9980,6 +9986,7 @@ export function AgentChatPane({
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
       }, ...chatPinArgsFor(chatRuntimePinRef));
+      setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
       invalidateCurrentChatSessionList();
@@ -13426,6 +13433,21 @@ export function AgentChatPane({
                 Restore
               </button>
             ) : null}
+          </div>
+        ) : null}
+        {replayForkDisclosure ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5 font-sans text-[11px] text-amber-100/80">
+            <span className="min-w-0 flex-1 break-words">
+              {`Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `}
+              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window.`}
+            </span>
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-amber-300/15 px-2 py-0.5 font-medium text-amber-50/90 transition-colors hover:bg-amber-300/[0.12]"
+              onClick={() => setReplayForkDisclosure(null)}
+            >
+              Dismiss
+            </button>
           </div>
         ) : null}
         {mergedRuntimeBanner?.kind === "cli-only" ? (

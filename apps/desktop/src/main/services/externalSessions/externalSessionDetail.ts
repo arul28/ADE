@@ -39,6 +39,15 @@ type WatchEntry = {
 };
 
 const watches = new Map<string, WatchEntry>();
+/**
+ * Registration is async (the transcript load is awaited before the watcher is
+ * installed), so two starts — or a start racing an unwatch — can settle out of
+ * order. Each start claims a generation for its key; a start that no longer
+ * owns its key when its load resolves installs nothing, so exactly one watcher
+ * survives and none is left orphaned behind a replaced map entry.
+ */
+const watchGenerations = new Map<string, number>();
+let nextWatchGeneration = 1;
 
 function assertProvider(value: string): ExternalSessionProvider {
   switch (value) {
@@ -195,6 +204,9 @@ function watchKey(senderId: number, watchId: string): string {
 
 export function stopExternalSessionDetailWatch(senderId: number, watchId: string): void {
   const key = watchKey(senderId, watchId);
+  // Drop the generation even when no entry exists yet: a start still awaiting
+  // its transcript load must not install a watcher after this unwatch.
+  watchGenerations.delete(key);
   const entry = watches.get(key);
   if (!entry) return;
   entry.closed = true;
@@ -206,7 +218,9 @@ export function stopExternalSessionDetailWatch(senderId: number, watchId: string
 
 export function stopExternalSessionDetailWatchesForSender(senderId: number): void {
   const prefix = `${senderId}:`;
-  for (const key of [...watches.keys()]) {
+  // Include keys that only have a claimed generation so far — those are starts
+  // still loading, and they must be cancelled along with the installed ones.
+  for (const key of new Set([...watches.keys(), ...watchGenerations.keys()])) {
     if (!key.startsWith(prefix)) continue;
     const watchId = key.slice(prefix.length);
     stopExternalSessionDetailWatch(senderId, watchId);
@@ -221,13 +235,21 @@ export async function startExternalSessionDetailWatch(args: {
   onUpdate: (detail: ExternalSessionDetail) => void;
 }): Promise<ExternalSessionDetail> {
   stopExternalSessionDetailWatch(args.senderId, args.watchId);
+  const key = watchKey(args.senderId, args.watchId);
+  const generation = nextWatchGeneration++;
+  watchGenerations.set(key, generation);
   const detail = await loadExternalSessionDetail({
     provider: args.provider,
     sessionId: args.sessionId,
   });
-  if (!detail.watchable || !detail.sourcePath) return detail;
+  // A newer start (or an unwatch) took the key while this load was in flight.
+  // Hand back the snapshot without installing a watcher nobody would close.
+  if (watchGenerations.get(key) !== generation) return detail;
+  if (!detail.watchable || !detail.sourcePath) {
+    watchGenerations.delete(key);
+    return detail;
+  }
 
-  const key = watchKey(args.senderId, args.watchId);
   const entry: WatchEntry = { watcher: null, timer: null, closed: false, sourcePath: detail.sourcePath };
   watches.set(key, entry);
 

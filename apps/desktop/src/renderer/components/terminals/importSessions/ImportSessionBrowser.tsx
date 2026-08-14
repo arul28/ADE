@@ -59,7 +59,8 @@ function readImportedSessionRef(summary: ExternalSessionSummary): ImportedSessio
 }
 
 const BROWSE_LIMIT = 200;
-const DEFAULT_FORK_MODEL = "anthropic/claude-sonnet-5";
+/** Must stay resolvable through the shared model registry; see the guard test. */
+export const DEFAULT_FORK_MODEL = "anthropic/claude-sonnet-5";
 
 function mergeSessions(
   prev: ExternalSessionSummary[],
@@ -593,9 +594,13 @@ function ImportSessionDetail({
   const heading = sessionHeading(summary);
   const [detail, setDetail] = useState<ExternalSessionDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [forkModel, setForkModel] = useState(
-    summary.launch?.model?.trim() || DEFAULT_FORK_MODEL,
-  );
+  // The recorded launch model is whatever the foreign CLI wrote down, so it only
+  // seeds the picker when the shared registry can actually resolve it — an
+  // unresolvable id would leave the fork with no family and no descriptor.
+  const [forkModel, setForkModel] = useState(() => {
+    const recorded = summary.launch?.model?.trim();
+    return recorded && resolveModelDescriptor(recorded) ? recorded : DEFAULT_FORK_MODEL;
+  });
 
   useEffect(() => {
     const api = getExternalSessionsApi();

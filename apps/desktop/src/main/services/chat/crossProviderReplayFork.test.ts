@@ -45,6 +45,34 @@ describe("buildTranscriptReplayDocument", () => {
     expect(document.text).toContain("Also align the width.");
     expect(document.text).not.toMatch(/\bsummariz(?:e|ed|ing)\b/i);
   });
+
+  it("regression: preserves leading and trailing whitespace in replayed text and tool results", () => {
+    const indentedResult = "  line one\n    line two\n";
+    const document = buildTranscriptReplayDocument([
+      envelope(1, { type: "user_message", text: "  keep my indentation  " }),
+      envelope(2, { type: "text", text: "\n  reply with leading newline" }),
+      envelope(3, {
+        type: "tool_result",
+        tool: "Read",
+        result: indentedResult,
+        itemId: "tool-1",
+      }),
+    ]);
+
+    expect(document.text).toContain("  keep my indentation  ");
+    expect(document.text).toContain("\n  reply with leading newline");
+    expect(document.text).toContain(`[tool result: Read]\n${indentedResult}`);
+  });
+
+  it("regression: drops whitespace-only events instead of replaying blank turns", () => {
+    const document = buildTranscriptReplayDocument([
+      envelope(1, { type: "user_message", text: "   " }),
+      envelope(2, { type: "text", text: "\n\t " }),
+    ]);
+
+    expect(document.turnCount).toBe(0);
+    expect(document.text).toBe(document.header);
+  });
 });
 
 describe("fitTranscriptReplayToBudget", () => {
@@ -72,6 +100,34 @@ describe("fitTranscriptReplayToBudget", () => {
     expect(fit.keptTurnCount + fit.truncatedTurnCount).toBe(document.turnCount);
     expect(fit.text).toContain(`user-turn-${document.turnCount - 1}`);
     expect(fit.text).not.toContain("user-turn-0");
+    expect(fit.text.length).toBeLessThanOrEqual(900);
+  });
+
+  it("regression: rejects a newest turn that is larger than the whole budget", () => {
+    const document = buildTranscriptReplayDocument([
+      envelope(1, { type: "user_message", text: "old turn" }),
+      envelope(2, { type: "user_message", text: `huge ${"z".repeat(5_000)}` }),
+    ]);
+    const budget = document.header.length + 64;
+    const fit = fitTranscriptReplayToBudget(document, budget);
+
+    expect(fit.text.length).toBeLessThanOrEqual(budget);
+    expect(fit.text).not.toContain("zzz");
+    expect(fit.truncated).toBe(true);
+    expect(fit.keptTurnCount).toBe(0);
+    expect(fit.truncatedTurnCount).toBe(document.turnCount);
+  });
+
+  it("regression: returns no replay text when even the header cannot fit", () => {
+    const document = buildTranscriptReplayDocument([
+      envelope(1, { type: "user_message", text: "anything" }),
+    ]);
+    const fit = fitTranscriptReplayToBudget(document, 8);
+
+    expect(fit.text).toBe("");
+    expect(fit.truncated).toBe(true);
+    expect(fit.keptTurnCount).toBe(0);
+    expect(fit.truncatedTurnCount).toBe(document.turnCount);
   });
 });
 

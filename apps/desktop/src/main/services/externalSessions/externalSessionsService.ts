@@ -302,7 +302,7 @@ async function importedSessionRefs(
       putImportedRef(refs, `${metadata.importedFrom.provider}:${metadata.importedFrom.targetId}`, ref);
     }
     if (isChatToolType(session.toolType) && chatSessionsDir) {
-      for (const chatRef of liveChatProviderRefsFromPersistedState(chatSessionsDir, session.id)) {
+      for (const chatRef of await liveChatProviderRefsFromPersistedState(chatSessionsDir, session.id)) {
         putImportedRef(refs, `${chatRef.provider}:${chatRef.externalId}`, {
           kind: "chat",
           sessionId: session.id,

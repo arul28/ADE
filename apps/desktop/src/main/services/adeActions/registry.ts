@@ -941,7 +941,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unsubscribe",
   ],
   search: ["query", "indexStatus", "rebuildIndex"],
-  "external-sessions": ["list", "import", "getDetail", "watchDetail", "unwatchDetail"],
+  // No `watchDetail`/`unwatchDetail`: live detail watching pushes updates over a
+  // per-sender Electron IPC channel, which has no remote-runtime equivalent, so
+  // it stays local IPC only (`IPC.externalSessions{Watch,Unwatch}Detail`).
+  // Exposing them here would hand remote callers a snapshot that never updates.
+  "external-sessions": ["list", "import", "getDetail"],
 };
 
 export type AdeActionInputContract = {
@@ -1229,16 +1233,6 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Re-parse one outside session file and return a generous transcript tail.",
       input: "object { provider, sessionId }",
       example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
-    },
-    watchDetail: {
-      description: "Watch one outside session file and push transcript tail updates.",
-      input: "object { provider, sessionId, watchId }",
-      example: "ade actions run external-sessions.watchDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\",\"watchId\":\"w1\"}' --text",
-    },
-    unwatchDetail: {
-      description: "Stop watching an outside session file.",
-      input: "object { watchId }",
-      example: "ade actions run external-sessions.unwatchDetail --input-json '{\"watchId\":\"w1\"}' --text",
     },
   },
 };
@@ -4129,12 +4123,10 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
     getDetail(args: unknown) {
       return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(args ?? {}));
     },
-    watchDetail(args: unknown) {
-      return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(args ?? {}));
-    },
-    unwatchDetail() {
-      return { ok: true as const };
-    },
+    // `watchDetail`/`unwatchDetail` are deliberately absent: the watch pushes
+    // updates on a per-sender Electron IPC channel this action domain cannot
+    // reach, so the desktop bridge keeps them on local IPC. A no-op here would
+    // have told a remote caller it was watching when nothing would ever arrive.
   } as OpaqueService;
 }
 

@@ -132,10 +132,21 @@ export function parseProviderSessionFromPath(
     if (provider === "cursor") {
       const relative = path.relative(root, trimmed);
       const parts = relative.split(/[\\/]/u).filter(Boolean);
-      const id = path.basename(root).toLowerCase() === "chats" ? parts[1] : parts[0];
+      // `~/.cursor/chats/<workspace-hash>/<conversation-id>/store.db` and
+      // `~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl` are the two
+      // layouts `discoverCursor` reads; anything else under those roots is not a
+      // session.
+      const id = path.basename(root).toLowerCase() === "chats"
+        ? parts[1]
+        : (parts[1]?.toLowerCase() === "agent-transcripts" ? parts[2] : undefined);
       if (id && CLI_SESSION_ID.test(id) && !id.startsWith("agent-") && isSessionTranscriptPath(trimmed)) {
         return { provider, sessionId: id };
       }
+      // A cursor id only ever comes from that directory layout. Falling through
+      // to the basename derivation below would mint ids from unrelated files
+      // such as `~/.cursor/projects/<slug>/data.json`, and a wrong key here
+      // decides which session the importer hides as ADE-owned.
+      continue;
     }
     if (!isSessionTranscriptPath(trimmed)) continue;
     const sessionId = sessionIdFromBasename(trimmed)
