@@ -624,6 +624,8 @@ import type {
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionSummary,
+  ExternalSessionDetail,
+  ExternalSessionDetailUpdatedEvent,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -707,6 +709,13 @@ import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
+import {
+  loadExternalSessionDetail,
+  normalizeExternalSessionDetailArgs,
+  startExternalSessionDetailWatch,
+  stopExternalSessionDetailWatch,
+  stopExternalSessionDetailWatchesForSender,
+} from "../externalSessions/externalSessionDetail";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
@@ -5822,6 +5831,47 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["externalSessionsService"]);
     return ctx.externalSessionsService.importExternalSession(normalizeExternalSessionImportArgs(arg));
+  });
+
+  ipcMain.handle(IPC.externalSessionsGetDetail, async (_event, arg: unknown): Promise<ExternalSessionDetail> => {
+    return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(arg));
+  });
+
+  const detailWatchCleanupSenders = new Set<number>();
+
+  ipcMain.handle(IPC.externalSessionsWatchDetail, async (event, arg: unknown): Promise<ExternalSessionDetail> => {
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
+    const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
+    if (!watchId) throw new Error("external session detail watchId must be a string.");
+    const args = normalizeExternalSessionDetailArgs(arg);
+    const sender = event.sender;
+    const senderId = sender.id;
+    if (!detailWatchCleanupSenders.has(senderId)) {
+      detailWatchCleanupSenders.add(senderId);
+      sender.once("destroyed", () => {
+        detailWatchCleanupSenders.delete(senderId);
+        stopExternalSessionDetailWatchesForSender(senderId);
+      });
+    }
+    return startExternalSessionDetailWatch({
+      senderId,
+      watchId,
+      provider: args.provider,
+      sessionId: args.sessionId,
+      onUpdate: (detail) => {
+        if (sender.isDestroyed()) return;
+        const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };
+        sender.send(IPC.externalSessionsDetailUpdated, payload);
+      },
+    });
+  });
+
+  ipcMain.handle(IPC.externalSessionsUnwatchDetail, async (event, arg: unknown): Promise<{ ok: true }> => {
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
+    const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
+    if (!watchId) throw new Error("external session detail watchId must be a string.");
+    stopExternalSessionDetailWatch(event.sender.id, watchId);
+    return { ok: true };
   });
 
 

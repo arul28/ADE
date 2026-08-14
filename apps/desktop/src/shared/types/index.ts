@@ -36,6 +36,7 @@ export * from "./linearSync";
 export * from "./feedback";
 export * from "./search";
 export * from "./externalSessions";
+export * from "./externalSessionDetail";
 export * from "./recovery";
 export * from "./productAnalytics";
 export * from "./account";

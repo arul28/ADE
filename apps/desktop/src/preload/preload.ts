@@ -234,6 +234,10 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionListArgs,
   ExternalSessionSummary,
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
+  ExternalSessionDetailUpdatedEvent,
+  ExternalSessionDetailWatchArgs,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -7664,6 +7668,26 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.externalSessionsImport, args);
     },
+    getDetail: async (args: ExternalSessionDetailArgs): Promise<ExternalSessionDetail> => {
+      const runtime = await callProjectRuntimeActionIfBound<ExternalSessionDetail>(
+        "external-sessions",
+        "getDetail",
+        { args: { ...args } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.externalSessionsGetDetail, args);
+    },
+    watchDetail: async (args: ExternalSessionDetailWatchArgs): Promise<ExternalSessionDetail> => {
+      return ipcRenderer.invoke(IPC.externalSessionsWatchDetail, args);
+    },
+    unwatchDetail: async (args: { watchId: string }): Promise<{ ok: true }> => {
+      return ipcRenderer.invoke(IPC.externalSessionsUnwatchDetail, args);
+    },
+    onDetailUpdated: createLocalIpcEventSubscription<ExternalSessionDetailUpdatedEvent>(
+      IPC.externalSessionsDetailUpdated,
+      "external session detail updated",
+    ),
   },
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {

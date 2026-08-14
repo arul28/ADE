@@ -7,6 +7,27 @@ export function formatUpdatedAt(ms: number | null | undefined): string {
   return relativeWhen(new Date(ms).toISOString());
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfLocalDay(ms: number): number {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+/** Date grouping label for the import list. */
+export function sessionDateGroup(ms: number | null | undefined, now = Date.now()): string {
+  if (ms == null || !Number.isFinite(ms)) return "Older";
+  const today = startOfLocalDay(now);
+  const then = startOfLocalDay(ms);
+  if (then === today) return "Today";
+  if (then === today - DAY_MS) return "Yesterday";
+  if (now - ms < 7 * DAY_MS) {
+    return new Date(ms).toLocaleDateString(undefined, { weekday: "long" });
+  }
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 function lastPathSegment(cwd: string | null | undefined): string | null {
   if (!cwd) return null;
   const segments = cwd.split(/[\\/]/u).filter(Boolean);

@@ -382,6 +382,9 @@ describe("preload OAuth bridge", () => {
       }
       if (channel === IPC.externalSessionsList) return [];
       if (channel === IPC.externalSessionsImport) return imported;
+      if (channel === IPC.externalSessionsGetDetail) {
+        return { provider: "codex", id: "native-session-1", messages: [], watchable: false };
+      }
       return undefined;
     });
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
@@ -416,9 +419,17 @@ describe("preload OAuth bridge", () => {
 
     await expect(bridge.externalSessions.list(listArgs)).resolves.toEqual([]);
     await expect(bridge.externalSessions.import(importArgs)).resolves.toEqual(imported);
+    await expect(bridge.externalSessions.getDetail({
+      provider: "codex",
+      sessionId: "native-session-1",
+    })).resolves.toMatchObject({ id: "native-session-1" });
 
     expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsList, listArgs);
     expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsImport, importArgs);
+    expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsGetDetail, {
+      provider: "codex",
+      sessionId: "native-session-1",
+    });
   });
 
   it("exposes review IPC methods and cleans up listeners", async () => {

@@ -70,6 +70,8 @@ describe("importAffordancesFor", () => {
     expect(hero?.target).toBe("chat");
     expect(hero?.mode).toBe("resume");
     expect(affs.find((a) => a.kind === "fork-as-chat")).toMatchObject({ target: "chat", mode: "fork", hero: false });
+    expect(affs.find((a) => a.kind === "fork-as-chat")?.description).toMatch(/any SDK-backed catalog model/i);
+    expect(affs.find((a) => a.kind === "fork-as-chat")?.hint).toMatch(/any catalog model/i);
   });
 
   it("only open-as-chat is ever flagged hero", () => {
@@ -357,5 +359,18 @@ describe("sessionAnchors", () => {
     const anchors = sessionAnchors(session({ title: "Something", preview: "a preview" }));
     expect(anchors.started).toBe("a preview");
     expect(anchors.latest).toBeNull();
+  });
+});
+
+describe("sessionDateGroup", () => {
+  it("groups today, yesterday, and older dates", async () => {
+    const { sessionDateGroup } = await import("./sessionPresentation");
+    const now = new Date(2026, 7, 14, 15).getTime();
+    const today = new Date(2026, 7, 14, 8).getTime();
+    const yesterday = new Date(2026, 7, 13, 22).getTime();
+    expect(sessionDateGroup(today, now)).toBe("Today");
+    expect(sessionDateGroup(yesterday, now)).toBe("Yesterday");
+    expect(sessionDateGroup(new Date(2026, 0, 2).getTime(), now)).toMatch(/Jan/);
+    expect(sessionDateGroup(null, now)).toBe("Older");
   });
 });

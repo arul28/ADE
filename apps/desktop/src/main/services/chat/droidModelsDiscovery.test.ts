@@ -3,12 +3,16 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockCreateSession = vi.hoisted(() => vi.fn());
+const mockSpawnAsync = vi.hoisted(() => vi.fn());
 const mockHome = vi.hoisted(() => ({ path: "" }));
 
-vi.mock("@factory/droid-sdk", () => ({
-  createSession: mockCreateSession,
-}));
+vi.mock("../shared/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/utils")>();
+  return {
+    ...actual,
+    spawnAsync: mockSpawnAsync,
+  };
+});
 
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal();
@@ -26,13 +30,15 @@ import {
   parseDroidExecHelpModels,
 } from "./droidModelsDiscovery";
 
-function sessionWithModels(ids: string[]) {
-  return {
-    initResult: {
-      availableModels: ids.map((id) => ({ id, displayName: id })),
-    },
-    close: vi.fn(async () => {}),
-  };
+function helpFromModels(rows: Array<{ id: string; displayName?: string }>) {
+  const body = rows
+    .map((row) => `  ${row.id.padEnd(40)}${row.displayName ?? row.id}`)
+    .join("\n");
+  return { status: 0, stdout: `Available Models:\n${body}\n`, stderr: "" };
+}
+
+function emptyHelp() {
+  return { status: 0, stdout: "Usage: droid exec\n", stderr: "" };
 }
 
 let tmpHome: string;
@@ -41,7 +47,8 @@ beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(tmpdir(), "ade-droid-models-"));
   mockHome.path = tmpHome;
   clearDroidCliModelsCache();
-  mockCreateSession.mockReset();
+  mockSpawnAsync.mockReset();
+  mockSpawnAsync.mockResolvedValue(emptyHelp());
 });
 
 afterEach(() => {
@@ -100,57 +107,40 @@ describe("parseDroidExecHelpModels", () => {
 });
 
 describe("discoverDroidCliModelDescriptors", () => {
-  it("uses the Droid SDK model catalog before fallback models", async () => {
-    const close = vi.fn(async () => {});
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [
-          {
-            id: "claude-sonnet-5",
-            displayName: "Claude Sonnet 5",
-          },
-          {
-            id: "custom:gpt-5.4(xhigh)",
-            displayName: "GPT-5.4 (XHigh)",
-            isCustom: true,
-          },
-        ],
-      },
-      close,
-    });
+  it("uses droid exec --help for the model catalog and does not open an SDK session", async () => {
+    mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
+      { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+      { id: "custom:gpt-5.4(xhigh)", displayName: "GPT-5.4 (XHigh)" },
+    ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
-    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
-      execPath: "/mock/bin/droid",
-    }));
-    expect(close).toHaveBeenCalled();
+    expect(mockSpawnAsync).toHaveBeenCalledWith(
+      "/mock/bin/droid",
+      ["exec", "--help"],
+      expect.objectContaining({ cwd: expect.any(String) }),
+    );
     expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
       "droid/claude-sonnet-5",
       "droid/custom:gpt-5.4(xhigh)",
     ]);
     expect(descriptors[1]).toMatchObject({
       displayName: "GPT-5.4 (XHigh)",
-      customProxy: true,
+      providerModelId: "custom:gpt-5.4(xhigh)",
     });
   });
 
   it("normalizes removed Droid factory model IDs before surfacing them", async () => {
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [
-          { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
-          { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
-          { id: "claude-opus-4-7", displayName: "Claude Opus 4.7" },
-          { id: "opus-4-7", displayName: "Opus 4.7" },
-          { id: "claude-opus-4-6-fast", displayName: "Claude Opus 4.6 Fast Mode" },
-          { id: "opus", displayName: "Opus" },
-          { id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M" },
-          { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
-        ],
-      },
-      close: vi.fn(async () => {}),
-    });
+    mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
+      { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+      { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
+      { id: "claude-opus-4-7", displayName: "Claude Opus 4.7" },
+      { id: "opus-4-7", displayName: "Opus 4.7" },
+      { id: "claude-opus-4-6-fast", displayName: "Claude Opus 4.6 Fast Mode" },
+      { id: "opus", displayName: "Opus" },
+      { id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M" },
+      { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+    ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
@@ -172,18 +162,13 @@ describe("discoverDroidCliModelDescriptors", () => {
   });
 
   it("reroutes removed Droid runtime ids when canonical replacements are absent", async () => {
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [
-          { id: "sonnet-4-6", displayName: "Sonnet 4.6", noImageSupport: true },
-          { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
-          { id: "claude-opus-4-6-fast", displayName: "Claude Opus 4.6 Fast Mode" },
-          { id: "opus-4-6", displayName: "Opus 4.6" },
-          { id: "opus", displayName: "Opus" },
-        ],
-      },
-      close: vi.fn(async () => {}),
-    });
+    mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
+      { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
+      { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
+      { id: "claude-opus-4-6-fast", displayName: "Claude Opus 4.6 Fast Mode" },
+      { id: "opus-4-6", displayName: "Opus 4.6" },
+      { id: "opus", displayName: "Opus" },
+    ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
@@ -210,70 +195,34 @@ describe("discoverDroidCliModelDescriptors", () => {
   });
 
   it("prefers canonical Droid rows over normalized retired aliases", async () => {
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [
-          {
-            id: "sonnet-4-6",
-            displayName: "Sonnet 4.6",
-            noImageSupport: true,
-          },
-          {
-            id: "claude-sonnet-5",
-            displayName: "Claude Sonnet 5",
-            supportedReasoningEfforts: ["high", "max"],
-            defaultReasoningEffort: "high",
-          },
-        ],
-      },
-      close: vi.fn(async () => {}),
-    });
+    mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
+      { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
+      { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+    ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
     expect(descriptors.filter((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toHaveLength(1);
     expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toMatchObject({
       providerModelId: "claude-sonnet-5",
-      reasoningTiers: ["high", "max"],
-      capabilities: expect.objectContaining({
-        vision: true,
-        reasoning: true,
-      }),
     });
   });
 
-  it("preserves Droid SDK reasoning and media metadata without exposing tier as a toggle", async () => {
-    const close = vi.fn(async () => {});
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [
-          {
-            id: "gpt-5.4",
-            displayName: "GPT-5.4",
-            supportedReasoningEfforts: ["low", "high", "max"],
-            defaultReasoningEffort: "high",
-            tier: "fast",
-            noImageSupport: true,
-          },
-        ],
-      },
-      close,
-    });
+  it("does not invent SDK-only reasoning metadata from CLI help rows", async () => {
+    mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
+      { id: "gpt-5.4", displayName: "GPT-5.4" },
+    ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
     expect(descriptors[0]).toMatchObject({
       id: "droid/gpt-5.4",
-      reasoningTiers: ["high", "low", "max"],
-      capabilities: expect.objectContaining({
-        vision: false,
-        reasoning: true,
-      }),
+      displayName: "GPT-5.4",
     });
     expect(descriptors[0]?.serviceTiers).toBeUndefined();
   });
 
-  it("merges existing Factory config custom models with SDK models", async () => {
+  it("merges existing Factory config custom models with CLI help models", async () => {
     fs.mkdirSync(path.join(tmpHome, ".factory"), { recursive: true });
     fs.writeFileSync(
       path.join(tmpHome, ".factory", "config.json"),
@@ -287,17 +236,9 @@ describe("discoverDroidCliModelDescriptors", () => {
       }),
       "utf8",
     );
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [
-          {
-            id: "claude-sonnet-5",
-            displayName: "Claude Sonnet 5",
-          },
-        ],
-      },
-      close: vi.fn(async () => {}),
-    });
+    mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
+      { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+    ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
@@ -337,12 +278,7 @@ describe("discoverDroidCliModelDescriptors", () => {
       }),
       "utf8",
     );
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [],
-      },
-      close: vi.fn(async () => {}),
-    });
+    mockSpawnAsync.mockResolvedValueOnce(emptyHelp());
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
@@ -405,12 +341,7 @@ describe("discoverDroidCliModelDescriptors", () => {
       }),
       "utf8",
     );
-    mockCreateSession.mockResolvedValueOnce({
-      initResult: {
-        availableModels: [],
-      },
-      close: vi.fn(async () => {}),
-    });
+    mockSpawnAsync.mockResolvedValueOnce(emptyHelp());
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
@@ -435,29 +366,22 @@ describe("discoverDroidCliModelDescriptors", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-10T00:00:00.000Z"));
     try {
-      mockCreateSession.mockResolvedValueOnce(sessionWithModels(["claude-sonnet-5"]));
+      mockSpawnAsync.mockResolvedValueOnce(helpFromModels([{ id: "claude-sonnet-5" }]));
       const seeded = await discoverDroidCliModelDescriptors("/mock/bin/droid");
       expect(seeded.map((d) => d.id)).toEqual(["droid/claude-sonnet-5"]);
-      expect(mockCreateSession).toHaveBeenCalledTimes(1);
+      expect(mockSpawnAsync).toHaveBeenCalledTimes(1);
 
-      // Generic readiness invalidation ages the cache without dropping rows.
       markDroidModelCachesStale();
-      // The background revalidation fails (e.g. droid is mid-reauth), so the
-      // aged last-known-good rows must remain the served answer.
-      mockCreateSession.mockRejectedValue(new Error("droid session unavailable"));
+      mockSpawnAsync.mockRejectedValue(new Error("droid help unavailable"));
 
-      // A passive read past the 120s window still returns the cached rows
-      // synchronously and kicks off exactly one background SDK session.
       const stale = await discoverDroidCliModelDescriptors("/mock/bin/droid", { mode: "cached-or-fallback" });
       expect(stale.map((d) => d.id)).toEqual(["droid/claude-sonnet-5"]);
-      expect(mockCreateSession).toHaveBeenCalledTimes(2);
+      const warmCalls = mockSpawnAsync.mock.calls.length;
+      expect(warmCalls).toBeGreaterThan(1);
 
-      // Backoff: a second passive read inside the same freshness window must
-      // NOT spawn another session, even though the cache is still aged and the
-      // warm just failed — without backoff a broken droid gets a session per call.
       const again = await discoverDroidCliModelDescriptors("/mock/bin/droid", { mode: "cached-or-fallback" });
       expect(again.map((d) => d.id)).toEqual(["droid/claude-sonnet-5"]);
-      expect(mockCreateSession).toHaveBeenCalledTimes(2);
+      expect(mockSpawnAsync).toHaveBeenCalledTimes(warmCalls);
     } finally {
       vi.useRealTimers();
     }

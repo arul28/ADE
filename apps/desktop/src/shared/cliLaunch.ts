@@ -33,6 +33,8 @@ export type TrackedCliLaunchCommand = {
   initialInput?: string;
   initialInputDelayMs?: number;
   env?: Record<string, string>;
+  /** Provider-native session id ADE assigned at launch, when the CLI accepts one. */
+  assignedSessionId?: string;
 };
 
 export type CodexComputerUseCliConfig = {
@@ -596,9 +598,9 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
-    // Inject --session-id so we know the Claude session ID upfront for resume.
-    if (args.sessionId) {
-      commandArgs.push("--session-id", args.sessionId);
+    const assignedSessionId = args.sessionId?.trim() || null;
+    if (assignedSessionId) {
+      commandArgs.push("--session-id", assignedSessionId);
     }
     const model = resolveClaudeCliModelForLaunch(args.model);
     if (model) {
@@ -636,6 +638,7 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "claude",
       args: commandArgs,
       startupCommand: commandArrayToLine(["claude", ...shellArgs], { platform: "linux" }),
+      ...(assignedSessionId ? { assignedSessionId } : {}),
       ...(initialPrompt && !promptRidesInArgv
         ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
         : {}),

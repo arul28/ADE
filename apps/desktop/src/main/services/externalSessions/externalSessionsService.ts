@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   buildTrackedCliResumeCommand,
@@ -44,6 +45,18 @@ import {
 } from "./discoveryUtils";
 import { pathsEqual } from "../shared/pathCompare";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
+import {
+  liveChatProviderRefsFromPersistedState,
+  type ImportedChatSessionRef,
+} from "./liveChatProviderRefs";
+import {
+  handleInspectionUnavailableMessage,
+  handlesForSession,
+  inspectLiveProviderSessions,
+  type LiveProviderSessionIndex,
+  type RunCommand,
+} from "./providerSessionHandles";
 
 export interface ExternalChatImporter {
   importExternalChatSession(args: {
@@ -53,14 +66,12 @@ export interface ExternalChatImporter {
     cwd: string | null;
     fork: boolean;
     title?: string;
+    /** Target model; a model outside the source provider's family runs a full-replay fork. */
+    model?: string;
   }): Promise<AgentChatImportExternalSessionResult>;
 }
 
-export type ImportedChatSessionRef = {
-  provider: string;
-  externalId: string;
-  chatSessionId: string;
-};
+export type { ImportedChatSessionRef } from "./liveChatProviderRefs";
 
 type ChatImportedRefsProvider = () =>
   | ImportedChatSessionRef[]
@@ -87,6 +98,7 @@ type SessionServiceLike = {
 
 type PtyServiceLike = {
   create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
+  listLiveTrackedCliPids?: () => number[];
 };
 
 type ExternalSessionsServiceArgs = {
@@ -103,6 +115,13 @@ type ExternalSessionsServiceArgs = {
   droidForkSupported?: boolean;
   /** Overrides the machine-local durable import log (tests). */
   importedSessionStore?: ImportedSessionStore;
+  /** Directory of persisted ADE chat JSON (`*.json`). Live chats only. */
+  chatSessionsDir?: string;
+  /** Test seam for process/handle inspection. */
+  inspectLiveSessions?: (args: {
+    extraPids?: readonly number[];
+  }) => LiveProviderSessionIndex;
+  runHandleCommand?: RunCommand;
 };
 
 type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
@@ -255,8 +274,6 @@ function putImportedRef(
 
 type ImportedRefIndex = {
   refs: Map<string, ImportedSessionRef | null>;
-  /** `provider:id` keys for provider sessions ADE itself created by copying. */
-  adeCreated: Set<string>;
 };
 
 async function importedSessionRefs(
@@ -264,11 +281,12 @@ async function importedSessionRefs(
   chatImportedRefsProvider: ChatImportedRefsProvider | null | undefined,
   importedStore: ImportedSessionStore,
   logger: LoggerLike,
+  chatSessionsDir?: string | null,
 ): Promise<ImportedRefIndex> {
   const refs = new Map<string, ImportedSessionRef | null>();
-  const adeCreated = new Set<string>();
   const liveAdeSessionIds = new Set<string>();
   for (const session of sessionService.list({ limit: null })) {
+    if (session.archivedAt) continue;
     liveAdeSessionIds.add(session.id);
     const metadata = session.resumeMetadata as (TerminalResumeMetadata & {
       importedFrom?: { provider?: ExternalSessionProvider; targetId?: string | null };
@@ -283,6 +301,14 @@ async function importedSessionRefs(
     if (metadata?.importedFrom?.provider && metadata.importedFrom.targetId) {
       putImportedRef(refs, `${metadata.importedFrom.provider}:${metadata.importedFrom.targetId}`, ref);
     }
+    if (isChatToolType(session.toolType) && chatSessionsDir) {
+      for (const chatRef of liveChatProviderRefsFromPersistedState(chatSessionsDir, session.id)) {
+        putImportedRef(refs, `${chatRef.provider}:${chatRef.externalId}`, {
+          kind: "chat",
+          sessionId: session.id,
+        });
+      }
+    }
   }
   // The durable log is the only source that survives deleting the ADE session,
   // and the only one that knows the provider id a fork import created.
@@ -293,9 +319,6 @@ async function importedSessionRefs(
     putImportedRef(refs, `${record.provider}:${record.externalId}`, ref);
     if (record.targetId) {
       putImportedRef(refs, `${record.provider}:${record.targetId}`, ref);
-      if (record.targetId !== record.externalId) {
-        adeCreated.add(`${record.provider}:${record.targetId}`);
-      }
     }
   }
   // Claude pointers are one of the imported-marking sources; ask for all of them
@@ -325,7 +348,7 @@ async function importedSessionRefs(
       });
     }
   }
-  return { refs, adeCreated };
+  return { refs };
 }
 
 /**
@@ -349,22 +372,17 @@ function resolveImportedRef(
   return { imported, ref };
 }
 
-/**
- * ADE's own copies re-list as fresh provider sessions: a cross-cwd Claude fork
- * writes a transplanted transcript under a new uuid into `~/.claude`, and a
- * Codex chat fork mints a new thread. Both are already open in ADE under their
- * original row, so listing them again offers to import ADE's work into ADE.
- *
- * Every id has to be ADE-created. When discovery collapses the user's original
- * into the copy, that one row is also the only place the original appears;
- * hiding it would drop the conversation instead of marking it imported.
- */
-function isAdeCreatedArtifact(
-  index: ImportedRefIndex,
-  record: Pick<ExternalSessionDiscoveryRecord, "id" | "provider" | "lineageIds">,
+function isSessionLiveNow(
+  session: Pick<ExternalSessionDiscoveryRecord, "id" | "provider" | "sourceMtimeMs">,
+  liveHandles: LiveProviderSessionIndex,
+  liveClaudeIds: Set<string> | null,
+  availability: LiveProviderSessionIndex["availability"],
 ): boolean {
-  return [record.id, ...(record.lineageIds ?? [])]
-    .every((id) => index.adeCreated.has(`${record.provider}:${id}`));
+  if (session.provider === "claude" && liveClaudeIds?.has(session.id)) return true;
+  if (handlesForSession(liveHandles, session.provider, session.id).length > 0) return true;
+  if (availability.available) return false;
+  const activeCutoffMs = Date.now() - 2 * 60_000;
+  return typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs;
 }
 
 function toolTypeForProvider(provider: ExternalSessionProvider): TerminalToolType {
@@ -511,6 +529,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         timeout: 1500,
         encoding: "utf8",
         env,
+        cwd: os.tmpdir(),
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       }, (error, stdout, stderr) => {
@@ -658,8 +677,22 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       args.chatImportedRefsProvider,
       importedStore,
       args.logger,
+      args.chatSessionsDir ?? resolveAdeLayout(args.projectRoot).chatSessionsDir,
     );
-    const activeCutoffMs = Date.now() - 2 * 60_000;
+    const extraPids = args.ptyService.listLiveTrackedCliPids?.() ?? [];
+    const liveHandles = args.inspectLiveSessions?.({ extraPids })
+      ?? inspectLiveProviderSessions({
+        homeDir: args.homeDir,
+        env: args.env,
+        extraPids,
+        runCommand: args.runHandleCommand,
+      });
+    if (!liveHandles.availability.available) {
+      args.logger.warn?.("external_sessions.handle_inspection_unavailable", {
+        reason: liveHandles.availability.reason,
+        detail: handleInspectionUnavailableMessage(liveHandles.availability.reason),
+      });
+    }
     const liveClaudeIds = providers.includes("claude")
       ? liveClaudeSessionIds({ homeDir: args.homeDir, env: args.env })
       : null;
@@ -670,15 +703,31 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const inScope = projectScoped
       ? discovered.filter((session) => cwdIsInScope(session.cwd, scopeRoots))
       : discovered;
+    const adePids = new Set(extraPids);
+    const isLiveAdeTracked = (
+      session: Pick<ExternalSessionDiscoveryRecord, "id" | "provider" | "lineageIds">,
+    ): boolean => {
+      const { ref } = resolveImportedRef(imported, session);
+      if (ref) return true;
+      const owners = [
+        session.id,
+        ...(session.lineageIds ?? []),
+      ].flatMap((id) => handlesForSession(liveHandles, session.provider, id));
+      return owners.some((handle) => adePids.has(handle.pid));
+    };
+    const isEmptyOfUserPrompts = (
+      session: Pick<ExternalSessionDiscoveryRecord, "messageCount">,
+    ): boolean => session.messageCount === 0;
     // An exact lookup names the session the caller wants and must resolve even
-    // when that session is an ADE-created copy.
+    // when that session is ADE-tracked or empty.
     const scoped = requestedSessionId
       ? inScope
-      : inScope.filter((session) => !isAdeCreatedArtifact(imported, session));
+      : inScope.filter((session) => !isLiveAdeTracked(session) && !isEmptyOfUserPrompts(session));
 
     const summaries = scoped
       .map((session): ExternalSessionSummary => {
-        const { imported: alreadyImported, ref: importedRef } = resolveImportedRef(imported, session);
+        const { imported: previouslyImported, ref: importedRef } = resolveImportedRef(imported, session);
+        const liveNow = isSessionLiveNow(session, liveHandles, liveClaudeIds, liveHandles.availability);
         return {
           provider: session.provider,
           id: session.id,
@@ -690,13 +739,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           updatedAt: session.updatedAt,
           messageCount: session.messageCount,
           launch: session.launch ?? null,
-          alreadyImported,
+          alreadyImported: importedRef != null,
+          importedBefore: previouslyImported && importedRef == null ? true : undefined,
           importedSessionRef: importedRef,
-          // Claude publishes its own live-session registry, which answers "open
-          // right now" instead of "written in the last two minutes".
-          possiblyActive: session.provider === "claude" && liveClaudeIds
-            ? liveClaudeIds.has(session.id)
-            : typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
+          possiblyActive: liveNow,
           cwdMatchesRequestedLane: cwdMatches(session.cwd, requestedCwd),
           capabilities: capabilitiesFor(session.provider, session, cwdExistenceCache),
         };
@@ -732,6 +778,16 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       logger: args.logger,
     });
     if (!session || session.id !== sessionId) return null;
+    const liveHandles = args.inspectLiveSessions?.({ extraPids: args.ptyService.listLiveTrackedCliPids?.() ?? [] })
+      ?? inspectLiveProviderSessions({
+        homeDir: args.homeDir,
+        env: args.env,
+        extraPids: args.ptyService.listLiveTrackedCliPids?.() ?? [],
+        runCommand: args.runHandleCommand,
+      });
+    const liveClaudeIds = provider === "claude"
+      ? liveClaudeSessionIds({ homeDir: args.homeDir, env: args.env })
+      : null;
     return {
       provider: session.provider,
       id: session.id,
@@ -745,8 +801,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       launch: session.launch ?? null,
       alreadyImported: false,
       importedSessionRef: null,
-      possiblyActive: typeof session.sourceMtimeMs === "number"
-        && session.sourceMtimeMs >= Date.now() - 2 * 60_000,
+      possiblyActive: isSessionLiveNow(session, liveHandles, liveClaudeIds, liveHandles.availability),
       cwdMatchesRequestedLane: cwdMatches(session.cwd, destinationCwd),
       capabilities: capabilitiesFor(provider, session),
     };
@@ -806,6 +861,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         cwd: sourceCwd,
         fork: importArgs.mode === "fork",
         ...(summary?.title ? { title: summary.title } : {}),
+        ...(importArgs.model?.trim() ? { model: importArgs.model.trim() } : {}),
       });
       // A fork import binds the chat to a provider id that did not exist when
       // the user picked the row; both ids have to be marked, or the fork lists

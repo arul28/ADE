@@ -124,6 +124,10 @@ import {
 import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
 import { discoverPiSessions } from "../externalSessions/discoverPi";
 import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
+import {
+  captureProviderSessionFromPidTree,
+  PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS,
+} from "../externalSessions/providerSessionHandles";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -181,10 +185,13 @@ export function materializeRuntimeCliLaunch(
   if (!isLaunchProfile(provider) || provider === "shell") {
     throw new Error(`Unsupported runtime CLI launch provider '${provider}'.`);
   }
+  const sessionId = runtimeCliLaunch.sessionId?.trim()
+    || (provider === "claude" ? randomUUID() : undefined);
   return buildTrackedCliLaunchCommand({
     ...runtimeCliLaunch,
     provider,
     laneWorktreePath,
+    ...(sessionId ? { sessionId } : {}),
   });
 }
 
@@ -1351,6 +1358,36 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
 function extractClaudeSessionIdFromCommand(command: string): string | null {
   const match = command.match(/--session-id(?:=|\s+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   return match?.[1] ?? null;
+}
+
+function extractClaudeSessionIdFromArgs(args: readonly string[]): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "--session-id") {
+      return args[index + 1]?.trim() || null;
+    }
+    if (token?.startsWith("--session-id=")) {
+      return token.slice("--session-id=".length).trim() || null;
+    }
+  }
+  return null;
+}
+
+function assignClaudeLaunchSessionId(args: {
+  startupCommand: string;
+  commandArgs: string[];
+}): { startupCommand: string; commandArgs: string[]; assignedId: string } {
+  const existing = extractClaudeSessionIdFromArgs(args.commandArgs)
+    ?? extractClaudeSessionIdFromCommand(args.startupCommand);
+  const assignedId = existing || randomUUID();
+  if (existing) {
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId };
+  }
+  const commandArgs = ["--session-id", assignedId, ...args.commandArgs];
+  const startupCommand = args.startupCommand.trim()
+    ? args.startupCommand.replace(/^(claude(?:\.exe)?)\b/iu, `$1 --session-id ${assignedId}`)
+    : `claude --session-id ${assignedId}`;
+  return { startupCommand, commandArgs, assignedId };
 }
 
 function buildInitialResumeMetadata(args: {
@@ -3444,6 +3481,66 @@ export function createPtyService({
     }
   };
 
+  const scheduleProviderSessionHandleCapture = (entry: PtyEntry): void => {
+    let attempt = 0;
+    const tick = (): void => {
+      if (entry.disposed) return;
+      const session = sessionService.get(entry.sessionId);
+      if (sanitizeResumeTargetId(session?.resumeMetadata?.targetId ?? null)) return;
+      const pid = entry.pty.pid;
+      if (typeof pid === "number" && pid > 0) {
+        const captured = captureProviderSessionFromPidTree({ rootPid: pid });
+        if (captured) {
+          let resumeCmd: string;
+          switch (captured.provider) {
+            case "codex":
+              resumeCmd = `codex resume ${captured.sessionId}`;
+              break;
+            case "claude":
+              resumeCmd = `claude --resume ${captured.sessionId}`;
+              break;
+            case "droid":
+              resumeCmd = `droid --resume ${captured.sessionId}`;
+              break;
+            case "opencode":
+              resumeCmd = `opencode --session ${captured.sessionId}`;
+              break;
+            case "pi":
+              resumeCmd = commandArrayToLine(["pi", "--session", captured.sessionId]);
+              break;
+            case "cursor":
+              resumeCmd = `cursor-agent --resume ${captured.sessionId}`;
+              break;
+            default: {
+              const exhaustive: never = captured.provider;
+              throw new Error(`Unhandled provider ${exhaustive}`);
+            }
+          }
+          sessionService.setResumeCommand(entry.sessionId, resumeCmd);
+          logger.info("pty.resume_target_captured_from_handles", {
+            sessionId: entry.sessionId,
+            provider: captured.provider,
+            nativeSessionId: captured.sessionId,
+            pid: captured.pid,
+          });
+          return;
+        }
+      }
+      if (attempt >= PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS.length) {
+        logger.info("pty.resume_target_handle_capture_exhausted", {
+          sessionId: entry.sessionId,
+          toolType: entry.toolTypeHint,
+        });
+        return;
+      }
+      const delayMs = PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS[attempt]!;
+      attempt += 1;
+      const timer = setTimeout(tick, delayMs);
+      timer.unref?.();
+    };
+    tick();
+  };
+
   const tryBackfillResumeTarget = async (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
@@ -5248,7 +5345,7 @@ export function createPtyService({
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath)
         : null;
-      const effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
+      let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
         ? {
             ...args,
             startupCommand: materializedRuntimeLaunch.startupCommand,
@@ -5349,7 +5446,26 @@ export function createPtyService({
           throw Object.assign(new Error(decision.message), { code: decision.code });
         }
       }
-      const requestedStartupCommand = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
+      const requestedStartupCommandRaw = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
+      let requestedStartupCommand = requestedStartupCommandRaw;
+      if (
+        tracked
+        && isClaudeTrackedCliToolType(toolTypeHint)
+        && !existingSession
+      ) {
+        const assigned = assignClaudeLaunchSessionId({
+          startupCommand: requestedStartupCommandRaw,
+          commandArgs: Array.isArray(effectiveArgs.args)
+            ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
+            : [],
+        });
+        requestedStartupCommand = assigned.startupCommand;
+        effectiveArgs = {
+          ...effectiveArgs,
+          startupCommand: assigned.startupCommand,
+          args: assigned.commandArgs,
+        };
+      }
       const requestedInitialInput = typeof effectiveArgs.initialInput === "string" ? effectiveArgs.initialInput : "";
       const requestedResumeMetadata = args.resumeMetadata ?? null;
       let initialResumeMetadata = existingSession?.resumeMetadata
@@ -5968,6 +6084,12 @@ export function createPtyService({
         piSessionLeaseUpgradeAttempts: 0,
       };
       ptys.set(ptyId, entry);
+      if (
+        isTrackedAgentCliToolType(toolTypeHint)
+        && !sanitizeResumeTargetId(initialResumeMetadata?.targetId ?? null)
+      ) {
+        scheduleProviderSessionHandleCapture(entry);
+      }
       if (chatSessionId) {
         terminalChatSessions.set(sessionId, chatSessionId);
         promoteActiveChatTerminal(chatSessionId, sessionId, toolTypeHint);
@@ -7261,6 +7383,16 @@ export function createPtyService({
 
     list(args: Parameters<typeof sessionService.list>[0] = {}): TerminalSessionSummary[] {
       return service.enrichSessions(sessionService.list(args));
+    },
+
+    listLiveTrackedCliPids(): number[] {
+      const pids: number[] = [];
+      for (const entry of ptys.values()) {
+        if (entry.disposed || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+        const pid = entry.pty.pid;
+        if (typeof pid === "number" && pid > 0) pids.push(pid);
+      }
+      return pids;
     },
 
     async readTranscriptTail(args: {

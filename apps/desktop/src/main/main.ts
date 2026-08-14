@@ -3966,18 +3966,35 @@ app.whenReady().then(async () => {
         const sessions = await agentChatService.listSessions(undefined, {
           includeIdentity: true,
           includeAutomation: true,
-          includeArchived: true,
+          includeArchived: false,
         });
         return sessions.flatMap((session) => {
+          const refs: Array<{ provider: string; externalId: string; chatSessionId: string }> = [];
+          const push = (provider: string | null | undefined, externalId: string | null | undefined) => {
+            const cleanProvider = provider?.trim();
+            const cleanId = externalId?.trim();
+            if (!cleanProvider || !cleanId) return;
+            refs.push({ provider: cleanProvider, externalId: cleanId, chatSessionId: session.sessionId });
+          };
           const importedFrom = session.importedFrom;
-          if (!importedFrom?.provider?.trim() || !importedFrom.sessionId?.trim()) return [];
-          return [{
-            provider: importedFrom.provider,
-            externalId: importedFrom.sessionId,
-            chatSessionId: session.sessionId,
-          }];
+          const pointers = session as typeof session & {
+            providerSessionId?: string | null;
+            sdkSessionId?: string | null;
+            droidSdkSessionId?: string | null;
+            cursorSdkAgentId?: string | null;
+          };
+          push(importedFrom?.provider, importedFrom?.sessionId);
+          push(session.provider, pointers.providerSessionId);
+          push("claude", pointers.sdkSessionId);
+          push("codex", session.threadId);
+          push("droid", pointers.droidSdkSessionId);
+          push("pi", session.piSessionId ?? session.piSessionFile);
+          push("cursor", pointers.cursorSdkAgentId);
+          push("cursor", session.cursorCloudAgentId);
+          return refs;
         });
       },
+      chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
       homeDir: os.homedir(),
       env: process.env,
     });
