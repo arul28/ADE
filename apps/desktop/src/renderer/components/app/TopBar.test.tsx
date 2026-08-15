@@ -724,7 +724,7 @@ describe("TopBar", () => {
     });
 
     expect(screen.getByRole("dialog", { name: "Connections" })).toBeTruthy();
-    expect(screen.getByText("Sign in to connect your devices")).toBeTruthy();
+    expect(screen.getByText("Sign in to easily connect your machines")).toBeTruthy();
     expect(mobileTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("sync-devices-section").getAttribute("data-variant")).toBe("phone");
     expect(connectionsButton.getAttribute("aria-expanded")).toBe("true");
