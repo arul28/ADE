@@ -237,7 +237,7 @@ that could not work without it.
   rather than the old `ResizeObserver`-based 28 %-of-height formula;
   that eliminated the observer churn without changing the visible
   ceiling for normal tile sizes.
-- **Prompt stashes (desktop only).** Cmd/Ctrl+S stores the current prompt text
+- **Prompt stashes.** Cmd/Ctrl+S stores the current prompt text
   in the project runtime and clears the composer only after the runtime confirms
   the write. The bookmark control immediately left of the context-usage meter
   performs the same action; invoking either path with an empty composer opens
@@ -253,8 +253,12 @@ that could not work without it.
   currently bound local or remote project runtime. File attachments and visual
   context are deliberately not stashed because their paths can be
   machine-specific. Appearance > Prompt stash button can hide the bookmark;
-  the keyboard shortcut remains active. Mobile and the TUI do not expose this
-  feature.
+  the keyboard shortcut remains active. iOS exposes the same per-project stash
+  through the composer overflow menu (`WorkPromptStash.swift`) over
+  `chat.listPromptStashes` / `chat.createPromptStash` / `chat.deletePromptStash`;
+  those actions are optional in mobile compatibility so an older host omits
+  stash instead of going limited. Personal chats hide stash. The TUI does not
+  expose this feature.
 - **Smart links.** Once an HTTP(S) or `ade://` URL is completed by paste,
   whitespace, or paragraph insertion, the rich editor replaces its visible run
   with an atomic violet chip. Each chip shows the provider's real brand mark —

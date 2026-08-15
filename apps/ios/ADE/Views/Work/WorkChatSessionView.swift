@@ -309,7 +309,7 @@ struct WorkChatSessionView: View {
   @State var latestPinTask: Task<Void, Never>?
   @State var latestPinGeneration = 0
   @State var assistantPreviewCache = WorkAssistantPreviewCache()
-  @State private var contextUsageViewModelCache = WorkContextUsageViewModelCache()
+  @State var contextUsageViewModelCache = WorkContextUsageViewModelCache()
   @State var assistantLineBudgets: [String: Int] = [:]
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
@@ -1196,13 +1196,8 @@ struct WorkChatSessionView: View {
 
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
-        usageViewModel: contextUsageViewModelCache.value(
-          sessionId: session.id,
-          transcript: transcript,
-          transcriptRenderSignature: transcriptRenderSignature,
-          provider: chatSummaryContext.provider,
-          fallbackContextWindow: chatSummaryContext.contextWindowFallback
-        ),
+        sessionId: session.id,
+        isPersonalChat: isPersonalChat,
         laneId: session.laneId,
         dictationTargetId: "work-chat:\(session.id)",
         awaitingInputGate: hasPendingInputGate,
@@ -2253,7 +2248,8 @@ func mergeWorkPendingSteers(
 
 private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
-  let usageViewModel: WorkContextUsageViewModel?
+  let sessionId: String
+  let isPersonalChat: Bool
   let laneId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
@@ -2285,7 +2281,8 @@ private struct WorkChatComposerCard: View {
   var body: some View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
-      usageViewModel: usageViewModel,
+      sessionId: sessionId,
+      isPersonalChat: isPersonalChat,
       laneId: laneId,
       dictationTargetId: dictationTargetId,
       awaitingInputGate: awaitingInputGate,
@@ -2327,7 +2324,8 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
-  let usageViewModel: WorkContextUsageViewModel?
+  let sessionId: String
+  let isPersonalChat: Bool
   let laneId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
@@ -2357,7 +2355,6 @@ private struct WorkChatComposerDraftInput: View {
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
-  @State private var contextUsagePresented = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
@@ -2372,6 +2369,10 @@ private struct WorkChatComposerDraftInput: View {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
   }
 
+  private var stashAvailable: Bool {
+    !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if compact {
@@ -2382,11 +2383,7 @@ private struct WorkChatComposerDraftInput: View {
 
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
-            WorkChatAttachmentAddButton(
-              pickerPresented: $attachmentPickerPresented,
-              attachmentCount: inputAttachments.count,
-              disabled: !canCompose || !attachmentsAvailable || settingsMutationInFlight
-            )
+            composerOverflowMenu
 
             WorkChatComposerTextField(
               draftState: draftState,
@@ -2401,13 +2398,7 @@ private struct WorkChatComposerDraftInput: View {
             )
           }
 
-          DictationMicButton(
-            draft: $draftState.text,
-            coordinator: dictationCoordinator,
-            targetId: dictationTargetId,
-            onRecordingChange: { isDictating = $0 }
-          )
-          .frame(maxWidth: isDictating ? .infinity : nil)
+          composerDictationControl
 
           if !isDictating {
             sendOrInterruptControls()
@@ -2439,14 +2430,8 @@ private struct WorkChatComposerDraftInput: View {
         }
 
         HStack(alignment: .center, spacing: 8) {
-        // Leading controls collapse while dictating so the recording pill can
-        // expand into the row without a layout jump.
         if !isDictating {
-          WorkChatAttachmentAddButton(
-            pickerPresented: $attachmentPickerPresented,
-            attachmentCount: inputAttachments.count,
-            disabled: !canCompose || !attachmentsAvailable || settingsMutationInFlight
-          )
+          composerOverflowMenu
 
           WorkComposerChipStrip(
             chatSummary: chatSummary,
@@ -2459,47 +2444,14 @@ private struct WorkChatComposerDraftInput: View {
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
 
           Spacer(minLength: 0)
-
-          if let usageViewModel {
-            WorkContextUsageMeter(
-              usage: usageViewModel,
-              active: showInterrupt,
-              isPresented: $contextUsagePresented
-            )
-            .popover(
-              isPresented: $contextUsagePresented,
-              attachmentAnchor: .rect(.bounds),
-              arrowEdge: .bottom
-            ) {
-              WorkContextUsagePopover(
-                usage: usageViewModel,
-                modelLabel: chatSummary.modelLabel
-              )
-              .frame(maxWidth: 320, alignment: .leading)
-              .presentationCompactAdaptation(.popover)
-            }
-          }
         }
 
-        // Single mic control: renders the 28×28 mic when idle and the inline
-        // recording pill (full-width) while recording.
-        DictationMicButton(
-          draft: $draftState.text,
-          coordinator: dictationCoordinator,
-          targetId: dictationTargetId,
-          onRecordingChange: { isDictating = $0 }
-        )
-        .frame(maxWidth: isDictating ? .infinity : nil)
+          composerDictationControl
 
           if !isDictating {
             sendOrInterruptControls()
           }
         }
-      }
-    }
-    .onChange(of: usageViewModel) { _, newValue in
-      if newValue == nil {
-        contextUsagePresented = false
       }
     }
     .onAppear {
@@ -2542,6 +2494,32 @@ private struct WorkChatComposerDraftInput: View {
         if canCompose { draftState.isFocused = true }
       }
     )
+  }
+
+  private var composerOverflowMenu: some View {
+    WorkComposerOverflowButton(
+      attachmentPickerPresented: $attachmentPickerPresented,
+      draft: $draftState.text,
+      attachments: $inputAttachments,
+      canCompose: canCompose && !settingsMutationInFlight,
+      attachmentsAvailable: attachmentsAvailable,
+      onDictate: { dictationCoordinator.requestStart() },
+      stashAvailable: stashAvailable,
+      scope: WorkPromptStashScope(chatSessionId: sessionId),
+      provider: chatSummary.provider,
+      modelId: chatSummary.currentModelId
+    )
+  }
+
+  private var composerDictationControl: some View {
+    DictationMicButton(
+      draft: $draftState.text,
+      coordinator: dictationCoordinator,
+      targetId: dictationTargetId,
+      showsIdleButton: false,
+      onRecordingChange: { isDictating = $0 }
+    )
+    .frame(maxWidth: isDictating ? .infinity : nil)
   }
 
   @ViewBuilder
@@ -2967,205 +2945,6 @@ private struct WorkQueueRecoveryBanner: View {
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
     }
-  }
-}
-
-private struct WorkContextUsageMeter: View {
-  let usage: WorkContextUsageViewModel
-  let active: Bool
-  @Binding var isPresented: Bool
-
-  private var percent: Int? {
-    guard usage.state == .measured else { return nil }
-    return usage.ratio.map { Int(($0 * 100).rounded()) }
-  }
-
-  private var ringColor: Color {
-    guard let ratio = usage.ratio else { return ADEColor.textSecondary }
-    if ratio >= 0.9 { return ADEColor.danger }
-    if ratio >= 0.7 { return ADEColor.warning }
-    return Color(red: 0.22, green: 0.74, blue: 0.97)
-  }
-
-  private var accessibilityLabel: String {
-    switch usage.state {
-    case .compacting:
-      return "Context usage: compacting"
-    case .recalculating:
-      return "Context usage: recalculating"
-    case .unknown:
-      return "Context usage unavailable"
-    case .measured:
-      return percent.map { "Context usage: \($0)% full" } ?? "Context usage"
-    }
-  }
-
-  var body: some View {
-    if usage.ratio != nil || usage.usedTokens != nil {
-      Button {
-        withAnimation(.easeInOut(duration: 0.18)) {
-          isPresented.toggle()
-        }
-      } label: {
-        ZStack {
-          if usage.state != .measured {
-            Circle()
-              .stroke(Color.white.opacity(0.12), lineWidth: 1.5)
-              .frame(width: 22, height: 22)
-            Text(usage.state == .unknown ? "?" : "…")
-              .font(.system(size: 10, weight: .semibold, design: .rounded))
-              .foregroundStyle(ADEColor.textSecondary)
-          } else if let ratio = usage.ratio, let percent {
-            Circle()
-              .stroke(Color.white.opacity(0.10), lineWidth: 2.5)
-              .frame(width: 22, height: 22)
-
-            Circle()
-              .trim(from: 0, to: CGFloat(ratio))
-              .stroke(ringColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-              .rotationEffect(.degrees(-90))
-              .frame(width: 22, height: 22)
-
-            Text("\(percent)")
-              .font(.system(size: percent >= 100 ? 7 : 8, weight: .semibold, design: .rounded))
-              .monospacedDigit()
-              .foregroundStyle(ADEColor.textPrimary.opacity(0.78))
-              .minimumScaleFactor(0.65)
-          } else if let usedTokens = usage.usedTokens {
-            Text(workAbbreviateCount(usedTokens))
-              .font(.system(size: 10, weight: .semibold, design: .rounded))
-              .monospacedDigit()
-              .foregroundStyle(ADEColor.textSecondary)
-              .minimumScaleFactor(0.7)
-          }
-        }
-        .frame(width: 28, height: 28)
-        .contentShape(Rectangle())
-        .opacity(active ? 1 : 0.92)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(accessibilityLabel)
-      .accessibilityHint(isPresented ? "Dismisses context usage details" : "Shows context usage details")
-      .adeInspectable(
-        "Work.Chat.Composer.ContextUsageMeter",
-        metadata: [
-          "label": percent.map { "Context usage: \($0)% full" } ?? "Context usage",
-          "role": "button"
-        ]
-      )
-    }
-  }
-}
-
-private struct WorkContextUsagePopover: View {
-  let usage: WorkContextUsageViewModel
-  let modelLabel: String?
-
-  private var percent: Int? {
-    guard usage.state == .measured else { return nil }
-    return usage.ratio.map { Int(($0 * 100).rounded()) }
-  }
-
-  private var windowLabel: String? {
-    usage.contextWindow.map { workAbbreviateCount($0) }
-  }
-
-  private var usedLabel: String? {
-    usage.usedTokens.map { workAbbreviateCount($0) }
-  }
-
-  private var description: String {
-    if usage.state == .compacting {
-      return "Claude is compacting this chat. The previous exact reading is temporarily hidden."
-    }
-    if usage.state == .recalculating {
-      return "Compaction finished. ADE is waiting for the next authoritative usage snapshot."
-    }
-    if usage.state == .unknown {
-      return "The runtime did not return an authoritative context reading."
-    }
-    let model = modelLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let percent, let windowLabel {
-      let owner: String
-      if let model, !model.isEmpty {
-        owner = "\(model)'s "
-      } else {
-        owner = "the "
-      }
-      let estimated = usage.windowSource == .registry ? " (estimated)" : ""
-      return "Using \(percent)% of \(owner)\(windowLabel)-token context window\(estimated)."
-    }
-    let used = usedLabel ?? "--"
-    if let model, !model.isEmpty {
-      return "\(used) tokens used so far by \(model); context window unknown."
-    }
-    return "\(used) tokens used so far; context window unknown."
-  }
-
-  private var breakdown: String? {
-    guard usage.state == .measured else { return nil }
-    var segments: [String] = []
-    if let value = usage.inputTokens { segments.append("in \(workAbbreviateCount(value))") }
-    if let value = usage.outputTokens { segments.append("out \(workAbbreviateCount(value))") }
-    if let value = usage.cacheReadTokens { segments.append("cached \(workAbbreviateCount(value)) *") }
-    if let value = usage.reasoningTokens { segments.append("reasoning \(workAbbreviateCount(value))") }
-    return segments.isEmpty ? nil : segments.joined(separator: " · ")
-  }
-
-  private var effect: String? {
-    guard let percent, let windowLabel else { return nil }
-    return "\(usedLabel ?? "--") / \(windowLabel) tokens · \(percent)% full"
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
-      Text("Context usage")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-
-      Text(description)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-      if breakdown != nil || effect != nil {
-        Rectangle()
-          .fill(ADEColor.border.opacity(0.35))
-          .frame(height: 1)
-      }
-
-      if let breakdown {
-        Text(breakdown)
-          .font(.caption.monospaced())
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(2)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      if let effect {
-        Text(effect)
-          .font(.caption.monospacedDigit())
-          .foregroundStyle((usage.ratio ?? 0) >= 0.8 ? ADEColor.warning : ADEColor.success)
-          .lineLimit(1)
-          .minimumScaleFactor(0.7)
-      }
-
-      if usage.state == .measured, let ratio = usage.ratio, ratio >= 0.8 {
-        Text("Nearing the limit; older context may be auto-trimmed or compacted.")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.warning)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .background(ADEColor.surfaceBackground.opacity(0.94), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
-    )
-    .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
-    .accessibilityIdentifier("Work.Chat.Composer.ContextUsagePopover")
   }
 }
 

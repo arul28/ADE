@@ -126,12 +126,23 @@ extension WorkChatSessionView {
       WorkTurnSeparatorView(separator: separator)
     case .turnEndMarker(let marker):
       let activity = turnToolActivity.completedByTurnId[marker.turnId]
+      let isLatestTurnEnd = marker.turnId == timelineSnapshot.latestTurnEndTurnId
       WorkTurnEndMarkerView(
         marker: marker,
         toolCount: activity?.count ?? 0,
         onOpenActivity: activity.map { _ in
           { toolActivitySheet = .completed(marker.turnId) }
-        }
+        },
+        usageViewModel: isLatestTurnEnd
+          ? contextUsageViewModelCache.value(
+            sessionId: session.id,
+            transcript: transcript,
+            transcriptRenderSignature: transcriptRenderSignature,
+            provider: chatSummaryContext.provider,
+            fallbackContextWindow: chatSummaryContext.contextWindowFallback
+          )
+          : nil,
+        modelLabel: chatSummaryContext.modelLabel
       )
     case .pendingQuestion(let question):
       // When offline, still render the card in a disabled (busy) state so the

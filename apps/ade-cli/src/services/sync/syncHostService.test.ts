@@ -5954,6 +5954,9 @@ describe("CTO-gated Linear sync commands", () => {
         "prs.unstackGithubStack",
         "ai.openCursorCloudChat",
         "ai.watchCursorCloudMirror",
+        "chat.listPromptStashes",
+        "chat.createPromptStash",
+        "chat.deletePromptStash",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),

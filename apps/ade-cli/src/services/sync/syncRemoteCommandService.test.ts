@@ -2039,6 +2039,9 @@ describe("createSyncRemoteCommandService", () => {
       "chat.rewindFiles",
       "chat.getTurnFileDiff",
       "chat.saveTempAttachment",
+      "chat.listPromptStashes",
+      "chat.createPromptStash",
+      "chat.deletePromptStash",
       "chat.warmupModel",
       "chat.launch",
       "chat.getImageDataUrl",
@@ -2074,6 +2077,9 @@ describe("createSyncRemoteCommandService", () => {
       "orchestration.runCreate",
     ]));
     expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
+    expect(service.getDescriptor("chat.listPromptStashes")?.scope).toBe("project");
+    expect(service.getDescriptor("chat.createPromptStash")?.scope).toBe("project");
+    expect(service.getDescriptor("chat.deletePromptStash")?.scope).toBe("project");
     expect(service.getDescriptor("chat.resolveSmartLinkPreview")).toEqual({
       action: "chat.resolveSmartLinkPreview",
       scope: "project",
@@ -2082,6 +2088,50 @@ describe("createSyncRemoteCommandService", () => {
     expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
     expect(service.getDescriptor("prs.delete")?.policy).toEqual({ viewerAllowed: false, queueable: true });
     expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });
+  });
+
+  it("routes per-project prompt stash create/list/delete through the project DB", async () => {
+    const created = {
+      id: "stash-1",
+      text: "retry the composer",
+      attachments: [{ path: "/tmp/shot.png", type: "image" }],
+      attachmentCount: 1,
+      attachmentsAvailable: true,
+      provider: "codex",
+      modelId: "gpt-5.6",
+      createdAt: "2026-08-14T00:00:00.000Z",
+    };
+    const db = {
+      get: vi.fn().mockReturnValue({ id: "stash-1" }),
+      all: vi.fn().mockReturnValue([{
+        id: created.id,
+        text: created.text,
+        attachments_json: JSON.stringify(created.attachments),
+        attachment_origin_site_id: "abc",
+        provider: created.provider,
+        model_id: created.modelId,
+        created_at: created.createdAt,
+      }]),
+      run: vi.fn(),
+      sync: { getSiteId: () => "abc" },
+    };
+    const { service } = createService({ db });
+
+    await expect(service.execute(makePayload("chat.createPromptStash", {
+      text: created.text,
+      attachments: created.attachments,
+      provider: created.provider,
+      modelId: created.modelId,
+    }))).resolves.toMatchObject({
+      text: created.text,
+      attachments: created.attachments,
+      provider: created.provider,
+      modelId: created.modelId,
+    });
+    await expect(service.execute(makePayload("chat.listPromptStashes"))).resolves.toEqual([
+      expect.objectContaining({ id: "stash-1", text: created.text, attachmentsAvailable: true }),
+    ]);
+    await expect(service.execute(makePayload("chat.deletePromptStash", { id: "stash-1" }))).resolves.toBe(true);
   });
 
   it("routes chat.handoff with a trimmed handoff note", async () => {

@@ -316,7 +316,8 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `preflightCrossMachineDestination`,
   `fastForwardCrossMachineHandoffLane`, `acceptCrossMachineHandoff`,
   `markCrossMachineHandoff`,
-  `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `getImageDataUrl`
+  `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`,
+  `listPromptStashes`, `createPromptStash`, `deletePromptStash`, `getImageDataUrl`
 
 `chat.getTranscript` supports cursor pagination: responses carry an
 opaque `nextCursor`, and requests can pass `cursor` to page strictly-older

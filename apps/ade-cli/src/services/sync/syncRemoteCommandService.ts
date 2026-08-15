@@ -241,6 +241,11 @@ import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } 
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
+import {
+  createPromptStash,
+  deletePromptStash,
+  listPromptStashes,
+} from "../../../../desktop/src/main/services/chat/promptStashService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
 import { mergeAiConfig } from "../../../../desktop/src/main/services/config/projectConfigService";
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
@@ -4403,6 +4408,15 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.getTurnFileDiff", { viewerAllowed: true }, async (payload) => getRemoteTurnFileDiff(args, payload));
   register("chat.saveTempAttachment", { viewerAllowed: true }, async (payload) =>
     saveAgentChatTempAttachment(args, payload));
+  register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
+    listPromptStashes(requireService(args.db, "Database not available.")));
+  register("chat.createPromptStash", { viewerAllowed: true }, async (payload) =>
+    createPromptStash(requireService(args.db, "Database not available."), payload));
+  register("chat.deletePromptStash", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing prompt stash id.");
+    return deletePromptStash(requireService(args.db, "Database not available."), id);
+  });
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
