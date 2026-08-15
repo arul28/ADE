@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const runtimeEntitlementsPath = path.join(packageRoot, "build", "entitlements.mac.plist");
 export const requiredRuntimeEntitlement = "com.apple.security.cs.allow-jit";
+export const forbiddenRuntimeEntitlement = "com.apple.security.cs.allow-unsigned-executable-memory";
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -110,14 +111,24 @@ export function buildRuntimeCodesignArgs(binaryPath, identity, entitlementsPath 
   ];
 }
 
+function enabledEntitlementPatterns(entitlement) {
+  const escapedKey = entitlement.replaceAll(".", String.raw`\.`);
+  return {
+    xml: new RegExp(`<key>\\s*${escapedKey}\\s*</key>\\s*<true\\s*/>`, "u"),
+    codesign: new RegExp(
+      String.raw`\[Key\]\s*${escapedKey}\s*\[Value\]\s*\[Bool\]\s*true`,
+      "u",
+    ),
+  };
+}
+
 export function assertRuntimeEntitlements(entitlements, binaryPath) {
-  const escapedKey = requiredRuntimeEntitlement.replaceAll(".", String.raw`\.`);
-  const xmlPattern = new RegExp(`<key>\\s*${escapedKey}\\s*</key>\\s*<true\\s*/>`, "u");
-  const codesignPattern = new RegExp(
-    String.raw`\[Key\]\s*${escapedKey}\s*\[Value\]\s*\[Bool\]\s*true`,
-    "u",
-  );
-  if (!xmlPattern.test(entitlements) && !codesignPattern.test(entitlements)) {
+  const requiredPatterns = enabledEntitlementPatterns(requiredRuntimeEntitlement);
+  const forbiddenPatterns = enabledEntitlementPatterns(forbiddenRuntimeEntitlement);
+  if (forbiddenPatterns.xml.test(entitlements) || forbiddenPatterns.codesign.test(entitlements)) {
+    throw new Error(`Signed ADE runtime grants ${forbiddenRuntimeEntitlement}: ${binaryPath}`);
+  }
+  if (!requiredPatterns.xml.test(entitlements) && !requiredPatterns.codesign.test(entitlements)) {
     throw new Error(`Signed ADE runtime is missing ${requiredRuntimeEntitlement}: ${binaryPath}`);
   }
 }

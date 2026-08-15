@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertRuntimeEntitlements,
   buildRuntimeCodesignArgs,
+  forbiddenRuntimeEntitlement,
   requiredRuntimeEntitlement,
   runtimeEntitlementsPath,
 } from "./notarize-static-runtime.mjs";
@@ -26,6 +27,22 @@ test("rejects a signed runtime when the JIT entitlement is absent or disabled", 
   assert.throws(() => assertRuntimeEntitlements(missing, "/tmp/ade"), /missing com\.apple\.security\.cs\.allow-jit/u);
   assert.throws(() => assertRuntimeEntitlements(disabled, "/tmp/ade"), /missing com\.apple\.security\.cs\.allow-jit/u);
   assert.throws(() => assertRuntimeEntitlements(malformed, "/tmp/ade"), /missing com\.apple\.security\.cs\.allow-jit/u);
+});
+
+test("rejects the broader unsigned executable memory entitlement", () => {
+  const xmlOutput = `<plist><dict><key>${forbiddenRuntimeEntitlement}</key><true/></dict></plist>`;
+  const codesignOutput = `[Dict]\n\t[Key] ${forbiddenRuntimeEntitlement}\n\t[Value]\n\t\t[Bool] true`;
+  const validOutput = `[Dict]\n\t[Key] ${requiredRuntimeEntitlement}\n\t[Value]\n\t\t[Bool] true`;
+
+  assert.throws(
+    () => assertRuntimeEntitlements(xmlOutput, "/tmp/ade"),
+    /grants com\.apple\.security\.cs\.allow-unsigned-executable-memory/u,
+  );
+  assert.throws(
+    () => assertRuntimeEntitlements(codesignOutput, "/tmp/ade"),
+    /grants com\.apple\.security\.cs\.allow-unsigned-executable-memory/u,
+  );
+  assert.doesNotThrow(() => assertRuntimeEntitlements(validOutput, "/tmp/ade"));
 });
 
 test("accepts the codesign display format emitted by current macOS", () => {
