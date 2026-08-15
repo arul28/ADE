@@ -132,7 +132,30 @@ final class SyncEnvelopeChunkAssemblerTests: XCTestCase {
         part: try XCTUnwrap(decoded["part"] as? String)
       ) ?? reassembled
     }
-    XCTAssertEqual(reassembled, direct)
+    // Compared as parsed objects, not as text. Key order is NOT part of the
+    // wire contract: an envelope is a JSON object, `JSONSerialization` emits its
+    // keys in dictionary iteration order, and Swift seeds that order per
+    // process — so two envelopes built by different code paths can serialize the
+    // same keys in different orders and still be the same envelope.
+    //
+    // This assertion used to compare the two strings, which made it a coin flip
+    // per test process: it failed on roughly two runs in five, always with
+    // byte-different, semantically identical JSON of the same length. It was
+    // testing the hash seed rather than the chunking. What the chunked path
+    // actually promises is that the SAME envelope comes back out, and that is
+    // what is checked here — `NSDictionary` equality is deep and order-blind.
+    //
+    // The byte-identity assertion above is deliberate and stays as it is: the
+    // no-capability path must produce the same text it always has, and both
+    // sides of it are encoded by the same call in the same process.
+    let reassembledText = try XCTUnwrap(reassembled)
+    let reassembledObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(reassembledText.utf8)) as? [String: Any]
+    )
+    let directObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(direct.utf8)) as? [String: Any]
+    )
+    XCTAssertEqual(reassembledObject as NSDictionary, directObject as NSDictionary)
   }
 
   func testCompressionAndChunkingMatrixRoundTrips() throws {

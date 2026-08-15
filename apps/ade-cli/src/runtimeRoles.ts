@@ -61,6 +61,43 @@ export function resolveSessionRole(
 }
 
 /**
+ * The identity a terminal opened by an ADE agent carries in its environment.
+ *
+ * Listed in the order someone would type after `unset`, and exported so the
+ * refusal message below cannot drift from the clamp that produced it.
+ */
+export const ADE_SESSION_IDENTITY_ENV_VARS = [
+  "ADE_CHAT_SESSION_ID",
+  "ADE_RUN_ID",
+  "ADE_STEP_ID",
+  "ADE_ATTEMPT_ID",
+  "ADE_OWNER_ID",
+  "ADE_DEFAULT_ROLE",
+] as const;
+
+/**
+ * Why `--role cto` did not take, in the caller's own terms — or null when the
+ * caller carries no session and the clamp below was not the reason.
+ *
+ * The refusal it decorates used to say "run it from your own terminal", which is
+ * true and unusable: an ADE-owned terminal looks exactly like a terminal you
+ * opened, and nothing on screen says it is carrying an agent identity. In the
+ * alpha test that produced `docs/reports/ade-tipsy-plugin-alpha-ux-retrospective.md`
+ * the user retried with the role the error itself named, got the identical
+ * refusal, and only got through after discovering six inherited variables. The
+ * clamp is correct — a chat-session binding must never elevate itself — so the
+ * fix is to name it.
+ */
+export function describeSessionBoundRoleClamp(
+  chatSessionId: string | null | undefined,
+): string | null {
+  if (!chatSessionId) return null;
+  return "This terminal carries an ADE agent session (ADE_CHAT_SESSION_ID is set),"
+    + " so --role cto is clamped to agent. Run from a terminal you opened yourself,"
+    + ` or unset ${ADE_SESSION_IDENTITY_ENV_VARS.join(" ")}.`;
+}
+
+/**
  * A chat-session binding is an authority boundary, not a source of elevation.
  * In particular, a client launched from ADE's CTO-capable runtime must not
  * inherit the daemon's machine-wide CTO role merely because it omitted (or

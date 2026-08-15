@@ -5,7 +5,13 @@ import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import { contributionKey } from "./contributionModel";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
 import { SocketBoundary } from "./SocketBoundary";
-import { SocketIcon, SocketMenuRow, SocketOverflow } from "./socketUi";
+import {
+  SocketIcon,
+  SocketMenuRow,
+  SocketMenuSubRows,
+  SocketOverflow,
+  SocketSplitMenu,
+} from "./socketUi";
 
 /**
  * Contributed buttons in the chat composer's accessory row.
@@ -46,6 +52,11 @@ const BUTTON_BUSY_CLASS =
   + " text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
   + " hover:text-[var(--chat-accent)]";
 
+/** The chevron half, sized to the accessory row rather than to a toolbar. */
+const CHEVRON_CLASS =
+  "inline-flex h-7 shrink-0 items-center rounded-lg px-0.5 text-muted-fg/45"
+  + " transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60";
+
 export function PluginComposerActions({
   surface = "work",
   sessionId,
@@ -84,6 +95,10 @@ export function PluginComposerActions({
     }),
     [laneId, projectKey, projectRoot, sessionId],
   );
+  // Filed per SESSION: `surface` names the tab this kind is declared on, while
+  // the composer context resolves to a `{entityKind: "session"}` key and skips
+  // the surface fallback — so a plugin publishes a per-chat row to change what
+  // this button says in one conversation. See `useSurfaceContributions`.
   const contributions = useSurfaceContributions(surface, "composer-action", {
     active,
     context: identity,
@@ -132,6 +147,7 @@ export function PluginComposerActions({
       {visible.map((contribution) => {
         const key = contributionKey(contribution);
         const busy = busyKeys.includes(key);
+        const menu = contribution.payload.menu ?? [];
         return (
           <SocketBoundary key={key}>
             <button
@@ -151,6 +167,17 @@ export function PluginComposerActions({
               <SocketIcon name={contribution.payload.icon} size={12} />
               <span className="truncate">{contribution.payload.label}</span>
             </button>
+            {/* Menu actions share the BUTTON's busy key on purpose: the two
+                halves are one control, so a menu action that records for two
+                minutes lights the button the user is looking at and refuses a
+                second press from either half. */}
+            <SocketSplitMenu
+              items={menu}
+              label={contribution.payload.label}
+              dataTour={`${dataTour}-menu`}
+              className={CHEVRON_CLASS}
+              onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
+            />
           </SocketBoundary>
         );
       })}
@@ -168,6 +195,10 @@ export function PluginComposerActions({
                   label={contribution.payload.label}
                   {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
                   onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
+                />
+                <SocketMenuSubRows
+                  items={contribution.payload.menu ?? []}
+                  onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
                 />
               </SocketBoundary>
             );

@@ -16,6 +16,7 @@ import {
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
 import { budgetExceeded, PluginSdkError, PLUGIN_BUDGET_EXCEEDED_CODE } from "../../desktop/src/shared/plugins/sdk";
+import { resetPluginInstallApprovalsForTests } from "../../desktop/src/main/services/plugins/pluginInstallApproval";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -6544,8 +6545,343 @@ describe("run_ade_action plugin domain", () => {
     expect(names).toContain("plugin.list");
     expect(names).toContain("plugin.invoke");
     expect(names).toContain("plugin.usageSummary");
-    expect(names).not.toContain("plugin.install");
+    // `install` stays listed for a lesser caller now that its refusal is a
+    // QUESTION rather than a dead end: an agent cannot ask permission for a
+    // verb it was never told exists. The other three are still hidden, because
+    // for them the refusal really is the end of the road.
+    expect(names).toContain("plugin.install");
     expect(names).not.toContain("plugin.uninstall");
+    expect(names).not.toContain("plugin.enable");
+    expect(names).not.toContain("plugin.disable");
+  });
+
+  /**
+   * The approval card — an agent's `plugin.install` turned into a question.
+   *
+   * The gate fires only for a caller that is BOTH agent-role and carries a chat
+   * session, on a runtime that has a chat service to raise the card in. On
+   * approval it falls through to the ordinary dispatch, so `service.install`
+   * runs from the same invocation site a CTO caller reaches.
+   */
+  describe("agent-initiated install approval", () => {
+    const approvalSourceDirs: string[] = [];
+
+    /** A real directory with a parseable manifest: resolves as a `path` source. */
+    function pluginSourceDir(overrides: Record<string, unknown> = {}): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rpc-install-src-"));
+      approvalSourceDirs.push(dir);
+      fs.writeFileSync(
+        path.join(dir, "plugin.json"),
+        JSON.stringify({
+          name: "ade-tipsy",
+          version: "0.3.0",
+          displayName: "Tipsy",
+          description: "A drink counter.",
+          entry: "index.js",
+          surfaces: [{ kind: "tab", id: "tipsy", title: "Tipsy", panelId: "main" }],
+          panels: [{ id: "main", title: "Tipsy" }],
+          sockets: [
+            { socket: "composer-action", surface: "work", id: "drink", label: "Take a drink", actionId: "drink" },
+          ],
+          ...overrides,
+        }),
+        "utf8",
+      );
+      return dir;
+    }
+
+    type ChatInputArgs = Record<string, unknown>;
+
+    /** Stand in for the chat service the host raises the card through. */
+    function withApprovalChat(
+      fixture: RuntimeFixture,
+      answer: { decision?: string; answers?: Record<string, string[]> } = {},
+    ): ChatInputArgs[] {
+      const calls: ChatInputArgs[] = [];
+      (fixture.runtime.agentChatService as any).requestChatInput = vi.fn(async (args: ChatInputArgs) => {
+        calls.push(args);
+        return {
+          decision: answer.decision ?? "accept",
+          answers: answer.answers ?? { plugin_install: ["install"] },
+          responseText: null,
+        };
+      });
+      return calls;
+    }
+
+    beforeEach(() => {
+      // The approved-pair record is module-level, so a leak from one case would
+      // silently answer the next one's question for it.
+      resetPluginInstallApprovalsForTests();
+    });
+
+    afterEach(() => {
+      while (approvalSourceDirs.length) {
+        fs.rmSync(approvalSourceDirs.pop()!, { recursive: true, force: true });
+      }
+    });
+
+    it("installs on the host's authority once the person in the chat says yes", async () => {
+      const source = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "plugin",
+        action: "install",
+        args: { source },
+      });
+
+      expect(result?.isError).toBeUndefined();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.chatSessionId).toBe("chat-1");
+      // The card is raised operator-only: the requesting agent can read the
+      // itemId back out of its own transcript, so "knows the id" cannot be the
+      // rule for answering it.
+      expect(calls[0]!.operatorOnly).toBe(true);
+      expect(service.install).toHaveBeenCalledTimes(1);
+      expect(service.install).toHaveBeenCalledWith({ source });
+    });
+
+    it("writes the card from the manifest it parsed, never from the caller's arguments", async () => {
+      const source = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      await callTool(handler, "run_ade_action", {
+        domain: "plugin",
+        action: "install",
+        // Everything but `source` is noise the gate never reads — and the
+        // reader must never see it, because a card that quotes its requester is
+        // a card the requester wrote.
+        args: { source, displayName: "TOTALLY SAFE OFFICIAL PLUGIN" },
+      });
+
+      expect(calls).toHaveLength(1);
+      // The name and version come from the manifest on disk; the path is shown
+      // verbatim because it is the thing being approved.
+      expect(String(calls[0]!.title)).toContain("Tipsy");
+      expect(String(calls[0]!.body)).toContain(source);
+      expect(JSON.stringify(calls[0])).not.toContain("TOTALLY SAFE OFFICIAL PLUGIN");
+      expect(service.install).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses with a typed denial the agent can act on when the person declines", async () => {
+      const source = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      withApprovalChat(fixture, { decision: "decline", answers: { plugin_install: ["deny"] } });
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "plugin",
+        action: "install",
+        args: { source },
+      });
+
+      expect(denied?.isError).toBe(true);
+      expect(denied.error).toMatchObject({
+        code: JsonRpcErrorCode.policyDenied,
+        data: { kind: "plugin_install_denied", method: "plugin.install" },
+      });
+      expect(service.install).not.toHaveBeenCalled();
+    });
+
+    it("asks once for a directory and installs from it again without a second card", async () => {
+      const source = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      const first = await callTool(handler, "run_ade_action", {
+        domain: "plugin", action: "install", args: { source },
+      });
+      // The build-test-fix loop: the agent edits the plugin and installs again.
+      const second = await callTool(handler, "run_ade_action", {
+        domain: "plugin", action: "install", args: { source },
+      });
+
+      expect(first?.isError).toBeUndefined();
+      expect(second?.isError).toBeUndefined();
+      expect(calls).toHaveLength(1);
+      expect(service.install).toHaveBeenCalledTimes(2);
+    });
+
+    it("asks again for a different directory", async () => {
+      const first = pluginSourceDir();
+      const second = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      await callTool(handler, "run_ade_action", { domain: "plugin", action: "install", args: { source: first } });
+      await callTool(handler, "run_ade_action", { domain: "plugin", action: "install", args: { source: second } });
+
+      expect(calls).toHaveLength(2);
+      expect(service.install).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the flat refusal for an agent with no chat to raise a card in", async () => {
+      const source = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent" });
+
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "plugin",
+        action: "install",
+        args: { source },
+      });
+
+      expect(denied?.isError).toBe(true);
+      expect(denied.error).toMatchObject({
+        code: JsonRpcErrorCode.policyDenied,
+        data: { kind: "plugin_role_denied", requiredRole: "cto" },
+      });
+      expect(calls).toHaveLength(0);
+      expect(service.install).not.toHaveBeenCalled();
+    });
+
+    it("leaves uninstall a flat refusal even for a chat-bound agent", async () => {
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "plugin",
+        action: "uninstall",
+        args: { pluginId: "hello" },
+      });
+
+      expect(denied?.isError).toBe(true);
+      expect(denied.error).toMatchObject({
+        code: JsonRpcErrorCode.policyDenied,
+        data: { kind: "plugin_role_denied", method: "plugin.uninstall" },
+      });
+      // Removing a plugin is not a thing to interrupt someone for mid-turn, and
+      // an uninstall prompt is exactly the card people learn to dismiss.
+      expect(calls).toHaveLength(0);
+      expect(service.uninstall).not.toHaveBeenCalled();
+    });
+
+    it("never raises a card for the machine operator", async () => {
+      const source = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "operator", role: "cto" });
+
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "plugin",
+        action: "install",
+        args: { source },
+      });
+
+      expect(result?.isError).toBeUndefined();
+      expect(calls).toHaveLength(0);
+      expect(service.install).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats an identity that claims cto WITH a chat session as the agent it is", async () => {
+      // `resolveSessionBoundRole` clamps a session-bound `cto` to `agent`, so
+      // "a CTO caller carrying a chatSessionId" is not a thing this door can
+      // produce. The clamped caller takes the approval path like any other
+      // agent — which is the safe direction, and worth pinning so a future
+      // change to the clamp cannot quietly hand an agent the operator's install.
+      const source = pluginSourceDir();
+      const { service, host } = pluginHostMock();
+      const fixture = withPluginHost(host);
+      const calls = withApprovalChat(fixture);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "claims-cto", role: "cto", chatSessionId: "chat-1" });
+
+      await callTool(handler, "run_ade_action", { domain: "plugin", action: "install", args: { source } });
+
+      expect(calls).toHaveLength(1);
+      expect(service.install).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * The other half of invariant 2: the agent must not be able to ANSWER the
+   * card it raised. `respondToInput` matches a waiter by `itemId` alone, and
+   * that id lands in the transcript the requesting agent can read back.
+   */
+  describe("operator-only pending input", () => {
+    function withPendingInput(fixture: RuntimeFixture, requiresOperator: boolean) {
+      const respondToInput = vi.fn(async () => ({ ok: true }));
+      (fixture.runtime.agentChatService as any).respondToInput = respondToInput;
+      (fixture.runtime.agentChatService as any).pendingInputRequiresOperator = vi.fn(() => requiresOperator);
+      return respondToInput;
+    }
+
+    it("refuses to relay an agent's answer to an operator-only request", async () => {
+      const fixture = createRuntime();
+      const respondToInput = withPendingInput(fixture, true);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "respondToInput",
+        args: { sessionId: "chat-1", itemId: "item-1" },
+      });
+
+      expect(denied?.isError).toBe(true);
+      expect(denied.error).toMatchObject({
+        code: JsonRpcErrorCode.policyDenied,
+        data: { kind: "pending_input_operator_only", itemId: "item-1", requiredRole: "cto" },
+      });
+      expect(respondToInput).not.toHaveBeenCalled();
+    });
+
+    it("lets the operator answer the same request", async () => {
+      const fixture = createRuntime();
+      const respondToInput = withPendingInput(fixture, true);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "operator", role: "cto" });
+
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "respondToInput",
+        args: { sessionId: "chat-1", itemId: "item-1" },
+      });
+
+      expect(result?.isError).toBeUndefined();
+      expect(respondToInput).toHaveBeenCalledWith({ sessionId: "chat-1", itemId: "item-1" });
+    });
+
+    it("leaves ordinary approvals answerable by the agent that was asked", async () => {
+      const fixture = createRuntime();
+      const respondToInput = withPendingInput(fixture, false);
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "respondToInput",
+        args: { sessionId: "chat-1", itemId: "item-1" },
+      });
+
+      expect(result?.isError).toBeUndefined();
+      expect(respondToInput).toHaveBeenCalledWith({ sessionId: "chat-1", itemId: "item-1" });
+    });
   });
 });
 

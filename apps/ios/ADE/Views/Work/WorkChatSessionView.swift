@@ -2349,6 +2349,8 @@ private struct WorkChatComposerDraftInput: View {
               disabled: !canCompose || !attachmentsAvailable || settingsMutationInFlight
             )
 
+            pluginComposerActions
+
             WorkChatComposerTextField(
               draftState: draftState,
               controller: suggestionController,
@@ -2511,8 +2513,12 @@ private struct WorkChatComposerDraftInput: View {
   /// Contributed buttons in the accessory row, after the composer's own
   /// controls and before the spacer that pushes the meter to the trailing edge.
   ///
-  /// Compact mode draws none: that layout is one text field and a mic on a
-  /// single line, and there is no room for a control that is not the product's.
+  /// Compact mode draws them too, and used not to. That layout is one text
+  /// field and a mic on a single line, so it looked like the row with no space
+  /// to spare — but the consequence was a plugin whose button was on screen on
+  /// desktop and simply missing on the phone, for the same chat and the same
+  /// install, with nothing anywhere saying why. A tighter presentation is the
+  /// honest trade: one labeled action inline, the rest behind a plugins menu.
   @ViewBuilder
   private var pluginComposerActions: some View {
     PluginComposerActions(
@@ -2522,7 +2528,8 @@ private struct WorkChatComposerDraftInput: View {
       // moment rather than the ones that were there when the row last drew.
       draft: { draftState.text },
       onEdit: applyPluginComposerEdit,
-      enabled: canCompose && !settingsMutationInFlight
+      enabled: canCompose && !settingsMutationInFlight,
+      compact: compact
     )
   }
 

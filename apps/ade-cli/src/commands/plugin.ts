@@ -7,6 +7,7 @@
 //   ade plugin remove|uninstall <id>
 //   ade plugin enable <id> | disable <id> | reload <id>
 //   ade plugin logs <id> [--limit <n>]
+//   ade plugin doctor <id>
 //   ade plugin dev [<id>|<path>]
 //
 // Two halves, deliberately split:
@@ -36,12 +37,21 @@ import {
 import { isRecord } from "../../../desktop/src/shared/plugins/parse";
 import { readPluginInstallRecords } from "../../../desktop/src/main/services/plugins/pluginRegistryFile";
 import type {
+  PluginContributionRecord,
   PluginDetail,
   PluginInstallRecord,
   PluginInstallSource,
   PluginLogEntry,
+  PluginPresenceMachineRow,
   PluginSummary,
+  PluginUsageSummary,
 } from "../../../desktop/src/shared/plugins/sdk";
+import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "../../../desktop/src/shared/plugins/clientRendering";
+import {
+  buildPluginDoctorReport,
+  formatPluginDoctorReport,
+  type PluginDoctorLive,
+} from "./pluginDoctor";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 export class CliPluginUsageError extends Error {}
@@ -72,6 +82,7 @@ const HELP_PLUGIN = [
   "  ade plugin enable <id> | disable <id>     Turn a plugin on or off",
   "  ade plugin reload <id>                    Re-read the manifest and restart it",
   "  ade plugin logs <id> [--limit <n>]        Show a plugin's recent log lines",
+  "  ade plugin doctor <id>                    Check every layer between installed and visible",
   "  ade plugin dev [<id>|<path>]              Watch a plugin directory and reload on change",
   "",
   "  list and create work without the ADE brain; everything else runs through",
@@ -497,7 +508,18 @@ async function runPluginInstall(
     ...(ref ? { ref } : {}),
     enable: !noEnable,
   });
-  return daemonResult(result, format);
+  const installed = daemonResult(result, format);
+  if (format !== "text") return installed;
+  // A skill arriving is the one thing an install changes that the reader
+  // cannot see, and the moment they will test it is the turn already running.
+  // Read from the registry rather than the action result: the manifest is on
+  // disk by now, and the summary carries no skill list.
+  const pluginId = isRecord(result) && typeof result.pluginId === "string" ? result.pluginId : null;
+  const { manifest } = pluginId
+    ? readPluginManifestAt(path.join(resolvePluginsRoot(), pluginId))
+    : { manifest: null };
+  if (!manifest || manifest.skills.length === 0) return installed;
+  return { ...installed, output: `${installed.output}${PLUGIN_SKILL_NEXT_TURN_NOTE}\n` };
 }
 
 async function runPluginLifecycle(
@@ -548,6 +570,100 @@ async function runPluginLogs(
     return { output: `${lines.join("\n")}\n`, exitCode: 0 };
   }
   return jsonOutput(recent);
+}
+
+// ---------------------------------------------------------------------------
+// doctor — the state ladder
+// ---------------------------------------------------------------------------
+
+/**
+ * Ask the host one question, and treat every failure as "nobody could say".
+ *
+ * Deliberately swallowing: `doctor` is the command someone runs when things are
+ * already wrong, so a host that answers four of five questions must still print
+ * four answers. The layer builder renders the fifth as unchecked rather than as
+ * absent.
+ */
+async function askHost<T>(work: () => Promise<unknown>, fallback: T): Promise<T> {
+  try {
+    return ((await work()) as T) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * The live half of the ladder.
+ *
+ * `plugin.get` is the probe: if THAT cannot be reached the brain is not
+ * answering at all, and the whole live half returns null so the report says so
+ * once instead of printing "unknown" five times over.
+ */
+async function readPluginDoctorLive(
+  pluginId: string,
+  manifest: PluginManifest | null,
+  invoke: PluginActionInvoker | undefined,
+): Promise<PluginDoctorLive | null> {
+  if (!invoke) return null;
+  let detail: PluginDetail | null;
+  try {
+    detail = (await invoke("get", { pluginId })) as PluginDetail | null;
+  } catch {
+    return null;
+  }
+
+  const presenceRows = await askHost<PluginPresenceMachineRow[]>(() => invoke("presence", {}), []);
+  const usageSummary = await askHost<PluginUsageSummary | null>(
+    () => invoke("usageSummary", { pluginId }),
+    null,
+  );
+
+  // One read per surface the manifest names, because `listContributions` is
+  // scoped to a surface — asking for all eight would cost seven pointless round
+  // trips on the usual plugin, which declares sockets on one.
+  const surfaces = [...new Set((manifest?.sockets ?? []).map((socket) => socket.surface))];
+  const contributions: PluginContributionRecord[] = [];
+  for (const surface of surfaces) {
+    const rows = await askHost<PluginContributionRecord[]>(
+      () => invoke("listContributions", { surface }),
+      [],
+    );
+    for (const row of rows) {
+      if (row?.pluginId === pluginId) contributions.push(row);
+    }
+  }
+
+  return {
+    detail: detail ?? null,
+    presence: presenceRows.filter((row) => row?.pluginId === pluginId),
+    contributions,
+    usage: usageSummary?.entries?.find((entry) => entry.pluginId === pluginId) ?? null,
+  };
+}
+
+async function runPluginDoctor(
+  args: string[],
+  format: OutputFormat,
+  deps: PluginCommandDeps | undefined,
+): Promise<PluginCliResult> {
+  const pluginId = requirePluginId(args[0], "ade plugin doctor <id>");
+  const pluginsRoot = resolvePluginsRoot();
+  const record = readPluginInstallRecords(pluginsRoot).get(pluginId) ?? null;
+  const parsed = readPluginManifestAt(path.join(pluginsRoot, pluginId));
+  const live = await readPluginDoctorLive(pluginId, parsed.manifest, deps?.invokeAction);
+
+  const report = buildPluginDoctorReport({
+    pluginId,
+    record,
+    manifest: parsed.manifest,
+    // A plugin that is not installed here has no manifest to be wrong about;
+    // reporting "plugin.json is missing" for it would answer a question the
+    // "Installed here" line already answers better.
+    manifestErrors: record ? parsed.errors : [],
+    live,
+  });
+  if (format === "text") return { output: formatPluginDoctorReport(report), exitCode: 0 };
+  return jsonOutput(report);
 }
 
 // ---------------------------------------------------------------------------
@@ -706,6 +822,7 @@ const PLUGIN_SUBCOMMANDS: Record<string, PluginSubcommand> = {
   disable: { kind: "daemon", run: (args, format, deps) => runPluginLifecycle("disable", args, format, deps) },
   reload: { kind: "daemon", run: (args, format, deps) => runPluginLifecycle("reload", args, format, deps) },
   logs: { kind: "daemon", run: (args, format, deps) => runPluginLogs(args, format, deps) },
+  doctor: { kind: "daemon", run: (args, format, deps) => runPluginDoctor(args, format, deps) },
   dev: { kind: "daemon", run: (args, format, deps) => runPluginDev(args, format, deps) },
 };
 

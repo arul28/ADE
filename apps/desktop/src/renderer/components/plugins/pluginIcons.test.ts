@@ -36,6 +36,38 @@ describe("pluginIcon", () => {
     }
     expect(pluginIcon("  GEAR ")).toBe(pluginIcon("gear"));
   });
+
+  /**
+   * A published name must resolve to a REAL glyph, not to the fallback.
+   *
+   * `toBeTruthy` above cannot tell the two apart — the fallback is a component
+   * too — so a token could be advertised in `PLUGIN_ICON_NAMES`, documented in
+   * the authoring skill, and still draw a puzzle piece. `puzzle` is excluded
+   * because it legitimately IS the fallback glyph.
+   */
+  it("draws a real glyph for every published name, never the fallback", () => {
+    for (const name of PLUGIN_ICON_NAMES) {
+      if (name === "puzzle") continue;
+      expect(pluginIcon(name), `${name} is published but draws the fallback`)
+        .not.toBe(DEFAULT_PLUGIN_ICON);
+    }
+  });
+
+  /**
+   * `beer` by name, because it is the retrospective's literal example.
+   *
+   * The alpha test's plugin declared `"icon": "beer"`. That token has now been
+   * wrong in both directions: first the two clients drew different pictures for
+   * it, then desktop lost it entirely while the phone kept it — so the same
+   * manifest rendered a mug on iOS and a puzzle piece here. Pinned by name
+   * rather than left to the general sweep above, so the specific token the
+   * report is written about cannot quietly go missing a third time.
+   */
+  it("resolves the token the plugin retrospective was written about", () => {
+    expect(PLUGIN_ICON_NAMES).toContain("beer");
+    expect(pluginIcon("beer")).not.toBe(DEFAULT_PLUGIN_ICON);
+    expect(pluginIcon("BEER")).toBe(pluginIcon("beer"));
+  });
 });
 
 /**

@@ -34,7 +34,7 @@ import { pluginIdentity } from "./pluginIcons";
 import { PluginInstallDialog, type InstallDialogTarget } from "./PluginInstallDialog";
 import { PluginConfigForm } from "./PluginConfigForm";
 import { PluginThemePreview } from "./PluginThemePreview";
-import { ContributionsRail, MachineRail, UsageRail } from "./MarketplaceDetailRail";
+import { ContributionsRail, MachineRail, UsageRail, WhereItShowsUpRail } from "./MarketplaceDetailRail";
 import { useMarketplaceCatalogue, usePluginPresence, usePluginRepoStars } from "./useMarketplace";
 import { PluginMediaGallery } from "./PluginMediaGallery";
 import { PluginStarButton } from "./PluginStarButton";
@@ -361,6 +361,13 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
             canToggle={catalogue.capabilities.contributions && installedPlugin !== null}
             onError={setActionError}
           />
+
+          {/* Directly under what it adds, because it answers the question that
+              list provokes: the reader has just read "composer button in Work"
+              and wants to know whether their phone will show it. Installed only
+              — for a plugin nobody has yet, "where would it show up" is a
+              hypothetical, and the install dialog already lists what it adds. */}
+          {installedPlugin ? <WhereItShowsUpRail manifest={manifest} showSkillTiming /> : null}
 
           {installedPlugin && manifest && manifest.settings.length > 0 ? (
             <RailSection title="Settings">

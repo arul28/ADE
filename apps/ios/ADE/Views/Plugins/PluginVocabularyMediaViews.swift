@@ -147,7 +147,7 @@ struct PluginVocabButtonView: View {
       HStack(spacing: 6) {
         if isBusy {
           ProgressView().controlSize(.mini)
-        } else if let icon = button.icon, PluginSymbol.exists(icon) {
+        } else if let icon = PluginSymbol.symbol(button.icon) {
           Image(systemName: icon)
             .font(.system(size: 11, weight: .semibold))
         }
@@ -251,16 +251,150 @@ struct PluginInlineEmptyText: View {
   }
 }
 
-/// Icon names arrive from a plugin manifest written for four clients, so most
-/// of them are not SF Symbols. Checking before use keeps an unrecognized name
-/// from rendering as an empty box beside a label.
+/// The manifest icon namespace, and the phone's half of it.
+///
+/// A plugin manifest names an icon with a TOKEN — `beer`, `git-branch`,
+/// `list-checks` — drawn from one shared list that every client resolves in its
+/// own catalogue. Desktop resolves it against `PLUGIN_ICONS` in
+/// `apps/desktop/src/renderer/components/plugins/pluginIcons.tsx` and draws a
+/// Phosphor glyph; this map is the same list resolved into SF Symbols.
+///
+/// Before this map, iOS had no token namespace at all: it passed the manifest
+/// string straight to `UIImage(systemName:)`, so a token drew only if it
+/// happened to also be an SF Symbol name. Thirty-three of the shared tokens
+/// silently became the puzzle piece, and the ones that did draw could mean
+/// something else entirely — the alpha test found the sharpest form of it, where
+/// a drink plugin's `beer` read as a cup of tea on the phone and a stein on the
+/// desktop beside it, from one manifest.
+///
+/// Two rules follow, and both are load-bearing:
+///
+/// - **Every token in desktop's list has an entry here.** A parity test walks a
+///   literal copy of that list in both directions, so neither side can add a
+///   token the other cannot draw.
+/// - **The token list is the whole namespace.** An unrecognised string is not
+///   retried as an SF Symbol name — see ``symbol(_:)``.
+///
+/// The pairs are chosen for what a glyph MEANS rather than what it is called:
+/// Phosphor's `Robot` and SF's `cpu` share no word and the same idea.
 enum PluginSymbol {
+  /// Manifest icon token → SF Symbol. Mirrors desktop's `PLUGIN_ICONS`.
+  ///
+  /// Same additive/removal rule as desktop: adding a token is safe, removing
+  /// one silently changes the appearance of a plugin already shipped with it.
+  ///
+  /// Where the two catalogues do not have the same glyph, the entry picks the
+  /// nearest MEANING and the comment says what was given up. A token with no
+  /// honest neighbour would be left out rather than pointed at something that
+  /// reads as another thing — that mistake is exactly what `beer` was.
+  private static let tokens: [String: String] = [
+    "beer": "mug",
+    "bell": "bell",
+    "bookmark": "bookmark",
+    "brain": "brain",
+    "bug": "ladybug",
+    "calendar": "calendar",
+    "chart": "chart.line.uptrend.xyaxis",
+    "chart-bar": "chart.bar",
+    "chat": "bubble.left.and.bubble.right",
+    "clock": "clock",
+    "clock-counter-clockwise": "clock.arrow.circlepath",
+    "cloud": "cloud",
+    "code": "chevron.left.forwardslash.chevron.right",
+    // Phosphor's compass rose. SF's nearest rose is Safari's; `location.north`
+    // is the needle without the dial, which reads as "heading" rather than
+    // "explore", so the dial wins.
+    "compass": "safari",
+    "cube": "cube",
+    "currency": "dollarsign.circle",
+    "database": "cylinder.split.1x2",
+    "desktop": "desktopcomputer",
+    "device-mobile": "iphone",
+    "envelope": "envelope",
+    "eye": "eye",
+    "file": "doc.text",
+    "flag": "flag",
+    "folder": "folder",
+    "gear": "gearshape",
+    "git-branch": "arrow.triangle.branch",
+    // A commit is a node on a line, and SF has no VCS glyph at all. The filled
+    // dot inside a ring is the closest reading; it loses the line.
+    "git-commit": "smallcircle.filled.circle",
+    "git-pull-request": "arrow.triangle.pull",
+    "globe": "globe",
+    "graph": "point.3.connected.trianglepath.dotted",
+    "heart": "heart",
+    "image": "photo",
+    "kanban": "rectangle.split.3x1",
+    "key": "key",
+    "lightning": "bolt",
+    "link": "link",
+    "list": "checklist",
+    "list-checks": "checklist",
+    "lock": "lock",
+    "magic": "wand.and.stars",
+    "microphone": "mic",
+    "music": "music.note",
+    "note": "note.text",
+    "package": "shippingbox",
+    "palette": "paintpalette",
+    "play": "play",
+    "plug": "powerplug",
+    "puzzle": "puzzlepiece.extension",
+    // SF has no robot. `cpu` is the machine-that-acts reading Phosphor's Robot
+    // carries in a plugin manifest, and it is not mistakable for anything else
+    // in this list.
+    "robot": "cpu",
+    // Nor a rocket. Launch/ship is the sense, and `paperplane` is the only
+    // send-it glyph in the catalogue; it loses the "big release" weight.
+    "rocket": "paperplane",
+    "rows": "rectangle.split.1x2",
+    "shield": "checkmark.shield",
+    "sparkle": "sparkles",
+    "star": "star",
+    "storefront": "storefront",
+    "table": "tablecells",
+    "tag": "tag",
+    "terminal": "terminal",
+    "timer": "timer",
+    "toolbox": "wrench.and.screwdriver",
+    "trend": "chart.line.uptrend.xyaxis",
+    "users": "person.3",
+    "video": "video",
+    "wrench": "wrench.adjustable",
+  ]
+
+  /// Tokens this build maps, for the parity test that walks every one of them.
+  static var tokenNames: [String] { tokens.keys.sorted() }
+
   static func exists(_ name: String) -> Bool {
     UIImage(systemName: name) != nil
   }
 
+  /// The SF Symbol a manifest icon draws as, or nil when nothing honest draws.
+  ///
+  /// **The token list IS the cross-client namespace, and this lookup is the
+  /// whole of it.** A known token draws its mapped symbol; anything else draws
+  /// nothing here and the caller falls back to the puzzle piece. There is
+  /// deliberately no second attempt at `UIImage(systemName:)` on the raw string.
+  ///
+  /// That fallback existed and was removed on purpose. It looked like
+  /// compatibility for an author who had named an SF Symbol directly, but such a
+  /// name never *worked* in any sense the author could rely on: it rendered on
+  /// this client and drew a puzzle piece on desktop, which cannot resolve SF
+  /// Symbol names at all. Keeping it would have meant the phone silently
+  /// accepting icons no other client can draw — one manifest, two pictures,
+  /// which is the exact bug class the retrospective recorded. With the map
+  /// authoritative, an icon that renders anywhere renders everywhere, and an
+  /// unrecognised string puzzles identically on both.
+  static func symbol(_ name: String?) -> String? {
+    guard let raw = name?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+      return nil
+    }
+    return tokens[raw.lowercased()]
+  }
+
   static func resolve(_ name: String?, fallback: String) -> String {
-    guard let name, exists(name) else { return fallback }
-    return name
+    symbol(name) ?? fallback
   }
 }

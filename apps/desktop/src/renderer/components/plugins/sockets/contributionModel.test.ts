@@ -332,6 +332,89 @@ describe("composer actions", () => {
 });
 
 /**
+ * Which entity a `chat-header-action` is FILED against.
+ *
+ * Written because the contract was misread once, in a way that would have
+ * inverted the very gap the socket exists to close. The renderer calls
+ * `useSurfaceContributions("work", "chat-header-action", { context: session })`,
+ * and the two arguments answer different questions: `surface` picks which
+ * contribution SET to read — which manifest declarations, which loaded rows —
+ * while `context` picks which entity's dynamic rows inside it. Reading the
+ * first as "filed against the surface" is the trap, because the code looks like
+ * a toolbar action's call and behaves like a composer action's.
+ *
+ * `pluginContributionKeyForContext` on a session context returns a `session`
+ * key, so `selectContributions` takes the entity branch and never reaches the
+ * surface branch at all. A client that filed this kind surface-scoped would
+ * render rows desktop ignores and ignore the rows desktop renders — the same
+ * "lit up on one client, dark on the other" failure as the block below, just
+ * pointing the other way.
+ */
+describe("chat-header-action is filed per session, not per surface", () => {
+  const headerSet = () => buildContributionSet(
+    [source("tipsy", [
+      { socket: "chat-header-action", surface: "work", id: "drink", label: "Drink", actionId: "takeDrink" },
+    ])],
+    [
+      {
+        entityKind: "session",
+        entityId: "chat-1",
+        pluginId: "tipsy",
+        socket: "chat-header-action",
+        socketId: "drink",
+        payload: { label: "Drink (3)", actionId: "takeDrink" },
+        updatedAt: "2026-08-15T00:00:00.000Z",
+      },
+      // The same plugin publishing against the TAB. Must not draw in a chat
+      // header: a row addressed to the tab is about the tab.
+      //
+      // It fills the DECLARED socket id, and that detail is load-bearing for
+      // any client porting this fixture. An undeclared id is dropped by a
+      // client that joins published rows against the manifest before looking
+      // anything up — so the assertion would pass there without the scoping
+      // rule ever being exercised, and a surface-scoped implementation would
+      // sail through a test written to catch exactly that. Naming `drink`
+      // leaves the per-session filing as the only thing keeping this row out
+      // of a header, on every client. (iOS found this when porting the block:
+      // their join dropped `tab-wide` at index time, so their copy was green
+      // for the wrong reason.)
+      {
+        entityKind: "surface",
+        entityId: "work",
+        pluginId: "tipsy",
+        socket: "chat-header-action",
+        socketId: "drink",
+        payload: { label: "Tab wide", actionId: "tabWide" },
+        updatedAt: "2026-08-15T00:00:00.000Z",
+      },
+    ],
+    "work",
+  );
+
+  const session = (id: string): PluginSurfaceContext => ({
+    kind: "session",
+    id,
+    title: "A chat",
+    provider: "claude",
+    status: "idle",
+  });
+
+  it("selects the row published for THIS chat, and the declaration for every other", () => {
+    const set = headerSet();
+    expect(selectContributions(set, "chat-header-action", session("chat-1")).map((entry) => entry.payload))
+      .toEqual([{ label: "Drink (3)", actionId: "takeDrink" }]);
+    expect(selectContributions(set, "chat-header-action", session("chat-2")).map((entry) => entry.payload))
+      .toEqual([{ label: "Drink", actionId: "takeDrink" }]);
+  });
+
+  it("never draws a tab-scoped row in a chat header", () => {
+    const labels = selectContributions(headerSet(), "chat-header-action", session("chat-1"))
+      .map((entry) => entry.payload.label);
+    expect(labels).not.toContain("Tab wide");
+  });
+});
+
+/**
  * Rows a plugin publishes against the TAB rather than against a row on it.
  *
  * A plugin can only reach a client with no manifest feed by publishing, so the

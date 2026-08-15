@@ -190,7 +190,7 @@ private struct PluginVocabBadgeView: View {
   let badge: PluginVocabBadge
 
   var body: some View {
-    if let icon = badge.icon, PluginSymbol.exists(icon) {
+    if let icon = PluginSymbol.symbol(badge.icon) {
       ADEGlassChip(icon: icon, text: badge.text, tint: badge.tone.color)
     } else {
       ADEGlassStatusBadge(text: badge.text, tint: badge.tone.color)
@@ -266,7 +266,7 @@ private struct PluginVocabListRow: View {
 
   private var content: some View {
     HStack(spacing: 10) {
-      if let icon = item.icon, PluginSymbol.exists(icon) {
+      if let icon = PluginSymbol.symbol(item.icon) {
         Image(systemName: icon)
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(item.tone.color)

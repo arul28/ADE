@@ -246,6 +246,7 @@ import {
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
+import { pluginSessionContext } from "../plugins/sockets";
 import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
@@ -5396,6 +5397,20 @@ export function AgentChatPane({
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
+  // The subject a `chat-header-action` receives. Null before the pane has a
+  // chat, which is what keeps the socket inert on a fresh pane — the composer
+  // socket makes the same call for the same reason.
+  const chatHeaderPluginSession = useMemo(
+    () => (selectedSessionId
+      ? pluginSessionContext({
+        id: selectedSessionId,
+        title: resolvedTitle,
+        provider: selectedSession?.provider ?? null,
+        status: selectedSession?.status ?? null,
+      })
+      : null),
+    [resolvedTitle, selectedSession?.provider, selectedSession?.status, selectedSessionId],
+  );
   const chatHeaderLane = laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null;
   const chatHeaderLaneName = chatHeaderLane?.name ?? laneId ?? "lane";
   const chatHeaderLaneColor = getLaneAccent(chatHeaderLane, 0);
@@ -11820,6 +11835,8 @@ export function AgentChatPane({
         onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
         prPaneOpen={prPaneOpen}
         runtimePin={chatRuntimePin}
+        pluginSession={chatHeaderPluginSession}
+        pluginSocketsActive={isTileVisible}
         trailingActions={chatHeaderTrailingActions}
         onToggleSessionsPane={onToggleSessionsPane}
         sessionsPaneCollapsed={sessionsPaneCollapsed}

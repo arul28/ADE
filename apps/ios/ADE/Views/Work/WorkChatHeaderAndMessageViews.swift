@@ -106,6 +106,19 @@ struct WorkChatHeaderMenuModel: Equatable {
   var showsProof: Bool = true
   var showsPinAction: Bool = true
   var showsSessionLink: Bool = true
+  /// `chat-header-action` contributions for the open chat.
+  ///
+  /// They ride the model rather than being read from the sync service inside
+  /// the menu, and that is what keeps the `.equatable()` gate below honest: an
+  /// observed object in the menu body would rebuild the presented UIMenu on
+  /// every projection tick and dismiss whatever submenu was open. Here a
+  /// contribution changing is a model change like any other.
+  var pluginActions: [PluginContribution] = []
+  /// Plugin id → display name, for the section headers that attribute them.
+  var pluginNames: [String: String] = [:]
+  /// False when the attached machine cannot run plugin actions — the entries
+  /// still draw, disabled, rather than vanishing while a phone reconnects.
+  var pluginActionsEnabled: Bool = true
 }
 
 /// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
@@ -132,6 +145,7 @@ struct WorkChatHeaderMenu: View, Equatable {
   var onCopySessionId: () -> Void
   var onCopySessionDeepLink: () -> Void
   var onTogglePinned: () -> Void
+  var onInvokePluginAction: (PluginContribution, String) -> Void = { _, _ in }
 
   static func == (lhs: WorkChatHeaderMenu, rhs: WorkChatHeaderMenu) -> Bool {
     lhs.model == rhs.model
@@ -169,6 +183,17 @@ struct WorkChatHeaderMenu: View, Equatable {
       Divider()
 
       sessionItems
+
+      // Last, under every one of the product's own entries. A plugin joins this
+      // menu rather than reordering it: "Delete chat" keeps the position the
+      // reader's muscle memory expects, and nothing a plugin publishes can move
+      // under a finger already travelling towards it.
+      PluginChatHeaderMenuItems(
+        contributions: model.pluginActions,
+        pluginNames: model.pluginNames,
+        isEnabled: model.pluginActionsEnabled,
+        onInvoke: onInvokePluginAction
+      )
     } label: {
       Image(systemName: "ellipsis")
         .font(.system(size: 14, weight: .semibold))

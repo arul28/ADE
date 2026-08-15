@@ -458,6 +458,46 @@ describe("plugin start and panel materialization", () => {
     expect(store!.readPanel("hello-plugin", "main")?.schema).toMatchObject({ title: "Edited" });
   });
 
+  it("restarts the child on reload and runs the manifest that is on disk now", async () => {
+    const { plugins, pluginsRoot, supervisors } = await hostWithFixture();
+    const before = supervisors.latest("hello-plugin")!;
+    expect(before.disposals).toBe(0);
+
+    // The `ade plugin dev` loop edits the installed tree in place. Nothing has
+    // re-read it yet, so the registry still records what was installed.
+    const manifestPath = path.join(pluginsRoot, "hello-plugin", "plugin.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.version = "0.2.0";
+    manifest.sockets = [
+      ...(manifest.sockets as unknown[]),
+      { socket: "row-badge", surface: "prs", id: "pr-greeting", label: "Greeting" },
+    ];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+    const recordedVersion = () => (JSON.parse(
+      fs.readFileSync(path.join(pluginsRoot, "state.json"), "utf8"),
+    ) as { plugins: Record<string, { version: string }> }).plugins["hello-plugin"]!.version;
+    expect(recordedVersion()).toBe("0.1.0");
+
+    const summary = await plugins.reload({ pluginId: "hello-plugin" });
+
+    // (a) The child that was holding the old code is gone, and a fresh one is
+    // running in its place — a reload that only re-read the manifest would
+    // leave the previous build answering every invoke.
+    expect(before.disposals).toBe(1);
+    const after = supervisors.latest("hello-plugin")!;
+    expect(after).not.toBe(before);
+    expect(after.starts).toBe(1);
+    expect(after.status()).toBe("running");
+
+    // (b) The manifest was re-read, and the re-read is what the host now
+    // reports AND what it persisted: the registry's cached version had drifted
+    // from disk, and this is the write that heals it.
+    expect(summary.version).toBe("0.2.0");
+    expect(recordedVersion()).toBe("0.2.0");
+    const sockets = (await plugins.getManifest({ pluginId: "hello-plugin" }))?.sockets ?? [];
+    expect(sockets.map((socket) => socket.id)).toEqual(["greeting", "pr-greeting"]);
+  });
+
   it("stops the running child before an install replaces its directory", async () => {
     const { plugins, supervisors } = await hostWithFixture();
     const first = supervisors.latest("hello-plugin")!;

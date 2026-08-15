@@ -1,4 +1,5 @@
 import {
+  BeerStein,
   Bell,
   Bookmark,
   Brain,
@@ -75,8 +76,18 @@ import {
  *
  * Adding a name here is additive and safe. Removing one is not: a plugin already
  * shipped with that icon silently changes appearance.
+ *
+ * This map and iOS's token map are two halves of one promise, and they have now
+ * broken it in both directions. The plugin alpha retrospective recorded `beer`
+ * rendering as a Phosphor stein on desktop and as `cup.and.saucer.fill` — which
+ * reads as tea — on the phone. The fix for that then left desktop without the
+ * token at all, so the retrospective's own literal example, `"icon": "beer"`,
+ * drew a mug on the phone and a puzzle piece here. A name that resolves on one
+ * client and not the other is worse than a name neither has: the author sees
+ * their plugin working and has no reason to look.
  */
 const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
+  beer: BeerStein,
   bell: Bell,
   bookmark: Bookmark,
   brain: Brain,

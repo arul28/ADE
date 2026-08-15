@@ -1,9 +1,10 @@
 import React from "react";
 import * as Popover from "@radix-ui/react-popover";
+import { CaretDown } from "@phosphor-icons/react";
 
 import { COLORS, RADII, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { pluginIcon } from "../pluginIcons";
-import type { PluginBadgeTone } from "../../../../shared/plugins/sockets";
+import type { PluginActionButtonMenuItem, PluginBadgeTone } from "../../../../shared/plugins/sockets";
 
 /**
  * The chrome every socket shares.
@@ -159,12 +160,15 @@ export function SocketButton({
   disabled,
   onClick,
   dataTour,
+  style,
 }: {
   label: string;
   icon?: string;
   disabled?: boolean;
   onClick: () => void;
   dataTour?: string;
+  /** Overrides, for the one caller that butts a split-menu chevron against it. */
+  style?: React.CSSProperties;
 }) {
   return (
     <button
@@ -189,11 +193,125 @@ export function SocketButton({
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.6 : 1,
         whiteSpace: "nowrap",
+        ...style,
       }}
     >
       <SocketIcon name={icon} size={12} />
       {label}
     </button>
+  );
+}
+
+/**
+ * The chevron half of a split button, and the menu it opens.
+ *
+ * Three chromes host this — the toolbar button, the composer accessory button
+ * and the chat header button — and they differ only in the trigger's own
+ * styling, which is why that arrives as props while the popover does not. A
+ * dropdown that looked like three different dropdowns depending on which button
+ * it hung from would undo the point of `socketUi` having one file.
+ *
+ * Rendered ONLY when a payload carries a menu. A caller with no menu draws the
+ * button it always drew, unchanged, which is the contract the payload field
+ * promises: the arrow is additive and nothing about a plain button moves.
+ */
+export function SocketSplitMenu({
+  items,
+  onSelect,
+  label,
+  dataTour,
+  style,
+  className,
+  iconSize = 9,
+}: {
+  items: readonly PluginActionButtonMenuItem[];
+  onSelect: (item: PluginActionButtonMenuItem) => void;
+  /** Accessible name — the primary button's label is the useful half of it. */
+  label: string;
+  dataTour?: string;
+  style?: React.CSSProperties;
+  className?: string;
+  iconSize?: number;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          aria-label={`${label} — more actions`}
+          data-tour={dataTour}
+          className={className}
+          style={style}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <CaretDown size={iconSize} weight="bold" />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="bottom"
+          align="end"
+          sideOffset={6}
+          onClick={(event) => event.stopPropagation()}
+          style={{
+            zIndex: 60,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            minWidth: 160,
+            maxWidth: 280,
+            padding: 6,
+            background: COLORS.panelCard,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: RADII.md,
+            boxShadow: "var(--shadow-panel)",
+          }}
+        >
+          {items.map((item) => (
+            <Popover.Close asChild key={`${item.actionId} ${item.label}`}>
+              <div>
+                <SocketMenuRow
+                  label={item.label}
+                  {...(item.danger ? { danger: true } : {})}
+                  onClick={() => onSelect(item)}
+                />
+              </div>
+            </Popover.Close>
+          ))}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+/**
+ * A split button's menu, flattened into rows for an overflow popover.
+ *
+ * A button that folded into "+N" cannot also open a dropdown — the chevron went
+ * with the button — so its extra actions would simply vanish at the width where
+ * the overflow appears. They are drawn as indented rows under their primary
+ * instead, which keeps every action a plugin declared reachable at every width.
+ */
+export function SocketMenuSubRows({
+  items,
+  onSelect,
+}: {
+  items: readonly PluginActionButtonMenuItem[];
+  onSelect: (item: PluginActionButtonMenuItem) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", paddingLeft: 12 }}>
+      {items.map((item) => (
+        <SocketMenuRow
+          key={`${item.actionId} ${item.label}`}
+          label={item.label}
+          {...(item.danger ? { danger: true } : {})}
+          onClick={() => onSelect(item)}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -213,6 +331,11 @@ export function SocketMenuRow({
     <button
       type="button"
       onClick={onClick}
+      // The colour below is a CSS custom property, which means it is not
+      // readable from a computed style in a test environment. This attribute is
+      // the same fact in a form the DOM keeps, next to `data-busy` and
+      // `data-tour`, which the sockets already lean on for the same reason.
+      data-danger={danger || undefined}
       style={{
         display: "flex",
         alignItems: "center",

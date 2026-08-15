@@ -4,6 +4,10 @@ import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignToke
 import { setPluginContributionEnabled, type PluginUsageRow } from "../../lib/pluginRuntimeBridge";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import {
+  PLUGIN_SKILL_NEXT_TURN_NOTE,
+  describePluginClientRendering,
+} from "../../../shared/plugins/clientRendering";
+import {
   CoverageGlyph,
   COVERAGE_LABEL,
   RailSection,
@@ -273,6 +277,142 @@ function ContributionToggle({
         />
       </button>
     </li>
+  );
+}
+
+/**
+ * Which of your devices actually draw this plugin.
+ *
+ * The section that exists because "installed" and "visible here" are different
+ * facts and the page said only the first. A plugin can be installed, enabled,
+ * running and publishing rows while a phone shows nothing — because the phone
+ * does not draw that kind of contribution. Every layer knew; none of them said
+ * it, so a correct platform answer read as a broken plugin
+ * (`docs/reports/ade-tipsy-plugin-alpha-ux-retrospective.md`).
+ *
+ * Resting state is four short lines with no jargon. The socket vocabulary — the
+ * words a plugin author writes and a reader has no reason to learn — sits behind
+ * the disclosure, next to the only thing it is needed for: naming which addition
+ * is missing where.
+ */
+export function WhereItShowsUpRail({
+  manifest,
+  showSkillTiming,
+}: {
+  manifest: PluginManifest | null;
+  /** Installed plugins only: the note belongs to an install that just landed. */
+  showSkillTiming: boolean;
+}) {
+  const sockets = manifest?.sockets ?? [];
+  const answers = React.useMemo(
+    () => describePluginClientRendering(sockets.map((socket) => socket.socket)),
+    [sockets],
+  );
+  const skillNote = showSkillTiming && (manifest?.skills.length ?? 0) > 0;
+  if (sockets.length === 0) {
+    // Nothing to place, so there is no per-device answer to give. A skill-only
+    // plugin still has timing worth saying, and that is the whole section.
+    if (!skillNote) return null;
+    return (
+      <RailSection title="Where it shows up">
+        <SkillTimingNote />
+      </RailSection>
+    );
+  }
+
+  const missingOn = answers
+    .filter((answer) => answer.absent.length > 0)
+    .map((answer) => ({
+      label: answer.label,
+      names: sockets
+        .filter((socket) => answer.absent.includes(socket.socket))
+        .map((socket) => socket.label ?? socket.id),
+    }));
+
+  return (
+    <RailSection title="Where it shows up">
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 1 }}>
+        {answers.map((answer) => (
+          <li
+            key={answer.client}
+            style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "4px 0" }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 10,
+                flexShrink: 0,
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                color: answer.renders ? COLORS.accent : COLORS.textDim,
+              }}
+            >
+              {answer.renders ? "✓" : "✗"}
+            </span>
+            <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textSecondary, flex: 1 }}>
+              {answer.label}
+            </span>
+            <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim }}>
+              {answer.absent.length === 0
+                ? "everything it adds"
+                : answer.renders
+                  ? `${answer.drawn.length} of ${sockets.length}`
+                  : "nothing it adds"}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {missingOn.length > 0 ? (
+        <details>
+          <summary
+            style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, cursor: "pointer" }}
+          >
+            Details
+          </summary>
+          <ul style={{ margin: "8px 0 0", padding: 0, listStyle: "none", display: "grid", gap: 6 }}>
+            {missingOn.map((entry) => (
+              <li
+                key={entry.label}
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: COLORS.textDim,
+                }}
+              >
+                {`Not drawn on ${entry.label}: ${entry.names.join(", ")}`}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {skillNote ? <SkillTimingNote /> : null}
+    </RailSection>
+  );
+}
+
+/**
+ * The one sentence that explains why an agent mid-answer did not change.
+ *
+ * Said here rather than only at install time because the question is asked
+ * later — the user presses the plugin's button, the reply comes back exactly as
+ * before, and this page is where they come to find out why.
+ */
+function SkillTimingNote() {
+  return (
+    <p
+      style={{
+        margin: 0,
+        fontFamily: SANS_FONT,
+        fontSize: 10.5,
+        lineHeight: 1.5,
+        color: COLORS.textDim,
+      }}
+    >
+      {PLUGIN_SKILL_NEXT_TURN_NOTE}
+    </p>
   );
 }
 

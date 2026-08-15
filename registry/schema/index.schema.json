@@ -2,9 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/arul28/ade-plugins-registry/main/schema/index.schema.json",
   "title": "ADE plugin registry index",
-  "description": "The document the crawler writes and every ADE install reads. Kept in step with apps/desktop/src/shared/plugins/registryIndex.ts, which is the enforcing copy — this file documents the contract and lets the crawler validate before publishing. Objects stay open (additionalProperties true) and only identity is required, because that is what the enforcing parser does: it accepts an index from a newer registry and degrades field by field. A schema that refused unknown fields would make every registry change a flag day across every installed ADE, and would have failed a document the app itself accepts.",
+  "description": "The document the crawler writes and every ADE install reads. Kept in step with apps/desktop/src/shared/plugins/registryIndex.ts, which is the enforcing copy \u2014 this file documents the contract and lets the crawler validate before publishing. Objects stay open (additionalProperties true) and only identity is required, because that is what the enforcing parser does: it accepts an index from a newer registry and degrades field by field. A schema that refused unknown fields would make every registry change a flag day across every installed ADE, and would have failed a document the app itself accepts.",
   "type": "object",
-  "required": ["version", "entries"],
+  "required": [
+    "version",
+    "entries"
+  ],
   "additionalProperties": true,
   "properties": {
     "version": {
@@ -20,7 +23,9 @@
     "entries": {
       "type": "array",
       "maxItems": 2000,
-      "items": { "$ref": "#/$defs/entry" }
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
     }
   },
   "$defs": {
@@ -34,7 +39,7 @@
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$"
     },
     "httpsUrl": {
-      "description": "https only, and no credentials in the authority — an entry is third-party text and these URLs reach git.",
+      "description": "https only, and no credentials in the authority \u2014 an entry is third-party text and these URLs reach git.",
       "type": "string",
       "maxLength": 512,
       "pattern": "^https://[^@/\\s]+(/[^\\s]*)?$"
@@ -50,26 +55,58 @@
     "media": {
       "description": "One screenshot or clip. `kind` decides which element the app renders it in; it is never sniffed from the URL.",
       "type": "object",
-      "required": ["kind", "src"],
+      "required": [
+        "kind",
+        "src"
+      ],
       "additionalProperties": true,
       "properties": {
-        "kind": { "enum": ["image", "video"] },
-        "src": { "$ref": "#/$defs/httpsUrl" },
-        "caption": { "type": "string", "maxLength": 160 }
+        "kind": {
+          "enum": [
+            "image",
+            "video"
+          ]
+        },
+        "src": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "caption": {
+          "type": "string",
+          "maxLength": 160
+        }
       }
     },
     "extraDownload": {
       "description": "One asset the plugin fetches on first use. The label is the plugin's own words for it and is shown beside the figure, so it is bounded like every other piece of third-party text on the page.",
       "type": "object",
-      "required": ["label", "bytes"],
+      "required": [
+        "label",
+        "bytes"
+      ],
       "additionalProperties": true,
       "properties": {
-        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
-        "bytes": { "type": "integer", "minimum": 1 }
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "surface": {
-      "enum": ["work", "lanes", "files", "prs", "automations", "cto"]
+      "enum": [
+        "work",
+        "lanes",
+        "files",
+        "prs",
+        "automations",
+        "cto",
+        "app",
+        "settings"
+      ]
     },
     "socket": {
       "enum": [
@@ -80,38 +117,67 @@
         "empty-state",
         "filter-chip",
         "file-viewer",
-        "composer-action"
+        "composer-action",
+        "chat-card",
+        "slash-command",
+        "command-palette-action",
+        "settings-section",
+        "work-rail-pane",
+        "drawer-tab",
+        "activity-entry",
+        "dialog-section",
+        "chat-header-action"
       ]
     },
     "entry": {
       "type": "object",
-      "required": ["pluginId", "version", "repo"],
+      "required": [
+        "pluginId",
+        "version",
+        "repo"
+      ],
       "additionalProperties": true,
       "properties": {
-        "pluginId": { "$ref": "#/$defs/pluginId" },
-        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "pluginId": {
+          "$ref": "#/$defs/pluginId"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
         "description": {
           "description": "One line. Longer text belongs in the readme.",
           "type": "string",
           "maxLength": 300
         },
-        "author": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "version": { "$ref": "#/$defs/version" },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
         "repo": {
-          "description": "Canonical repository URL — where the crawler found the plugin.",
+          "description": "Canonical repository URL \u2014 where the crawler found the plugin.",
           "$ref": "#/$defs/httpsUrl"
         },
         "source": {
           "description": "Installable source, when it differs from repo. Readers fall back to repo.",
           "$ref": "#/$defs/httpsUrl"
         },
-        "changelogUrl": { "$ref": "#/$defs/httpsUrl" },
+        "changelogUrl": {
+          "$ref": "#/$defs/httpsUrl"
+        },
         "iconGlyph": {
           "description": "A glyph name from ADE's curated icon set. Only a hint: an entry that names none is drawn with a glyph and colour derived from its pluginId, so no plugin is ever iconless.",
           "type": "string",
           "maxLength": 64
         },
-        "iconColor": { "$ref": "#/$defs/hexColor" },
+        "iconColor": {
+          "$ref": "#/$defs/hexColor"
+        },
         "iconUrl": {
           "description": "A custom image tile. Must be reachable under the app's media allowlist (raw.githubusercontent.com and the user-images hosts); anything else loads as nothing and falls back to the glyph.",
           "$ref": "#/$defs/httpsUrl"
@@ -129,18 +195,30 @@
           "description": "Screenshots and clips for the detail page's gallery. Items past the eighth are dropped by readers.",
           "type": "array",
           "maxItems": 8,
-          "items": { "$ref": "#/$defs/media" }
+          "items": {
+            "$ref": "#/$defs/media"
+          }
         },
         "links": {
           "description": "Named links for the detail page's resources rail. A fixed set of slots: an entry cannot name its own labels, because those labels sit on controls ADE draws.",
           "type": "object",
           "additionalProperties": true,
           "properties": {
-            "repository": { "$ref": "#/$defs/httpsUrl" },
-            "homepage": { "$ref": "#/$defs/httpsUrl" },
-            "changelog": { "$ref": "#/$defs/httpsUrl" },
-            "license": { "$ref": "#/$defs/httpsUrl" },
-            "docs": { "$ref": "#/$defs/httpsUrl" }
+            "repository": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "homepage": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "changelog": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "license": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "docs": {
+              "$ref": "#/$defs/httpsUrl"
+            }
           }
         },
         "official": {
@@ -151,50 +229,77 @@
           "description": "Set from featured.json. The hero row is curated, not computed.",
           "type": "boolean"
         },
-        "isTheme": { "type": "boolean" },
+        "isTheme": {
+          "type": "boolean"
+        },
         "surfaces": {
           "description": "Core surfaces the plugin extends. Facet metadata; the installed manifest stays authoritative.",
           "type": "array",
           "maxItems": 6,
-          "items": { "$ref": "#/$defs/surface" }
+          "items": {
+            "$ref": "#/$defs/surface"
+          }
         },
         "sockets": {
           "type": "array",
           "maxItems": 7,
-          "items": { "$ref": "#/$defs/socket" }
+          "items": {
+            "$ref": "#/$defs/socket"
+          }
         },
         "adds": {
           "description": "Short lines for the install modal when the entry publishes no manifest. NOT written by the crawler: what a plugin adds is product copy the app derives from the facts below (surfaces, sockets, isTheme). Read, and permitted for a hand-curated entry, so a directory that wants to say more can.",
           "type": "array",
           "maxItems": 12,
-          "items": { "type": "string", "maxLength": 120 }
+          "items": {
+            "type": "string",
+            "maxLength": 120
+          }
         },
         "installs": {
-          "description": "Distinct machines that reported installing this plugin. Omit when never measured — readers render an omitted count as nothing, never as zero.",
+          "description": "Distinct machines that reported installing this plugin. Omit when never measured \u2014 readers render an omitted count as nothing, never as zero.",
           "type": "integer",
           "minimum": 0
         },
-        "stars": { "type": "integer", "minimum": 0 },
+        "stars": {
+          "type": "integer",
+          "minimum": 0
+        },
         "sizeBytes": {
-          "description": "What installing the plugin costs to download, in bytes. Approximate — the crawler derives it from the GitHub repository size, which counts the packed repository rather than a release artefact. Omit when unmeasured: readers render an omitted size as nothing, and a published 0 would read as a measured zero, so 0 is refused here too.",
+          "description": "What installing the plugin costs to download, in bytes. Approximate \u2014 the crawler derives it from the GitHub repository size, which counts the packed repository rather than a release artefact. Omit when unmeasured: readers render an omitted size as nothing, and a published 0 would read as a measured zero, so 0 is refused here too.",
           "type": "integer",
           "minimum": 1
         },
         "extraDownloads": {
-          "description": "What the plugin fetches for ITSELF after installing — a speech model, a runtime, a data pack. Declared by the plugin in its own plugin.json and passed through by the crawler. Published because a small package that then pulls down a large asset is a large decision, and quoting only the package size would be honest about the wrong number.",
+          "description": "What the plugin fetches for ITSELF after installing \u2014 a speech model, a runtime, a data pack. Declared by the plugin in its own plugin.json and passed through by the crawler. Published because a small package that then pulls down a large asset is a large decision, and quoting only the package size would be honest about the wrong number.",
           "type": "array",
           "maxItems": 4,
-          "items": { "$ref": "#/$defs/extraDownload" }
+          "items": {
+            "$ref": "#/$defs/extraDownload"
+          }
         },
-        "publishedAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" },
-        "readme": { "type": "string", "maxLength": 32768 },
+        "publishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "readme": {
+          "type": "string",
+          "maxLength": 32768
+        },
         "checksums": {
           "description": "version -> sha256 over the plugin's source tree. Published for official entries; the installer refuses a mismatch.",
           "type": "object",
           "maxProperties": 64,
-          "propertyNames": { "$ref": "#/$defs/version" },
-          "additionalProperties": { "$ref": "#/$defs/sha256" }
+          "propertyNames": {
+            "$ref": "#/$defs/version"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
         }
       }
     }

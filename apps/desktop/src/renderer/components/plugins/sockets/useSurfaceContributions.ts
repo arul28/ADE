@@ -253,8 +253,30 @@ export function usePluginSurfaceContributions(
 /**
  * The contributions one socket renders.
  *
+ * **`surface` and `context` answer different questions, and reading them as one
+ * is the misread this comment exists to prevent.** `surface` picks which
+ * contribution SET to read — which manifest declarations are in scope, and which
+ * dynamic rows got loaded. `context` picks which entity's rows *inside* that
+ * set. So `surface: "work"` means "this kind is declared on the Work tab", never
+ * "this contribution is filed against the Work tab".
+ *
+ * The consequence is in {@link selectContributions}: an entity context resolves
+ * through `pluginContributionKeyForContext` to a real entity key, which
+ * short-circuits the surface fallback entirely. A call passing a session context
+ * reads `session`-keyed rows and *never* looks at `{entityKind: "surface"}` rows,
+ * even though it named a surface one argument earlier.
+ *
  * `context` narrows dynamic rows to a single entity; omit it on toolbars, chips
- * and empty states, which have no subject.
+ * and empty states, which have no subject and therefore do take the surface
+ * fallback.
+ *
+ * This is worth spelling out because the two shapes look identical at a glance —
+ * a toolbar action and a chat-header action are the same call with a different
+ * second argument — and a client that copied the wrong one would file a kind
+ * against the tab instead of the chat. It would then render rows desktop ignores
+ * and ignore the rows desktop renders, which is the cross-client divergence the
+ * whole taxonomy exists to make impossible. `contributionModel.test.ts` pins the
+ * behaviour under "chat-header-action is filed per session, not per surface".
  */
 export function useSurfaceContributions<K extends PluginSocketKind>(
   surface: PluginSurfaceId,

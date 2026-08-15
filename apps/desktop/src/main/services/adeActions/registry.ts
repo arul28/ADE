@@ -290,9 +290,12 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // Installing a plugin puts third-party code on the machine and enabling one
   // starts a child process, so the whole install lifecycle is an operator act:
   // reachable from the surfaces the user drives (desktop renderer, `ade code`,
-  // a plain terminal) and refused to a session-bound agent. Agents may still
-  // read the roster and invoke an already-installed plugin's handlers —
-  // in-chat authoring proposes an install, the user accepts it.
+  // a plain terminal) and never performed on an agent's own authority.
+  //
+  // `install` is nonetheless listed in ADE_ACTION_APPROVAL_GATED below: a
+  // session-bound agent may ATTEMPT it, which raises an approval card in that
+  // agent's chat and installs — on the host's authority — only if the person
+  // says yes. The caller's role is unchanged either way.
   plugin: ["install", "uninstall", "enable", "disable"],
 };
 
@@ -306,6 +309,25 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
 
 export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
   return (ADE_ACTION_CTO_ONLY[domain] ?? []).includes(action);
+}
+
+/**
+ * CTO-only actions a lesser caller may still ATTEMPT, because the refusal is a
+ * question rather than a dead end.
+ *
+ * These stay in {@link ADE_ACTION_CTO_ONLY} — nothing about the role check
+ * changes, and the action never runs on the caller's authority. What this table
+ * governs is DISCOVERABILITY: `list_ade_actions` hides CTO-only actions from
+ * lesser callers, which for an approval-gated action would hide the only path
+ * that works. An agent cannot ask permission for a verb it was never told
+ * exists.
+ */
+export const ADE_ACTION_APPROVAL_GATED: Partial<Record<AdeActionDomain, string[]>> = {
+  plugin: ["install"],
+};
+
+export function isApprovalGatedAdeAction(domain: AdeActionDomain, action: string): boolean {
+  return (ADE_ACTION_APPROVAL_GATED[domain] ?? []).includes(action);
 }
 
 export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, minRole: AdeActionRole): boolean {
@@ -1283,7 +1305,7 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade actions run plugin.inspectSource --input-json '{\"source\":\"/path/to/plugin\"}'",
     },
     install: {
-      description: "Install a plugin from a git URL or a local directory. Operator-only: this puts third-party code on the machine.",
+      description: "Install a plugin from a git URL or a local directory. This puts third-party code on the machine, so it is the operator's call: from a chat it raises an approval card describing what the plugin adds, and installs only if the person approves. Reinstalling the same plugin from the same directory does not ask again, so a build-and-fix loop runs uninterrupted.",
       input: "object { source: string, ref?: string, enable?: boolean }",
       example: "ade plugin install https://github.com/owner/ade-plugin-graph",
     },

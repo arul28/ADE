@@ -222,6 +222,248 @@ final class PluginContributionTests: XCTestCase {
     XCTAssertEqual(result.plugins[1].pluginId, "")
   }
 
+  // MARK: - chat-header-action and split-button menus
+
+  /// The kind the retrospective asked for: an entry in the chat header's
+  /// three-dot menu.
+  ///
+  /// It shares the action-button payload with the toolbar and composer sockets,
+  /// so what is really under test is WHERE the phone files it — per CHAT, like
+  /// a composer action. The desktop call site reads the other way at a glance
+  /// (`useSurfaceContributions("work", …, { context: session })`) but that hook
+  /// only loads the surface's set; `selectContributions` then narrows it with
+  /// `pluginContributionKeyForContext(context)`, which maps a session context to
+  /// `{entityKind: "session", entityId: id}`.
+  func testChatHeaderActionIsKeyedPerChatLikeDesktop() throws {
+    XCTAssertFalse(pluginSocketIsSurfaceScoped(PluginSocketKind(rawValue: "chat-header-action")))
+
+    let contribution = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+      socket: "chat-header-action",
+      payloadJSON: #"{ "label": "Take a drink", "icon": "beer", "actionId": "tipsy.drink" }"#,
+      updatedAt: ""
+    ))
+    XCTAssertEqual(contribution.entityKind, .session)
+    XCTAssertEqual(contribution.chatHeaderAction?.label, "Take a drink")
+    XCTAssertEqual(contribution.chatHeaderAction?.actionId, "tipsy.drink")
+    XCTAssertEqual(contribution.chatHeaderAction?.icon, "beer")
+    XCTAssertTrue(contribution.chatHeaderAction?.menu.isEmpty == true)
+    // Not a composer action wearing another name: the two sockets send
+    // different contexts, so a surface must be able to tell them apart.
+    XCTAssertNil(contribution.composerAction)
+  }
+
+  func testChatHeaderActionNeedsBothALabelAndAnActionId() {
+    XCTAssertNil(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+      socket: "chat-header-action", payloadJSON: #"{ "label": "Take a drink" }"#, updatedAt: ""
+    ), "A header entry with no action would sit in the menu doing nothing.")
+  }
+
+  func testHeaderActionsAndComposerActionsDoNotLeakIntoEachOther() throws {
+    let mine = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+      socket: "chat-header-action",
+      payloadJSON: #"{ "label": "Take a drink", "actionId": "tipsy.drink" }"#, updatedAt: ""
+    ))
+    let theirs = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-2", pluginId: "ade-tipsy",
+      socket: "chat-header-action",
+      payloadJSON: #"{ "label": "Take a drink", "actionId": "tipsy.drink" }"#, updatedAt: ""
+    ))
+    let composer = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+      socket: "composer-action",
+      payloadJSON: #"{ "label": "Take a drink", "actionId": "tipsy.drink" }"#, updatedAt: ""
+    ))
+    let index = PluginContributionIndex(contributions: [mine, theirs, composer])
+
+    XCTAssertEqual(index.chatHeaderActions(sessionId: "sess-1").count, 1)
+    XCTAssertEqual(index.chatHeaderActions(sessionId: "sess-2").count, 1)
+    XCTAssertTrue(index.chatHeaderActions(sessionId: "sess-3").isEmpty)
+    // The composer row sits on the same chat and must not be mistaken for a
+    // header entry, nor the header row for a composer button.
+    XCTAssertEqual(index.composerActions(sessionId: "sess-1").count, 1)
+  }
+
+  /// placement-desktop's executable pin, mirrored one-for-one.
+  ///
+  /// Their `contributionModel.test.ts` block "chat-header-action is filed per
+  /// session, not per surface" builds one set holding a manifest declaration, a
+  /// row published against `session/chat-1`, and a row the same plugin published
+  /// against `surface/work`. It then asserts three things, which are the three
+  /// asserted here against the same fixture — same plugin, same ids, same
+  /// labels — so the two clients are pinned to one contract rather than to two
+  /// readings of a call site.
+  ///
+  /// Assertion three lands on iOS for a second reason as well as the shared one:
+  /// the tab row names a socket id the manifest never declared, so the
+  /// declaration join in ``PluginContributionIndex`` drops it before any lookup
+  /// runs. Desktop keeps it in the set and simply never asks for it from a chat
+  /// header. Different mechanism, same observable outcome — a row addressed to
+  /// the tab is about the tab, and never appears in a conversation's header.
+  func testChatHeaderFilingMatchesDesktopsExecutablePin() throws {
+    let record = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data(#"""
+      { "pluginId": "tipsy", "enabled": true, "sockets": [
+          { "socket": "chat-header-action", "surface": "work", "id": "drink",
+            "label": "Drink", "actionId": "takeDrink" }
+      ] }
+      """#.utf8)
+    )
+    let publishedForChat = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "session", entityId: "chat-1", pluginId: "tipsy",
+      socket: "chat-header-action",
+      payloadJSON: #"{ "id": "drink", "label": "Drink (3)", "actionId": "takeDrink" }"#,
+      updatedAt: "2026-08-15T00:00:00.000Z"
+    ))
+    let publishedForTab = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "surface", entityId: "work", pluginId: "tipsy",
+      socket: "chat-header-action",
+      payloadJSON: #"{ "id": "tab-wide", "label": "Tab wide", "actionId": "tabWide" }"#,
+      updatedAt: "2026-08-15T00:00:00.000Z"
+    ))
+    let index = PluginContributionIndex(
+      contributions: [publishedForChat, publishedForTab],
+      declarations: PluginSocketDeclarations(records: [record])
+    )
+
+    // 1. The chat the row was published for gets the published row, and the
+    //    declaration it fills does not draw beside it.
+    XCTAssertEqual(
+      index.chatHeaderActions(sessionId: "chat-1").map { $0.chatHeaderAction?.label },
+      ["Drink (3)"]
+    )
+
+    // 2. Every other chat gets the manifest declaration — a declared header
+    //    action is for every conversation until a published row refines it.
+    XCTAssertEqual(
+      index.chatHeaderActions(sessionId: "chat-2").map { $0.chatHeaderAction?.label },
+      ["Drink"]
+    )
+
+    // 3. The row published against the TAB is never drawn in a chat header.
+    for sessionId in ["chat-1", "chat-2"] {
+      XCTAssertFalse(
+        index.chatHeaderActions(sessionId: sessionId).contains { $0.chatHeaderAction?.label == "Tab wide" },
+        "A row addressed to the Work tab must not appear in \(sessionId)'s header."
+      )
+    }
+  }
+
+  /// A manifest DECLARATION carries its split button whole.
+  ///
+  /// The declaration path is a second parser entry point, so the menu has to be
+  /// threaded onto the payload the wire implies or a plugin that declared a
+  /// split button — rather than publishing one per chat — silently loses half
+  /// of it on the phone.
+  func testDeclaredSplitButtonKeepsItsMenu() throws {
+    let record = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data(#"""
+      { "pluginId": "ade-tipsy", "enabled": true, "sockets": [
+          { "socket": "chat-header-action", "surface": "work", "id": "drink",
+            "label": "Take a drink", "icon": "beer", "actionId": "tipsy.drink",
+            "menu": [{ "label": "Sober up", "actionId": "tipsy.sober" }] }
+      ] }
+      """#.utf8)
+    )
+    let declarations = PluginSocketDeclarations(records: [record])
+    // A per-entity declaration is a wildcard until a chat is named.
+    let index = PluginContributionIndex(declarations: declarations)
+    let entries = index.chatHeaderActions(sessionId: "sess-1")
+    XCTAssertEqual(entries.count, 1)
+    XCTAssertEqual(entries.first?.chatHeaderAction?.menu.map(\.actionId), ["tipsy.sober"])
+    XCTAssertTrue(entries.first?.isDeclaration == true)
+  }
+
+  /// The split button: `menu[]` is what makes "sober up" reachable from the
+  /// drink button instead of only from a slash command.
+  func testActionMenuEntriesParseWithTheirRoles() throws {
+    let contribution = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+      socket: "chat-header-action",
+      payloadJSON: #"""
+      { "label": "3 drinks in!", "actionId": "tipsy.drink", "menu": [
+          { "label": "Sober up", "actionId": "tipsy.sober", "icon": "sparkle" },
+          { "label": "Forget tonight", "actionId": "tipsy.reset", "danger": true }
+      ] }
+      """#,
+      updatedAt: ""
+    ))
+    let menu = try XCTUnwrap(contribution.chatHeaderAction?.menu)
+    XCTAssertEqual(menu.count, 2)
+    XCTAssertEqual(menu[0].label, "Sober up")
+    XCTAssertEqual(menu[0].actionId, "tipsy.sober")
+    XCTAssertFalse(menu[0].danger)
+    XCTAssertTrue(menu[1].danger)
+    // Only `danger` rides an entry. Desktop's `parsePluginActionButtonMenu`
+    // keeps label/actionId/danger and nothing else, and a phone that also drew
+    // the `icon` above would invent a difference between the two clients from a
+    // payload that did nothing wrong.
+    XCTAssertEqual(menu[1].label, "Forget tonight")
+  }
+
+  /// A `menu` this build cannot read must never cost the plugin its PRIMARY
+  /// action — that is the part the reader can see and press.
+  func testUnreadableMenuDegradesToAPlainButton() throws {
+    for raw in ["null", #""sober-up""#, "7", #"{ "label": "Sober up" }"#] {
+      let contribution = try XCTUnwrap(PluginContributionParser.parse(
+        entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+        socket: "chat-header-action",
+        payloadJSON: #"{ "label": "Take a drink", "actionId": "tipsy.drink", "menu": \#(raw) }"#,
+        updatedAt: ""
+      ), "menu: \(raw) should degrade, not drop the contribution")
+      XCTAssertEqual(contribution.chatHeaderAction?.actionId, "tipsy.drink")
+      XCTAssertTrue(contribution.chatHeaderAction?.menu.isEmpty == true)
+    }
+  }
+
+  /// One bad entry drops on its own. A menu of three where one lost its
+  /// `actionId` still opens with the other two.
+  func testOneUnreadableMenuEntryDoesNotDropTheRest() throws {
+    let contribution = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+      socket: "composer-action",
+      payloadJSON: #"""
+      { "label": "Take a drink", "actionId": "tipsy.drink", "menu": [
+          { "label": "Sober up", "actionId": "tipsy.sober" },
+          { "label": "No action here" },
+          "not-an-object",
+          { "actionId": "tipsy.nolabel" },
+          { "label": "Water", "actionId": "tipsy.water" }
+      ] }
+      """#,
+      updatedAt: ""
+    ))
+    XCTAssertEqual(contribution.composerAction?.menu.map(\.actionId), ["tipsy.sober", "tipsy.water"])
+  }
+
+  func testActionMenuIsCappedAtParseTimeSoEverySurfaceAgrees() throws {
+    let entries = (0..<20)
+      .map { #"{ "label": "Action \#($0)", "actionId": "a.\#($0)" }"# }
+      .joined(separator: ",")
+    let contribution = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "surface", entityId: "work", pluginId: "graph",
+      socket: "toolbar-action",
+      payloadJSON: #"{ "label": "Rebuild", "actionId": "graph.rebuild", "menu": [\#(entries)] }"#,
+      updatedAt: ""
+    ))
+    XCTAssertEqual(contribution.toolbarAction?.menu.count, pluginActionMenuEntryLimit)
+  }
+
+  /// A kind this build has no host for still drops rather than half-drawing,
+  /// which is what lets a new socket ship on desktop first.
+  func testAnUnknownSocketKindStillDropsItsRow() {
+    XCTAssertNil(PluginContributionParser.parse(
+      entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+      socket: "chat-background-fill",
+      payloadJSON: #"{ "label": "Fill with beer", "actionId": "tipsy.fill" }"#,
+      updatedAt: ""
+    ))
+  }
+
   func testInvokeResultNeverFailsToDecode() throws {
     let decoder = JSONDecoder()
     XCTAssertEqual(try decoder.decode(PluginInvokeResult.self, from: Data("{}".utf8)).ok, true)

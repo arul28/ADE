@@ -89,6 +89,9 @@ function toRecordSockets(installed: PluginInstalledPlugin): SyncPluginRecordSock
   return (installed.manifest?.sockets ?? []).map((socket) => ({
     ...socket,
     ...(socket.extensions ? { extensions: [...socket.extensions] } : {}),
+    // Copied for the same reason `extensions` is: the spread above shares the
+    // parsed manifest's arrays, and this record is handed to the sync layer.
+    ...(socket.menu ? { menu: socket.menu.map((item) => ({ ...item })) } : {}),
   }));
 }
 

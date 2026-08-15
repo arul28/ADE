@@ -44,7 +44,15 @@ beforeAll(() => {
         version: "1.0.0",
         sockets: [
           { socket: "composer-action", surface: "work", id: "bug", label: "Bug report", actionId: "bug", order: 1 },
-          { socket: "composer-action", surface: "work", id: "spec", label: "Spec", actionId: "spec", order: 2 },
+          {
+            socket: "composer-action",
+            surface: "work",
+            id: "spec",
+            label: "Spec",
+            actionId: "spec",
+            order: 2,
+            menu: [{ label: "Spec from issue", actionId: "specFromIssue", danger: false }],
+          },
           { socket: "composer-action", surface: "work", id: "extra", label: "Extra", actionId: "extra", order: 3 },
           // Another surface's socket must not leak into the composer row.
           { socket: "toolbar-action", surface: "work", id: "tool", label: "Toolbar", actionId: "tool", order: 1 },
@@ -275,5 +283,87 @@ describe("contributed composer buttons", () => {
     } finally {
       ade.plugins.invoke = original;
     }
+  });
+
+  /**
+   * The split button, in the row where the alpha test's plugin actually landed.
+   *
+   * "Bug report" declares no menu and must therefore render exactly as it did
+   * before the field existed — that byte-identical promise is the reason the
+   * field could be added to a shipped kind at all.
+   */
+  describe("the split button", () => {
+    it("gives only the button that declared a menu a chevron", async () => {
+      renderRow(() => ({ draft: "", cursor: null }));
+      await waitFor(() => expect(screen.getByText("Bug report")).toBeTruthy());
+
+      expect(screen.getByRole("button", { name: "Spec — more actions" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Bug report — more actions" })).toBeNull();
+    });
+
+    it("hands a menu action the live draft, exactly as the primary press does", async () => {
+      let draft = "first";
+      renderRow(() => ({ draft, cursor: draft.length }));
+      await waitFor(() => expect(screen.getByText("Spec")).toBeTruthy());
+      draft = "typed some more";
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Spec — more actions" }));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByText("Spec from issue"));
+      });
+
+      expect(invoked).toHaveLength(1);
+      expect(invoked[0]?.action).toBe("specFromIssue");
+      expect((invoked[0]?.args as { context: { draft: string } }).context.draft)
+        .toBe("typed some more");
+    });
+
+    /**
+     * Two halves, one control. A menu action shares the button's busy key, so a
+     * long-running one lights the button the user is looking at and neither
+     * half can start a second run on top of it.
+     */
+    it("marks the button busy while a menu action runs, and refuses both halves", async () => {
+      const pending: { release: () => void } = { release: () => {} };
+      const inFlight = new Promise<void>((resolve) => {
+        pending.release = resolve;
+      });
+      const ade = (window as unknown as { ade: { plugins: { invoke: unknown } } }).ade;
+      const original = ade.plugins.invoke;
+      ade.plugins.invoke = async (args: { pluginId: string; action: string; args: unknown }) => {
+        invoked.push({ pluginId: args.pluginId, action: args.action, args: args.args });
+        await inFlight;
+        return {};
+      };
+
+      try {
+        renderRow(() => ({ draft: "", cursor: null }));
+        await waitFor(() => expect(screen.getByText("Spec")).toBeTruthy());
+
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: "Spec — more actions" }));
+        });
+        await act(async () => {
+          fireEvent.click(screen.getByText("Spec from issue"));
+        });
+
+        const button = screen.getByText("Spec").closest("button");
+        if (!button) throw new Error("expected the primary button");
+        expect(button.getAttribute("aria-busy")).toBe("true");
+
+        fireEvent.click(button);
+        expect(invoked).toHaveLength(1);
+
+        await act(async () => {
+          pending.release();
+          await inFlight;
+        });
+        await waitFor(() => expect(button.getAttribute("aria-busy")).toBeNull());
+      } finally {
+        ade.plugins.invoke = original;
+      }
+    });
   });
 });

@@ -39,6 +39,7 @@ import {
   shouldEnforceMachineRuntimeBuildCompatibility,
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
+  unknownCommandMessage,
   unwrapToolResult,
 } from "./cli";
 import {
@@ -249,6 +250,20 @@ describe("ADE CLI", () => {
     } finally {
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
+  });
+
+  it("blames the CLI channel, not the user, for a command another build has", () => {
+    // A typo keeps reading as a typo. Nothing about `lnes` suggests a channel.
+    expect(unknownCommandMessage("lnes")).toBe("Unknown command 'lnes'. Run 'ade help'.");
+
+    // `plugin` routes on any build that has it, so reaching this message at all
+    // means the CLI on PATH does not — which is what the extra line says. The
+    // lane changed the checkout; it never changed which application PATH found.
+    const skewed = unknownCommandMessage("plugin");
+    expect(skewed).toContain("Unknown command 'plugin'. Run 'ade help'.");
+    expect(skewed).toContain("has no 'plugin' command");
+    expect(skewed).toContain("ADE Alpha");
+    expect(skewed.split("\n")).toHaveLength(2);
   });
 
   it("builds projectless account commands and reports the signed-out local-first message", () => {

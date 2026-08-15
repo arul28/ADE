@@ -211,6 +211,65 @@ describe("ade plugin dispatch", () => {
     ]);
   });
 
+  it("says when an install has changed how agents behave, and from when", async () => {
+    // The retrospective's sharpest confusion: the plugin was installed and the
+    // agent already answering stayed exactly as it was.
+    writePlugin("tipsy", manifestFixture("tipsy", { skills: ["skills/tipsy"] }));
+    writePlugin("graph", manifestFixture("graph"));
+    const invokeAction = async (_action: string, _args: Record<string, unknown>) => ({
+      pluginId: "tipsy",
+      version: "1.0.0",
+      displayName: "Tipsy",
+      enabled: true,
+    });
+
+    const withSkill = await runPluginCommandAsync(["install", "/src/tipsy", "--text"], { invokeAction });
+    expect(withSkill.output).toContain("Affects agents from their next turn");
+
+    // A plugin that ships no skill changes no agent, and says nothing about it.
+    const withoutSkill = await runPluginCommandAsync(["install", "/src/graph", "--text"], {
+      invokeAction: async () => ({ pluginId: "graph", version: "1.0.0", displayName: "Graph", enabled: true }),
+    });
+    expect(withoutSkill.output).not.toContain("next turn");
+
+    // JSON stays the action result verbatim: it is a contract, not a message.
+    const asJson = await runPluginCommandAsync(["install", "/src/tipsy", "--json"], { invokeAction });
+    expect(asJson.output).not.toContain("next turn");
+  });
+
+  it("walks the state ladder for one plugin, and degrades where ADE cannot answer", async () => {
+    writePlugin("tipsy", manifestFixture("tipsy", {
+      sockets: [
+        { socket: "composer-action", surface: "work", id: "drink", label: "Take a drink", actionId: "drink" },
+      ],
+    }));
+    const result = await runPluginCommandAsync(["doctor", "tipsy", "--text"], {
+      invokeAction: async (action) => {
+        if (action === "get") return { pluginId: "tipsy", status: "running", hasEntry: true };
+        // Everything else fails: a doctor run while things are broken must
+        // still print the rungs it could reach.
+        throw new Error("no");
+      },
+    });
+    expect(result.output).toContain("✓ Source");
+    expect(result.output).toContain("✓ Installed here");
+    expect(result.output).toContain("✓ Running");
+    expect(result.output).toContain("composer-action in work");
+    expect(result.output).toContain("Renders on: desktop ✓");
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("doctor answers with the app closed, saying which rungs went unchecked", async () => {
+    writePlugin("tipsy", manifestFixture("tipsy"));
+    const result = await runPluginCommandAsync(["doctor", "tipsy", "--text"], {
+      invokeAction: async () => {
+        throw new Error("connect ENOENT");
+      },
+    });
+    expect(result.output).toContain("✓ Installed here");
+    expect(result.output).toContain("could not ask ADE");
+  });
+
   it("logs reads the plugin detail and honors --limit", async () => {
     const logs = Array.from({ length: 5 }, (_, index) => ({
       at: `2026-08-11T00:00:0${index}.000Z`,

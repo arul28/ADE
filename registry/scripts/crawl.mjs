@@ -69,6 +69,15 @@ const SOCKET_KINDS = [
   "filter-chip",
   "file-viewer",
   "composer-action",
+  "chat-card",
+  "slash-command",
+  "command-palette-action",
+  "settings-section",
+  "work-rail-pane",
+  "drawer-tab",
+  "activity-entry",
+  "dialog-section",
+  "chat-header-action",
 ];
 
 const token = process.env.GITHUB_TOKEN?.trim() || "";

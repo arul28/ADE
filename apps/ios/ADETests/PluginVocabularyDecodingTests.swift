@@ -1708,6 +1708,126 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(empty.sockets?.isEmpty, true, "Empty stays empty — the stronger claim.")
   }
 
+  // MARK: - Icon tokens
+
+  /// Every icon token desktop offers a manifest author.
+  ///
+  /// Copied from `PLUGIN_ICONS` in
+  /// `apps/desktop/src/renderer/components/plugins/pluginIcons.tsx`, which is
+  /// the list an author is shown and the authoring skill documents. Held here
+  /// literally, and on purpose: the two tests below walk it in BOTH directions,
+  /// so neither client can add a token the other cannot draw. One direction
+  /// alone is what let `beer` exist on the phone and nowhere else for an
+  /// afternoon.
+  private static let desktopIconTokens = [
+    "beer",
+    "bell", "bookmark", "brain", "bug", "calendar", "chart", "chart-bar", "chat",
+    "clock", "clock-counter-clockwise", "cloud", "code", "compass", "cube",
+    "currency", "database", "desktop", "device-mobile", "envelope", "eye", "file",
+    "flag", "folder", "gear", "git-branch", "git-commit", "git-pull-request",
+    "globe", "graph", "heart", "image", "kanban", "key", "lightning", "link",
+    "list", "list-checks", "lock", "magic", "microphone", "music", "note",
+    "package", "palette", "play", "plug", "puzzle", "robot", "rocket", "rows",
+    "shield", "sparkle", "star", "storefront", "table", "tag", "terminal",
+    "timer", "toolbox", "trend", "users", "video", "wrench",
+  ]
+
+  func testEveryDesktopIconTokenDrawsSomethingOnThePhone() {
+    for token in Self.desktopIconTokens {
+      XCTAssertNotNil(
+        PluginSymbol.symbol(token),
+        "`\(token)` is offered to manifest authors on desktop but falls back to the puzzle piece here."
+      )
+    }
+  }
+
+  /// The other direction, and the one that was missing.
+  ///
+  /// A token the phone draws and desktop does not is the same defect as the
+  /// reverse — one manifest, two pictures — just harder to notice, because the
+  /// person testing on a phone sees it working. `beer` was exactly that for an
+  /// afternoon: added here to fix the retrospective's bug, absent from desktop's
+  /// map, so the identical token drew a mug on iOS and a puzzle piece on the
+  /// desktop beside it.
+  func testThePhoneDrawsNoTokenDesktopHasNeverHeardOf() {
+    let desktop = Set(Self.desktopIconTokens)
+    for token in PluginSymbol.tokenNames {
+      XCTAssertTrue(
+        desktop.contains(token),
+        "`\(token)` draws on the phone and is not in desktop's map — one manifest, two pictures."
+      )
+    }
+    // Same count both ways, so neither list can drift by an entry the loops
+    // above happen not to reach.
+    XCTAssertEqual(PluginSymbol.tokenNames.count, Self.desktopIconTokens.count)
+  }
+
+  /// Every symbol the map names has to exist in THIS build's SF Symbols
+  /// catalogue. A typo or a symbol added in a later OS resolves to nil at
+  /// runtime and draws an empty box beside a label, which looks like the
+  /// plugin's fault.
+  func testEveryMappedSymbolResolvesOnThisOS() {
+    for token in PluginSymbol.tokenNames {
+      let symbol = PluginSymbol.symbol(token)
+      XCTAssertNotNil(symbol, "`\(token)` maps to nothing.")
+      if let symbol {
+        XCTAssertTrue(
+          PluginSymbol.exists(symbol),
+          "`\(token)` maps to `\(symbol)`, which this OS does not have."
+        )
+      }
+    }
+  }
+
+  /// The bug the retrospective named, pinned so it cannot come back.
+  ///
+  /// A drink plugin's `beer` drew as `cup.and.saucer.fill` — tea — while
+  /// desktop drew a stein. The assertion is deliberately about the FAMILY
+  /// rather than one exact symbol: which mug SF ships may change, but a beer
+  /// token must never again resolve to a teacup.
+  func testBeerReadsAsADrinkAndNeverAsATeacup() throws {
+    let symbol = try XCTUnwrap(PluginSymbol.symbol("beer"), "A beer token must draw something.")
+    XCTAssertFalse(
+      symbol.contains("cup.and.saucer"),
+      "`beer` resolved to \(symbol), which reads as tea or coffee."
+    )
+    XCTAssertTrue(
+      symbol.hasPrefix("mug") || symbol.hasPrefix("wineglass") || symbol.hasPrefix("waterbottle"),
+      "`beer` resolved to \(symbol), which is not in the drinking-vessel family."
+    )
+  }
+
+  /// A token wins over a same-spelled SF Symbol, so one name cannot mean two
+  /// things depending on which catalogue the reader had in mind.
+  func testTokensWinOverSameSpelledSystemSymbols() {
+    XCTAssertEqual(PluginSymbol.symbol("chart"), "chart.line.uptrend.xyaxis")
+    XCTAssertEqual(PluginSymbol.symbol("list"), "checklist")
+    // Case and stray whitespace are the author's, not a different icon.
+    XCTAssertEqual(PluginSymbol.symbol("  Git-Branch "), "arrow.triangle.branch")
+  }
+
+  /// The token list is the whole namespace: a raw SF Symbol name is NOT an icon.
+  ///
+  /// It resolved here once, as an apparent kindness to an author who reached
+  /// past the token list. It was not one — desktop cannot resolve SF Symbol
+  /// names at all, so such an icon rendered on exactly one client and puzzled on
+  /// the other. Refusing it makes the failure symmetric and visible: the author
+  /// sees the same puzzle piece everywhere, and the fix is to name a token.
+  func testARawSystemSymbolNameIsNotAnIcon() {
+    XCTAssertNil(
+      PluginSymbol.symbol("bolt.horizontal.circle"),
+      "A real SF Symbol that is not a token must not resolve — desktop cannot draw it."
+    )
+    XCTAssertEqual(
+      PluginSymbol.resolve("bolt.horizontal.circle", fallback: "puzzlepiece.extension"),
+      "puzzlepiece.extension"
+    )
+    XCTAssertNil(PluginSymbol.symbol("not.a.real.symbol.at.all"))
+    XCTAssertNil(PluginSymbol.symbol(nil))
+    XCTAssertNil(PluginSymbol.symbol("   "))
+    XCTAssertEqual(PluginSymbol.resolve("not.a.real.symbol.at.all", fallback: "puzzlepiece.extension"), "puzzlepiece.extension")
+  }
+
   func testOneUnreadableDisabledContributionIdDoesNotDropTheRest() throws {
     let record = try JSONDecoder().decode(
       PluginInstallRecordEntry.self,

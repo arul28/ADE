@@ -8,6 +8,7 @@ import { formatToolTypeLabel, primarySessionLabel, truncateSessionLabel } from "
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { getLaneAccent } from "../lanes/laneColorPalette";
+import { pluginSessionContext } from "../plugins/sockets";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import {
@@ -290,6 +291,15 @@ export function CliSessionWorkSurfaceHeader({
       onTogglePrPane={onTogglePrPane}
       prPaneOpen={prPaneOpen}
       runtimePin={runtimePin}
+      // A CLI session is a `session` entity like a chat is, so it carries
+      // `chat-header-action` on the same terms — the same projection the
+      // sidebar card and the session context menu already build for it.
+      pluginSession={pluginSessionContext({
+        id: session.id,
+        title,
+        provider: session.toolType,
+        status: session.runtimeState,
+      })}
       onContextMenu={
         onContextMenu
           ? (event) => {

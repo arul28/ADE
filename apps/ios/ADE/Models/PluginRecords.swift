@@ -182,7 +182,7 @@ enum PluginSurfaceId: String, CaseIterable, Equatable {
 
 /// Where a plugin is allowed to appear on a core surface.
 ///
-/// Ten of the wire's sixteen kinds decode here — every kind the phone has an
+/// Eleven of the wire's kinds decode here — every kind the phone has an
 /// honest host for. The rest map to ``unsupported``, which drops the row rather
 /// than failing the read, and that is what lets a kind ship on desktop first.
 ///
@@ -208,6 +208,18 @@ enum PluginSocketKind: Equatable {
   case filterChip
   case fileViewer
   case composerAction
+  /// An entry in the chat header's own overflow menu — the phone's answer to
+  /// "can a plugin put something in the three-dot menu at the top right".
+  ///
+  /// It is a MENU entry rather than a second button beside the ellipsis, and
+  /// that is the whole placement difference from desktop, which has room for a
+  /// split button in the header row itself: a phone's nav bar is a title and
+  /// about two controls wide, so a plugin joins the overflow list under an
+  /// attributed heading instead of taking a slot beside it.
+  ///
+  /// Per-entity and keyed on the session, matching desktop — see
+  /// ``PluginContributionIndex/chatHeaderActions(sessionId:)``.
+  case chatHeaderAction
   case chatCard
   case activityEntry
   /// A kind the wire defines and this build does not draw — slash commands,
@@ -226,6 +238,7 @@ enum PluginSocketKind: Equatable {
     case "filter-chip": self = .filterChip
     case "file-viewer": self = .fileViewer
     case "composer-action": self = .composerAction
+    case "chat-header-action": self = .chatHeaderAction
     case "chat-card": self = .chatCard
     case "activity-entry": self = .activityEntry
     default: self = .unsupported(rawValue)
@@ -257,17 +270,63 @@ struct PluginRowMenuItemPayload: Equatable {
   var actionId: String
 }
 
-/// A button on a surface's toolbar, or in the chat composer's accessory row.
+/// One extra action hanging off a split button's menu.
 ///
-/// One struct for two socket kinds, matching the shared arm in
+/// Deliberately not a `PluginActionButtonPayload`: an entry has no menu of its
+/// own, and a type that could carry one would invite a plugin to nest menus
+/// inside menus on a phone, where the second level is already a long-press away.
+struct PluginActionMenuEntry: Equatable, Identifiable, Decodable {
+  var id: String { actionId }
+  var label: String
+  var actionId: String
+  /// Styles the entry destructive, the same meaning `danger` has on a row menu
+  /// item. It changes how the entry READS, never where it sits.
+  var danger: Bool
+
+  init(label: String, actionId: String, danger: Bool) {
+    self.label = label
+    self.actionId = actionId
+    self.danger = danger
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case label, actionId, danger
+  }
+
+  /// Decoded off the manifest feed, where entries arrive as part of a
+  /// ``PluginManifestSocketWire``. Tolerant per field like every other wire type
+  /// here — an entry that arrives without a label decodes to an empty one and is
+  /// dropped by ``PluginContributionParser`` a moment later, which is where the
+  /// single set of rules lives.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    label = ((try? container.decodeIfPresent(String.self, forKey: .label)) ?? nil) ?? ""
+    actionId = ((try? container.decodeIfPresent(String.self, forKey: .actionId)) ?? nil) ?? ""
+    danger = ((try? container.decodeIfPresent(Bool.self, forKey: .danger)) ?? nil) ?? false
+  }
+}
+
+/// A button on a surface's toolbar, in the chat composer's accessory row, or in
+/// the chat header's overflow menu.
+///
+/// One struct for three socket kinds, matching the shared arm in
 /// `parsePluginContributionPayload` — the payloads are identical and only the
 /// CONTEXT differs (a surface or a row, versus the live composer and its unsent
-/// draft). Splitting the payload would mean two identical parsers free to drift.
+/// draft). Splitting the payload would mean three identical parsers free to
+/// drift.
 struct PluginActionButtonPayload: Equatable {
   var label: String
   var icon: String?
   var actionId: String
   var disabled: Bool
+  /// Extra actions the button carries, which is what makes it a SPLIT button:
+  /// pressing it runs `actionId`, and the menu holds the rest.
+  ///
+  /// Empty is the ordinary case and the only one older payloads can express, so
+  /// every renderer treats empty as "plain button" rather than "menu with
+  /// nothing in it". The alpha test wanted exactly this shape — a drink button
+  /// whose arrow reveals sober-up — and had to reach a slash command instead.
+  var menu: [PluginActionMenuEntry] = []
 }
 
 /// A plugin's vocabulary panel, rendered inside a detail screen after the
@@ -354,6 +413,7 @@ enum PluginContributionPayload: Equatable {
   case filterChip(PluginFilterChipPayload)
   case fileViewer(PluginFileViewerPayload)
   case composerAction(PluginActionButtonPayload)
+  case chatHeaderAction(PluginActionButtonPayload)
   case chatCard(PluginChatCardPayload)
   case activityEntry(PluginActivityEntryPayload)
 }
@@ -453,6 +513,11 @@ struct PluginContribution: Equatable, Identifiable {
     return nil
   }
 
+  var chatHeaderAction: PluginActionButtonPayload? {
+    if case let .chatHeaderAction(payload) = payload { return payload }
+    return nil
+  }
+
   var chatCard: PluginChatCardPayload? {
     if case let .chatCard(payload) = payload { return payload }
     return nil
@@ -526,6 +591,9 @@ enum PluginContributionParser {
     case .composerAction:
       guard let button = parseActionButton(object) else { return nil }
       payload = .composerAction(button)
+    case .chatHeaderAction:
+      guard let button = parseActionButton(object) else { return nil }
+      payload = .chatHeaderAction(button)
     case .detailSection:
       guard let section = parseDetailSection(object) else { return nil }
       payload = .detailSection(section)
@@ -585,8 +653,9 @@ enum PluginContributionParser {
     )
   }
 
-  /// Shared by `toolbar-action` and `composer-action`, which carry the same
-  /// payload and differ only in what context the press sends.
+  /// Shared by `toolbar-action`, `composer-action` and `chat-header-action`,
+  /// which carry the same payload and differ only in what context the press
+  /// sends.
   private static func parseActionButton(_ object: [String: Any]) -> PluginActionButtonPayload? {
     guard let label = PluginPanelParser.cleanString(object["label"], max: 40),
           let actionId = PluginPanelParser.cleanString(object["actionId"], max: 64) else {
@@ -599,8 +668,44 @@ enum PluginContributionParser {
       // Strictly `true`, never a truthy number: `boolValue` refuses anything
       // that is not a JSON boolean, so a payload saying `"disabled": 1` leaves
       // the button live rather than silently dead.
-      disabled: PluginPanelParser.boolValue(object["disabled"]) ?? false
+      disabled: PluginPanelParser.boolValue(object["disabled"]) ?? false,
+      menu: parseActionMenu(object["menu"])
     )
+  }
+
+  /// The extra actions a split button carries.
+  ///
+  /// Absent, null, or not an array all mean "plain button" — a `menu` key this
+  /// build cannot read must never cost the plugin its primary action, which is
+  /// the part the user can see and press.
+  ///
+  /// Unreadable ENTRIES drop individually for the same reason: a menu of four
+  /// where one lost its `actionId` still opens with the other three, rather than
+  /// the whole control degrading over one bad row.
+  ///
+  /// Label ceiling, field set and cap all mirror `parsePluginActionButtonMenu`.
+  /// The field set is the part worth naming: an entry is a label and an action
+  /// and nothing else. Reading an `icon` or a `disabled` here would draw and
+  /// dim rows on the phone that the same payload leaves plain and live on the
+  /// desktop next to it — a parity gap invented by the client that was trying
+  /// to be generous.
+  private static func parseActionMenu(_ raw: Any?) -> [PluginActionMenuEntry] {
+    guard let items = raw as? [Any] else { return [] }
+    var entries: [PluginActionMenuEntry] = []
+    for item in items {
+      if entries.count >= pluginActionMenuEntryLimit { break }
+      guard let object = item as? [String: Any],
+            let label = PluginPanelParser.cleanString(object["label"], max: 40),
+            let actionId = PluginPanelParser.cleanString(object["actionId"], max: 64) else {
+        continue
+      }
+      entries.append(PluginActionMenuEntry(
+        label: label,
+        actionId: actionId,
+        danger: PluginPanelParser.boolValue(object["danger"]) ?? false
+      ))
+    }
+    return entries
   }
 
   private static func parseDetailSection(_ object: [String: Any]) -> PluginDetailSectionPayload? {
@@ -682,6 +787,14 @@ enum PluginContributionParser {
 /// what a dense Lanes/PRs row carries without pushing core metadata off; the
 /// constant matches `PLUGIN_ROW_BADGE_VISIBLE_LIMIT` in `sockets.ts`.
 let pluginRowBadgeVisibleLimit = 2
+
+/// Extra actions one split button's menu holds before the rest are truncated.
+///
+/// Matches `PLUGIN_ACTION_MENU_ITEM_LIMIT` in `sockets.ts`, and matching is the
+/// whole requirement: the cap is applied at PARSE time on both clients, so a
+/// plugin publishing seven entries must not show six on a desktop and seven on
+/// the phone beside it.
+let pluginActionMenuEntryLimit = 6
 
 /// Host-controlled placement: declared order, then plugin id, then socket.
 /// Deterministic across machines so a phone and a desktop showing the same row
@@ -894,6 +1007,23 @@ struct PluginContributionIndex: Equatable {
     contributions(.session, sessionId).filter { $0.composerAction != nil }
   }
 
+  /// Entries a plugin adds to the chat header's overflow menu, in placement
+  /// order.
+  ///
+  /// Keyed on the SESSION, exactly like a composer action, and the reason is
+  /// worth writing down because the desktop call site reads the other way at a
+  /// glance: `PluginChatHeaderActions` calls
+  /// `useSurfaceContributions("work", "chat-header-action", { context: session })`,
+  /// but that hook only LOADS the surface's whole set — `selectContributions`
+  /// then narrows it with `pluginContributionKeyForContext(context)`
+  /// (`contributionModel.ts:439`), which maps a session context to
+  /// `{entityKind: "session", entityId: id}`. So a published row is addressed at
+  /// one chat, and a manifest declaration is a wildcard that materializes over
+  /// every chat — the same two halves `composer-action` has.
+  func chatHeaderActions(sessionId: String) -> [PluginContribution] {
+    contributions(.session, sessionId).filter { $0.chatHeaderAction != nil }
+  }
+
   /// `chat-card` declarations for one chat, in placement order.
   ///
   /// A DECLARATION list, not a list of cards to draw: the cards themselves
@@ -1000,7 +1130,7 @@ func pluginSocketIsSurfaceScoped(_ kind: PluginSocketKind) -> Bool {
   switch kind {
   case .toolbarAction, .emptyState, .filterChip, .fileViewer, .activityEntry:
     return true
-  case .rowBadge, .rowMenuItem, .detailSection, .chatCard, .composerAction:
+  case .rowBadge, .rowMenuItem, .detailSection, .chatCard, .composerAction, .chatHeaderAction:
     return false
   case .unsupported:
     return false
@@ -1218,10 +1348,20 @@ struct PluginSocketDeclarations: Equatable {
       object[key] = value
     }
     switch kind {
-    case .toolbarAction, .composerAction:
+    case .toolbarAction, .composerAction, .chatHeaderAction:
       put("label", wire.label)
       put("icon", wire.icon)
       put("actionId", wire.actionId)
+      // A declared split button keeps its menu. Handed back as loose JSON so it
+      // goes through `parseActionMenu` like a published row does — the cap, the
+      // label ceiling and the drop-one-bad-entry rule then live in exactly one
+      // place, which is the same discipline desktop's `payloadFromManifestSocket`
+      // follows when it passes `menu` through to be re-validated.
+      if !wire.menu.isEmpty {
+        object["menu"] = wire.menu.map { entry -> [String: Any] in
+          ["label": entry.label, "actionId": entry.actionId, "danger": entry.danger]
+        }
+      }
     case .rowMenuItem:
       put("label", wire.label)
       put("icon", wire.icon)

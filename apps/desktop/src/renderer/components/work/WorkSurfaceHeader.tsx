@@ -8,7 +8,8 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { PluginToolbarActions } from "../plugins/sockets";
+import type { PluginSessionContext } from "../../../shared/plugins/context";
+import { PluginChatHeaderActions, PluginToolbarActions } from "../plugins/sockets";
 
 // Provider default chat titles — mirrors DEFAULT_SESSION_TITLES in
 // agentChatService.ts. When a chat's title transitions FROM one of these TO a
@@ -208,6 +209,29 @@ export type WorkSurfaceHeaderProps = {
   /** Surface-specific trailing actions (right side of the row). */
   trailingActions?: ReactNode;
   /**
+   * The chat or CLI session this header belongs to, for `chat-header-action`.
+   *
+   * A typed projection rather than an id, because the socket hands it to the
+   * plugin verbatim and this header is the one place that knows the title,
+   * provider and status without another lookup. Absent (or null) means the
+   * surface has no chat yet — a fresh pane — and the socket stays inert there
+   * rather than invoking against nothing.
+   *
+   * Every work surface shares this header, which is the whole point of putting
+   * the mount here: one declaration reaches an existing chat, a new pane, a CLI
+   * session and a grid tile, instead of the alpha test's "it only appeared in a
+   * new pane".
+   */
+  pluginSession?: PluginSessionContext | null;
+  /**
+   * Whether this surface is the visible one, threaded into the socket read.
+   *
+   * Work stays mounted behind other tabs, and the socket stores load nothing
+   * until something passes `true` — so a header rendered off-screen must not be
+   * what warms them.
+   */
+  pluginSocketsActive?: boolean;
+  /**
    * Far-left session-list expander. When provided, renders the sidebar toggle
    * before the title (every chat/CLI surface owns its own expander now that the
    * shared top bar is gone).
@@ -251,6 +275,8 @@ export function WorkSurfaceHeader({
   prPaneOpen,
   runtimePin = null,
   trailingActions,
+  pluginSession = null,
+  pluginSocketsActive = true,
   onToggleSessionsPane,
   sessionsPaneCollapsed = false,
   sessionsPaneCount,
@@ -309,8 +335,15 @@ export function WorkSurfaceHeader({
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {trailingActions}
           {/* Contributed actions sit between the surface's own buttons and the
-              Tools toggle, which stays the far-right anchor it has always been. */}
-          <PluginToolbarActions surface="work" />
+              Tools toggle, which stays the far-right anchor it has always been.
+
+              Two kinds, in order of how specific their subject is: the
+              chat-scoped one first, next to the buttons that are also about
+              this chat, then the tab-scoped toolbar action. They look alike on
+              purpose — they are the same affordance — and what differs is what
+              the plugin receives when one is pressed. */}
+          <PluginChatHeaderActions session={pluginSession} active={pluginSocketsActive} />
+          <PluginToolbarActions surface="work" active={pluginSocketsActive} />
           {onToggleToolsPane ? (
             <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
           ) : null}

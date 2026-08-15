@@ -372,6 +372,54 @@ function listBuiltinPackages(builtinRoot: string, maxDepth = BUILTIN_CATEGORY_MA
   return packages.sort((left, right) => left.pluginId.localeCompare(right.pluginId));
 }
 
+/**
+ * What `install` will actually do with a `source` string, decided WITHOUT
+ * putting anything on the machine.
+ *
+ * Exported because the in-chat install approval has to describe the install
+ * before it runs, and a second reading of the same string is how a card ends up
+ * promising one thing while the install does another. This is the same branch
+ * `install` itself takes, in the same order — local directory first, then the
+ * bundled catalogue, then git — so the two cannot disagree.
+ *
+ * A git URL resolves with no manifest by design: reading it would mean cloning
+ * it, and describing a source must never be the step that fetches code.
+ */
+export type PluginInstallSourceResolution =
+  | { kind: "path"; path: string; manifest: PluginManifest | null }
+  | { kind: "builtin"; pluginId: string; path: string; manifest: PluginManifest }
+  | { kind: "git"; url: string };
+
+export function resolvePluginInstallSource(
+  source: string,
+  options: { builtinPluginsRoot?: string | null } = {},
+): PluginInstallSourceResolution | null {
+  const trimmed = source?.trim();
+  if (!trimmed) return null;
+  const builtinRoot = options.builtinPluginsRoot === undefined
+    ? resolveBuiltinPluginsRoot()
+    : options.builtinPluginsRoot;
+  const isLocalDirectory = !PLUGIN_GIT_URL_PATTERN.test(trimmed) && dirExists(path.resolve(trimmed));
+  if (isLocalDirectory) {
+    const resolved = path.resolve(trimmed);
+    const parsed = readManifestAt(resolved);
+    // A directory whose manifest does not parse still resolves as a path: the
+    // install will fail on the same manifest a moment later, and saying "this
+    // is a directory I cannot read" is more use than calling it a git URL.
+    return { kind: "path", path: resolved, manifest: parsed.errors.length > 0 ? null : parsed.manifest };
+  }
+  if (builtinRoot && isValidPluginId(trimmed)) {
+    const bundled = listBuiltinPackages(builtinRoot).find((entry) => entry.pluginId === trimmed);
+    if (bundled) {
+      return { kind: "builtin", pluginId: bundled.pluginId, path: bundled.source, manifest: bundled.manifest };
+    }
+  }
+  if (PLUGIN_GIT_URL_PATTERN.test(trimmed)) return { kind: "git", url: trimmed };
+  // Neither a directory here, nor a package this build ships, nor a URL shaped
+  // like one git would accept. `install` would reject it too.
+  return null;
+}
+
 export function createPluginInstallService(deps: {
   logger: Logger;
   pluginsRoot?: string;

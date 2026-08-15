@@ -15,6 +15,7 @@ import {
   getAdeActionInputContract,
   getAdeActionDomainServices,
   isAllowedAdeAction,
+  isApprovalGatedAdeAction,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
@@ -59,6 +60,10 @@ import {
 } from "../../desktop/src/main/services/plugins/gatedActionDomains";
 import { subscribeToPluginChanges } from "../../desktop/src/main/services/plugins/pluginEvents";
 import {
+  recordPluginInstallApproval,
+  requestPluginInstallApproval,
+} from "../../desktop/src/main/services/plugins/pluginInstallApproval";
+import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
   isLaunchProfile,
@@ -79,7 +84,11 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import {
+  describeSessionBoundRoleClamp,
+  normalizeAdeRuntimeRole,
+  resolveSessionBoundRole,
+} from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
@@ -3804,7 +3813,12 @@ async function runTool(args: {
       const service = services[entry];
       if (!service) return [];
       return listAllowedAdeActionNames(entry, service)
-        .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
+        // An approval-gated action stays listed for a lesser caller: the whole
+        // point is that they may ask, and an agent cannot ask for a verb it was
+        // never told exists.
+        .filter((action) => callerIsCto
+          || !isCtoOnlyAdeAction(entry, action)
+          || isApprovalGatedAdeAction(entry, action))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
@@ -3842,20 +3856,77 @@ async function runTool(args: {
     if (!isAllowedAdeAction(domain, action)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
     }
+    let pluginInstallApproved = false;
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
-      if (domain === "plugin") {
+      // `install` is the one verb in this group whose refusal became a
+      // QUESTION. An agent that has just written a plugin should not have to
+      // hand its user a paragraph of shell ceremony — a packaged Electron
+      // path, an `ADE_HOME`, six inherited environment variables to unset — to
+      // install the thing the agent already built. The gate is not relaxed: the
+      // caller's role never changes, the host raises an approval card in the
+      // caller's own chat, and the install runs on the host's authority only
+      // after the person answers.
+      //
+      // The other three stay flat refusals. Removing a plugin or stopping its
+      // child is not a thing to interrupt someone for mid-turn, and an
+      // uninstall prompt is exactly the kind of card people learn to dismiss.
+      if (domain === "plugin" && action === "install"
+        && callerCtx.chatSessionId && runtime.agentChatService) {
+        const approval = await requestPluginInstallApproval({
+          chat: runtime.agentChatService,
+          chatSessionId: callerCtx.chatSessionId,
+          projectId: runtime.projectId,
+          // Read straight off the call, then resolved and described by the
+          // host. Nothing else the caller passed reaches the reader as prose.
+          source: asOptionalTrimmedString(safeObject(toolArgs.args).source) ?? "",
+        });
+        if (!approval.allow) {
+          throw new JsonRpcError(JsonRpcErrorCode.policyDenied, approval.message, {
+            ...approval.data,
+            method: `${domain}.${action}`,
+          });
+        }
+        if (approval.pluginId && approval.canonicalSource) {
+          // Remembered so the build-test-fix loop does not re-ask on every
+          // save. Keyed on what the HOST resolved, never on what was passed.
+          recordPluginInstallApproval({
+            projectId: runtime.projectId,
+            pluginId: approval.pluginId,
+            canonicalSource: approval.canonicalSource,
+          });
+        }
+        pluginInstallApproved = true;
+      }
+      if (pluginInstallApproved) {
+        // Fall through to the ordinary dispatch, so an approved install runs
+        // the exact code path a CTO caller takes — one invocation site, one set
+        // of error mappings.
+      } else if (domain === "plugin") {
         // The plugin bridge is new, so it starts out obeying the rule the
         // generic branch below still breaks: a role refusal is policy, not a
         // missing method. Widening the fix to every domain would change the
         // error code clients already assert on (accountUsage.test.ts), so it is
         // a deliberate follow-up rather than a drive-by here.
+        //
+        // The second sentence is the difference between a refusal someone can
+        // act on and one they retry verbatim: when the caller carries a chat
+        // session, `--role cto` was clamped and "run it from your own terminal"
+        // is advice they believe they already followed.
+        const clamp = describeSessionBoundRoleClamp(callerCtx.chatSessionId);
         throw new JsonRpcError(
           JsonRpcErrorCode.policyDenied,
-          `Action '${domain}.${action}' is limited to the machine operator. Run it from ADE, \`ade code\`, or your own terminal.`,
-          { kind: "plugin_role_denied", method: `${domain}.${action}`, requiredRole: "cto" },
+          `Action '${domain}.${action}' is limited to the machine operator. `
+          + (clamp ?? "Run it from ADE, `ade code`, or your own terminal."),
+          {
+            kind: "plugin_role_denied",
+            method: `${domain}.${action}`,
+            requiredRole: "cto",
+            ...(clamp ? { sessionBound: true } : {}),
+          },
         );
+      } else {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
       }
-      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
@@ -3877,6 +3948,30 @@ async function runTool(args: {
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : safeObject(toolArgs.args);
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
+    // A pending request whose answer GRANTS something may only be answered by
+    // the operator. `respondToInput` matches a waiter by `itemId` alone, and
+    // that id is written into the durable transcript the requesting agent can
+    // read back — so without this, an agent could raise its own install
+    // approval and then approve it. This is the only door an agent enters
+    // through; the renderer and a paired device are the user, and are not
+    // routed through here.
+    if (domain === "chat" && action === "respondToInput" && !callerIsCto) {
+      const targetSessionId = asOptionalTrimmedString(rawObjectArgs.sessionId);
+      const targetItemId = asOptionalTrimmedString(rawObjectArgs.itemId);
+      if (targetSessionId && targetItemId
+        && runtime.agentChatService?.pendingInputRequiresOperator(targetSessionId, targetItemId)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          "That request is waiting on the person at the keyboard, not on you. Leave it for them to answer.",
+          {
+            kind: "pending_input_operator_only",
+            method: `${domain}.${action}`,
+            itemId: targetItemId,
+            requiredRole: "cto",
+          },
+        );
+      }
+    }
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
     let result: unknown;

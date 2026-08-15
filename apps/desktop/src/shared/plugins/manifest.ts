@@ -32,6 +32,8 @@ import {
   PLUGIN_SURFACE_IDS,
   isPluginDialogKind,
   normalizePluginSlashCommand,
+  parsePluginActionButtonMenu,
+  type PluginActionButtonMenuItem,
   type PluginDialogKind,
   type PluginSocketExtraField,
   type PluginSocketKind,
@@ -222,6 +224,15 @@ export type PluginManifestSocket = {
   panelId?: string;
   /** `toolbar-action` / `row-menu-item` invoke this plugin action. */
   actionId?: string;
+  /**
+   * The three action-BUTTON kinds only: extra actions behind a chevron.
+   *
+   * Not a `manifestExtra`. A split button with a malformed menu is still a
+   * perfectly good button, and dropping the contribution over its dropdown
+   * would be the opposite of what the requirement table is for — so a bad
+   * `menu` degrades to no menu here, exactly as it does on a published row.
+   */
+  menu?: PluginActionButtonMenuItem[];
   /** `file-viewer` only: lowercase extensions including the dot. */
   extensions?: string[];
   /** `filter-chip` only. */
@@ -679,6 +690,10 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       return ctx.drop(`${label}.extensions must be an array of ".ext" strings`);
     }
     const declaredLabel = trimmedString(entry.label);
+    // Through the shared parser rather than a local read, so a manifest-declared
+    // split button and a published one are capped and bounded identically. A
+    // malformed menu yields `[]` and the entry stays a plain button.
+    const menu = parsePluginActionButtonMenu(entry.menu);
     // Read for every entry, meaningful to one kind each. A malformed value is
     // dropped to null here and then refused below by the same requirement loop
     // the four core fields go through, so `command: "Fix It!"` fails with the
@@ -722,6 +737,7 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       ...(trimmedString(entry.icon) ? { icon: trimmedString(entry.icon)! } : {}),
       ...(panelId ? { panelId } : {}),
       ...(actionId ? { actionId } : {}),
+      ...(menu.length > 0 ? { menu } : {}),
       ...(extensions && extensions.length ? { extensions } : {}),
       ...(trimmedString(entry.filterKey) ? { filterKey: trimmedString(entry.filterKey)! } : {}),
       ...(command ? { command } : {}),

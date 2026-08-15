@@ -108,6 +108,17 @@ export type SyncPluginRecordSocket = {
   icon?: string;
   panelId?: string;
   actionId?: string;
+  /**
+   * A split button's extra actions. Loose here like `dialog` above: the reader
+   * re-validates through `parsePluginActionButtonMenu`, and a wire type that
+   * restated the cap would be a second ceiling to keep in step.
+   *
+   * On the wire rather than omitted because the clients that read this record
+   * are exactly the ones with no manifest on disk — the web client and the
+   * phone — and a split button that arrived there without its menu would be the
+   * silent half-render the taxonomy promises never happens.
+   */
+  menu?: { label: string; actionId: string; danger?: boolean }[];
   extensions?: string[];
   filterKey?: string;
   command?: string;

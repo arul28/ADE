@@ -4,9 +4,9 @@
  * Pure types and pure helpers, shared by the daemon, the desktop renderer, the
  * `ade code` TUI and (transcribed) iOS. No React, no Electron, no Node.
  *
- * The taxonomy is deliberately CLOSED and small. Sixteen kinds across eight
+ * The taxonomy is deliberately CLOSED and small. Seventeen kinds across eight
  * surfaces is the whole vocabulary, and a plugin author learns the shape once
- * while iOS implements it exhaustively at compile time. Adding a seventeenth
+ * while iOS implements it exhaustively at compile time. Adding an eighteenth
  * kind is a platform change with a parity cost on four clients — not something
  * a plugin can invent at runtime.
  *
@@ -49,6 +49,7 @@ export const PLUGIN_SOCKET_KINDS = [
   "file-viewer",
   // Chat and the agent.
   "composer-action",
+  "chat-header-action",
   "chat-card",
   "slash-command",
   // Ambient placement: the seams that are not attached to a row.
@@ -132,7 +133,7 @@ export type PluginSocketRequirementField = "label" | "actionId" | "panelId" | "e
  * `command` and `dialog` carry no meaning for any other kind, and the manifest
  * parser reads the four core fields off every entry unconditionally. Listing
  * these separately is what lets the parser learn them one kind at a time
- * instead of widening the record it builds for all sixteen.
+ * instead of widening the record it builds for all seventeen.
  *
  * Membership means REQUIRED, which is the whole reason the list is short. A
  * per-kind field that is merely optional — `settings-section`'s `section`, a
@@ -160,6 +161,7 @@ export const PLUGIN_SOCKET_REQUIREMENTS: Record<PluginSocketKind, PluginSocketRe
   "filter-chip": { manifest: ["label"], payload: ["label", "filterKey"] },
   "file-viewer": { manifest: ["panelId", "extensions"], payload: ["panelId", "extensions"] },
   "composer-action": { manifest: ["label", "actionId"], payload: ["label", "actionId"] },
+  "chat-header-action": { manifest: ["label", "actionId"], payload: ["label", "actionId"] },
   // A card is a panel in a card frame: panel plus context, nothing else, which
   // is what makes it renderable by the panel renderer iOS and the TUI already
   // ship rather than by a card component only desktop has.
@@ -295,6 +297,17 @@ export const PLUGIN_SOCKET_CLIENT_SUPPORT: Record<PluginSocketKind, PluginSocket
   "filter-chip": { desktop: true, web: true, ios: true, tui: false },
   "file-viewer": { desktop: true, web: true, ios: true, tui: false },
   "composer-action": { desktop: true, web: true, ios: true, tui: false },
+  // The parity gap the alpha retrospective recorded, closed on three clients at
+  // once. It shipped desktop-and-web-first with `ios` false for one round, which
+  // is the pattern this table exists to make safe: absent on a client is honest
+  // and readable, half-drawn is neither.
+  //
+  // The phone draws these as rows in the chat's existing overflow menu, grouped
+  // per plugin, rather than as the split button desktop puts in the header — a
+  // nav bar holds a title and about two controls. Different chrome, same
+  // contribution and the same `PluginSessionContext`, which is what this row
+  // actually promises. It does NOT promise pixels.
+  "chat-header-action": { desktop: true, web: true, ios: true, tui: false },
   "chat-card": { desktop: true, web: true, ios: true, tui: false },
   "slash-command": { desktop: true, web: true, ios: false, tui: false },
   "command-palette-action": { desktop: true, web: true, ios: false, tui: false },
@@ -370,9 +383,17 @@ export const PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS = 15 * 60_000;
  * button next to it — and it draws the same busy state under the same caret.
  * Splitting the budget by gesture would mean `/summarize` timing out where the
  * button beside it succeeds.
+ *
+ * `chat-header-action` joins them on the rule this comment states rather than on
+ * where it sits: the budget follows the FEEDBACK, and the header button draws
+ * the same persistent busy state, refuses re-entry the same way, and is promoted
+ * out of its overflow menu while it runs. Its canonical uses are the open-ended
+ * ones a chat's own header attracts — summarize this conversation, hand it off,
+ * file it — and a 60s cap would report those as plugin faults.
  */
 const PLUGIN_LONG_RUNNING_SOCKETS: ReadonlySet<PluginSocketKind> = new Set([
   "composer-action",
+  "chat-header-action",
   "slash-command",
 ]);
 
@@ -405,12 +426,108 @@ export function clampPluginInvokeTimeoutMs(value: unknown): number | null {
   return Math.min(Math.trunc(value), PLUGIN_SOCKET_INVOKE_TIMEOUT_MAX_MS);
 }
 
-export type PluginToolbarActionPayload = {
+/**
+ * Extra actions hung off ONE action button, opened by a chevron beside it.
+ *
+ * The alpha retrospective's sharpest miss: a user asked for "a small arrow on
+ * the drink button" that exposes a second action, and the platform's nearest
+ * concepts — a slash command, a panel button, a row menu item — each answered a
+ * different question, so the visible button acquired no arrow and the result
+ * read as unfinished. This is that arrow, and nothing more: the button's primary
+ * press is unchanged, and a payload with no `menu` renders exactly what it
+ * rendered before this field existed.
+ *
+ * Deliberately NOT a nested socket. An entry is a label and an action id on the
+ * SAME contribution, which is what keeps it addressable by the plugin that owns
+ * the button and out of the per-slot cap that governs placement.
+ */
+export type PluginActionButtonMenuItem = {
+  label: string;
+  actionId: string;
+  /**
+   * The product's own destructive styling, as `row-menu-item` already spends it.
+   *
+   * Honoured only alongside the attribution the same menu draws — a red row that
+   * is not visibly a plugin's reads as ADE's own.
+   */
+  danger?: boolean;
+};
+
+/**
+ * Entries one split button may carry.
+ *
+ * Six, because the menu is a SECONDARY affordance on a control that already has
+ * a primary press: a plugin needing more than six related verbs wants a panel,
+ * where it owns the layout, not a dropdown hanging off a toolbar. Over-cap
+ * entries are truncated rather than dropping the button, so a plugin that grew
+ * a seventh action still renders its first six and its primary press.
+ */
+export const PLUGIN_ACTION_MENU_ITEM_LIMIT = 6;
+
+/**
+ * The three action-BUTTON kinds share this shape.
+ *
+ * `toolbar-action`, `composer-action` and `chat-header-action` are one
+ * contribution — a labelled button that invokes an action — wearing three
+ * chromes, and `command-palette-action` is the fourth spelling of the same
+ * fields. They share a parse arm for exactly that reason, and sharing the type
+ * is what keeps the arm honest: a field added for one is a field all four
+ * parse, at one ceiling, rather than three ceilings that drift.
+ */
+export type PluginActionButtonPayload = {
   label: string;
   icon?: string;
   actionId: string;
   disabled?: boolean;
+  /**
+   * Additional actions behind a chevron. Absent means a plain button.
+   *
+   * Read by the three button kinds. `command-palette-action` parses it — one
+   * arm, one ceiling — and the palette ignores it, because a palette row is
+   * already a flat searchable list and a submenu inside one would hide entries
+   * from the search that is the palette's whole point.
+   */
+  menu?: PluginActionButtonMenuItem[];
 };
+
+/**
+ * Narrow a split button's menu. Always an array — `[]` means "no menu".
+ *
+ * Tolerant per ENTRY and strict per FIELD, which is the same bargain the rest of
+ * this file makes: an entry missing a label or an action is dropped, because a
+ * blank menu row is a plugin bug that rendering would hide, while the entries
+ * around it are still perfectly good. A non-array `menu`, or one whose every
+ * entry is malformed, degrades to no menu — a plain button — rather than
+ * dropping the whole contribution. The button's primary press is the thing the
+ * user asked for; the chevron is the bonus.
+ *
+ * Exported because two other layers re-derive a menu from a shape this parser
+ * never sees: the manifest parser, which reads `sockets[].menu` off authored
+ * JSON, and the renderer's manifest→payload mapping. All three go through here
+ * so the cap and the label ceiling cannot differ by layer.
+ */
+export function parsePluginActionButtonMenu(raw: unknown): PluginActionButtonMenuItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: PluginActionButtonMenuItem[] = [];
+  for (const entry of raw) {
+    if (items.length >= PLUGIN_ACTION_MENU_ITEM_LIMIT) break;
+    if (!isRecord(entry)) continue;
+    // The same 40 the button's own label takes: a menu row sits directly under
+    // the button and a longer one would make the popover wider than the control
+    // it hangs from.
+    const label = bounded(entry.label, 40);
+    const actionId = bounded(entry.actionId, 64);
+    if (!label || !actionId) continue;
+    items.push({
+      label,
+      actionId,
+      ...(entry.danger === true ? { danger: true } : {}),
+    });
+  }
+  return items;
+}
+
+export type PluginToolbarActionPayload = PluginActionButtonPayload;
 
 export type PluginRowBadgePayload = {
   text: string;
@@ -458,12 +575,26 @@ export type PluginFileViewerPayload = {
  * sharing a payload shape is cheap; one kind carrying two different contexts
  * would mean every action handler had to guess which it received.
  */
-export type PluginComposerActionPayload = {
-  label: string;
-  icon?: string;
-  actionId: string;
-  disabled?: boolean;
-};
+export type PluginComposerActionPayload = PluginActionButtonPayload;
+
+/**
+ * A button in an open chat's header, beside the chat's own controls.
+ *
+ * The retrospective's direct ask, and the third chrome over
+ * {@link PluginActionButtonPayload}. What separates it from the
+ * `toolbar-action` two pixels away is the CONTEXT, which is the same reason
+ * `composer-action` is its own kind: a toolbar action on Work receives the tab
+ * (`{kind: "surface", surface: "work"}`), while this one receives the chat it
+ * sits above as a {@link PluginSessionContext}. A plugin that wants to act on
+ * *this conversation* could not do it from the toolbar kind without the host
+ * guessing which chat was meant.
+ *
+ * It is deliberately not scoped to a new chat, either. The alpha test's plugin
+ * appeared in a fresh pane and not in the conversation the user was already
+ * having, which read as the contribution being absent; this kind mounts on the
+ * header every chat surface shares, so an EXISTING chat carries it.
+ */
+export type PluginChatHeaderActionPayload = PluginActionButtonPayload;
 
 /**
  * A plugin's panel rendered as a card in the chat transcript.
@@ -511,12 +642,7 @@ export type PluginSlashCommandPayload = {
  * hands a surface-only context because it is opened from anywhere and belongs
  * to no row.
  */
-export type PluginCommandPaletteActionPayload = {
-  label: string;
-  icon?: string;
-  actionId: string;
-  disabled?: boolean;
-};
+export type PluginCommandPaletteActionPayload = PluginActionButtonPayload;
 
 /**
  * A section on a core settings page.
@@ -630,7 +756,7 @@ export type PluginContributionEntityTag = {
  * Per-kind payload shapes, each additionally carrying
  * {@link PluginContributionEntityTag}.
  *
- * Mapped rather than intersected sixteen times over, so a new socket kind gets
+ * Mapped rather than intersected seventeen times over, so a new socket kind gets
  * the tag by existing rather than by someone remembering.
  */
 export type PluginContributionPayloadByKind = {
@@ -647,6 +773,7 @@ type PluginContributionPayloadByKindBase = {
   "filter-chip": PluginFilterChipPayload;
   "file-viewer": PluginFileViewerPayload;
   "composer-action": PluginComposerActionPayload;
+  "chat-header-action": PluginChatHeaderActionPayload;
   "chat-card": PluginChatCardPayload;
   "slash-command": PluginSlashCommandPayload;
   "command-palette-action": PluginCommandPaletteActionPayload;
@@ -714,19 +841,22 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
   if (!isRecord(raw)) return null;
   const result = ((): PluginContributionPayloadByKind[PluginSocketKind] | null => {
     switch (socket) {
-      // Same payload, three contexts — see PluginComposerActionPayload. Sharing
+      // Same payload, four contexts — see PluginActionButtonPayload. Sharing
       // the arm is what keeps them from drifting into different ceilings.
       case "toolbar-action":
       case "composer-action":
+      case "chat-header-action":
       case "command-palette-action": {
         const label = bounded(raw.label, 40);
         const actionId = bounded(raw.actionId, 64);
         if (!label || !actionId) return null;
+        const menu = parsePluginActionButtonMenu(raw.menu);
         return {
           label,
           actionId,
           ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
           ...(raw.disabled === true ? { disabled: true } : {}),
+          ...(menu.length > 0 ? { menu } : {}),
         };
       }
       case "row-badge": {

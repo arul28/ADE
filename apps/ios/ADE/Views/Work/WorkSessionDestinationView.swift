@@ -592,6 +592,17 @@ struct WorkSessionDestinationView: View {
   // walking arbitrarily old transcript history.
   @State var olderChatEventHistoryCursor: Int?
   @State var olderTranscriptLoading = false
+  /// Session-scoped plugin contributions, for the header menu's
+  /// `chat-header-action` entries. Held here rather than inside the header menu
+  /// because the menu is `Equatable`-gated: it must be handed a value that
+  /// changed, not a service it can watch.
+  ///
+  /// A second index over the same entity kind as the composer's, one view down,
+  /// and deliberately not shared with it: the composer's lives inside
+  /// `WorkChatComposerDraftInput`, which is rebuilt on a different cadence, and
+  /// threading one index through the chat body to save a projection read would
+  /// couple the header menu's refresh to the composer's lifetime.
+  @State var pluginContributions = PluginContributionIndex()
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var artifactsRenderSignature = 0
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
@@ -934,7 +945,10 @@ struct WorkSessionDestinationView: View {
           onDelete: { Task { await deleteCurrentChatSession() } },
           onCopySessionId: { copyCurrentSessionId() },
           onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
-          onTogglePinned: { Task { await toggleCurrentSessionPinned() } }
+          onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+          onInvokePluginAction: { contribution, actionId in
+            invokeChatHeaderPluginAction(contribution, actionId: actionId)
+          }
         )
         .equatable()
       }
@@ -965,8 +979,51 @@ struct WorkSessionDestinationView: View {
       sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id),
       showsProof: !personalChat,
       showsPinAction: !personalChat,
-      showsSessionLink: !personalChat
+      showsSessionLink: !personalChat,
+      pluginActions: pluginContributions.chatHeaderActions(sessionId: session.id),
+      pluginNames: chatHeaderPluginNames(session.id),
+      pluginActionsEnabled: syncService.canInvokePluginActions
     )
+  }
+
+  /// Display names for the plugins contributing to this chat's header menu.
+  ///
+  /// Resolved here, where the sync service is already observed, so the menu can
+  /// stay a pure value — see ``WorkChatHeaderMenuModel/pluginActions``. Only the
+  /// contributing plugins are looked up: the catalogue holds every plugin on
+  /// every machine, and copying all of it into the model would make the
+  /// equality gate compare a table that has nothing to do with this menu.
+  private func chatHeaderPluginNames(_ sessionId: String) -> [String: String] {
+    let catalog = syncService.pluginPresenceCatalog()
+    var names: [String: String] = [:]
+    for contribution in pluginContributions.chatHeaderActions(sessionId: sessionId) {
+      names[contribution.pluginId] = catalog.label(for: contribution.pluginId)
+    }
+    return names
+  }
+
+  /// Dispatch a header-menu entry.
+  ///
+  /// The context is the open chat, read from the view rather than off
+  /// `contribution.entityId`: a published row and a materialized declaration
+  /// agree about the session, but a wildcard declaration is only stamped with
+  /// the entity at lookup, and the view is the one place that always knows which
+  /// chat the reader has in front of them.
+  ///
+  /// The draft is deliberately not attached. This entry is a verb about the
+  /// conversation, and the menu is nowhere near the text field — a reader
+  /// opening it is not mid-sentence. Fire-and-forget for its outcome, like
+  /// every other menu socket: the menu has dismissed by the time the call
+  /// resolves, so a `navigate` is the only answer with anywhere to land.
+  private func invokeChatHeaderPluginAction(_ contribution: PluginContribution, actionId: String) {
+    guard let openSessionId = (session ?? initialSession)?.id else { return }
+    Task { @MainActor in
+      await syncService.invokeSocketContribution(
+        contribution,
+        actionId: actionId,
+        context: .session(id: openSessionId)
+      )
+    }
   }
 
   var lanePrGitHubUrlString: String {
@@ -1096,6 +1153,7 @@ struct WorkSessionDestinationView: View {
         title: sessionDestinationNavigationTitle,
         trailingControls: { sessionHeaderTrailingControls }
       )
+      .loadPluginContributions(.session, into: $pluginContributions)
       .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
       .adeAnalyticsScreen(.workSession)
       .sheet(item: $fullscreenImage) { image in

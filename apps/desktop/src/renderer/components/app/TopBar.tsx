@@ -68,6 +68,7 @@ import { ChannelBadge } from "./ChannelBadge";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
 import { useDialogFocusTrap } from "./HeaderSheet";
 import { HelpMenu } from "../onboarding/HelpMenu";
+import { PluginToolbarActions } from "../plugins/sockets";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
@@ -2845,6 +2846,18 @@ export function TopBar({
           </HeaderStatusMenu>
 
           {!webMode ? <AutoUpdateControl /> : null}
+
+          {/* The first mount the `app` surface has ever had. A plugin could
+              already declare a toolbar action on it — the surface exists, the
+              parser accepts it, the phone even draws it — and on desktop it
+              drew nowhere, which is the shape of gap this round exists to
+              close. It sits after the product's own status strip and before
+              the utility cluster, so the window's fixed controls (feedback,
+              help, zoom) stay where muscle memory left them.
+
+              Context is `{kind: "surface", surface: "app"}`: this cluster
+              belongs to the window, not to whatever tab is open under it. */}
+          <PluginToolbarActions surface="app" />
         </div>
 
         <div

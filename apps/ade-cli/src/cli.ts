@@ -1431,6 +1431,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade plugin enable <id> | disable <id>         Turn a plugin on or off
     $ ade plugin reload <id>                        Re-read the manifest and restart the plugin
     $ ade plugin logs <id> [--limit <n>]            Show a plugin's recent log lines
+    $ ade plugin doctor <id> --text                 Check every layer between installed and visible
     $ ade plugin dev [<id>|<path>]                  Watch a plugin directory and reload on change
     $ ade <plugin-id> <command>                     Run a command the plugin declares in its manifest
 
@@ -12741,7 +12742,42 @@ function buildCliPlan(
       })],
     };
   }
-  throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
+  throw new CliUsageError(unknownCommandMessage(primary));
+}
+
+/**
+ * Words that name a real ADE capability some build has, and this one cannot
+ * route.
+ *
+ * The distinction the plain "Unknown command" error cannot make. A person whose
+ * shell resolves `ade` to the stable app, typing a command that only the alpha
+ * app's CLI has, is told the command does not exist — and reasonably concludes
+ * the FEATURE does not exist, because the prompt is sitting in the alpha lane's
+ * worktree and everything else about the session looks right. A lane changes the
+ * checkout; it does not change which application `PATH` picked. That is the
+ * whole failure in `docs/reports/ade-tipsy-plugin-alpha-ux-retrospective.md`'s
+ * "command-line permission maze", and it cost three failed invocations before
+ * the boundary was visible.
+ *
+ * Deliberately a short allowlist rather than a guess at any unknown word: a typo
+ * must keep reading as a typo (`ade lnes` is not a channel problem), so only
+ * words this build knows to be real elsewhere earn the extra line. Add an entry
+ * when a command ships on one channel ahead of another; it costs nothing once
+ * every channel routes the word, because a routed command never reaches here.
+ */
+const COMMANDS_FROM_ANOTHER_CHANNEL: ReadonlySet<string> = new Set(["plugin", "plugins"]);
+
+/** This CLI's own identity, for an error that is ABOUT which CLI is running. */
+function describeCliBuild(): string {
+  const channel = process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() || "stable";
+  return `${channel} ${VERSION}`;
+}
+
+export function unknownCommandMessage(primary: string): string {
+  const base = `Unknown command '${primary}'. Run 'ade help'.`;
+  if (!COMMANDS_FROM_ANOTHER_CHANNEL.has(primary)) return base;
+  return `${base}\nThis ADE CLI (${describeCliBuild()}) has no '${primary}' command`
+    + " — if you're testing ADE Alpha, its CLI is separate and ships with that app.";
 }
 
 function buildGithubPlan(args: string[]): CliPlan {

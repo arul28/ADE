@@ -497,9 +497,13 @@ struct PluginManifestSocketWire: Decodable, Equatable {
   var actionId: String?
   var extensions: [String] = []
   var filterKey: String?
+  /// Extra actions a declared split button carries, mirroring
+  /// `SyncPluginRecordSocket.menu`. Empty for every kind that is not one of the
+  /// action-button kinds, and for the older hosts that send no `menu` at all.
+  var menu: [PluginActionMenuEntry] = []
 
   private enum CodingKeys: String, CodingKey {
-    case socket, surface, id, order, label, icon, panelId, actionId, extensions, filterKey
+    case socket, surface, id, order, label, icon, panelId, actionId, extensions, filterKey, menu
   }
 
   init(
@@ -512,7 +516,8 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     panelId: String? = nil,
     actionId: String? = nil,
     extensions: [String] = [],
-    filterKey: String? = nil
+    filterKey: String? = nil,
+    menu: [PluginActionMenuEntry] = []
   ) {
     self.socket = socket
     self.surface = surface
@@ -524,6 +529,7 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     self.actionId = actionId
     self.extensions = extensions
     self.filterKey = filterKey
+    self.menu = menu
   }
 
   init(from decoder: Decoder) throws {
@@ -543,5 +549,8 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     actionId = (try? container.decodeIfPresent(String.self, forKey: .actionId)) ?? nil
     extensions = (try? container.decodeIfPresent([String].self, forKey: .extensions)) ?? []
     filterKey = (try? container.decodeIfPresent(String.self, forKey: .filterKey)) ?? nil
+    // Whole-array `try?`: a menu whose JSON this build cannot read costs the
+    // declaration its extra actions, never its primary one.
+    menu = (try? container.decodeIfPresent([PluginActionMenuEntry].self, forKey: .menu)) ?? [] ?? []
   }
 }

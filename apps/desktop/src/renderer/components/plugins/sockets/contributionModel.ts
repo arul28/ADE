@@ -104,15 +104,25 @@ export function entityCacheKey(entityKind: PluginEntityKind, entityId: string): 
  */
 export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown {
   switch (socket.socket) {
-    // Three kinds, one arm, because they are three chromes over one
+    // Four kinds, one arm, because they are four chromes over one
     // contribution: a labelled button that invokes an action. The parser folds
     // them into a single case too (`sockets.ts`), and the two files agreeing on
     // that is the point — a mapping that split them here would be claiming a
     // difference the contract does not have.
+    //
+    // `menu` is passed through raw and re-validated by the parser, like every
+    // other field here: the manifest parser already capped and bounded it, and
+    // this mapping deliberately trusts nothing it is handed.
     case "toolbar-action":
     case "composer-action":
+    case "chat-header-action":
     case "command-palette-action":
-      return { label: socket.label, icon: socket.icon, actionId: socket.actionId };
+      return {
+        label: socket.label,
+        icon: socket.icon,
+        actionId: socket.actionId,
+        ...(socket.menu ? { menu: socket.menu } : {}),
+      };
     case "row-badge":
       // A manifest badge has no value of its own — it is the declaration a
       // dynamic row later fills in. Rendering it as a neutral label keeps a
@@ -185,7 +195,7 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
        * telling the plugin author why. That is the exact failure
        * `PLUGIN_SOCKET_REQUIREMENTS` was written to prevent one layer up, and
        * it is how eight kinds shipped renderable but undeclarable. The `never`
-       * makes the seventeenth kind a compile error in this file rather than a
+       * makes the eighteenth kind a compile error in this file rather than a
        * silent hole in someone else's surface.
        */
       const unhandled: never = socket.socket;

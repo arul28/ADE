@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WorkSurfaceHeader } from "./WorkSurfaceHeader";
+import { pluginSessionContext } from "../plugins/sockets";
 
 vi.mock("../chat/ChatGitToolbar", () => ({
   ChatGitToolbar: ({ laneId }: { laneId: string }) => (
@@ -24,7 +25,45 @@ vi.mock("../shared/ClaudeCacheTtlBadge", () => ({
   ),
 }));
 
+const invoked: { action: string; context: unknown }[] = [];
+
+/**
+ * Stubbed for the whole file, not for one describe.
+ *
+ * The socket layer's stores are module-level and settle on the FIRST read: a
+ * build with no plugin namespace records "no plugins" and never asks again. A
+ * stub installed halfway through the file would therefore be invisible, and the
+ * mount test would pass for the wrong reason — which is exactly the class of
+ * silent-nothing failure the socket taxonomy keeps producing.
+ */
+beforeAll(() => {
+  (window as unknown as { ade: unknown }).ade = {
+    plugins: {
+      list: async () => [
+        { pluginId: "tipsy", displayName: "Tipsy", enabled: true, accent: null, icon: null, disabledContributions: [] },
+      ],
+      getManifest: async () => ({
+        name: "tipsy",
+        version: "1.0.0",
+        sockets: [
+          { socket: "chat-header-action", surface: "work", id: "drink", label: "Drink", actionId: "takeDrink" },
+        ],
+      }),
+      listContributions: async () => [],
+      invoke: async (args: { action: string; args: { context: unknown } }) => {
+        invoked.push({ action: args.action, context: args.args.context });
+        return {};
+      },
+    },
+  };
+});
+
+afterAll(() => {
+  delete (window as unknown as { ade?: unknown }).ade;
+});
+
 afterEach(() => {
+  invoked.length = 0;
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -138,5 +177,45 @@ describe("WorkSurfaceHeader", () => {
     rerender(<WorkSurfaceHeader title="Fix the logout redirect" />);
     const el = screen.getByText("Fix the logout redirect");
     expect(el.getAttribute("data-title-landed")).toBeNull();
+  });
+
+  /**
+   * The mount itself, rather than the socket component in isolation.
+   *
+   * This header is shared by ADE chats, CLI sessions and grid tiles, which is
+   * why `chat-header-action` lives here: one declaration reaches all three. The
+   * alpha test's complaint was that a plugin appeared only in a NEW pane, so
+   * what has to be proven is that a header handed an existing chat draws it and
+   * invokes against that chat.
+   */
+  it("mounts chat-header-action for the session it is given", async () => {
+    render(
+      <WorkSurfaceHeader
+        title="Refactor the parser"
+        pluginSession={pluginSessionContext({ id: "chat-1", title: "Refactor the parser", provider: "claude" })}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Drink")).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(screen.getByText("Drink"));
+    });
+
+    expect(invoked).toHaveLength(1);
+    expect(invoked[0]?.action).toBe("takeDrink");
+    expect((invoked[0]?.context as { kind: string; id: string })).toMatchObject({
+      kind: "session",
+      id: "chat-1",
+    });
+  });
+
+  // A header with no chat — a pane that has not started one — has no subject to
+  // hand a plugin, so the socket stays absent rather than invoking against null.
+  it("draws no chat-header contribution on a header with no session", async () => {
+    render(<WorkSurfaceHeader title="New chat" />);
+    // The other socket in this row would draw if anything were going to, so a
+    // settled empty render is the real assertion, not an immediate one.
+    await waitFor(() => expect(screen.getByText("New chat")).toBeTruthy());
+    expect(screen.queryByText("Drink")).toBeNull();
   });
 });

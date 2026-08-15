@@ -3705,6 +3705,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   <div className="ade-lane-column" style={{ "--lane-accent": getLaneAccent(lane, index) } as React.CSSProperties}>
                     <div className="flex items-center gap-1.5 px-2 shrink-0" style={{ height: 22, background: `color-mix(in srgb, var(--lane-accent) 6%, transparent)` }}>
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--lane-accent)", opacity: 0.85 }}>{laneName}</span>
+                      {/* The column view's per-lane header was the one place a
+                          lane is named and a plugin could say nothing about it.
+                          The list row a few hundred lines down already carries
+                          badges for the same lane; a user who splits Lanes into
+                          columns should not lose them. Skipped when the lane is
+                          not in `lanesById` — a column keyed to a lane this
+                          render cannot resolve has no subject to badge. */}
+                      {lane ? (
+                        <PluginRowBadges surface="lanes" context={pluginLaneContext(lane)} active={active} />
+                      ) : null}
                     </div>
                     <PaneTilingLayout
                       layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${laneId}`}

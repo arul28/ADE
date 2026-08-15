@@ -8,11 +8,13 @@ import {
   isPluginSocketKind,
   isPluginSurfaceId,
   normalizePluginSlashCommand,
+  parsePluginActionButtonMenu,
   parsePluginContributionPayload,
   pluginSocketInvokeTimeoutMs,
   pluginSocketKindsSupportedOn,
   pluginSocketSupportedOn,
   splitPluginRowBadges,
+  PLUGIN_ACTION_MENU_ITEM_LIMIT,
   PLUGIN_CLIENT_SURFACES,
   PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS,
   PLUGIN_DIALOG_FIELDS,
@@ -187,6 +189,234 @@ describe("a composer-action declared in a plugin.json", () => {
       icon: parsed.icon,
       actionId: parsed.actionId,
     })).toEqual({ label: "Dictate", icon: "Microphone", actionId: "dictate" });
+  });
+});
+
+/**
+ * The kind the alpha retrospective asked for by name.
+ *
+ * The user wanted a control in the chat's HEADER, got one in the composer, and
+ * read the difference as the plugin not having been built. What makes this a
+ * kind of its own rather than a second `toolbar-action` is the context: the
+ * toolbar action a few pixels away in the same header receives the Work tab,
+ * this one receives the chat.
+ */
+describe("chat-header-action", () => {
+  it("parses the same payload a toolbar action does", () => {
+    expect(parsePluginContributionPayload("chat-header-action", {
+      label: "Sober up",
+      icon: "beer",
+      actionId: "soberUp",
+    })).toEqual({ label: "Sober up", icon: "beer", actionId: "soberUp" });
+  });
+
+  it("refuses a button with nothing to invoke", () => {
+    expect(parsePluginContributionPayload("chat-header-action", { label: "Sober up" })).toBeNull();
+    expect(parsePluginContributionPayload("chat-header-action", { actionId: "soberUp" })).toBeNull();
+  });
+
+  it("is a member of the closed list, so a manifest and a row can both name it", () => {
+    expect(isPluginSocketKind("chat-header-action")).toBe(true);
+    expect(PLUGIN_SOCKET_KINDS).toContain("chat-header-action");
+  });
+
+  it("declares its requirements in the one table three layers read", () => {
+    expect(PLUGIN_SOCKET_REQUIREMENTS["chat-header-action"]).toEqual({
+      manifest: ["label", "actionId"],
+      payload: ["label", "actionId"],
+    });
+  });
+
+  /**
+   * Desktop, web and the phone; the terminal deliberately absent rather than
+   * half-drawn. This row is the honest answer three audiences read, and it is
+   * pinned exactly so that flipping a token is a decision someone makes rather
+   * than a default that drifts — it shipped `ios: false` for one round while
+   * the phone had no host, and this assertion is what made that flip a
+   * deliberate edit instead of an oversight.
+   */
+  it("ships on desktop, web and the phone, and is absent in the terminal", () => {
+    expect(PLUGIN_SOCKET_CLIENT_SUPPORT["chat-header-action"])
+      .toEqual({ desktop: true, web: true, ios: true, tui: false });
+    expect(pluginSocketSupportedOn("chat-header-action", "desktop")).toBe(true);
+    expect(pluginSocketSupportedOn("chat-header-action", "ios")).toBe(true);
+    expect(pluginSocketSupportedOn("chat-header-action", "tui")).toBe(false);
+    expect(pluginSocketKindsSupportedOn("desktop")).toContain("chat-header-action");
+    expect(pluginSocketKindsSupportedOn("ios")).toContain("chat-header-action");
+    expect(pluginSocketKindsSupportedOn("tui")).not.toContain("chat-header-action");
+  });
+
+  // Same rule as the composer button, applied to the same evidence: it draws a
+  // persistent busy state, so it gets the budget that state pays for.
+  it("gets the long budget, not the row default", () => {
+    expect(pluginSocketInvokeTimeoutMs("chat-header-action"))
+      .toBe(PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS);
+  });
+
+  it("is declarable in a plugin.json and reaches the payload it implies", () => {
+    const parsed = parsePluginManifestJson(JSON.stringify({
+      name: "tipsy",
+      version: "1.0.0",
+      displayName: "Tipsy",
+      sockets: [
+        { socket: "chat-header-action", surface: "work", id: "drink", label: "Drink", actionId: "takeDrink" },
+      ],
+    }));
+    expect(parsed.manifest?.sockets).toEqual([
+      { socket: "chat-header-action", surface: "work", id: "drink", label: "Drink", actionId: "takeDrink" },
+    ]);
+  });
+
+  it("is dropped with a warning naming the field when it cannot be invoked", () => {
+    const parsed = parsePluginManifestJson(JSON.stringify({
+      name: "tipsy",
+      version: "1.0.0",
+      displayName: "Tipsy",
+      sockets: [{ socket: "chat-header-action", surface: "work", id: "drink", label: "Drink" }],
+    }));
+    expect(parsed.manifest?.sockets).toEqual([]);
+    expect(parsed.warnings.join(" ")).toContain("actionId");
+    expect(parsed.warnings.join(" ")).toContain("chat-header-action");
+  });
+});
+
+/**
+ * The split-button dropdown — the retrospective's other direct ask.
+ *
+ * The user described "a small arrow on the drink button" that exposes a second
+ * action. Every existing concept answered a different question, so the visible
+ * button acquired no arrow and the whole plugin read as unfinished. The
+ * assertions that matter here are the degradations: a malformed menu must never
+ * cost a plugin the button it asked for.
+ */
+describe("the split-button menu", () => {
+  const MENU = [
+    { label: "Sober up", actionId: "soberUp" },
+    { label: "Reset count", actionId: "reset", danger: true },
+  ];
+
+  it("rides every action-button kind, at one ceiling", () => {
+    for (const kind of ["toolbar-action", "composer-action", "chat-header-action", "command-palette-action"] as const) {
+      expect(parsePluginContributionPayload(kind, {
+        label: "Drink",
+        actionId: "takeDrink",
+        menu: MENU,
+      })).toEqual({ label: "Drink", actionId: "takeDrink", menu: MENU });
+    }
+  });
+
+  /**
+   * The compatibility promise the field makes. A plugin that declares no menu
+   * must produce the byte-identical payload it produced before the field
+   * existed — no empty array, no `menu: undefined` key — because a renderer
+   * that saw either would start drawing a chevron over nothing.
+   */
+  it("is absent, not empty, when a plugin declares none", () => {
+    const parsed = parsePluginContributionPayload("toolbar-action", { label: "Sync", actionId: "sync" });
+    expect(parsed).toEqual({ label: "Sync", actionId: "sync" });
+    expect(Object.keys(parsed ?? {})).not.toContain("menu");
+  });
+
+  it("carries danger through, because the menu draws the product's own red", () => {
+    const parsed = parsePluginContributionPayload("chat-header-action", {
+      label: "Drink",
+      actionId: "takeDrink",
+      menu: [{ label: "Reset count", actionId: "reset", danger: true }],
+    });
+    expect(parsed?.menu?.[0]?.danger).toBe(true);
+    // Anything other than a literal true is not danger — a truthy string from
+    // a plugin's JSON must not colour a row red.
+    expect(parsePluginContributionPayload("chat-header-action", {
+      label: "Drink",
+      actionId: "takeDrink",
+      menu: [{ label: "Reset", actionId: "reset", danger: "yes" }],
+    })?.menu?.[0]).toEqual({ label: "Reset", actionId: "reset" });
+  });
+
+  it("truncates over-cap entries rather than dropping the button", () => {
+    const many = Array.from({ length: PLUGIN_ACTION_MENU_ITEM_LIMIT + 4 }, (_, index) => ({
+      label: `Item ${index}`,
+      actionId: `item-${index}`,
+    }));
+    const parsed = parsePluginContributionPayload("toolbar-action", {
+      label: "Drink",
+      actionId: "takeDrink",
+      menu: many,
+    });
+    expect(parsed?.menu).toHaveLength(PLUGIN_ACTION_MENU_ITEM_LIMIT);
+    expect(parsed?.menu?.[0]?.actionId).toBe("item-0");
+    expect(parsed?.label).toBe("Drink");
+  });
+
+  it("drops a malformed entry and keeps the ones around it", () => {
+    expect(parsePluginActionButtonMenu([
+      { label: "Good", actionId: "good" },
+      { label: "No action" },
+      { actionId: "no-label" },
+      "not an object",
+      null,
+      { label: "Also good", actionId: "also" },
+    ])).toEqual([
+      { label: "Good", actionId: "good" },
+      { label: "Also good", actionId: "also" },
+    ]);
+  });
+
+  it("degrades a wholly unusable menu to a plain button", () => {
+    for (const menu of ["nope", 7, {}, null, [], [{ label: "" }], [{}]]) {
+      const parsed = parsePluginContributionPayload("composer-action", {
+        label: "Drink",
+        actionId: "takeDrink",
+        menu,
+      });
+      expect(parsed).toEqual({ label: "Drink", actionId: "takeDrink" });
+    }
+  });
+
+  it("bounds a menu label like every other piece of plugin-authored text", () => {
+    expect(parsePluginActionButtonMenu([{ label: "x".repeat(41), actionId: "long" }])).toEqual([]);
+    expect(parsePluginActionButtonMenu([{ label: "ok", actionId: "y".repeat(65) }])).toEqual([]);
+  });
+
+  it("is declarable in a plugin.json, so a split button need not be published", () => {
+    const parsed = parsePluginManifestJson(JSON.stringify({
+      name: "tipsy",
+      version: "1.0.0",
+      displayName: "Tipsy",
+      sockets: [{
+        socket: "chat-header-action",
+        surface: "work",
+        id: "drink",
+        label: "Drink",
+        actionId: "takeDrink",
+        menu: MENU,
+      }],
+    }));
+    expect(parsed.manifest?.sockets[0]?.menu).toEqual(MENU);
+  });
+
+  /**
+   * A menu is decoration on a button, never a reason to lose one. The manifest
+   * parser drops a socket that cannot render — but a split button whose
+   * dropdown is garbage still renders perfectly as a button, so the socket
+   * survives and only the menu is gone.
+   */
+  it("never costs a plugin its socket when the manifest menu is garbage", () => {
+    const parsed = parsePluginManifestJson(JSON.stringify({
+      name: "tipsy",
+      version: "1.0.0",
+      displayName: "Tipsy",
+      sockets: [{
+        socket: "toolbar-action",
+        surface: "lanes",
+        id: "drink",
+        label: "Drink",
+        actionId: "takeDrink",
+        menu: "not a list",
+      }],
+    }));
+    expect(parsed.manifest?.sockets).toHaveLength(1);
+    expect(parsed.manifest?.sockets[0]?.menu).toBeUndefined();
   });
 });
 
@@ -527,10 +757,16 @@ describe("per-client socket support", () => {
   // of these updates this expectation in the same commit as the client arm.
   it("states what each client draws today", () => {
     expect(pluginSocketKindsSupportedOn("desktop")).toEqual([...PLUGIN_SOCKET_KINDS]);
-    // iOS mounts the original eight plus the two chat/ambient kinds that have
-    // a host on a phone. The six it skips have nowhere to go there: no command
+    // iOS mounts the original eight plus the three chat/ambient kinds that have
+    // a host on a phone. The five it skips have nowhere to go there: no command
     // palette, no Work tools rail, no chat actions drawer, no lane/PR dialogs,
     // and a flat Settings with no page ids to name.
+    //
+    // `chat-header-action` reaches the phone as rows in the chat's existing
+    // overflow menu rather than as desktop's split button — a nav bar holds a
+    // title and about two controls. That is the difference this list is allowed
+    // to hide: it answers "does this client draw the kind", not "does it draw
+    // the same chrome". Same contribution, same `PluginSessionContext`.
     expect(pluginSocketKindsSupportedOn("ios")).toEqual([
       "toolbar-action",
       "row-badge",
@@ -540,6 +776,7 @@ describe("per-client socket support", () => {
       "filter-chip",
       "file-viewer",
       "composer-action",
+      "chat-header-action",
       "chat-card",
       "activity-entry",
     ]);
@@ -707,6 +944,7 @@ describe("payload arm coverage", () => {
     "filter-chip": { label: "Mine", filterKey: "mine" },
     "file-viewer": { panelId: "player", extensions: [".mp4"] },
     "composer-action": { label: "Refine", actionId: "refine" },
+    "chat-header-action": { label: "Summarize", actionId: "summarize" },
     "chat-card": { panelId: "risk" },
     "slash-command": { command: "review", actionId: "review" },
     "command-palette-action": { label: "Sync", actionId: "sync" },

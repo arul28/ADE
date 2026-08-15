@@ -109,6 +109,15 @@ enum PluginSocketContext: Equatable {
 /// `PLUGIN_ROW_BADGE_VISIBLE_LIMIT`.
 let pluginActionVisibleLimit = 2
 
+/// How wide a contributed button's label may grow before it truncates.
+///
+/// A cap rather than a wrap: these sit in single-line rows beside the product's
+/// own controls, and a plugin that named a forty-character label must not be
+/// able to push the send button off the screen. The tail ellipsis is the honest
+/// end of that — the alpha test saw a label cut with no ellipsis at all, which
+/// reads as a broken string rather than a long one.
+let pluginActionLabelMaxWidth: CGFloat = 132
+
 /// The row-badge socket: plugin badges appended to a row's existing trailing
 /// cluster.
 ///
@@ -143,7 +152,7 @@ struct PluginRowBadgeCluster: View {
 
   @ViewBuilder
   private func badgeView(_ badge: PluginRowBadgePayload) -> some View {
-    if let icon = badge.icon, PluginSymbol.exists(icon) {
+    if let icon = PluginSymbol.symbol(badge.icon) {
       ADEGlassChip(icon: icon, text: badge.text, tint: badge.tone.color)
     } else {
       ADEGlassStatusBadge(text: badge.text, tint: badge.tone.color)
@@ -185,7 +194,7 @@ struct PluginRowMenuItems: View {
           Button(role: Self.role(for: item)) {
             onInvoke(contribution)
           } label: {
-            if let icon = item.icon, PluginSymbol.exists(icon) {
+            if let icon = PluginSymbol.symbol(item.icon) {
               Label(item.label, systemImage: icon)
             } else {
               Text(item.label)
@@ -357,18 +366,38 @@ struct PluginToolbarActions: View {
       HStack(spacing: 4) {
         ForEach(Array(visible)) { contribution in
           if let action = contribution.toolbarAction {
-            Button {
-              invoke(contribution, action)
-            } label: {
-              Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(ADEColor.textSecondary)
-                .frame(width: 38, height: 34)
-                .contentShape(Rectangle())
+            if action.menu.isEmpty {
+              Button {
+                invoke(contribution, actionId: action.actionId)
+              } label: {
+                toolbarGlyph(action)
+              }
+              .buttonStyle(.plain)
+              .disabled(action.disabled || !syncService.canInvokePluginActions)
+              .accessibilityLabel(attributedLabel(action.label, contribution))
+            } else {
+              // Tap runs the action, press-and-hold reveals the rest — the
+              // system's own split-button gesture for a bar button, and the
+              // only one available where the glyph is 38 points wide and there
+              // is nowhere to put a chevron beside it.
+              Menu {
+                ForEach(action.menu) { entry in
+                  Button(role: entry.danger ? .destructive : nil) {
+                    invoke(contribution, actionId: entry.actionId)
+                  } label: {
+                    Text(entry.label)
+                  }
+                  .disabled(!syncService.canInvokePluginActions)
+                }
+              } label: {
+                toolbarGlyph(action)
+              } primaryAction: {
+                invoke(contribution, actionId: action.actionId)
+              }
+              .disabled(action.disabled || !syncService.canInvokePluginActions)
+              .accessibilityLabel(attributedLabel(action.label, contribution))
+              .accessibilityHint("Press and hold for \(action.menu.count) more actions")
             }
-            .buttonStyle(.plain)
-            .disabled(action.disabled || !syncService.canInvokePluginActions)
-            .accessibilityLabel(attributedLabel(action.label, contribution))
           }
         }
         if !hidden.isEmpty {
@@ -376,11 +405,19 @@ struct PluginToolbarActions: View {
             ForEach(Array(hidden)) { contribution in
               if let action = contribution.toolbarAction {
                 Button {
-                  invoke(contribution, action)
+                  invoke(contribution, actionId: action.actionId)
                 } label: {
                   Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
                 }
                 .disabled(action.disabled || !syncService.canInvokePluginActions)
+                ForEach(action.menu) { entry in
+                  Button(role: entry.danger ? .destructive : nil) {
+                    invoke(contribution, actionId: entry.actionId)
+                  } label: {
+                    Text(entry.label)
+                  }
+                  .disabled(!syncService.canInvokePluginActions)
+                }
               }
             }
           } label: {
@@ -403,12 +440,20 @@ struct PluginToolbarActions: View {
     "\(label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))"
   }
 
-  private func invoke(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) {
+  private func toolbarGlyph(_ action: PluginActionButtonPayload) -> some View {
+    Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+      .font(.system(size: 15, weight: .semibold))
+      .foregroundStyle(ADEColor.textSecondary)
+      .frame(width: 38, height: 34)
+      .contentShape(Rectangle())
+  }
+
+  private func invoke(_ contribution: PluginContribution, actionId: String) {
     ADEHaptics.light()
     Task { @MainActor in
       await syncService.invokeSocketContribution(
         contribution,
-        actionId: action.actionId,
+        actionId: actionId,
         context: .surface(surface)
       )
     }
@@ -757,14 +802,27 @@ struct PluginComposerActions: View {
   let draft: () -> String
   let onEdit: (PluginInvokeComposerEdit) -> Void
   var enabled = true
+  /// The single-line composer — one text field, a mic and send, on one row.
+  ///
+  /// It used to draw NO plugin controls at all, which is what made a plugin
+  /// with a composer button visible on desktop and absent on the phone for the
+  /// same chat. It draws them now, more tightly: one action inline, several
+  /// behind a single plugins menu, because the row genuinely cannot hold a
+  /// second labeled control beside a text field the user is typing into.
+  var compact = false
 
   @EnvironmentObject private var syncService: SyncService
   @State private var inFlight: Set<String> = []
 
+  /// One inline control in the compact row, two in the full one.
+  private var visibleLimit: Int {
+    compact ? 1 : pluginActionVisibleLimit
+  }
+
   var body: some View {
     if !contributions.isEmpty {
-      let visible = contributions.prefix(pluginActionVisibleLimit)
-      let hidden = contributions.dropFirst(pluginActionVisibleLimit)
+      let visible = contributions.prefix(visibleLimit)
+      let hidden = contributions.dropFirst(visibleLimit)
       ForEach(Array(visible)) { contribution in
         if let action = contribution.composerAction {
           button(contribution, action)
@@ -774,16 +832,15 @@ struct PluginComposerActions: View {
         Menu {
           ForEach(Array(hidden)) { contribution in
             if let action = contribution.composerAction {
-              Button {
-                invoke(contribution, action)
-              } label: {
-                Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
-              }
-              .disabled(isDisabled(contribution, action))
+              menuEntries(contribution, action)
             }
           }
         } label: {
-          Image(systemName: "ellipsis")
+          // Anonymous in the full row, where it follows two visible plugin
+          // buttons and plainly means "more of those". Named in the compact
+          // one, where it is the ONLY plugin affordance on screen and an
+          // ellipsis would be a menu the reader has no reason to open.
+          Image(systemName: compact ? "puzzlepiece.extension" : "ellipsis")
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
             .frame(width: 28, height: 28)
@@ -794,40 +851,123 @@ struct PluginComposerActions: View {
     }
   }
 
+  /// One contributed control: a labeled pill, and a chevron beside it when the
+  /// action carries a menu.
+  ///
+  /// Labeled rather than icon-only, which is the correction the alpha test
+  /// earned twice over. A composer button's whole job is to say what it will do
+  /// to the words the reader has already typed, and a manifest icon token is
+  /// drawn from a small shared set that cannot express "sober up" — the icon
+  /// identifies the plugin, the label is the verb.
   @ViewBuilder
   private func button(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) -> some View {
     let busy = inFlight.contains(contribution.id)
-    Button {
-      invoke(contribution, action)
-    } label: {
-      Group {
-        if busy {
-          ProgressView().controlSize(.mini)
-        } else {
-          Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
-            .font(.system(size: 12, weight: .semibold))
+    HStack(spacing: 0) {
+      Button {
+        invoke(contribution, actionId: action.actionId)
+      } label: {
+        HStack(spacing: 5) {
+          if busy {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+              .font(.system(size: 11, weight: .semibold))
+          }
+          Text(action.label)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.tail)
         }
+        .foregroundStyle(ADEColor.textSecondary)
+        .padding(.leading, 9)
+        .padding(.trailing, action.menu.isEmpty ? 9 : 6)
+        .frame(height: 28)
+        .contentShape(Rectangle())
       }
-      .foregroundStyle(ADEColor.textSecondary)
-      .frame(width: 28, height: 28)
-      .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
-      )
-      .contentShape(Rectangle())
+      .buttonStyle(.plain)
+      .disabled(isDisabled(contribution, disabled: action.disabled))
+      .accessibilityLabel("\(action.label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))")
+      .accessibilityValue(busy ? "Working" : "")
+
+      if !action.menu.isEmpty {
+        // A separate hit target rather than a long-press, matching the send
+        // control a few points to its right: the extra actions have to be
+        // reachable by a reader who has never held anything down in this app.
+        Menu {
+          ForEach(action.menu) { entry in
+            Button(role: entry.danger ? .destructive : nil) {
+              invoke(contribution, actionId: entry.actionId)
+            } label: {
+              Text(entry.label)
+            }
+            .disabled(isDisabled(contribution, disabled: false))
+          }
+        } label: {
+          Image(systemName: "chevron.down")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 20, height: 28)
+            .contentShape(Rectangle())
+        }
+        .disabled(isDisabled(contribution, disabled: false))
+        .accessibilityLabel("More \(action.label) actions")
+      }
     }
-    .buttonStyle(.plain)
-    .disabled(isDisabled(contribution, action))
-    .accessibilityLabel("\(action.label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))")
-    .accessibilityValue(busy ? "Working" : "")
+    // The cap and the ellipsis together: a long label ends in "…" instead of
+    // being cut mid-word, and the pill keeps its intrinsic width against the
+    // text field beside it rather than being squeezed to its icon.
+    .frame(maxWidth: pluginActionLabelMaxWidth)
+    .fixedSize(horizontal: false, vertical: true)
+    .layoutPriority(1)
+    .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
+    )
   }
 
-  private func isDisabled(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) -> Bool {
-    action.disabled || !enabled || !syncService.canInvokePluginActions || inFlight.contains(contribution.id)
+  /// An overflowed action as menu rows: the action itself, then whatever its
+  /// own menu carried, indented one level so a split button that folded into
+  /// the overflow does not lose half of itself.
+  @ViewBuilder
+  private func menuEntries(
+    _ contribution: PluginContribution,
+    _ action: PluginActionButtonPayload
+  ) -> some View {
+    if action.menu.isEmpty {
+      Button {
+        invoke(contribution, actionId: action.actionId)
+      } label: {
+        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+      }
+      .disabled(isDisabled(contribution, disabled: action.disabled))
+    } else {
+      Menu {
+        Button {
+          invoke(contribution, actionId: action.actionId)
+        } label: {
+          Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+        }
+        .disabled(isDisabled(contribution, disabled: action.disabled))
+        ForEach(action.menu) { entry in
+          Button(role: entry.danger ? .destructive : nil) {
+            invoke(contribution, actionId: entry.actionId)
+          } label: {
+            Text(entry.label)
+          }
+          .disabled(isDisabled(contribution, disabled: false))
+        }
+      } label: {
+        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+      }
+    }
   }
 
-  private func invoke(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) {
+  private func isDisabled(_ contribution: PluginContribution, disabled: Bool) -> Bool {
+    disabled || !enabled || !syncService.canInvokePluginActions || inFlight.contains(contribution.id)
+  }
+
+  private func invoke(_ contribution: PluginContribution, actionId: String) {
     guard !inFlight.contains(contribution.id) else { return }
     inFlight.insert(contribution.id)
     ADEHaptics.light()
@@ -839,11 +979,107 @@ struct PluginComposerActions: View {
       defer { inFlight.remove(contribution.id) }
       let result = await syncService.invokeSocketContribution(
         contribution,
-        actionId: action.actionId,
+        actionId: actionId,
         context: context
       )
       if let edit = result?.composer { onEdit(edit) }
     }
+  }
+}
+
+// MARK: - chat-header-action
+
+/// What a plugin adds to the chat header's own overflow menu — the three-dot
+/// control at the top right of a conversation.
+///
+/// The retrospective's explicit ask, and the one placement the phone had no
+/// socket for: a plugin could badge a row, sit in the composer, or take a
+/// toolbar slot, and none of those is where a reader looks for "things I can do
+/// to this chat".
+///
+/// Entries are grouped into a section per plugin, titled with the plugin's
+/// name. That is the iOS convention for a menu that mixes owners, and it is the
+/// only attribution a menu row can carry — there is no room for a subtitle, and
+/// an unattributed "Sober up" sitting under "Rename" and "Delete chat" would
+/// read as one of ADE's own verbs.
+///
+/// Drawn AFTER the product's own entries wherever it is placed, and never
+/// before the destructive ones: the delete is fenced behind a divider precisely
+/// so a mis-tap cannot land on it, and a plugin must not be able to push it
+/// under a moving finger.
+struct PluginChatHeaderMenuItems: View {
+  let contributions: [PluginContribution]
+  /// Plugin id → display name, resolved by the caller. Passed rather than read
+  /// from the environment because the header menu is `Equatable`-gated and an
+  /// observed object inside it would defeat that gate — an open menu rebuilt
+  /// mid-stream dismisses whatever submenu the reader had opened.
+  let pluginNames: [String: String]
+  let isEnabled: Bool
+  let onInvoke: (PluginContribution, String) -> Void
+
+  var body: some View {
+    let entries = contributions.filter { $0.chatHeaderAction != nil }
+    ForEach(groupedByPlugin(entries), id: \.pluginId) { group in
+      Section(pluginNames[group.pluginId] ?? group.pluginId) {
+        ForEach(group.contributions) { contribution in
+          if let action = contribution.chatHeaderAction {
+            row(contribution, action)
+          }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func row(
+    _ contribution: PluginContribution,
+    _ action: PluginActionButtonPayload
+  ) -> some View {
+    if action.menu.isEmpty {
+      Button {
+        onInvoke(contribution, action.actionId)
+      } label: {
+        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+      }
+      .disabled(action.disabled || !isEnabled)
+    } else {
+      // A submenu, with the primary action as its first row. Inside a menu
+      // there is no press-versus-long-press to split, so the button's own
+      // action has to be listed or it becomes unreachable from here.
+      Menu {
+        Button {
+          onInvoke(contribution, action.actionId)
+        } label: {
+          Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+        }
+        .disabled(action.disabled || !isEnabled)
+        ForEach(action.menu) { entry in
+          Button(role: entry.danger ? .destructive : nil) {
+            onInvoke(contribution, entry.actionId)
+          } label: {
+            Text(entry.label)
+          }
+          .disabled(!isEnabled)
+        }
+      } label: {
+        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+      }
+    }
+  }
+
+  /// Contributions bucketed by plugin, keeping the placement order the index
+  /// already sorted them into. First appearance decides a plugin's position, so
+  /// the sections are as stable across reads as the rows inside them.
+  private func groupedByPlugin(
+    _ entries: [PluginContribution]
+  ) -> [(pluginId: String, contributions: [PluginContribution])] {
+    var order: [String] = []
+    var byPlugin: [String: [PluginContribution]] = [:]
+    for entry in entries {
+      if byPlugin[entry.pluginId] == nil { order.append(entry.pluginId) }
+      byPlugin[entry.pluginId, default: []].append(entry)
+    }
+    return order.map { (pluginId: $0, contributions: byPlugin[$0] ?? []) }
   }
 }
 

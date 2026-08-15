@@ -2780,6 +2780,17 @@ type ManagedChatSession = {
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
+    /**
+     * This request may only be answered by the machine's operator.
+     *
+     * `respondToInput` matches a waiter by `itemId` alone, and the `itemId` is
+     * written into the durable transcript the requesting agent can read — so
+     * for an ordinary question "whoever knows the id" is fine, but for a
+     * request that GRANTS something it would let the agent approve itself.
+     * The flag is read by the RPC gate, which is the one door an agent enters
+     * through; the renderer and a paired device are the user and are unaffected.
+     */
+    operatorOnly?: boolean;
     resolve: (response: {
       decision?: AgentChatApprovalDecision;
       answers?: Record<string, string | string[]>;
@@ -40143,6 +40154,18 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  /**
+   * Whether this pending request refuses every answerer but the operator.
+   *
+   * Read-only and non-creating: an unknown session or item is `false`, because
+   * "there is nothing here to protect" is the honest answer and inventing a
+   * managed session to answer a predicate would be a side effect. The one
+   * caller is the RPC gate, which turns `true` into a refusal before
+   * `respondToInput` ever runs.
+   */
+  const pendingInputRequiresOperator = (sessionId: string, itemId: string): boolean =>
+    managedSessions.get(sessionId)?.localPendingInputs.get(itemId)?.operatorOnly === true;
+
   const respondToInput = async ({
     sessionId,
     itemId,
@@ -43828,6 +43851,18 @@ export function createAgentChatService(args: {
     providerMetadata?: Record<string, unknown>;
     eventDescription?: string;
     eventDetail?: Record<string, unknown>;
+    /**
+     * Only the operator may answer this. See `localPendingInputs.operatorOnly`
+     * — set it for any request whose answer grants something, so the agent that
+     * raised it cannot read the id out of the transcript and answer itself.
+     */
+    operatorOnly?: boolean;
+    /**
+     * Called with the request's `itemId` the moment it exists, so a caller that
+     * gives up waiting can settle the card instead of leaving a live prompt
+     * nobody is listening to.
+     */
+    onItemId?: (itemId: string) => void;
     questions?: Array<{
       id?: string;
       header?: string;
@@ -43967,7 +44002,12 @@ export function createAgentChatService(args: {
       answers?: Record<string, string | string[]>;
       responseText?: string | null;
     }>((resolve) => {
-      managed.localPendingInputs.set(itemId, { request, resolve });
+      managed.localPendingInputs.set(itemId, {
+        request,
+        ...(args.operatorOnly === true ? { operatorOnly: true } : {}),
+        resolve,
+      });
+      args.onItemId?.(itemId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: args.eventDescription ?? request.description ?? args.body,
@@ -44573,6 +44613,7 @@ export function createAgentChatService(args: {
     respondToInput,
     dismissPendingInputForSettlement,
     requestChatInput,
+    pendingInputRequiresOperator,
     getAvailableModels,
     getModelCatalog,
     getSlashCommands,

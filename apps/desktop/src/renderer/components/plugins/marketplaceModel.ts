@@ -26,6 +26,11 @@
  */
 
 import {
+  describeManifestAdds,
+  joinSurfaceNames,
+  PLUGIN_SURFACE_LABELS,
+} from "../../../shared/plugins/installDisclosure";
+import {
   comparePluginVersions,
   isValidPluginId,
   isValidPluginVersion,
@@ -108,16 +113,12 @@ export type MarketplaceListing = {
 };
 
 /** Presentation-facing surface names. Sentence case, product vocabulary. */
-export const SURFACE_LABELS: Record<PluginSurfaceId, string> = {
-  work: "Work",
-  lanes: "Lanes",
-  files: "Files",
-  prs: "PRs",
-  automations: "Automations",
-  cto: "CTO",
-  app: "App",
-  settings: "Settings",
-};
+/**
+ * Re-exported rather than declared: the install approval card an agent raises
+ * from `plugin.install` shows the same surface names, and it lives in the host
+ * where this renderer module cannot be imported.
+ */
+export const SURFACE_LABELS = PLUGIN_SURFACE_LABELS;
 
 /* ── Directory entries ──────────────────────────────────────────────────── */
 
@@ -352,11 +353,6 @@ export function installStateFor(
 
 /* ── Adds ───────────────────────────────────────────────────────────────── */
 
-function joinSurfaceNames(names: readonly string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-
 /**
  * The "Adds:" lines — the one part of the install modal that is load-bearing
  * for trust, since it is the reader's only preview of what changes.
@@ -384,45 +380,7 @@ export function describePluginAdds(listing: MarketplaceListing): string[] {
     return lines;
   }
 
-  const lines: string[] = [];
-  const tabs = manifest.surfaces.filter((surface) => surface.kind === "tab");
-  const panes = manifest.surfaces.filter((surface) => surface.kind === "pane");
-  const webviews = manifest.surfaces.filter((surface) => surface.kind === "webview");
-  for (const tab of tabs) lines.push(`${tab.title} tab`);
-  for (const pane of panes) lines.push(`${pane.title} pane`);
-  // Said on the line itself rather than as a chip somewhere else on the page:
-  // this is the reader's one preview of what installing changes, and "this tab
-  // only works on my computer" is exactly the kind of thing they should not
-  // have to go looking for.
-  for (const webview of webviews) lines.push(`${webview.title} tab — desktop only, custom UI`);
-
-  const bySurface = new Map<PluginSurfaceId, number>();
-  for (const socket of manifest.sockets) {
-    bySurface.set(socket.surface, (bySurface.get(socket.surface) ?? 0) + 1);
-  }
-  for (const surface of PLUGIN_SURFACE_IDS) {
-    const total = bySurface.get(surface);
-    if (!total) continue;
-    lines.push(total === 1
-      ? `One addition to ${SURFACE_LABELS[surface]}`
-      : `${total} additions to ${SURFACE_LABELS[surface]}`);
-  }
-
-  if (manifest.cli.length > 0) {
-    lines.push(`Terminal commands: ${manifest.cli.map((word) => `ade ${manifest.name} ${word}`).join(", ")}`);
-  }
-  if (manifest.skills.length > 0) {
-    lines.push(manifest.skills.length === 1
-      ? "One agent skill"
-      : `${manifest.skills.length} agent skills`);
-  }
-  if (manifest.theme) lines.push("A colour theme");
-  if (Object.keys(manifest.collections).length > 0) {
-    const synced = Object.values(manifest.collections).filter((collection) => collection.sync).length;
-    lines.push(synced > 0 ? "Stores data, and syncs it to your other devices" : "Stores data on this machine");
-  }
-  if (manifest.entry) lines.push("Runs code on this machine");
-  return lines;
+  return describeManifestAdds(manifest);
 }
 
 /* ── Filter, sort, search ───────────────────────────────────────────────── */

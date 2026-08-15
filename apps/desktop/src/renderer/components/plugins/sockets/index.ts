@@ -10,6 +10,7 @@
 export { PluginRowBadges } from "./PluginRowBadges";
 export { PluginToolbarActions } from "./PluginToolbarActions";
 export { PluginComposerActions } from "./PluginComposerActions";
+export { PluginChatHeaderActions } from "./PluginChatHeaderActions";
 export { PluginChatCard } from "./PluginChatCard";
 export {
   CHAT_CARD_ACTION_EVENT,

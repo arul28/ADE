@@ -15,6 +15,7 @@ import {
   pluginMarketplaceCapabilities,
 } from "../../lib/pluginRuntimeBridge";
 import { parsePluginManifest } from "../../../shared/plugins/manifest";
+import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "../../../shared/plugins/clientRendering";
 import { pluginIdentity } from "./pluginIcons";
 import { OfficialBadge, PluginIconTile } from "./marketplaceUi";
 import {
@@ -81,6 +82,11 @@ export function PluginInstallDialog({
   const listing = target?.kind === "listing" ? target.listing : resolved;
   const source = target?.kind === "listing" ? target.listing.source : sourceInput.trim();
   const adds = listing ? describePluginAdds(listing) : [];
+  // Only when the manifest is actually in hand. A directory listing carries no
+  // manifest, and claiming a timing boundary for a plugin whose skills nobody
+  // has read yet would be a guess — the note lands on the detail page once the
+  // install has read it for real.
+  const declaresSkill = (listing?.manifest?.skills.length ?? 0) > 0;
   const busy = phase.status === "installing" || phase.status === "inspecting";
 
   const inspect = async () => {
@@ -264,6 +270,15 @@ export function PluginInstallDialog({
               ADE reads the plugin’s manifest while installing and shows what it adds once it is in.
             </p>
           )}
+          {/* A skill is the one thing in that list whose effect is not
+              immediate, and this is the last screen before the decision. The
+              approval card already says it; a reader who clicked Install here
+              instead was the only one who never heard it. */}
+          {declaresSkill ? (
+            <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, lineHeight: 1.5 }}>
+              {PLUGIN_SKILL_NEXT_TURN_NOTE}
+            </p>
+          ) : null}
         </div>
 
         {/* The disclosure. Short on purpose — a long notice is one nobody
