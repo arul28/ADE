@@ -159,7 +159,7 @@ const autoConfirm = async () => true;
  * every test that touches them has to open it first.
  */
 function openPairing() {
-  fireEvent.click(screen.getByRole("button", { name: /^Pairing code/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^Manual pairing code/ }));
 }
 
 describe("ThisMacCard", () => {
@@ -192,8 +192,7 @@ describe("ThisMacCard", () => {
     );
     // Connecting runs through the ADE account now; no code is a normal state.
     expect(screen.queryByText(/Set a pairing code/)).toBeNull();
-    expect(screen.getByRole("button", { name: /^Pairing code/ }).textContent)
-      .toContain("Not set");
+    expect(screen.getByRole("button", { name: /^Manual pairing code/ })).toBeTruthy();
   });
 
   it("renames this computer and mirrors the name into the account directory", async () => {
@@ -254,9 +253,25 @@ describe("ThisMacCard", () => {
     );
     // The alert above carries the runtime's full explanation; the status line
     // does not repeat a one-liner version of it.
-    expect(screen.queryByRole("button", { name: /^Pairing code/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Manual pairing code/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Generate code/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
+  });
+
+  it("still offers Repair on a cold unreadable read while signed out", () => {
+    (globalThis.window as any).ade = { app: { restartBackgroundService: vi.fn() } };
+    render(
+      <ThisMacCard
+        sync={makeSync({ status: unreadableSessionStatus() })}
+        accountSignedIn={false}
+        sessionState="unreadable"
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+    expect(
+      screen.getByText("Your session is still there — open your account to fix it"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Not signed in/)).toBeNull();
   });
 
   it("restarts the brain and re-reads health when repairing an unreadable session", async () => {
@@ -323,7 +338,7 @@ describe("ThisMacCard", () => {
   it("explains nearby fallback when signed out", () => {
     render(<ThisMacCard sync={makeSync()} accountSignedIn={false} />);
     expect(
-      screen.getByText("Not signed in — nearby devices can still connect with the pairing code"),
+      screen.getByText("Not signed in — you can still connect to other machines manually"),
     ).toBeTruthy();
   });
 
@@ -375,12 +390,12 @@ describe("ThisMacCard", () => {
   it("reopens the pairing disclosure closed every time, never remembering it", () => {
     const { unmount } = render(<ThisMacCard sync={makeSync()} accountSignedIn />);
     openPairing();
-    expect(screen.getByRole("button", { name: /^Pairing code/ }).getAttribute("aria-expanded"))
+    expect(screen.getByRole("button", { name: /^Manual pairing code/ }).getAttribute("aria-expanded"))
       .toBe("true");
     unmount();
 
     render(<ThisMacCard sync={makeSync()} accountSignedIn />);
-    expect(screen.getByRole("button", { name: /^Pairing code/ }).getAttribute("aria-expanded"))
+    expect(screen.getByRole("button", { name: /^Manual pairing code/ }).getAttribute("aria-expanded"))
       .toBe("false");
   });
 
@@ -396,16 +411,14 @@ describe("ThisMacCard", () => {
 
     expect(await screen.findByRole("img", { name: accessibleName })).toBeTruthy();
     // The logo is the platform statement, so the version line never repeats it.
-    expect(await screen.findByText("ADE 1.2.28")).toBeTruthy();
+    expect(await screen.findByText("This machine — ADE 1.2.28")).toBeTruthy();
     expect(screen.queryByText(new RegExp(`ADE 1\\.2\\.28.*${accessibleName}`))).toBeNull();
   });
 
-  it("labels this computer with a chip", () => {
+  it("labels this pane as this machine", () => {
     render(<ThisMacCard sync={makeSync()} accountSignedIn />);
-    // Composed from THIS_MACHINE_NAME, never spelled out: this badge was
-    // macOS-only copy ("This Mac") until ADE shipped on Windows, and pinning the
-    // literal here is what let Settings and Account miss the rename.
-    expect(screen.getByText(THIS_MACHINE_NAME)).toBeTruthy();
+    expect(screen.getByText("This machine")).toBeTruthy();
+    expect(screen.queryByText(THIS_MACHINE_NAME)).toBeNull();
   });
 
   it("swaps the version line for the fault while the listener is down", async () => {
@@ -421,8 +434,7 @@ describe("ThisMacCard", () => {
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
     expect(await screen.findByText("Port 8787 is already in use.")).toBeTruthy();
-    // One slot, so the card never grows a line in the unhappy path.
-    expect(screen.queryByText("ADE 1.2.28")).toBeNull();
+    expect(screen.getByText("This machine — ADE 1.2.28")).toBeTruthy();
   });
 
   it("no longer embeds a Connect-a-phone disclosure — the Phone tab owns pairing", () => {
@@ -768,18 +780,27 @@ describe("useSyncConnections local scoping", () => {
 });
 
 describe("accountDirectorySummary", () => {
-  it("reflects whether signed-out nearby pairing has a configured code", () => {
+  it("keeps an unreadable session distinct from signed out", () => {
+    const status = { pairingPinConfigured: true } as SyncRoleSnapshot;
+    expect(accountDirectorySummary(status, false, "unreadable")).toEqual({
+      label: "Your session is still there — open your account to fix it",
+      healthy: false,
+    });
+  });
+
+  it("uses one signed-out line whether a pairing code is set or not", () => {
     const status = { pairingPinConfigured: false } as SyncRoleSnapshot;
 
     expect(accountDirectorySummary(status, false)).toEqual({
-      label: "Not signed in — set a pairing code so nearby devices can connect",
+      label: "Not signed in — you can still connect to other machines manually",
       healthy: false,
     });
 
     status.pairingPinConfigured = true;
-    expect(accountDirectorySummary(status, false).label).toContain(
-      "nearby devices can still connect with the pairing code",
-    );
+    expect(accountDirectorySummary(status, false)).toEqual({
+      label: "Not signed in — you can still connect to other machines manually",
+      healthy: false,
+    });
   });
 
   const summaryForState = (

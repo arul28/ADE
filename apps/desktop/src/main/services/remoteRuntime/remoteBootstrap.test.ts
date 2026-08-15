@@ -402,7 +402,7 @@ describe("validateRemoteRuntimeInitializeResult", () => {
     });
     expect(info.version).toBe("0.9.0");
     expect(info.capabilities.machineProjects.browseDirectories).toBe(false);
-    expect(info.compatibilityWarnings.join("\n")).toMatch(/local ADE is 1\.0\.0/i);
+    expect(info.compatibilityWarnings.join("\n")).not.toMatch(/This machine is on ADE/i);
     expect(info.compatibilityWarnings.join("\n")).toMatch(/missing project capabilities/i);
   });
 
@@ -424,7 +424,7 @@ describe("validateRemoteRuntimeInitializeResult", () => {
           },
         },
       },
-    }).compatibilityWarnings.join("\n")).toMatch(/reported 0\.9\.0/i);
+    }).compatibilityWarnings.join("\n")).not.toMatch(/This machine is on ADE|Remote ADE service reported/i);
   });
 });
 

@@ -1,8 +1,10 @@
 import {
   describeUnpublishedAccountDirectory,
+  type AdeAccountSessionState,
   type SyncAccountDirectoryState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import { accountSessionConnectionsSubtitle } from "../../lib/account";
 
 export type AccountDirectorySummary = {
   label: string;
@@ -29,12 +31,17 @@ function unpublishedMachineLabel(state: SyncAccountDirectoryState): string {
 export function accountDirectorySummary(
   status: SyncRoleSnapshot,
   accountSignedIn: boolean,
+  sessionState: AdeAccountSessionState = accountSignedIn ? "active" : "signed_out",
 ): AccountDirectorySummary {
+  if (sessionState === "unreadable") {
+    return {
+      label: accountSessionConnectionsSubtitle("unreadable"),
+      healthy: false,
+    };
+  }
   if (!accountSignedIn) {
     return {
-      label: status.pairingPinConfigured
-        ? "Not signed in — nearby devices can still connect with the pairing code"
-        : "Not signed in — set a pairing code so nearby devices can connect",
+      label: "Not signed in — you can still connect to other machines manually",
       healthy: false,
     };
   }

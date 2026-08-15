@@ -1,9 +1,11 @@
+import { useEffect, useState } from "react";
 import {
   ArrowClockwise,
-  CaretDown,
-  CaretUp,
   CheckCircle,
+  PencilSimple,
+  Plugs,
   PlugsConnected,
+  Pulse,
   Trash,
   Warning,
 } from "@phosphor-icons/react";
@@ -25,6 +27,8 @@ import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import {
   connectionStateLabel,
   formatLastSeen,
+  formatVersionSkewNote,
+  isVersionSkewWarning,
   selectMachineErrorCard,
   type MachineSection,
   type SavedMachineRow as SavedMachineRowModel,
@@ -36,6 +40,7 @@ import {
 } from "./RemoteTargetForm";
 import {
   helperTextStyle,
+  iconActionButtonStyle,
   inlineDetailStyle,
   inlineErrorTextStyle,
   inlineSuccessTextStyle,
@@ -43,6 +48,21 @@ import {
   nameStyle,
   subTextStyle,
 } from "./remoteTargetListStyles";
+
+const CONNECTING_STALE_MS = 20_000;
+
+function useStaleConnecting(connecting: boolean): boolean {
+  const [stale, setStale] = useState(false);
+  useEffect(() => {
+    if (!connecting) {
+      setStale(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setStale(true), CONNECTING_STALE_MS);
+    return () => window.clearTimeout(timer);
+  }, [connecting]);
+  return stale;
+}
 
 type SavedMachineRowProps = {
   row: SavedMachineRowModel;
@@ -64,6 +84,8 @@ type SavedMachineRowProps = {
   updating?: boolean;
   /** Outcome of the last update run on this machine. */
   updateStatus?: { ok: boolean; message: string } | null;
+  /** ADE version running on this computer, used for the quiet skew note. */
+  localAdeVersion?: string | null;
   onUpdateAndRestart?: (targetVersion: string | null) => void;
   hostKeyTrust: RemoteRuntimeSshHostKeyTrustStatus | null;
   trustingHostKey: boolean;
@@ -96,6 +118,7 @@ export function SavedMachineRow({
   updateTargetVersion = null,
   updating = false,
   updateStatus = null,
+  localAdeVersion = null,
   onUpdateAndRestart,
   hostKeyTrust,
   trustingHostKey,
@@ -113,17 +136,33 @@ export function SavedMachineRow({
   const { target, status } = row;
   const targetConnecting =
     busyId === target.id || status?.state === "connecting";
-  const statusLabel = connectionStateLabel(
-    status ?? null,
-    connected?.target.id === target.id,
+  // A live connect (busyId set) can take minutes for SSH bootstrap. Only treat
+  // snapshot-stuck "connecting" with no in-flight action as hung.
+  const connectingStale = useStaleConnecting(
+    status?.state === "connecting" && busyId !== target.id && !row.connected,
   );
-  const warnings = selected
+  const statusLabel = connectingStale
+    ? "Can't reach"
+    : connectionStateLabel(
+        status ?? null,
+        connected?.target.id === target.id,
+      );
+  const versionNote = formatVersionSkewNote({
+    localVersion: localAdeVersion,
+    remoteVersion: row.version,
+    remoteName: target.name,
+  });
+  const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
       (connected?.target.id === target.id
         ? connected.compatibilityWarnings
         : []) ??
       [])
     : (status?.compatibilityWarnings ?? []);
+  const warnings = compatibilityWarnings.filter((warning) => !isVersionSkewWarning(warning));
+  const rawSkewWarning = compatibilityWarnings.find(isVersionSkewWarning) ?? null;
+  const displayedVersionNote = versionNote
+    ?? (localAdeVersion && row.version ? null : rawSkewWarning);
   const errorCard = selectMachineErrorCard({
     errorInfo: status?.state === "error" ? status.lastErrorInfo : null,
     rawError: status?.state === "error" ? status.lastError : null,
@@ -178,18 +217,22 @@ export function SavedMachineRow({
             <div style={helperTextStyle}>
               {section === "unavailable" && row.unavailableReason ? (
                 <span>{row.unavailableReason}</span>
+              ) : row.connected ? (
+                <span>{formatLastSeen(target.lastConnectedAt)}</span>
               ) : (
-                <>
-                  <span>{statusLabel}</span>
-                  <span>{` · ${formatLastSeen(target.lastConnectedAt)}`}</span>
-                </>
+                <span>
+                  {target.lastConnectedAt || statusLabel !== "Not connected"
+                    ? `${statusLabel} · ${formatLastSeen(target.lastConnectedAt)}`
+                    : formatLastSeen(null)}
+                </span>
               )}
             </div>
           </div>
           <div
             style={{
               display: "flex",
-              gap: 8,
+              alignItems: "center",
+              gap: 4,
               flexWrap: "wrap",
               justifyContent: "flex-end",
             }}
@@ -200,7 +243,7 @@ export function SavedMachineRow({
                 disabled={busyId != null || updating}
                 onClick={() => onUpdateAndRestart(updateTargetVersion)}
                 style={outlineButton({
-                  height: 30,
+                  height: 28,
                   padding: "0 10px",
                   fontSize: 11,
                 })}
@@ -212,15 +255,17 @@ export function SavedMachineRow({
             {row.connected ? (
               <button
                 type="button"
+                aria-label="Disconnect"
+                title="Disconnect"
                 disabled={busyId != null || updating}
                 onClick={() => onDisconnect(target.id)}
-                style={outlineButton({
-                  height: 30,
-                  padding: "0 10px",
-                  fontSize: 11,
-                })}
+                style={{
+                  ...iconActionButtonStyle,
+                  opacity: busyId != null || updating ? 0.45 : 1,
+                  cursor: busyId != null || updating ? "not-allowed" : "pointer",
+                }}
               >
-                Disconnect
+                <Plugs size={15} />
               </button>
             ) : section !== "unavailable" ? (
               <>
@@ -229,63 +274,63 @@ export function SavedMachineRow({
                   disabled={busyId != null}
                   onClick={() => onConnect(target.id)}
                   style={primaryButton({
-                    height: 30,
+                    height: 28,
                     padding: "0 10px",
                     fontSize: 11,
                   })}
                 >
                   <PlugsConnected size={14} weight="bold" />
-                  {targetConnecting ? "Connecting…" : "Connect"}
+                  {connectingStale ? "Retry" : targetConnecting ? "Connecting…" : "Connect"}
                 </button>
                 <button
                   type="button"
+                  aria-label="Test"
+                  title="Test connection"
                   aria-controls={`remote-target-test-${target.id}`}
                   aria-expanded={testOpen}
                   disabled={busyId != null}
                   onClick={() => onToggleTest(target.id)}
-                  style={outlineButton({
-                    height: 30,
-                    padding: "0 10px",
-                    fontSize: 11,
-                  })}
+                  style={{
+                    ...iconActionButtonStyle,
+                    opacity: busyId != null ? 0.45 : 1,
+                    cursor: busyId != null ? "not-allowed" : "pointer",
+                  }}
                 >
-                  Test
+                  <Pulse size={15} />
                 </button>
               </>
             ) : null}
             {section !== "unavailable" ? (
               <button
                 type="button"
+                aria-label="Edit"
+                title="Edit"
                 aria-controls={`remote-target-edit-${target.id}`}
                 aria-expanded={formOpen}
                 disabled={busyId != null}
                 onClick={() => onToggleEdit(target)}
-                style={outlineButton({
-                  height: 30,
-                  padding: "0 10px",
-                  fontSize: 11,
-                })}
+                style={{
+                  ...iconActionButtonStyle,
+                  opacity: busyId != null ? 0.45 : 1,
+                  cursor: busyId != null ? "not-allowed" : "pointer",
+                }}
               >
-                Edit
-                {formOpen ? (
-                  <CaretUp size={12} weight="bold" />
-                ) : (
-                  <CaretDown size={12} weight="bold" />
-                )}
+                <PencilSimple size={15} />
               </button>
             ) : null}
             <button
               type="button"
               aria-label={`Remove ${target.name}`}
+              title="Delete"
               disabled={busyId != null}
               onClick={() => onRemove(target.id)}
-              style={outlineButton({
-                height: 30,
-                padding: "0 9px",
-                fontSize: 11,
-              })}
+              style={{
+                ...iconActionButtonStyle,
+                opacity: busyId != null ? 0.45 : 1,
+                cursor: busyId != null ? "not-allowed" : "pointer",
+              }}
             >
-              <Trash size={14} />
+              <Trash size={15} />
             </button>
           </div>
         </div>
@@ -327,6 +372,10 @@ export function SavedMachineRow({
           correlationId={routeCorrelationId}
           omittedAttemptCount={omittedAttemptCount}
         />
+
+        {displayedVersionNote ? (
+          <div style={helperTextStyle}>{displayedVersionNote}</div>
+        ) : null}
 
         {warnings.length > 0 ? (
           <div

@@ -16,12 +16,13 @@ import {
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
-import { isBrainAccountSessionFailure } from "../../../shared/types";
-import type {
-  SyncDeviceRuntimeState,
-  SyncPeerDeviceType,
-  SyncPairingConnectInfo,
-  SyncRoleSnapshot,
+import {
+  isBrainAccountSessionFailure,
+  type AdeAccountSessionState,
+  type SyncDeviceRuntimeState,
+  type SyncPeerDeviceType,
+  type SyncPairingConnectInfo,
+  type SyncRoleSnapshot,
 } from "../../../shared/types";
 import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
@@ -42,7 +43,6 @@ import {
   SANS_FONT,
   cardStyle,
   dangerButton,
-  inlineBadge,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
@@ -140,7 +140,7 @@ function isCrdtSyncUnavailable(status: SyncRoleSnapshot): boolean {
 // laptop glyph *and* the "· Windows" suffix that used to trail the version — the
 // logo is the platform statement, so spelling it out again is pure duplication.
 function PlatformGlyph({ platform }: { platform: string | undefined }) {
-  const props = { size: 17, weight: "duotone" as const, color: COLORS.accent };
+  const props = { size: 18, weight: "regular" as const, color: COLORS.textSecondary };
   switch (platform) {
     case "darwin":
       return <AppleLogo {...props} />;
@@ -190,9 +190,11 @@ function useAppInfoLine(): { version: string; platform: string } | null {
 export function ThisMacCard({
   sync,
   accountSignedIn,
+  sessionState = accountSignedIn ? "active" : "signed_out",
 }: {
   sync: SyncConnections;
   accountSignedIn: boolean;
+  sessionState?: AdeAccountSessionState;
 }) {
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
@@ -254,25 +256,26 @@ export function ThisMacCard({
   // the reader nothing they could act on, and a missing pairing code is a
   // normal state now that the account is the primary way to connect.
   const problem = connectionProblem(status, host);
-  const directorySummary = accountDirectorySummary(status, accountSignedIn);
+  const directorySummary = accountDirectorySummary(status, accountSignedIn, sessionState);
   // A brain-side unreadable account session is the one directory failure a
   // restart clears — same test RemoteTargetList runs on its publish health.
-  const showRepair = accountSignedIn
-    && isBrainAccountSessionFailure(status.routeHealth?.accountDirectory?.state)
+  // Repair stays available on a cold unreadable read even when signedIn is false.
+  const showRepair = isBrainAccountSessionFailure(status.routeHealth?.accountDirectory?.state)
     && repair.available;
 
-  return (
+    return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
       <div style={{ display: "grid", gap: 10 }}>
-        <span
-          style={inlineBadge(COLORS.accent, {
-            fontSize: 10,
-            padding: "2px 7px",
-            justifySelf: "start",
-          })}
+        <div
+          style={{
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            fontWeight: 600,
+            color: COLORS.textSecondary,
+          }}
         >
-          {THIS_MACHINE_NAME}
-        </span>
+          {appInfo ? `This machine — ADE ${appInfo.version}` : "This machine"}
+        </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
           <span
@@ -282,12 +285,9 @@ export function ThisMacCard({
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              width: 32,
-              height: 32,
-              borderRadius: 9,
+              width: 28,
+              height: 28,
               flexShrink: 0,
-              background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-              border: `1px solid ${COLORS.accentBorder}`,
             }}
           >
             <PlatformGlyph platform={appInfo?.platform} />
@@ -323,8 +323,6 @@ export function ThisMacCard({
               </span>
               {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
             </div>
-            {/* Third line is one slot: the fault takes the version's place while
-                something is wrong, so the card never grows a line. */}
             {problem ? (
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 <span
@@ -341,8 +339,6 @@ export function ThisMacCard({
                   {problem}
                 </span>
               </div>
-            ) : appInfo ? (
-              <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>ADE {appInfo.version}</div>
             ) : null}
           </div>
         </div>
@@ -365,7 +361,7 @@ export function ThisMacCard({
       ) : null}
 
       {host && !crdtUnavailable ? (
-        <PairingDisclosure pinConfigured={status.pairingPinConfigured}>
+        <PairingDisclosure>
           {isRemoteBound ? (
             <PinManagerRemoteNote
               pin={status.pairingPin}
@@ -405,7 +401,7 @@ export function ThisMacCard({
  */
 function connectionProblem(status: SyncRoleSnapshot, host: boolean): string | null {
   if (!host) {
-    return `${THIS_MACHINE_NAME} connects through your main ADE host`;
+    return "This machine connects through your main ADE host";
   }
   // The CRDT failure renders as its own alert block below, with the runtime's
   // full explanation — repeating a one-liner here would just duplicate it.
@@ -559,10 +555,8 @@ function MachineNameRow({
  * that it was opened.
  */
 function PairingDisclosure({
-  pinConfigured,
   children,
 }: {
-  pinConfigured: boolean;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -599,10 +593,7 @@ function PairingDisclosure({
             transition: "transform 120ms ease",
           }}
         />
-        Pairing code
-        <span style={{ color: COLORS.textMuted, fontWeight: 400 }}>
-          · {pinConfigured ? "Set" : "Not set"}
-        </span>
+        Manual pairing code
       </button>
       {open ? (
         <div style={{ display: "grid", gap: 10 }}>

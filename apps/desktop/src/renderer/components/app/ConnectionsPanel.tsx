@@ -27,6 +27,8 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import {
   accountAvatarImage,
   accountInitials,
+  accountSessionConnectionsAction,
+  accountSessionConnectionsActionAria,
   accountSessionConnectionsSubtitle,
   accountSessionState,
   accountSessionTitle,
@@ -133,13 +135,7 @@ function AccountHeader({
           cursor: "pointer",
           textAlign: "left",
         }}
-        aria-label={
-          sessionState === "active"
-            ? "Manage account"
-            : sessionState === "unreadable"
-              ? "Fix your sign-in"
-              : "Sign in to ADE"
-        }
+        aria-label={accountSessionConnectionsActionAria(sessionState)}
       >
         <span style={{ flexShrink: 0 }}>
           {avatarImage && !imgBroken ? (
@@ -203,7 +199,7 @@ function AccountHeader({
           cursor: "pointer",
         }}
       >
-        Manage account
+        {accountSessionConnectionsAction(sessionState)}
       </button>
     </div>
   );
@@ -324,7 +320,11 @@ export function ConnectionsPanel({
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
 
       <div style={{ padding: "12px 12px 0" }}>
-        <ThisMacCard sync={sync} accountSignedIn={accountStatus.signedIn} />
+        <ThisMacCard
+        sync={sync}
+        accountSignedIn={accountStatus.signedIn}
+        sessionState={accountSessionState(accountStatus)}
+      />
       </div>
 
       <div

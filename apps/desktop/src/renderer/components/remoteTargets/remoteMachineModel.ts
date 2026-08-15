@@ -271,7 +271,31 @@ export function formatLastSeen(value: number | null): string {
   if (!value) return "Never connected";
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "Last connection unknown";
-  return `Last connected ${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  const phrase = relativeLastSeenPhrase(value);
+  return phrase ? `Last connected ${phrase}` : "Last connection unknown";
+}
+
+/** Quiet version-skew note. Yellow warnings are reserved for real breakage. */
+export function formatVersionSkewNote(args: {
+  localVersion: string | null | undefined;
+  remoteVersion: string | null | undefined;
+  remoteName: string;
+}): string | null {
+  const local = args.localVersion?.trim();
+  const remote = args.remoteVersion?.trim();
+  if (!local || !remote || local === remote) return null;
+  const advice = isMachineVersionOutdated(remote, local)
+    ? `update ${args.remoteName} when you can`
+    : isMachineVersionOutdated(local, remote)
+      ? "update this machine when you can"
+      : "nothing to do";
+  return `This machine is on ADE ${local}. ${args.remoteName} is on ${remote}. They can still connect — ${advice}.`;
+}
+
+export function isVersionSkewWarning(warning: string): boolean {
+  return /Remote ADE service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
+    warning,
+  );
 }
 
 /**
