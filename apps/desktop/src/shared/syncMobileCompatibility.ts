@@ -43,6 +43,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // go limited, and an older host simply omits the actions.
   "ai.openCursorCloudChat",
   "ai.watchCursorCloudMirror",
+  // Per-project prompt stash. iOS gates the overflow-menu items on these
+  // descriptors so an older brain simply omits stash instead of going limited.
+  "chat.listPromptStashes",
+  "chat.createPromptStash",
+  "chat.deletePromptStash",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

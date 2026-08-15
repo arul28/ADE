@@ -805,6 +805,15 @@ struct WorkTurnEndMarker: Equatable {
   let modelId: String?
 }
 
+func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
+  for entry in timeline.reversed() {
+    if case .turnEndMarker(let marker) = entry.payload {
+      return marker.turnId
+    }
+  }
+  return nil
+}
+
 struct WorkTimelineEntry: Identifiable, Equatable {
   let id: String
   let timestamp: String
@@ -960,6 +969,7 @@ struct WorkChatTimelineSnapshot: Equatable {
   var transcriptHasInterruptibleActivity: Bool
   var latestTranscriptTimestamp: String?
   var latestMessageAssistantId: String?
+  var latestTurnEndTurnId: String?
   var timeline: [WorkTimelineEntry]
 
   static let empty = WorkChatTimelineSnapshot(
@@ -977,6 +987,7 @@ struct WorkChatTimelineSnapshot: Equatable {
     transcriptHasInterruptibleActivity: false,
     latestTranscriptTimestamp: nil,
     latestMessageAssistantId: nil,
+    latestTurnEndTurnId: nil,
     timeline: []
   )
 

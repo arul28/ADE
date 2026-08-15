@@ -2248,6 +2248,29 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
   var url: String? = nil
 }
 
+struct PromptStashEntry: Codable, Equatable, Identifiable {
+  var id: String
+  var text: String
+  var attachments: [AgentChatFileRef]?
+  var attachmentCount: Int?
+  var attachmentsAvailable: Bool?
+  var provider: String?
+  var modelId: String?
+  var createdAt: String
+
+  var resolvedAttachments: [AgentChatFileRef] {
+    attachments ?? []
+  }
+
+  var resolvedAttachmentCount: Int {
+    attachmentCount ?? resolvedAttachments.count
+  }
+
+  var imagesUnavailable: Bool {
+    attachmentsAvailable == false && resolvedAttachmentCount > 0
+  }
+}
+
 private struct AgentChatSpawnCompletionPayload: Decodable {
   var childSessionId: String
   var childTitle: String

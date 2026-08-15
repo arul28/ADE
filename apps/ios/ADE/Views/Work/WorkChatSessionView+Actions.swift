@@ -124,6 +124,7 @@ private func workSnapshotByApplyingAssistantTextTail(
     envelopes: candidateEnvelopes
   )
   nextSnapshot.latestMessageAssistantId = workIncrementalLatestAssistantId(timeline)
+  nextSnapshot.latestTurnEndTurnId = workLatestTurnEndTurnId(in: timeline)
   nextSnapshot.transcriptIndicatesActiveTurn = true
   nextSnapshot.transcriptLatestTurnEnded = false
   // Keep interruptibility consistent with the full-rebuild path (which derives

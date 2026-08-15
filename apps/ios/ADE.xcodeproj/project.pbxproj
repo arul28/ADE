@@ -106,6 +106,8 @@
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
 		E10000000000000000000047 /* ADEInspectable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000047 /* ADEInspectable.swift */; };
 		E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */; };
+		E10000000000000000000F03 /* WorkPromptStash.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F03 /* WorkPromptStash.swift */; };
+		E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F04 /* WorkContextUsageViews.swift */; };
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
 		E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000030 /* WorkMarkdownViews.swift */; };
 		E10000000000000000000031 /* WorkModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000031 /* WorkModels.swift */; };
@@ -174,6 +176,7 @@
 		D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */; };
 		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
+		D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkPromptStashTests.swift */; };
 		FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */; };
 		FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */; };
 		FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */; };
@@ -394,6 +397,8 @@
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
 		D10000000000000000000047 /* ADEInspectable.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEInspectable.swift; path = ADE/Debug/ADEInspectorKit/ADEInspectable.swift; sourceTree = "<group>"; };
 		D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatComposerAndInputViews.swift; path = ADE/Views/Work/WorkChatComposerAndInputViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000F03 /* WorkPromptStash.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStash.swift; path = ADE/Views/Work/WorkPromptStash.swift; sourceTree = "<group>"; };
+		D10000000000000000000F04 /* WorkContextUsageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextUsageViews.swift; path = ADE/Views/Work/WorkContextUsageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000030 /* WorkMarkdownViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownViews.swift; path = ADE/Views/Work/WorkMarkdownViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000031 /* WorkModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModels.swift; path = ADE/Views/Work/WorkModels.swift; sourceTree = "<group>"; };
@@ -465,6 +470,7 @@
 		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000008 /* PrMergeMergeStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeMergeStateTests.swift; path = ADETests/PrMergeMergeStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTriggerDetectorTests.swift; path = ADETests/WorkComposerTriggerDetectorTests.swift; sourceTree = "<group>"; };
+		D3000000000000000000000A /* WorkPromptStashTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStashTests.swift; path = ADETests/WorkPromptStashTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionCanonicalStateTests.swift; path = ADETests/WorkSessionCanonicalStateTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
@@ -876,6 +882,8 @@
 				D10000000000000000000054 /* WorkPlanComposerViews.swift */,
 				D10000000000000000000050 /* WorkChatAttachmentTray.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
+				D10000000000000000000F03 /* WorkPromptStash.swift */,
+				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
 				D10000000000000000000030 /* WorkMarkdownViews.swift */,
 				D10000000000000000000031 /* WorkModels.swift */,
@@ -1125,6 +1133,7 @@
 				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
+				D3000000000000000000000A /* WorkPromptStashTests.swift */,
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
 				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
 				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
@@ -1585,6 +1594,8 @@
 				E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
+				E10000000000000000000F03 /* WorkPromptStash.swift in Sources */,
+				E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */,
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
 				E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */,
 				E10000000000000000000031 /* WorkModels.swift in Sources */,
@@ -1644,6 +1655,7 @@
 				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
+				D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */,
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
 				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,
 				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,

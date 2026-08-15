@@ -62,6 +62,7 @@ func buildWorkChatTimelineSnapshot(
     transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
     latestTranscriptTimestamp: latestTranscriptTimestamp,
     latestMessageAssistantId: latestWorkTimelineMessageAssistantId(timeline),
+    latestTurnEndTurnId: workLatestTurnEndTurnId(in: timeline),
     timeline: timeline
   )
 }

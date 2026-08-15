@@ -421,6 +421,9 @@ apps/ios/
 │   │   │                            #   WorkMentionsPickerSheet /
 │   │   │                            #   WorkSlashCommandsSheet modals),
 │   │   │                            # WorkChatAttachmentTray,
+│   │   │                            # WorkPromptStash (composer overflow +
+│   │   │                            #   per-project stash host),
+│   │   │                            # WorkContextUsageViews (turn-end meter),
 │   │   │                            # WorkChatComposerAndInputViews (compacted
 │   │   │                            #   icon-only staged-steer strip + the
 │   │   │                            #   structured-question card: pinned provider
@@ -1975,14 +1978,18 @@ multi-line prompt the available space instead of lifting the activity panel
 with it.
 
 Mobile image attachments use the same host-side temp attachment contract as
-desktop. Hub, Work new-session, compact/in-session, Chat, and CLI composers open
-the scoped `PhotosPicker` directly from the plus control rather than through a
-one-item menu. Their `UITextView` inputs also advertise Paste for image-only
-clipboards and stage pasted images through the same path. Up to ten images are
-normalized to JPEG and retained locally; overflow and load failures stay visible
-as blocking tray errors instead of being silently dropped. Staging works while
-offline, while upload/send waits for reconnection. Hosts that do not advertise
-`chat.saveTempAttachment` do not offer attachment entry.
+desktop. Hub, Work new-session, and in-session composers open attach, dictate,
+and per-project prompt stash from `WorkComposerOverflowButton` (a three-dot
+menu) rather than a plus control or idle mic. Their `UITextView` inputs also
+advertise Paste for image-only clipboards and stage pasted images through the
+same path. Up to ten images are normalized to JPEG and retained locally;
+overflow and load failures stay visible as blocking tray errors instead of
+being silently dropped. Staging works while offline, while upload/send waits
+for reconnection. Hosts that do not advertise `chat.saveTempAttachment` disable
+Attach only; Dictate stays available. Hosts that omit the optional
+`chat.listPromptStashes` / `chat.createPromptStash` / `chat.deletePromptStash`
+actions hide stash instead of going limited. Context usage lives on the latest
+turn-end marker, not in the composer.
 
 `WorkChatInputAttachmentTray` is a separate fixed-height shelf above the input
 region, so adding previews grows the composer upward without reducing the text

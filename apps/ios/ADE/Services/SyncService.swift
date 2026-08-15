@@ -13059,6 +13059,127 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func chatImageDataUrl(
+    path: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> String {
+    try requireInvokableRemoteAction("chat.getImageDataUrl")
+    let payload = try await sendDecodableCommand(
+      action: "chat.getImageDataUrl",
+      args: ["path": path],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: PersonalChatImageData.self
+    )
+    return payload.dataUrl
+  }
+
+  func listPromptStashes(
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> [PromptStashEntry] {
+    try requireInvokableRemoteAction("chat.listPromptStashes")
+    return try await sendDecodableCommand(
+      action: "chat.listPromptStashes",
+      args: [:],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: [PromptStashEntry].self
+    )
+  }
+
+  func createPromptStash(
+    text: String,
+    attachments: [AgentChatFileRef] = [],
+    provider: String? = nil,
+    modelId: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> PromptStashEntry {
+    try requireInvokableRemoteAction("chat.createPromptStash")
+    var args: [String: Any] = ["text": text]
+    if !attachments.isEmpty {
+      args["attachments"] = attachments.map { ref in
+        var entry: [String: Any] = ["path": ref.path, "type": ref.type]
+        if let url = ref.url, !url.isEmpty { entry["url"] = url }
+        return entry
+      }
+    }
+    if let provider, !provider.isEmpty { args["provider"] = provider }
+    if let modelId, !modelId.isEmpty { args["modelId"] = modelId }
+    return try await sendDecodableCommand(
+      action: "chat.createPromptStash",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: PromptStashEntry.self
+    )
+  }
+
+  func deletePromptStash(
+    id: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> Bool {
+    try requireInvokableRemoteAction("chat.deletePromptStash")
+    return try await sendDecodableCommand(
+      action: "chat.deletePromptStash",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: Bool.self
+    )
+  }
+
+  func listPromptStashesForChat(sessionId: String) async throws -> [PromptStashEntry] {
+    if isPersonalChatScope(sessionId: sessionId) { return [] }
+    let scope = chatCommandScope(for: sessionId)
+    return try await listPromptStashes(
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func createPromptStashForChat(
+    sessionId: String,
+    text: String,
+    attachments: [AgentChatFileRef] = [],
+    provider: String? = nil,
+    modelId: String? = nil
+  ) async throws -> PromptStashEntry {
+    let scope = chatCommandScope(for: sessionId)
+    return try await createPromptStash(
+      text: text,
+      attachments: attachments,
+      provider: provider,
+      modelId: modelId,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func deletePromptStashForChat(sessionId: String, id: String) async throws -> Bool {
+    let scope = chatCommandScope(for: sessionId)
+    return try await deletePromptStash(
+      id: id,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func chatImageDataUrlForChat(sessionId: String, path: String) async throws -> String {
+    if isPersonalChatScope(sessionId: sessionId) {
+      return try await personalChatImageDataUrl(path: path)
+    }
+    let scope = chatCommandScope(for: sessionId)
+    return try await chatImageDataUrl(
+      path: path,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
   func personalChatImageDataUrl(path: String) async throws -> String {
     try requireInvokableRemoteAction("personalChats.getImageDataUrl")
     let payload = try await sendDecodableCommand(

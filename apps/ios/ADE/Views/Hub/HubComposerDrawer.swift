@@ -670,10 +670,19 @@ struct HubInlineComposer: View {
         if isExpanded {
           HStack(alignment: .center, spacing: 8) {
             if !isDictating {
-              WorkChatAttachmentAddButton(
-                pickerPresented: $attachmentPickerPresented,
-                attachmentCount: attachments.count,
-                disabled: busy || !attachmentsAvailable
+              WorkComposerOverflowButton(
+                attachmentPickerPresented: $attachmentPickerPresented,
+                draft: $draft,
+                attachments: $attachments,
+                canCompose: !busy,
+                attachmentsAvailable: attachmentsAvailable,
+                onDictate: { dictationCoordinator.requestStart() },
+                stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
+                scope: WorkPromptStashScope(
+                  projectId: pickedProjectId.isEmpty ? nil : pickedProjectId
+                ),
+                provider: provider,
+                modelId: modelId
               )
 
               ScrollView(.horizontal, showsIndicators: false) {
@@ -708,6 +717,7 @@ struct HubInlineComposer: View {
               draft: $draft,
               coordinator: dictationCoordinator,
               targetId: dictationTargetId,
+              showsIdleButton: false,
               onRecordingChange: { isDictating = $0 }
             )
             .frame(maxWidth: isDictating ? .infinity : nil)

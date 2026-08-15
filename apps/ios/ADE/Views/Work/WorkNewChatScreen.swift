@@ -1471,6 +1471,7 @@ private struct WorkNewChatComposerBar: View {
   let onOpenModelPicker: () -> Void
   let onSubmit: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
 
+  @EnvironmentObject private var syncService: SyncService
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
   @State private var attachmentPickerPresented = false
@@ -1549,10 +1550,17 @@ private struct WorkNewChatComposerBar: View {
 
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
-            WorkChatAttachmentAddButton(
-              pickerPresented: $attachmentPickerPresented,
-              attachmentCount: attachments.count,
-              disabled: busy || !attachmentsAvailable
+            WorkComposerOverflowButton(
+              attachmentPickerPresented: $attachmentPickerPresented,
+              draft: $draft,
+              attachments: $attachments,
+              canCompose: !busy,
+              attachmentsAvailable: attachmentsAvailable,
+              onDictate: { dictationCoordinator.requestStart() },
+              stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
+              scope: WorkPromptStashScope(),
+              provider: provider,
+              modelId: modelId
             )
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1587,6 +1595,7 @@ private struct WorkNewChatComposerBar: View {
             draft: $draft,
             coordinator: dictationCoordinator,
             targetId: dictationTargetId,
+            showsIdleButton: false,
             onRecordingChange: { isDictating = $0 }
           )
           .frame(maxWidth: isDictating ? .infinity : nil)

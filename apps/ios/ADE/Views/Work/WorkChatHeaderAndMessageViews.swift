@@ -1066,6 +1066,10 @@ struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
   var toolCount: Int = 0
   var onOpenActivity: (() -> Void)? = nil
+  var usageViewModel: WorkContextUsageViewModel? = nil
+  var modelLabel: String? = nil
+
+  @State private var contextUsagePresented = false
 
   private var status: String {
     marker.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1122,6 +1126,25 @@ struct WorkTurnEndMarkerView: View {
         content
       }
       hairline
+      if let usageViewModel {
+        WorkContextUsageMeter(
+          usage: usageViewModel,
+          isPresented: $contextUsagePresented
+        )
+        .popover(
+          isPresented: $contextUsagePresented,
+          attachmentAnchor: .rect(.bounds),
+          arrowEdge: .bottom
+        ) {
+          WorkContextUsagePopover(
+            usage: usageViewModel,
+            modelLabel: modelLabel ?? marker.modelLabel
+          )
+          .presentationCompactAdaptation(.popover)
+          .presentationBackground(ADEColor.surfaceBackground)
+        }
+        .layoutPriority(2)
+      }
     }
     .frame(maxWidth: .infinity)
     .padding(.vertical, 8)
