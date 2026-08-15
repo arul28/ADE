@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
 export const panelStyle: CSSProperties = {
   display: "grid",
@@ -49,14 +49,13 @@ export const inlineSuccessTextStyle: CSSProperties = {
 export const sectionHeaderStyle: CSSProperties = {
   color: COLORS.textMuted,
   fontFamily: SANS_FONT,
-  fontSize: 10.5,
+  fontSize: 11,
   fontWeight: 600,
-  letterSpacing: "0.08em",
 };
 
 export const nameStyle: CSSProperties = {
   color: COLORS.textPrimary,
-  fontFamily: MONO_FONT,
+  fontFamily: SANS_FONT,
   fontSize: 13,
   fontWeight: 700,
   overflow: "hidden",
@@ -66,9 +65,23 @@ export const nameStyle: CSSProperties = {
 
 export const subTextStyle: CSSProperties = {
   color: COLORS.textMuted,
-  fontFamily: MONO_FONT,
+  fontFamily: SANS_FONT,
   fontSize: 12,
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+};
+
+export const iconActionButtonStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 28,
+  height: 28,
+  padding: 0,
+  border: "none",
+  borderRadius: 7,
+  background: "transparent",
+  color: COLORS.textSecondary,
+  cursor: "pointer",
 };

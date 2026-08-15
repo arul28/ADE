@@ -154,7 +154,7 @@ export function SignInCard({
               One source for the state's own words: `unreadable` and `expired`
               both take their title from the label table, so the header never
               drifts from the notice under it. `signed_out` keeps the call to
-              action -- the table's "Not signed in" describes the state, but
+              action -- the table's "Signed out" describes the state, but
               this card is where you act on it.
             */}
             {unreadable || expired ? accountSessionTitle(sessionState) : "Sign in to ADE"}

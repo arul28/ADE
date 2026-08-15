@@ -11,7 +11,10 @@ import {
   accountMachineMatchesTarget,
   assignMachineSections,
   describePublishHealth,
+  formatLastSeen,
   formatRemoteTargetError,
+  formatVersionSkewNote,
+  isVersionSkewWarning,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
 
@@ -362,6 +365,59 @@ describe("describePublishHealth", () => {
     expect(
       describePublishHealth(health({ state: "http_timeout", failingSinceMs }), NOW),
     ).toEqual({ kind: "failing", minutes: 5 });
+  });
+});
+
+describe("formatLastSeen", () => {
+  it("uses a relative last-connected phrase", () => {
+    expect(formatLastSeen(null)).toBe("Never connected");
+    expect(formatLastSeen(Date.now() - 2 * 60 * 60_000)).toBe("Last connected 2h ago");
+  });
+});
+
+describe("formatVersionSkewNote", () => {
+  it("names both machines and points the update at the older one", () => {
+    expect(
+      formatVersionSkewNote({
+        localVersion: "1.2.59",
+        remoteVersion: "1.2.57",
+        remoteName: "Arul's Mac Studio",
+      }),
+    ).toBe(
+      "This machine is on ADE 1.2.59. Arul's Mac Studio is on 1.2.57. They can still connect — update Arul's Mac Studio when you can.",
+    );
+    expect(
+      formatVersionSkewNote({
+        localVersion: "1.2.57",
+        remoteVersion: "1.2.59",
+        remoteName: "Arul's Mac Studio",
+      }),
+    ).toBe(
+      "This machine is on ADE 1.2.57. Arul's Mac Studio is on 1.2.59. They can still connect — update this machine when you can.",
+    );
+    expect(
+      formatVersionSkewNote({
+        localVersion: "1.2.59",
+        remoteVersion: "1.2.59",
+        remoteName: "Studio",
+      }),
+    ).toBeNull();
+  });
+
+  it("recognizes both the old jargon and the new version-skew copy", () => {
+    expect(
+      isVersionSkewWarning(
+        "Remote ADE service reported 1.2.57; local ADE is 1.2.59. The versions differ but their RPC capabilities match, so ADE connected normally — nothing to do.",
+      ),
+    ).toBe(true);
+    expect(
+      isVersionSkewWarning(
+        "This machine is on ADE 1.2.59. The other machine is on 1.2.57. They can still connect — update the other machine when you can.",
+      ),
+    ).toBe(true);
+    expect(isVersionSkewWarning("Remote ADE service is missing project capabilities: create.")).toBe(
+      false,
+    );
   });
 });
 
