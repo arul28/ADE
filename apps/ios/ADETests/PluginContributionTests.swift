@@ -296,12 +296,14 @@ final class PluginContributionTests: XCTestCase {
   /// labels — so the two clients are pinned to one contract rather than to two
   /// readings of a call site.
   ///
-  /// Assertion three lands on iOS for a second reason as well as the shared one:
-  /// the tab row names a socket id the manifest never declared, so the
-  /// declaration join in ``PluginContributionIndex`` drops it before any lookup
-  /// runs. Desktop keeps it in the set and simply never asks for it from a chat
-  /// header. Different mechanism, same observable outcome — a row addressed to
-  /// the tab is about the tab, and never appears in a conversation's header.
+  /// The tab row names the DECLARED socket id `drink`, and that detail is the
+  /// whole strength of assertion three. An undeclared id — the fixture's first
+  /// shape — is dropped by the declaration join in ``PluginContributionIndex``
+  /// before any lookup runs, which means a surface-scoped implementation would
+  /// have passed the assertion too: it could not fail for the reason it claims.
+  /// With a declared id the row survives the join and is filed under the Work
+  /// surface, so the ONLY thing keeping it out of a chat header is the
+  /// per-session filing rule. Get that rule wrong and this test goes red.
   func testChatHeaderFilingMatchesDesktopsExecutablePin() throws {
     let record = try JSONDecoder().decode(
       PluginInstallRecordEntry.self,
@@ -321,7 +323,7 @@ final class PluginContributionTests: XCTestCase {
     let publishedForTab = try XCTUnwrap(PluginContributionParser.parse(
       entityKind: "surface", entityId: "work", pluginId: "tipsy",
       socket: "chat-header-action",
-      payloadJSON: #"{ "id": "tab-wide", "label": "Tab wide", "actionId": "tabWide" }"#,
+      payloadJSON: #"{ "id": "drink", "label": "Tab wide", "actionId": "tabWide" }"#,
       updatedAt: "2026-08-15T00:00:00.000Z"
     ))
     let index = PluginContributionIndex(
@@ -344,6 +346,15 @@ final class PluginContributionTests: XCTestCase {
     )
 
     // 3. The row published against the TAB is never drawn in a chat header.
+    //
+    // Guarded first: the row has to actually BE in the index, or this asserts
+    // nothing. It survives the declaration join because it names a declared
+    // socket id, so its absence below is the filing rule at work and not the
+    // join quietly having discarded it.
+    XCTAssertTrue(
+      index.surfaceContributions(.work).contains { $0.chatHeaderAction?.label == "Tab wide" },
+      "The tab row must survive into the index, or assertion 3 proves nothing."
+    )
     for sessionId in ["chat-1", "chat-2"] {
       XCTAssertFalse(
         index.chatHeaderActions(sessionId: sessionId).contains { $0.chatHeaderAction?.label == "Tab wide" },
