@@ -165,15 +165,22 @@ final class WorkPromptStashController: ObservableObject {
   @Published var busy = false
   @Published var errorMessage: String?
   @Published var listPresented = false
+  private var refreshToken = UUID()
 
   func refresh(syncService: SyncService, scope: WorkPromptStashScope) async {
+    let token = UUID()
+    refreshToken = token
     guard syncService.canInvokeRemoteAction("chat.listPromptStashes") else {
+      guard refreshToken == token else { return }
       entries = []
       return
     }
     do {
-      entries = try await listEntries(syncService: syncService, scope: scope)
+      let fetched = try await listEntries(syncService: syncService, scope: scope)
+      guard refreshToken == token else { return }
+      entries = fetched
     } catch {
+      guard refreshToken == token else { return }
       errorMessage = error.localizedDescription
     }
   }
@@ -216,6 +223,7 @@ final class WorkPromptStashController: ObservableObject {
     onAttachmentsChange: ([WorkChatInputAttachment]) -> Void
   ) async {
     guard !busy else { return }
+    refreshToken = UUID()
     if workChatInputHasLoadingAttachments(attachments) {
       errorMessage = "Wait for images to finish loading before stashing."
       listPresented = true
@@ -275,6 +283,7 @@ final class WorkPromptStashController: ObservableObject {
     onAttachmentsChange: ([WorkChatInputAttachment]) -> Void
   ) async {
     guard !busy else { return }
+    refreshToken = UUID()
     if workComposerHasStashableContent(text: currentText, attachments: currentAttachments) {
       listPresented = false
       return
@@ -317,6 +326,7 @@ final class WorkPromptStashController: ObservableObject {
     scope: WorkPromptStashScope
   ) async {
     guard !busy else { return }
+    refreshToken = UUID()
     busy = true
     defer { busy = false }
     do {

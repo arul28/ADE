@@ -365,7 +365,10 @@ func workChatInputAttachments(
        let scheme = url.scheme?.lowercased(),
        scheme == "http" || scheme == "https" {
       let data = try await workChatRemoteImageData(from: url)
-      guard let image = UIImage(data: data),
+      guard let image = WorkChatAttachmentImagePreview.downsampledImage(
+              data: data,
+              maxPixelSize: 2400
+            ),
             let attachment = workChatInputAttachment(
               from: image,
               filename: workChatAttachmentDisplayName(ref)

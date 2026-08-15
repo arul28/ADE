@@ -30,7 +30,7 @@ struct WorkContextUsageMeter: View {
   }
 
   var body: some View {
-    if usage.ratio != nil || usage.usedTokens != nil {
+    if usage.state != .measured || usage.ratio != nil || usage.usedTokens != nil {
       Button {
         withAnimation(.easeInOut(duration: 0.18)) {
           isPresented.toggle()
@@ -104,7 +104,7 @@ struct WorkContextUsagePopover: View {
 
   private var description: String {
     if usage.state == .compacting {
-      return "Claude is compacting this chat. The previous exact reading is temporarily hidden."
+      return "The runtime is compacting this chat. The previous exact reading is temporarily hidden."
     }
     if usage.state == .recalculating {
       return "Compaction finished. ADE is waiting for the next authoritative usage snapshot."
