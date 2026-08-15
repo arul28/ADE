@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.60] - 2026-08-15
+
+### Work and chat
+
+- Project creation and opening now land directly in Work.
+- Highlighted assistant output can become context chips for the next prompt.
+- Import Sessions now reuses ADE-owned session state for more useful recovery flows.
+
+### Connections and authentication
+
+- The Connections pane organizes machine states and actions more clearly.
+- Session-ticket failures fall back to Clerk sign-in tickets instead of stranding account recovery.
+
+### iOS
+
+- Composer overflow is corrected, the turn-end meter is clearer, and prompt stashes are scoped per project.
+
+### Delivery
+
+- Push relay production deploys now mint smoke credentials and verify authenticated paths.
+
 ## [1.2.59] - 2026-08-14
 
 ### Connections and sync
@@ -1546,6 +1567,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[1.2.60]: https://github.com/arul28/ADE/compare/v1.2.59...v1.2.60
 [1.2.59]: https://github.com/arul28/ADE/compare/v1.2.58...v1.2.59
 [1.2.58]: https://github.com/arul28/ADE/compare/v1.2.57...v1.2.58
 [1.2.57]: https://github.com/arul28/ADE/compare/v1.2.56...v1.2.57
