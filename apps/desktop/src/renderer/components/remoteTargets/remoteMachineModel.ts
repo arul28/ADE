@@ -284,11 +284,12 @@ export function formatVersionSkewNote(args: {
   const local = args.localVersion?.trim();
   const remote = args.remoteVersion?.trim();
   if (!local || !remote || local === remote) return null;
-  const advice = isMachineVersionOutdated(remote, local)
-    ? `update ${args.remoteName} when you can`
-    : isMachineVersionOutdated(local, remote)
-      ? "update this machine when you can"
-      : "nothing to do";
+  let advice = "nothing to do";
+  if (isMachineVersionOutdated(remote, local)) {
+    advice = `update ${args.remoteName} when you can`;
+  } else if (isMachineVersionOutdated(local, remote)) {
+    advice = "update this machine when you can";
+  }
   return `This machine is on ADE ${local}. ${args.remoteName} is on ${remote}. They can still connect — ${advice}.`;
 }
 

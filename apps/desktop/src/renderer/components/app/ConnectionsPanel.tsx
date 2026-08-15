@@ -321,10 +321,9 @@ export function ConnectionsPanel({
 
       <div style={{ padding: "12px 12px 0" }}>
         <ThisMacCard
-        sync={sync}
-        accountSignedIn={accountStatus.signedIn}
-        sessionState={accountSessionState(accountStatus)}
-      />
+          sync={sync}
+          sessionState={accountSessionState(accountStatus)}
+        />
       </div>
 
       <div

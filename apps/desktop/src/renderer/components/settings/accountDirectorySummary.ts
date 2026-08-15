@@ -30,8 +30,7 @@ function unpublishedMachineLabel(state: SyncAccountDirectoryState): string {
 
 export function accountDirectorySummary(
   status: SyncRoleSnapshot,
-  accountSignedIn: boolean,
-  sessionState: AdeAccountSessionState = accountSignedIn ? "active" : "signed_out",
+  sessionState: AdeAccountSessionState,
 ): AccountDirectorySummary {
   if (sessionState === "unreadable") {
     return {
@@ -39,7 +38,7 @@ export function accountDirectorySummary(
       healthy: false,
     };
   }
-  if (!accountSignedIn) {
+  if (sessionState !== "active") {
     return {
       label: "Not signed in — you can still connect to other machines manually",
       healthy: false,

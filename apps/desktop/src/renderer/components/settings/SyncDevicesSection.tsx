@@ -189,13 +189,12 @@ function useAppInfoLine(): { version: string; platform: string } | null {
 
 export function ThisMacCard({
   sync,
-  accountSignedIn,
-  sessionState = accountSignedIn ? "active" : "signed_out",
+  sessionState,
 }: {
   sync: SyncConnections;
-  accountSignedIn: boolean;
-  sessionState?: AdeAccountSessionState;
+  sessionState: AdeAccountSessionState;
 }) {
+  const accountSignedIn = sessionState === "active";
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
   // Restarting the brain is the fix when it cannot read the stored account
@@ -256,7 +255,7 @@ export function ThisMacCard({
   // the reader nothing they could act on, and a missing pairing code is a
   // normal state now that the account is the primary way to connect.
   const problem = connectionProblem(status, host);
-  const directorySummary = accountDirectorySummary(status, accountSignedIn, sessionState);
+  const directorySummary = accountDirectorySummary(status, sessionState);
   // A brain-side unreadable account session is the one directory failure a
   // restart clears — same test RemoteTargetList runs on its publish health.
   // Repair stays available on a cold unreadable read even when signedIn is false.

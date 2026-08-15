@@ -51,6 +51,12 @@ import {
 
 const CONNECTING_STALE_MS = 20_000;
 
+function connectButtonLabel(stale: boolean, connecting: boolean): string {
+  if (stale) return "Retry";
+  if (connecting) return "Connecting…";
+  return "Connect";
+}
+
 function useStaleConnecting(connecting: boolean): boolean {
   const [stale, setStale] = useState(false);
   useEffect(() => {
@@ -280,7 +286,7 @@ export function SavedMachineRow({
                   })}
                 >
                   <PlugsConnected size={14} weight="bold" />
-                  {connectingStale ? "Retry" : targetConnecting ? "Connecting…" : "Connect"}
+                  {connectButtonLabel(connectingStale, targetConnecting)}
                 </button>
                 <button
                   type="button"
