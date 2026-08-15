@@ -408,7 +408,22 @@ describe("chat-header-action is filed per session, not per surface", () => {
   });
 
   it("never draws a tab-scoped row in a chat header", () => {
-    const labels = selectContributions(headerSet(), "chat-header-action", session("chat-1"))
+    const set = headerSet();
+    // Guard FIRST: prove the tab row is actually in the set and reachable when
+    // something asks for the surface. Without this, a future change upstream —
+    // a declaration join, a stricter row filter — could start dropping it
+    // before any lookup runs, and the absence below would silently stop meaning
+    // "the filing rule excluded it" and start meaning "something ate it". That
+    // is the can't-fail condition this block already had once and had to have
+    // sharpened out of it; the guard is what stops it coming back unnoticed.
+    // (Borrowed from iOS's port, which added the same guard for the same
+    // reason after we found the first version passing vacuously there.)
+    expect(
+      selectContributions(set, "chat-header-action", { kind: "surface", surface: "work" })
+        .map((entry) => entry.payload.label),
+    ).toContain("Tab wide");
+
+    const labels = selectContributions(set, "chat-header-action", session("chat-1"))
       .map((entry) => entry.payload.label);
     expect(labels).not.toContain("Tab wide");
   });
