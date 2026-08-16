@@ -42,6 +42,7 @@ function readOpenProjectBinding(value: unknown): OpenProjectBinding | null {
   return typeof remote.targetId === "string"
     && typeof remote.projectId === "string"
     && typeof remote.runtimeName === "string"
+    && typeof remote.displayName === "string"
     ? remote
     : null;
 }

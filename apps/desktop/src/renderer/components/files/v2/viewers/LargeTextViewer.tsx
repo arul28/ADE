@@ -78,7 +78,7 @@ export function LargeTextViewer({ files, workspaceId, tab, content }: ViewerProp
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, tab.path, content.content, content.isPartial, content.nextOffset]);
+  }, [files, workspaceId, tab.path, content.content, content.isPartial, content.nextOffset]);
 
   const lines = useMemo(() => text.split("\n"), [text]);
 

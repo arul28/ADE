@@ -56,7 +56,7 @@ export function PdfViewer({ files, workspaceId, tab }: ViewerProps) {
       void docRef.current?.destroy();
       docRef.current = null;
     };
-  }, [workspaceId, tab.path]);
+  }, [files, workspaceId, tab.path]);
 
   // Render the active page at the current zoom.
   useEffect(() => {

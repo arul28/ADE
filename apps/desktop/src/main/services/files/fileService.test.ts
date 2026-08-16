@@ -1527,35 +1527,44 @@ describe("fileSearchIndexService", () => {
     fs.writeFileSync(path.join(rootPath, "big.txt"), big, "utf8");
     expect(fs.statSync(path.join(rootPath, "big.txt")).size).toBeGreaterThan(1_000_000);
 
-    const service = createFileSearchIndexService();
-    const gitMatches = await service.searchText({
-      workspaceId: "ws-big",
-      rootPath,
-      query: "needle_in_big_file",
-      limit: 10,
-      includeIgnored: false,
-      shouldIgnore,
-      primeIgnoreCache,
-    });
-    expect(gitMatches).toHaveLength(1);
-
     // Same content in a non-git workspace: the JS tier skips the oversized file.
     // A separate root rather than removing `.git`, which `git init` made a
     // directory that `breakGitWorkTree`'s file write cannot replace.
     const fallbackRoot = createTempWorkspace("ade-files-bigfile-nogit-");
     breakGitWorkTree(fallbackRoot);
     fs.writeFileSync(path.join(fallbackRoot, "big.txt"), big, "utf8");
+    const service = createFileSearchIndexService();
     const fallbackService = createFileSearchIndexService();
-    const fallbackMatches = await fallbackService.searchText({
-      workspaceId: "ws-big-fallback",
-      rootPath: fallbackRoot,
-      query: "needle_in_big_file",
-      limit: 10,
-      includeIgnored: false,
-      shouldIgnore,
-      primeIgnoreCache,
-    });
-    expect(fallbackMatches).toHaveLength(0);
+    try {
+      const gitMatches = await service.searchText({
+        workspaceId: "ws-big",
+        rootPath,
+        query: "needle_in_big_file",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      expect(gitMatches).toHaveLength(1);
+
+      const fallbackMatches = await fallbackService.searchText({
+        workspaceId: "ws-big-fallback",
+        rootPath: fallbackRoot,
+        query: "needle_in_big_file",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      expect(fallbackMatches).toHaveLength(0);
+    } finally {
+      // Two roots each holding a >1 MB file; a failed assertion must not leave
+      // them (or the services) behind on a CI runner.
+      service.dispose();
+      fallbackService.dispose();
+      removeTestTree(rootPath);
+      removeTestTree(fallbackRoot);
+    }
   });
 
   it("builds a git grep argv that a Windows shell cannot re-interpret", () => {

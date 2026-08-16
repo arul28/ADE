@@ -46,7 +46,7 @@ export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [workspaceId, tab.path, content.size, mimeType]);
+  }, [files, workspaceId, tab.path, content.size, mimeType]);
 
   const openExternally = () => {
     void window.ade.app.openPathInEditor?.({ rootPath, relativePath: tab.path, target: "finder" }).catch(() => {});

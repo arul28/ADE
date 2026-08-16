@@ -157,8 +157,9 @@ export function FilesWorkbench({
   /**
    * The machine this workbench is currently reading from, when that is NOT the
    * machine the project tab is bound to. Set by a navigation request that came
-   * from a chat on another machine; cleared as soon as the user picks a
-   * workspace from this machine again.
+   * from a chat on another machine. The banner's "Back to this computer" is the
+   * only exit: `selectWorkspace` does not clear it, and could not usefully —
+   * while pinned, the picker is listing the pinned machine's workspaces.
    *
    * Everything downstream keys off `projectBinding`/`projectRootPath` below
    * rather than the bound pair, so the workspace roster, the tree caches, and

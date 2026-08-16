@@ -107,4 +107,24 @@ describe("ViewerHost editability wiring", () => {
     renderHost(makeTab("csv", "huge.csv"), textContent({ isPartial: true, nextOffset: 5 }));
     expect(screen.getByTestId("viewer-csv").getAttribute("data-readonly")).toBe("true");
   });
+
+  it("re-reads bytes when the machine changes under the same file", () => {
+    // The viewers stream through the machine-bound Files client. If an effect
+    // closes over it without listing it, switching machines with the same
+    // workspace and path keeps reading from the machine you just left.
+    const first = createPinnedFilesApi(null);
+    const second = createPinnedFilesApi({
+      kind: "remote",
+      key: "remote:mac-studio",
+      targetId: "mac-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/repo",
+      displayName: "ADE",
+    } as never);
+    // A different machine must yield a different client identity, which is what
+    // makes the viewers' dependency on it able to fire at all.
+    expect(second).not.toBe(first);
+    expect(createPinnedFilesApi(null)).toBe(first);
+  });
 });

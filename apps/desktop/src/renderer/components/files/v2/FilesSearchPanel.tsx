@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { CaretDown, CaretRight, CheckSquare, MagnifyingGlass, Square, X } from "@phosphor-icons/react";
 import type { FilesQuickOpenItem, FilesSearchTextMatch } from "../../../../shared/types";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
@@ -148,6 +148,9 @@ export function FilesSearchPanel({
   const hasQuery = trimmed.length > 0;
 
   const [includeIgnored, setIncludeIgnored] = useState(() => getFilesSearchIncludeIgnored());
+  // Arrow keys move the highlight while focus stays in the input, so the input
+  // has to name the highlighted row for a screen reader to follow along.
+  const resultsListId = useId();
   const [names, setNames] = useState<NameState>({ key: "", items: [] });
   const [contents, setContents] = useState<ContentState>({ key: "", groups: [] });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -385,7 +388,10 @@ export function FilesSearchPanel({
       {namesPending || contentsPending ? "Searching…" : "No matches"}
     </div>
   ) : (
-    <>
+    // A listbox the input can point into: the highlight moves with the arrow
+    // keys while focus stays in the field, so without this a screen reader
+    // never hears which result is selected.
+    <div id={resultsListId} role="listbox" aria-label="Search results">
       {nameItems.length > 0 ? (
         <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wide" style={{ color: COLORS.textDim }}>
           Files
@@ -396,10 +402,14 @@ export function FilesSearchPanel({
         const name = baseName(item.path);
         const { icon: Icon, color } = getFileIcon(name);
         const isActive = index === active;
+        const rowId = `${resultsListId}-row-${index}`;
         return (
           <button
             key={`file:${item.path}`}
             ref={isActive ? (node) => { activeRowRef.current = node; } : undefined}
+            id={rowId}
+            role="option"
+            aria-selected={isActive}
             type="button"
             onMouseEnter={() => setActive(index)}
             onClick={() => openItem({ kind: "file", path: item.path })}
@@ -446,10 +456,14 @@ export function FilesSearchPanel({
               : group.matches.map((match, i) => {
                 const index = flatCursor++;
                 const isActive = index === active;
+                const rowId = `${resultsListId}-row-${index}`;
                 return (
                   <button
                     key={`m:${group.path}:${match.line}:${match.column}:${i}`}
                     ref={isActive ? (node) => { activeRowRef.current = node; } : undefined}
+                    id={rowId}
+                    role="option"
+                    aria-selected={isActive}
                     type="button"
                     onMouseEnter={() => setActive(index)}
                     onClick={() => openItem({ kind: "line", path: group.path, line: match.line })}
@@ -472,7 +486,7 @@ export function FilesSearchPanel({
           Searching inside files…
         </div>
       ) : null}
-    </>
+    </div>
   );
 
   if (variant === "sidebar") {
@@ -505,6 +519,10 @@ export function FilesSearchPanel({
             placeholder="Search files by name or text…"
             aria-label="Search files"
             data-files-search-field="1"
+            role="combobox"
+            aria-controls={resultsListId}
+            aria-expanded={flat.length > 0}
+            aria-activedescendant={flat.length > 0 ? `${resultsListId}-row-${active}` : undefined}
             className="w-full bg-transparent text-sm outline-none"
             style={{ color: COLORS.textPrimary }}
           />

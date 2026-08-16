@@ -89,7 +89,7 @@ export function CsvViewer(props: ViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, tab.id, tab.path, content.content, content.isPartial, content.nextOffset, delimiter, liveText, mode, registry]);
+  }, [files, workspaceId, tab.id, tab.path, content.content, content.isPartial, content.nextOffset, delimiter, liveText, mode, registry]);
 
   const header = rows[0] ?? [];
   const bodyRows = useMemo(() => rows.slice(1), [rows]);

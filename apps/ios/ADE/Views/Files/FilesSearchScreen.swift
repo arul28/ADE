@@ -34,6 +34,9 @@ struct FilesSearchScreen: View {
   @AppStorage("ade.files.search.includeIgnored") private var includeIgnored = false
 
   @State private var query = ""
+  /// The last value this view seeded, so a newer seed may replace it while
+  /// anything the user typed is left alone.
+  @State private var seededQuery = ""
   @State private var fileResults: [FilesQuickOpenItem] = []
   @State private var contentGroups: [FilesSearchContentGroup] = []
   @State private var collapsedGroups: Set<String> = []
@@ -115,12 +118,17 @@ struct FilesSearchScreen: View {
     .task(id: searchKey) {
       await runSearch()
     }
-    .task {
-      // Seeded from a chat file link that matched more than one file. Only ever
-      // fills an untouched field, so it can't stomp what the user is typing.
+    // Keyed on the seed: a second ambiguous chat link can arrive while this
+    // sheet is already open, and an unkeyed task would not rerun, leaving the
+    // field showing the previous request's name.
+    .task(id: initialQuery) {
+      // Seeded from a chat file link that matched more than one file. A new
+      // seed replaces an older seed, but never what the user has typed since.
       let seed = initialQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !seed.isEmpty, query.isEmpty {
+      guard !seed.isEmpty else { return }
+      if query.isEmpty || query == seededQuery {
         query = seed
+        seededQuery = seed
       }
     }
     .task {

@@ -398,9 +398,11 @@ describe("FilesWorkbench", () => {
         null,
       );
     });
+    // First argument only: `expect.anything()` does not match the explicit
+    // `null` pin every unpinned call passes, so a two-argument negative here
+    // would pass even if the read really happened.
     expect(window.ade.files.readFile).not.toHaveBeenCalledWith(
       expect.objectContaining({ path: "docs/features" }),
-      expect.anything(),
     );
   });
 
