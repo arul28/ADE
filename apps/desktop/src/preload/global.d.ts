@@ -2218,39 +2218,84 @@ declare global {
         getFile: (args: GetFileDiffArgs) => Promise<FileDiff>;
         getFilePatch: (args: GetFilePatchArgs) => Promise<FilePatch>;
       };
+      // `pin` addresses one machine explicitly: omitted or null means "the
+      // machine this project tab is bound to" (today's behavior, including the
+      // local IPC fallback), a binding means "that machine, regardless of what
+      // the tab is bound to". Writes honour it too — a file on another
+      // connected machine is fully editable. `external-local:*` workspaces are
+      // local-only by construction and ignore the pin.
       files: {
-        writeTextAtomic: (args: WriteTextAtomicArgs) => Promise<void>;
+        writeTextAtomic: (
+          args: WriteTextAtomicArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         listWorkspaces: (
           args?: FilesListWorkspacesArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<FilesWorkspace[]>;
-        listTree: (args: FilesListTreeArgs) => Promise<FileTreeNode[]>;
+        listTree: (
+          args: FilesListTreeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<FileTreeNode[]>;
         listTreeChildren: (
           args: FilesListTreeChildrenArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<FilesListTreeChildrenResult>;
         refreshGitDecorations: (
           args: FilesRefreshGitDecorationsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<FilesGitStatusEvent>;
+        /** Local-only: the path comes from this machine's Finder/drag-drop, so it takes no pin. */
         openExternalPath: (
           args: FilesOpenExternalPathArgs,
         ) => Promise<FilesOpenExternalPathResult>;
-        readFile: (args: FilesReadFileArgs) => Promise<FileContent>;
+        readFile: (
+          args: FilesReadFileArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<FileContent>;
         readFileRange: (
           args: FilesReadFileRangeArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<FilesReadFileRangeResult>;
-        gitBlame: (args: FilesGitBlameArgs) => Promise<FilesGitBlameResult>;
-        writeText: (args: FilesWriteTextArgs) => Promise<void>;
-        createFile: (args: FilesCreateFileArgs) => Promise<void>;
-        createDirectory: (args: FilesCreateDirectoryArgs) => Promise<void>;
-        rename: (args: FilesRenameArgs) => Promise<void>;
-        delete: (args: FilesDeleteArgs) => Promise<void>;
-        watchChanges: (args: FilesWatchArgs) => Promise<void>;
-        stopWatching: (args: FilesWatchArgs) => Promise<void>;
+        gitBlame: (
+          args: FilesGitBlameArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<FilesGitBlameResult>;
+        writeText: (
+          args: FilesWriteTextArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        createFile: (
+          args: FilesCreateFileArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        createDirectory: (
+          args: FilesCreateDirectoryArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        rename: (
+          args: FilesRenameArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        delete: (
+          args: FilesDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        watchChanges: (
+          args: FilesWatchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        stopWatching: (
+          args: FilesWatchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         quickOpen: (
           args: FilesQuickOpenArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<FilesQuickOpenItem[]>;
         searchText: (
           args: FilesSearchTextArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<FilesSearchTextMatch[]>;
         onChange: (cb: (ev: FileChangeEvent) => void) => () => void;
       };

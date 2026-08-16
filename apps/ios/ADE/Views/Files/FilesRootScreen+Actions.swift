@@ -132,9 +132,19 @@ extension FilesRootScreen {
       suppressNextWorkspaceNavigationReset = true
     }
     selectedWorkspaceId = workspace.id
-    if let relativePath = request.relativePath, !relativePath.isEmpty {
-      selectedFileTransitionPath = relativePath
-      openFile(relativePath, in: workspace, focusLine: request.focusLine)
+    if let searchQuery = request.searchQuery, !searchQuery.isEmpty {
+      // Several files share this name; search lets the user pick the right one.
+      selectedFileTransitionPath = nil
+      navigationPath = []
+      pendingSearchQuery = searchQuery
+      isSearchPresented = true
+    } else if let relativePath = request.relativePath, !relativePath.isEmpty {
+      if request.pathKind == .directory {
+        openDirectory(relativePath, in: workspace)
+      } else {
+        selectedFileTransitionPath = relativePath
+        openFile(relativePath, in: workspace, focusLine: request.focusLine)
+      }
     } else {
       selectedFileTransitionPath = nil
       navigationPath = []

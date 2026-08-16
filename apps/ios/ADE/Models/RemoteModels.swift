@@ -3769,6 +3769,13 @@ struct SyncFileBlob: Codable, Equatable {
   var dataUrl: String? = nil
   var contentOmitted: Bool? = nil
   var omittedReason: String? = nil
+  /// The machine sent only the first chunk of an oversized text file; `content`
+  /// stops there. Desktop streams the rest — iPhone does not, so the viewer has
+  /// to say so instead of presenting a prefix as the whole file.
+  var isPartial: Bool? = nil
+  /// Full size of the file on disk when only part of it was sent. `size` already
+  /// carries this today, but the host sends both and older hosts send neither.
+  var totalSize: Int? = nil
 }
 
 struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {

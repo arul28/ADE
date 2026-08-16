@@ -16,6 +16,8 @@ struct FilesRootScreen: View {
   @State var lanes: [LaneSummary] = []
   @State var selectedWorkspaceId: String?
   @State var isSearchPresented = false
+  /// Seed for the search field, set when a chat file link matched several files.
+  @State var pendingSearchQuery = ""
   @State var proofArtifacts: [ComputerUseArtifactSummary] = []
   @State var proofErrorMessage: String?
   @State var selectedProofArtifact: ComputerUseArtifactSummary?
@@ -210,6 +212,9 @@ struct FilesRootScreen: View {
         ADERootTopBar(title: "Files") {
           if selectedWorkspace != nil {
             Button {
+              // A manual open always starts from an empty field; only a chat
+              // file link seeds one.
+              pendingSearchQuery = ""
               isSearchPresented = true
             } label: {
               Image(systemName: "magnifyingglass")
@@ -277,11 +282,13 @@ struct FilesRootScreen: View {
             workspace: workspace,
             isLive: canUseLiveFileActions,
             needsRepairing: needsRepairing,
+            initialQuery: pendingSearchQuery,
             onOpenFile: { path, line in
               openFile(path, in: workspace, focusLine: line)
             }
           )
           .environmentObject(syncService)
+          .onDisappear { pendingSearchQuery = "" }
         } else {
           // The workspace list emptied while search was open (e.g. a disconnect
           // reload). Never strand the user on a blank cover with no way out.

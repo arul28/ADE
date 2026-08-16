@@ -1,3 +1,5 @@
+import type { PinnedFilesApi } from "./pinnedFilesApi";
+
 /**
  * Stream a whole file's bytes via readFileRange. Each range comes back as base64
  * of an INDEPENDENT byte slice, so chunks must be decoded individually and their
@@ -6,6 +8,7 @@
  * `=`-padded, and that padding lands mid-string).
  */
 export async function streamFileBytes(
+  files: PinnedFilesApi,
   workspaceId: string,
   path: string,
   opts: { chunkLength?: number; isCancelled?: () => boolean; maxBytes?: number } = {},
@@ -16,7 +19,7 @@ export async function streamFileBytes(
   let next: number | null = 0;
   let guard = 0;
   while (next != null) {
-    const page = await window.ade.files.readFileRange({ workspaceId, path, offset: next, length: chunkLength });
+    const page = await files.readFileRange({ workspaceId, path, offset: next, length: chunkLength });
     if (opts.isCancelled?.()) return new Uint8Array();
     if (page.content) {
       let bytes: Uint8Array;

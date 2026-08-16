@@ -5,6 +5,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ChatMarkdown } from "./chatMarkdown";
 import {
   ChatWorkspacePathProvider,
+  looksLikeWorkspacePath,
+  probeWorkspacePath,
   resetFilesWorkspaceCacheForTests,
   type ChatWorkspacePathContextValue,
   resolveFilesNavigationTarget,
@@ -189,5 +191,96 @@ describe("resolveFilesNavigationTarget", () => {
     expect(
       resolveFilesNavigationTarget({ path: "/elsewhere/a.ts", workspaces, fallbackLaneId: "lane-a" }),
     ).toBeNull();
+  });
+});
+
+describe("looksLikeWorkspacePath", () => {
+  it("rejects version numbers and domains that only look like filenames", () => {
+    // `/\.[A-Za-z0-9]{1,8}$/` cannot tell `v1.2.60` from `preload.ts`, so these
+    // rendered as clickable file links that could never resolve — the dead
+    // clicks users read as "file links are broken".
+    expect(looksLikeWorkspacePath("v1.2.60")).toBe(false);
+    expect(looksLikeWorkspacePath("1.2.3")).toBe(false);
+    expect(looksLikeWorkspacePath("example.com")).toBe(false);
+    expect(looksLikeWorkspacePath("anthropic.ai")).toBe(false);
+  });
+
+  it("still accepts real filenames and any path with a separator", () => {
+    expect(looksLikeWorkspacePath("preload.ts")).toBe(true);
+    // `.sh` was briefly treated as a TLD, which made every shell script in
+    // agent prose inert — this repo ships install.sh.
+    expect(looksLikeWorkspacePath("install.sh")).toBe(true);
+    expect(looksLikeWorkspacePath("FilesWorkbench.tsx")).toBe(true);
+    // A separator means the author meant a path, so the domain rule stops applying.
+    expect(looksLikeWorkspacePath("docs/example.com")).toBe(true);
+    expect(looksLikeWorkspacePath("apps/desktop/src/main.ts")).toBe(true);
+  });
+});
+
+describe("probeWorkspacePath", () => {
+  // `vi.stubGlobal` so the shared window is restored afterwards — assigning to it
+  // directly leaked `window.ade` into every test that ran later in the file, and
+  // only passed because this block happens to run last.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockQuickOpen(paths: string[]) {
+    const quickOpen = vi.fn().mockResolvedValue(paths.map((path) => ({ path })));
+    vi.stubGlobal("window", { ...globalThis.window, ade: { files: { quickOpen } } });
+    return quickOpen;
+  }
+
+  it("resolves a bare filename to its real location", async () => {
+    // The old code assumed a separator-less path sat at the workspace root and
+    // opened `<lane>/FilesWorkbench.tsx`, which never exists. Agents write bare
+    // filenames constantly, so this was most of the dead clicks.
+    mockQuickOpen(["apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx"]);
+    await expect(
+      probeWorkspacePath({ workspaceId: "ws", path: "FilesWorkbench.tsx", pin: null }),
+    ).resolves.toEqual({
+      kind: "file",
+      path: "apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx",
+    });
+  });
+
+  it("reports ambiguity instead of guessing when several files share a name", async () => {
+    mockQuickOpen(["apps/a/index.ts", "apps/b/index.ts"]);
+    await expect(
+      probeWorkspacePath({ workspaceId: "ws", path: "index.ts", pin: null }),
+    ).resolves.toEqual({ kind: "ambiguous", query: "index.ts" });
+  });
+
+  it("recognises a directory by its children", async () => {
+    // A folder name is clickable too, and opening it as a file only errored.
+    mockQuickOpen(["docs/features/files-and-editor/README.md"]);
+    await expect(
+      probeWorkspacePath({ workspaceId: "ws", path: "docs/features/files-and-editor", pin: null }),
+    ).resolves.toEqual({ kind: "directory", path: "docs/features/files-and-editor" });
+  });
+
+  it("reports a miss so the caller can say so instead of failing silently", async () => {
+    mockQuickOpen([]);
+    await expect(
+      probeWorkspacePath({ workspaceId: "ws", path: "apps/nope.ts", pin: null }),
+    ).resolves.toEqual({ kind: "missing" });
+  });
+
+  it("falls back to the reported path when the index cannot answer at all", async () => {
+    // The index is built once per workspace and only refreshed from watcher
+    // events, so a file created after the first search is invisible to it. The
+    // probe must not become a veto on opening real files.
+    const quickOpen = vi.fn().mockRejectedValue(new Error("index unavailable"));
+    vi.stubGlobal("window", { ...globalThis.window, ade: { files: { quickOpen } } });
+    await expect(
+      probeWorkspacePath({ workspaceId: "ws", path: "apps/new-file.ts", pin: null }),
+    ).resolves.toEqual({ kind: "file", path: "apps/new-file.ts" });
+  });
+
+  it("forwards the machine pin so a foreign chat is looked up on its own machine", async () => {
+    const quickOpen = mockQuickOpen(["apps/a.ts"]);
+    const pin = { kind: "remote", key: "remote:m1", targetId: "m1" } as never;
+    await probeWorkspacePath({ workspaceId: "ws", path: "apps/a.ts", pin });
+    expect(quickOpen).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "ws" }), pin);
   });
 });

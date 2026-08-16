@@ -5591,15 +5591,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         modified: { exists: false, text: "" },
       }),
     },
+    // Every real `files` method takes an optional trailing machine `pin`. The
+    // browser mock models a single synthetic machine, so it accepts the pin to
+    // keep the surface identical and then ignores it — there is nowhere else to
+    // route to.
     files: {
-      writeTextAtomic: resolvedArg(undefined),
-      listWorkspaces: resolved(getBrowserMockFilesWorkspaces()),
-      listTree: async (args: any) => {
+      writeTextAtomic: resolvedArg2(undefined),
+      listWorkspaces: resolvedArg2(getBrowserMockFilesWorkspaces()),
+      listTree: async (args: any, _pin?: any) => {
         const workspaceId = String(args?.workspaceId ?? "");
         const parentPath = normalizeBrowserMockRelPath(args?.parentPath);
         return getBrowserMockListTreeNodes(workspaceId, parentPath);
       },
-      listTreeChildren: async (args: any) => {
+      listTreeChildren: async (args: any, _pin?: any) => {
         const workspaceId = String(args?.workspaceId ?? "");
         const parentPath = normalizeBrowserMockRelPath(args?.parentPath);
         const all = getBrowserMockListTreeNodes(workspaceId, parentPath);
@@ -5615,7 +5619,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           nextOffset: pageEnd < all.length ? pageEnd : null,
         };
       },
-      refreshGitDecorations: async (args: any) => ({
+      refreshGitDecorations: async (args: any, _pin?: any) => ({
         workspaceId: String(args?.workspaceId ?? ""),
         files: [],
         directories: [],
@@ -5623,12 +5627,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openExternalPath: async () => {
         throw new Error("External local files are not available in the browser mock.");
       },
-      readFile: async (args: any) => {
+      readFile: async (args: any, _pin?: any) => {
         const workspaceId = String(args?.workspaceId ?? "");
         const relPath = String(args?.path ?? "");
         return getBrowserMockReadFilePayload(workspaceId, relPath);
       },
-      readFileRange: async (args: any) => {
+      readFileRange: async (args: any, _pin?: any) => {
         const offset = Number.isFinite(args?.offset) ? Math.max(0, Math.floor(args.offset)) : 0;
         return {
           path: String(args?.path ?? ""),
@@ -5641,15 +5645,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           eof: true,
         };
       },
-      gitBlame: async (args: any) => ({ path: String(args?.path ?? ""), lines: [] }),
-      writeText: resolvedArg(undefined),
-      createFile: resolvedArg(undefined),
-      createDirectory: resolvedArg(undefined),
-      rename: resolvedArg(undefined),
-      delete: resolvedArg(undefined),
-      watchChanges: resolvedArg(undefined),
-      stopWatching: resolvedArg(undefined),
-      quickOpen: async (args: any) => {
+      gitBlame: async (args: any, _pin?: any) => ({ path: String(args?.path ?? ""), lines: [] }),
+      writeText: resolvedArg2(undefined),
+      createFile: resolvedArg2(undefined),
+      createDirectory: resolvedArg2(undefined),
+      rename: resolvedArg2(undefined),
+      delete: resolvedArg2(undefined),
+      watchChanges: resolvedArg2(undefined),
+      stopWatching: resolvedArg2(undefined),
+      quickOpen: async (args: any, _pin?: any) => {
         const workspaceId = String(args?.workspaceId ?? "");
         const q = String(args?.query ?? "")
           .trim()
@@ -5687,7 +5691,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }
         return flat.slice(0, limit);
       },
-      searchText: resolvedArg([]),
+      searchText: resolvedArg2([]),
       onChange: noop,
     },
     git: {

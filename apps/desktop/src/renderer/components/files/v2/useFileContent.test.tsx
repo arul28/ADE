@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { createPinnedFilesApi } from "./pinnedFilesApi";
 import { renderHook, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,7 +31,7 @@ beforeEach(() => {
 describe("useFileContent saved-text sync", () => {
   it("updates a cached-first hook with the just-saved text", () => {
     primeFileContent("ws-1", "notes.md", textContent("v1"));
-    const { result } = renderHook(() => useFileContent("ws-1", "notes.md"));
+    const { result } = renderHook(() => useFileContent(createPinnedFilesApi(null), "ws-1", "notes.md"));
     expect(result.current).toMatchObject({ status: "ready", content: { content: "v1" } });
 
     act(() => updateCachedFileContentText("ws-1", "notes.md", "v2-saved"));
@@ -42,7 +43,7 @@ describe("useFileContent saved-text sync", () => {
     // patched directly — a save after a watcher reload previously rendered
     // stale pre-save text until the next watcher echo.
     primeFileContent("ws-1", "notes.md", textContent("stale-cache"));
-    const { result } = renderHook(() => useFileContent("ws-1", "notes.md", 1));
+    const { result } = renderHook(() => useFileContent(createPinnedFilesApi(null), "ws-1", "notes.md", 1));
     await waitFor(() => expect(result.current).toMatchObject({ status: "ready", content: { content: "from-disk" } }));
 
     act(() => updateCachedFileContentText("ws-1", "notes.md", "v3-saved"));
@@ -50,14 +51,14 @@ describe("useFileContent saved-text sync", () => {
   });
 
   it("ignores saved-text updates for other files and non-text payloads", async () => {
-    const { result } = renderHook(() => useFileContent("ws-1", "notes.md", 1));
+    const { result } = renderHook(() => useFileContent(createPinnedFilesApi(null), "ws-1", "notes.md", 1));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     act(() => updateCachedFileContentText("ws-1", "other.md", "unrelated"));
     expect(result.current).toMatchObject({ content: { content: "from-disk" } });
 
     readFile.mockResolvedValueOnce({ ...textContent("chunk"), isPartial: true, nextOffset: 5 });
-    const partial = renderHook(() => useFileContent("ws-1", "big.md", 1));
+    const partial = renderHook(() => useFileContent(createPinnedFilesApi(null), "ws-1", "big.md", 1));
     await waitFor(() => expect(partial.result.current.status).toBe("ready"));
     act(() => updateCachedFileContentText("ws-1", "big.md", "must-not-apply"));
     expect(partial.result.current).toMatchObject({ content: { content: "chunk", isPartial: true } });

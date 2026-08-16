@@ -771,6 +771,60 @@ func normalizeWorkFileReference(_ rawPath: String, workspaceRoot: String, reques
   return normalized
 }
 
+/// What the workspace file index says a chat-written path actually is.
+///
+/// Ports the desktop `probeWorkspacePath` outcomes so mobile stops assuming a
+/// bare filename sits at the workspace root.
+enum WorkFileReferenceProbe: Equatable {
+  /// Open this path — either the reference itself, or the single real file a
+  /// bare name resolved to.
+  case file(String)
+  /// The reference names a folder, not a file.
+  case directory(String)
+  /// Several files share that name; the user picks in search rather than
+  /// having one guessed for them.
+  case ambiguous(String)
+  /// The index knows nothing by that name.
+  case missing
+}
+
+private func workIndexNormalizedPath(_ path: String) -> String {
+  path
+    .replacingOccurrences(of: "\\", with: "/")
+    .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+}
+
+/// Matches a chat-written reference against the paths the workspace file index
+/// returned for it. Pure so the four outcomes are testable without a host.
+///
+/// Basenames compare case-insensitively, matching desktop.
+func resolveWorkFileReferenceProbe(path: String, indexedPaths: [String]) -> WorkFileReferenceProbe {
+  let normalized = workIndexNormalizedPath(path)
+  guard !normalized.isEmpty else { return .missing }
+  let lowered = normalized.lowercased()
+  let candidates = indexedPaths.map(workIndexNormalizedPath).filter { !$0.isEmpty }
+
+  if let exact = candidates.first(where: { $0.lowercased() == lowered }) {
+    return .file(exact)
+  }
+
+  let directoryPrefix = lowered + "/"
+  if candidates.contains(where: { $0.lowercased().hasPrefix(directoryPrefix) }) {
+    return .directory(normalized)
+  }
+
+  // A reference that already carries a directory can only be matched exactly;
+  // only a bare name falls back to matching on basename.
+  guard !normalized.contains("/") else { return .missing }
+
+  let basenameMatches = candidates.filter {
+    ($0 as NSString).lastPathComponent.lowercased() == lowered
+  }
+  if basenameMatches.count == 1 { return .file(basenameMatches[0]) }
+  if basenameMatches.count > 1 { return .ambiguous(normalized) }
+  return .missing
+}
+
 func workReferenceLabel(for path: String) -> String {
   let normalized = normalizedWorkReferenceFilePath(path) ?? path
   let lastComponent = (normalized as NSString).lastPathComponent

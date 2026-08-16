@@ -2813,19 +2813,38 @@ private final class SyncSocketSessionDelegate: NSObject, URLSessionWebSocketDele
   }
 }
 
+enum FilesNavigationPathKind: Equatable {
+  case file
+  case directory
+}
+
 struct FilesNavigationRequest: Equatable, Identifiable {
   let id: String
   let workspaceId: String
   let laneId: String?
   let relativePath: String?
   let focusLine: Int?
+  let pathKind: FilesNavigationPathKind
+  /// Opens Files search seeded with this text instead of opening a path. Used
+  /// when a chat file reference matched several files and guessing one would
+  /// silently open the wrong file.
+  let searchQuery: String?
 
-  init(workspaceId: String, laneId: String? = nil, relativePath: String?, focusLine: Int? = nil) {
+  init(
+    workspaceId: String,
+    laneId: String? = nil,
+    relativePath: String?,
+    focusLine: Int? = nil,
+    pathKind: FilesNavigationPathKind = .file,
+    searchQuery: String? = nil
+  ) {
     self.id = UUID().uuidString
     self.workspaceId = workspaceId
     self.laneId = laneId
     self.relativePath = relativePath
     self.focusLine = focusLine
+    self.pathKind = pathKind
+    self.searchQuery = searchQuery
   }
 }
 
@@ -10197,11 +10216,14 @@ final class SyncService: ObservableObject {
     ])
   }
 
+  /// `includeIgnored` is deliberately not defaulted: whether a search reaches
+  /// into gitignored trees is a product decision per surface, and a default here
+  /// would silently make it for a call site nobody looked at.
   func quickOpen(
     workspaceId: String,
     query: String,
     limit: Int = 30,
-    includeIgnored: Bool = true,
+    includeIgnored: Bool,
     allowComposerPrefixFallback: Bool = false
   ) async throws -> [FilesQuickOpenItem] {
     let boundedLimit = min(max(limit, 1), 1000)
@@ -10220,11 +10242,12 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// See `quickOpen` — `includeIgnored` stays explicit at every call site.
   func searchText(
     workspaceId: String,
     query: String,
     limit: Int = 300,
-    includeIgnored: Bool = true
+    includeIgnored: Bool
   ) async throws -> [FilesSearchTextMatch] {
     let boundedLimit = min(max(limit, 1), 1000)
     return try decode(

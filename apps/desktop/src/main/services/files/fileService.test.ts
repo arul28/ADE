@@ -2,8 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { createExternalFilesWorkspaceRegistry, createFileService } from "./fileService";
-import { createFileSearchIndexService } from "./fileSearchIndexService";
+import { createFileSearchIndexService, parseGitGrepRecord,
+  gitGrepArgs } from "./fileSearchIndexService";
 
 function createLaneServiceStub(rootPath: string) {
   return {
@@ -1065,6 +1067,37 @@ function createTempWorkspace(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+/**
+ * Whether a usable git is on PATH. The production code resolves git carefully
+ * (see `resolveGitExecutable`); a test that hard-codes the bare name throws an
+ * opaque ENOENT out of a helper on a host without it and takes the whole suite
+ * with it. The JS-fallback tests below use `breakGitWorkTree` instead and stay
+ * unconditional, so the fallback path keeps its coverage either way.
+ */
+const hasGit = ((): boolean => {
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** Make `rootPath` a real work tree so content search takes the `git grep` tier. */
+function initGitWorkTree(rootPath: string): void {
+  execFileSync("git", ["init", "-q", rootPath], { stdio: "ignore" });
+}
+
+/**
+ * Make `rootPath` a directory git refuses to work in. A `.git` file pointing at
+ * a missing gitdir both fails `rev-parse` and stops discovery from walking up
+ * into whatever repository happens to own the OS temp directory, so the JS
+ * fallback tier is exercised deterministically on any machine.
+ */
+function breakGitWorkTree(rootPath: string): void {
+  fs.writeFileSync(path.join(rootPath, ".git"), "gitdir: /ade-nonexistent-gitdir\n", "utf8");
+}
+
 async function flushFileChange(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
@@ -1153,27 +1186,18 @@ describe("fileSearchIndexService", () => {
     }
   });
 
-  it("loads text content lazily for searchText and reuses cached lines", async () => {
-    const rootPath = createTempWorkspace("ade-file-index-lazy-text-");
+  it.skipIf(!hasGit)("greps a git work tree without reading files or building the name index", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-git-grep-");
+    initGitWorkTree(rootPath);
     const service = createFileSearchIndexService();
 
     try {
       fs.mkdirSync(path.join(rootPath, "notes"), { recursive: true });
-      fs.writeFileSync(path.join(rootPath, "notes", "plan.md"), "alpha\nlazy needle\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "notes", "plan.md"), "alpha\nfind Lazy Needle here\n", "utf8");
+      const readFile = vi.spyOn(fs.promises, "readFile");
       const readFileSync = vi.spyOn(fs, "readFileSync");
 
-      await expect(service.quickOpen({
-        workspaceId: "workspace-1",
-        rootPath,
-        query: "plan",
-        limit: 10,
-        includeIgnored: false,
-        shouldIgnore,
-        primeIgnoreCache,
-      })).resolves.toEqual([expect.objectContaining({ path: "notes/plan.md" })]);
-      expect(readFileSync).not.toHaveBeenCalled();
-
-      const firstSearch = await service.searchText({
+      const matches = await service.searchText({
         workspaceId: "workspace-1",
         rootPath,
         query: "lazy needle",
@@ -1182,22 +1206,174 @@ describe("fileSearchIndexService", () => {
         shouldIgnore,
         primeIgnoreCache,
       });
-      expect(firstSearch).toEqual([
-        expect.objectContaining({ path: "notes/plan.md", line: 2, column: 1 }),
-      ]);
-      expect(readFileSync).toHaveBeenCalledTimes(1);
 
-      readFileSync.mockClear();
+      expect(matches).toEqual([
+        { path: "notes/plan.md", line: 2, column: 6, preview: "find Lazy Needle here" },
+      ]);
+      // The whole point of tier 1: no file bytes cross into this process, and
+      // the name-index walk never runs.
+      expect(readFile).not.toHaveBeenCalled();
+      expect(readFileSync).not.toHaveBeenCalled();
+      expect(shouldIgnore).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+      removeTestTree(rootPath);
+    }
+  });
+
+  it.skipIf(!hasGit)("treats a git grep exit code of 1 as no matches rather than a failure", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-git-no-match-");
+    initGitWorkTree(rootPath);
+    const service = createFileSearchIndexService();
+
+    try {
+      for (let i = 0; i < 20; i += 1) {
+        fs.writeFileSync(path.join(rootPath, `file-${i}.ts`), `export const v${i} = ${i};\n`, "utf8");
+      }
+      const readFile = vi.spyOn(fs.promises, "readFile");
+
       await expect(service.searchText({
         workspaceId: "workspace-1",
         rootPath,
-        query: "lazy needle",
+        query: "zzz-nothing-matches-this-zzz",
         limit: 10,
         includeIgnored: false,
         shouldIgnore,
         primeIgnoreCache,
-      })).resolves.toEqual(firstSearch);
-      expect(readFileSync).not.toHaveBeenCalled();
+      })).resolves.toEqual([]);
+
+      // Exit 1 is git's "no matches", which is a complete answer. Reading a
+      // single file here would mean it had been mistaken for a failure and the
+      // whole workspace re-scanned in JS.
+      expect(readFile).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+      removeTestTree(rootPath);
+    }
+  });
+
+  it.skipIf(!hasGit)("matches regex metacharacters literally in both search tiers", async () => {
+    const gitRoot = createTempWorkspace("ade-file-index-meta-git-");
+    const plainRoot = createTempWorkspace("ade-file-index-meta-plain-");
+    initGitWorkTree(gitRoot);
+    breakGitWorkTree(plainRoot);
+    const service = createFileSearchIndexService();
+
+    try {
+      for (const root of [gitRoot, plainRoot]) {
+        fs.writeFileSync(path.join(root, "meta.txt"), "axbxxc\na.b*c\ncall foo(bar)\n", "utf8");
+      }
+
+      for (const [workspaceId, rootPath] of [["workspace-git", gitRoot], ["workspace-plain", plainRoot]] as const) {
+        await expect(service.searchText({
+          workspaceId,
+          rootPath,
+          query: "a.b*c",
+          limit: 10,
+          includeIgnored: false,
+          shouldIgnore,
+          primeIgnoreCache,
+        })).resolves.toEqual([
+          { path: "meta.txt", line: 2, column: 1, preview: "a.b*c" },
+        ]);
+
+        await expect(service.searchText({
+          workspaceId,
+          rootPath,
+          query: "foo(",
+          limit: 10,
+          includeIgnored: false,
+          shouldIgnore,
+          primeIgnoreCache,
+        })).resolves.toEqual([
+          { path: "meta.txt", line: 3, column: 6, preview: "call foo(bar)" },
+        ]);
+      }
+    } finally {
+      service.dispose();
+      removeTestTree(gitRoot);
+      removeTestTree(plainRoot);
+    }
+  });
+
+  it.skipIf(!hasGit)("falls back to the JS scan with the same results when git cannot answer", async () => {
+    const gitRoot = createTempWorkspace("ade-file-index-parity-git-");
+    const plainRoot = createTempWorkspace("ade-file-index-parity-plain-");
+    initGitWorkTree(gitRoot);
+    // A `.git` pointing nowhere is what an unusable repo looks like to
+    // `rev-parse`, so this pins the fallback without depending on where the
+    // OS put its temp directory.
+    breakGitWorkTree(plainRoot);
+    const service = createFileSearchIndexService();
+
+    try {
+      for (const root of [gitRoot, plainRoot]) {
+        fs.mkdirSync(path.join(root, "src", "nested"), { recursive: true });
+        fs.writeFileSync(path.join(root, "src", "one.ts"), "const needle = 1;\nconst other = 2;\n", "utf8");
+        fs.writeFileSync(path.join(root, "src", "nested", "two.ts"), "// NEEDLE in a comment\n", "utf8");
+        fs.writeFileSync(path.join(root, "README.md"), "no match here\n", "utf8");
+        // Both tiers must skip binaries: git via -I, the JS scan via its null
+        // byte probe.
+        fs.writeFileSync(path.join(root, "blob.bin"), Buffer.from([0x6e, 0x00, 0x65, 0x65, 0x64, 0x6c, 0x65]));
+      }
+
+      const sorted = (matches: { path: string; line: number }[]) =>
+        [...matches].sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+
+      const viaGit = await service.searchText({
+        workspaceId: "workspace-git",
+        rootPath: gitRoot,
+        query: "needle",
+        limit: 50,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      const viaScan = await service.searchText({
+        workspaceId: "workspace-plain",
+        rootPath: plainRoot,
+        query: "needle",
+        limit: 50,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+
+      expect(sorted(viaGit)).toEqual([
+        { path: "src/nested/two.ts", line: 1, column: 4, preview: "// NEEDLE in a comment" },
+        { path: "src/one.ts", line: 1, column: 7, preview: "const needle = 1;" },
+      ]);
+      expect(sorted(viaScan)).toEqual(sorted(viaGit));
+    } finally {
+      service.dispose();
+      removeTestTree(gitRoot);
+      removeTestTree(plainRoot);
+    }
+  });
+
+  it.skipIf(!hasGit)("widens a git grep to ignored files only when includeIgnored is set", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-git-ignored-");
+    initGitWorkTree(rootPath);
+    const service = createFileSearchIndexService();
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "build"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, ".gitignore"), "build/\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "build", "out.js"), "needle in ignored output\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "src.js"), "needle in tracked source\n", "utf8");
+
+      const search = (includeIgnored: boolean) => service.searchText({
+        workspaceId: `workspace-${includeIgnored ? "all" : "default"}`,
+        rootPath,
+        query: "needle",
+        limit: 10,
+        includeIgnored,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+
+      expect((await search(false)).map((match) => match.path)).toEqual(["src.js"]);
+      expect((await search(true)).map((match) => match.path).sort()).toEqual(["build/out.js", "src.js"]);
     } finally {
       service.dispose();
       removeTestTree(rootPath);
@@ -1279,59 +1455,133 @@ describe("fileSearchIndexService", () => {
     }
   });
 
-  it("keeps content byte accounting bounded across repeated invalidations", async () => {
-    const rootPath = createTempWorkspace("ade-file-index-content-bytes-");
+  it("never retains file contents across JS-scan searches", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-no-retention-");
+    breakGitWorkTree(rootPath);
     const service = createFileSearchIndexService();
-    const filePath = path.join(rootPath, "budget.txt");
-    const padding = "x".repeat(999_980);
+    const fileCount = 12;
 
     try {
-      for (let i = 0; i < 86; i += 1) {
-        fs.writeFileSync(filePath, `needle ${i}\n${padding}`, "utf8");
-        service.onFileChanged({
-          workspaceId: "workspace-1",
-          rootPath,
-          path: "budget.txt",
-          type: i === 0 ? "created" : "modified",
-          shouldIgnore,
-        });
-        await flushFileChange();
-
-        const matches = await service.searchText({
-          workspaceId: "workspace-1",
-          rootPath,
-          query: "needle",
-          limit: 1,
-          includeIgnored: false,
-          shouldIgnore,
-          primeIgnoreCache,
-        });
-        expect(matches).toEqual([
-          expect.objectContaining({ path: "budget.txt", preview: `needle ${i}` }),
-        ]);
+      for (let i = 0; i < fileCount; i += 1) {
+        fs.writeFileSync(path.join(rootPath, `doc-${i}.txt`), `line one ${i}\nline two ${i}\n`, "utf8");
       }
+      const readFile = vi.spyOn(fs.promises, "readFile");
+      const docReadCount = () => readFile.mock.calls
+        .filter(([target]) => String(target).includes(`${path.sep}doc-`)).length;
 
-      fs.rmSync(filePath, { force: true });
-      service.onFileChanged({
+      const runNoMatchSearch = () => service.searchText({
         workspaceId: "workspace-1",
         rootPath,
-        path: "budget.txt",
-        type: "deleted",
-        shouldIgnore,
-      });
-
-      await expect(service.searchText({
-        workspaceId: "workspace-1",
-        rootPath,
-        query: "needle",
-        limit: 1,
+        query: "zzz-nothing-matches-this-zzz",
+        limit: 50,
         includeIgnored: false,
         shouldIgnore,
         primeIgnoreCache,
-      })).resolves.toEqual([]);
+      });
+
+      await expect(runNoMatchSearch()).resolves.toEqual([]);
+      // Exactly once per file, not once per file per pass: the scan may not
+      // read anything twice inside a single search.
+      expect(docReadCount()).toBe(fileCount);
+
+      readFile.mockClear();
+      await expect(runNoMatchSearch()).resolves.toEqual([]);
+      // Re-reading is the proof that nothing was kept. The old index cached
+      // every decoded line here, which is what exhausted the heap.
+      expect(docReadCount()).toBe(fileCount);
     } finally {
       service.dispose();
       removeTestTree(rootPath);
     }
+  });
+
+  it("parses git grep records whose path or text contains colons", () => {
+    expect(parseGitGrepRecord("src/a.ts\u000012\u0000const url = \"http://x:8080\";")).toEqual({
+      path: "src/a.ts",
+      line: 12,
+      text: "const url = \"http://x:8080\";",
+    });
+    // Older git only replaced the delimiter after the path.
+    expect(parseGitGrepRecord("we:ird/a.ts\u00007:time: 10:30")).toEqual({
+      path: "we:ird/a.ts",
+      line: 7,
+      text: "time: 10:30",
+    });
+    // No NUL at all: only the first two colons are separators.
+    expect(parseGitGrepRecord("src/a.ts:3:a:b:c")).toEqual({
+      path: "src/a.ts",
+      line: 3,
+      text: "a:b:c",
+    });
+    expect(parseGitGrepRecord("not a grep record")).toBeNull();
+  });
+
+  it.skipIf(!hasGit)("searches a file the JS tier skips for size, and says so on purpose", async () => {
+    // The two tiers are not identical and it is better to pin that than to let
+    // it drift: git has no size cap, while the JS scan skips anything over
+    // MAX_TEXT_FILE_BYTES so one huge file cannot be read whole into memory.
+    const rootPath = createTempWorkspace("ade-files-bigfile-");
+    initGitWorkTree(rootPath);
+    const filler = "x".repeat(64);
+    const big = `${Array.from({ length: 20_000 }, () => filler).join("\n")}\nneedle_in_big_file\n`;
+    fs.writeFileSync(path.join(rootPath, "big.txt"), big, "utf8");
+    expect(fs.statSync(path.join(rootPath, "big.txt")).size).toBeGreaterThan(1_000_000);
+
+    const service = createFileSearchIndexService();
+    const gitMatches = await service.searchText({
+      workspaceId: "ws-big",
+      rootPath,
+      query: "needle_in_big_file",
+      limit: 10,
+      includeIgnored: false,
+      shouldIgnore,
+      primeIgnoreCache,
+    });
+    expect(gitMatches).toHaveLength(1);
+
+    // Same content in a non-git workspace: the JS tier skips the oversized file.
+    // A separate root rather than removing `.git`, which `git init` made a
+    // directory that `breakGitWorkTree`'s file write cannot replace.
+    const fallbackRoot = createTempWorkspace("ade-files-bigfile-nogit-");
+    breakGitWorkTree(fallbackRoot);
+    fs.writeFileSync(path.join(fallbackRoot, "big.txt"), big, "utf8");
+    const fallbackService = createFileSearchIndexService();
+    const fallbackMatches = await fallbackService.searchText({
+      workspaceId: "ws-big-fallback",
+      rootPath: fallbackRoot,
+      query: "needle_in_big_file",
+      limit: 10,
+      includeIgnored: false,
+      shouldIgnore,
+      primeIgnoreCache,
+    });
+    expect(fallbackMatches).toHaveLength(0);
+  });
+
+  it("builds a git grep argv that a Windows shell cannot re-interpret", () => {
+    // Windows is where this bites: if the query ever reached a cmd.exe wrapper
+    // it would expand %VAR%, eat quotes, and read a leading `-` as a flag. The
+    // argv array is the defence, so pin its shape.
+    const args = gitGrepArgs({ query: "-rf %PATH% \"quoted\" a.b*c", limit: 25, includeIgnored: false });
+
+    // `-F` makes the query literal; `-e` + `--` keep it out of flag position.
+    expect(args).toContain("-F");
+    const eIndex = args.indexOf("-e");
+    expect(eIndex).toBeGreaterThan(-1);
+    expect(args[eIndex + 1]).toBe("-rf %PATH% \"quoted\" a.b*c");
+    expect(args.indexOf("--")).toBeGreaterThan(eIndex);
+    // The query is one argv entry, never split or re-quoted.
+    expect(args.filter((a) => a.includes("%PATH%"))).toHaveLength(1);
+  });
+
+  it("only widens to ignored files when asked", () => {
+    const strict = gitGrepArgs({ query: "needle", limit: 10, includeIgnored: false });
+    const wide = gitGrepArgs({ query: "needle", limit: 10, includeIgnored: true });
+    expect(strict).not.toContain("--no-exclude-standard");
+    expect(wide).toContain("--no-exclude-standard");
+    // Untracked files are searched either way — a file an agent just wrote is
+    // the common case and is not committed yet.
+    expect(strict).toContain("--untracked");
+    expect(wide).toContain("--untracked");
   });
 });

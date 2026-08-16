@@ -13,7 +13,7 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function MediaViewer({ workspaceId, rootPath, tab, content, kind }: ViewerProps & { kind: "audio" | "video" }) {
+export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }: ViewerProps & { kind: "audio" | "video" }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const Icon = kind === "video" ? VideoCamera : MusicNotes;
@@ -30,7 +30,7 @@ export function MediaViewer({ workspaceId, rootPath, tab, content, kind }: Viewe
     }
     (async () => {
       try {
-        const bytes = await streamFileBytes(workspaceId, tab.path, {
+        const bytes = await streamFileBytes(files, workspaceId, tab.path, {
           isCancelled: () => cancelled,
           maxBytes: MAX_MEDIA_STREAM_BYTES,
         });

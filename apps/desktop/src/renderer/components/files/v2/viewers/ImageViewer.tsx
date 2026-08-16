@@ -15,7 +15,7 @@ function formatBytes(n: number): string {
 }
 
 /** Image viewer with fit/zoom/pan and trackpad pinch (ctrl+wheel) + drag-pan. */
-export function ImageViewer({ workspaceId, content, tab }: ViewerProps) {
+export function ImageViewer({ files, workspaceId, content, tab }: ViewerProps) {
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [fit, setFit] = useState(true);
@@ -43,7 +43,7 @@ export function ImageViewer({ workspaceId, content, tab }: ViewerProps) {
     }
     (async () => {
       try {
-        const bytes = await streamFileBytes(workspaceId, tab.path, {
+        const bytes = await streamFileBytes(files, workspaceId, tab.path, {
           isCancelled: () => cancelled,
           maxBytes: MAX_IMAGE_STREAM_BYTES,
         });

@@ -14,11 +14,14 @@ import { filterTabsForScope, isLaneGroupBoundary, orderTabsByLane } from "./tabD
 import { updateCachedFileContentText } from "./useFileContent";
 import { viewerIsEditable } from "./viewerRegistry";
 import { ViewerHost } from "./ViewerHost";
+import type { PinnedFilesApi } from "./pinnedFilesApi";
 import { DiffViewer } from "./viewers/DiffViewer";
 import type { EditorApi, EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 
 export type EditorGroupProps = {
+  /** Files API bound to the machine that owns these tabs. */
+  files: PinnedFilesApi;
   group: EditorGroupModel;
   isActiveGroup: boolean;
   explorerWorkspaceId: string;
@@ -139,7 +142,7 @@ export function EditorGroup(props: EditorGroupProps) {
     if (!registry.isDirty(activeTab.id)) return;
     const text = registry.getValue(activeTab.id);
     if (text == null) return;
-    void window.ade.files
+    void props.files
       .writeText({ workspaceId: activeContext.workspaceId, path: activeTab.path, text })
       .then(() => {
         registry.markSaved(activeTab.id);
@@ -152,7 +155,7 @@ export function EditorGroup(props: EditorGroupProps) {
       .catch((err) => {
         onError(err instanceof Error ? err.message : String(err));
       });
-  }, [activeContext, activeTab, onDirtyChange, onError, registry]);
+  }, [activeContext, activeTab, onDirtyChange, onError, props.files, registry]);
 
   useEffect(() => {
     if (!props.isActiveGroup || !activeTab || !viewerIsEditable(activeTab.viewerKind)) return;
@@ -245,6 +248,7 @@ export function EditorGroup(props: EditorGroupProps) {
         ) : activeTab && activeContext ? (
           <ViewerHost
             workspaceId={activeContext.workspaceId}
+            files={props.files}
             rootPath={activeContext.rootPath}
             tab={activeTab}
             theme={props.theme}

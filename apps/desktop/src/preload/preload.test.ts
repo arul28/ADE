@@ -7071,6 +7071,212 @@ describe("per-chat runtime routing", () => {
     );
   });
 
+  it("leaves unpinned file calls on the machine the tab is bound to", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.files.listWorkspaces();
+    await bridge.files.listTree({ workspaceId: "workspace-a" });
+    await bridge.files.readFile({ workspaceId: "workspace-a", path: "src/app.ts" });
+    await bridge.files.writeText({
+      workspaceId: "workspace-a",
+      path: "src/app.ts",
+      text: "next",
+    });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: { domain: "file", action: "listWorkspaces", args: {} },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "file",
+        action: "writeWorkspaceText",
+        args: { workspaceId: "workspace-a", path: "src/app.ts", text: "next" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes pinned file reads to the pinned machine without rebinding the window", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.files.listWorkspaces({}, machineB);
+    await bridge.files.listTree({ workspaceId: "workspace-b" }, machineB);
+    await bridge.files.listTreeChildren(
+      { workspaceId: "workspace-b", parentPath: "src" },
+      machineB,
+    );
+    await bridge.files.refreshGitDecorations({ workspaceId: "workspace-b" }, machineB);
+    await bridge.files.readFile({ workspaceId: "workspace-b", path: "src/app.ts" }, machineB);
+    await bridge.files.readFileRange(
+      { workspaceId: "workspace-b", path: "src/app.ts", offset: 0 },
+      machineB,
+    );
+    await bridge.files.gitBlame({ workspaceId: "workspace-b", path: "src/app.ts" }, machineB);
+    await bridge.files.quickOpen({ workspaceId: "workspace-b", query: "src" }, machineB);
+    await bridge.files.searchText({ workspaceId: "workspace-b", query: "todo" }, machineB);
+    await bridge.files.watchChanges({ workspaceId: "workspace-b" }, machineB);
+    await bridge.files.stopWatching({ workspaceId: "workspace-b" }, machineB);
+
+    const remoteRequests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => payload as {
+        id: string;
+        projectId: string;
+        request: { domain: string; action: string };
+      });
+    expect(remoteRequests.map(({ request }) => `${request.domain}.${request.action}`)).toEqual([
+      "file.listWorkspaces",
+      "file.listTree",
+      "file.listTreeChildren",
+      "file.refreshGitDecorations",
+      "file.readFile",
+      "file.readFileRange",
+      "file.blame",
+      "file.quickOpen",
+      "file.searchText",
+      "file.watchWorkspace",
+      "file.stopWatching",
+    ]);
+    for (const call of remoteRequests) {
+      expect(call.id).toBe("target-b");
+      expect(call.projectId).toBe("project-b");
+    }
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes pinned file writes to the machine that owns the bytes", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.files.writeText(
+      { workspaceId: "workspace-b", path: "src/app.ts", text: "edited on B" },
+      machineB,
+    );
+    await bridge.files.writeTextAtomic(
+      { laneId: "lane-b", path: "src/app.ts", text: "atomic on B" },
+      machineB,
+    );
+    await bridge.files.createFile({ workspaceId: "workspace-b", path: "src/new.ts" }, machineB);
+    await bridge.files.createDirectory({ workspaceId: "workspace-b", path: "src/new" }, machineB);
+    await bridge.files.rename(
+      { workspaceId: "workspace-b", oldPath: "src/a.ts", newPath: "src/b.ts" },
+      machineB,
+    );
+    await bridge.files.delete({ workspaceId: "workspace-b", path: "src/b.ts" }, machineB);
+
+    const remoteRequests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => payload as {
+        id: string;
+        projectId: string;
+        request: { domain: string; action: string; args: unknown };
+      });
+    expect(remoteRequests.map(({ request }) => `${request.domain}.${request.action}`)).toEqual([
+      "file.writeWorkspaceText",
+      "file.writeTextAtomic",
+      "file.createFile",
+      "file.createDirectory",
+      "file.rename",
+      "file.deletePath",
+    ]);
+    expect(remoteRequests[0]).toEqual({
+      id: "target-b",
+      projectId: "project-b",
+      request: {
+        domain: "file",
+        action: "writeWorkspaceText",
+        args: { workspaceId: "workspace-b", path: "src/app.ts", text: "edited on B" },
+      },
+    });
+    // The write never leaks to the machine the tab happens to be bound to.
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes a pinned This computer file call to the local runtime while the tab is remote-bound", async () => {
+    const { bridge, invoke } = await mountBridge(machineB);
+
+    await bridge.files.readFile({ workspaceId: "workspace-a", path: "src/app.ts" }, machineA);
+    await bridge.files.writeText(
+      { workspaceId: "workspace-a", path: "src/app.ts", text: "edited on A" },
+      machineA,
+    );
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "file",
+        action: "readFile",
+        args: { workspaceId: "workspace-a", path: "src/app.ts" },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "file",
+        action: "writeWorkspaceText",
+        args: { workspaceId: "workspace-a", path: "src/app.ts", text: "edited on A" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("keeps external-local workspaces on this machine even when a pin is supplied", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+    invoke.mockImplementation(async (channel: string): Promise<unknown> => {
+      if (channel === IPC.filesReadFile) {
+        return {
+          content: "local bytes",
+          encoding: "utf-8",
+          size: 11,
+          languageId: "plaintext",
+          isBinary: false,
+        };
+      }
+      if (channel === IPC.filesWriteText) return undefined;
+      if (channel === IPC.filesQuickOpen) return [];
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+
+    const readArgs = { workspaceId: "external-local:abc123", path: "notes.md" };
+    await expect(bridge.files.readFile(readArgs, machineB)).resolves.toMatchObject({
+      content: "local bytes",
+    });
+    const writeArgs = {
+      workspaceId: "external-local:abc123",
+      path: "notes.md",
+      text: "still local",
+    };
+    await bridge.files.writeText(writeArgs, machineB);
+    await bridge.files.quickOpen(
+      { workspaceId: "external-local:abc123", query: "notes" },
+      machineB,
+    );
+
+    expect(invoke).toHaveBeenCalledWith(IPC.filesReadFile, readArgs);
+    expect(invoke).toHaveBeenCalledWith(IPC.filesWriteText, writeArgs);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
   it("streams a pinned This computer chat while the window is remote-bound", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-27T18:02:00.500Z"));

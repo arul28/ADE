@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { createPinnedFilesApi } from "./pinnedFilesApi";
 import React from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -61,6 +62,7 @@ function renderHost(tab: EditorTab, content: FileContent) {
   contentState.current = { status: "ready", content };
   return render(
     <ViewerHost
+      files={createPinnedFilesApi(null)}
       workspaceId="ws-1"
       rootPath="/repo"
       tab={tab}
