@@ -742,7 +742,15 @@ extension WorkSessionDestinationView {
       // Agents write a bare filename far more often than a full path, and the
       // purely textual normalisation above assumes any such name sits at the
       // workspace root. Ask the file index what it really is first.
-      switch await probeWorkFileReference(workspaceId: workspace.id, path: relativePath) {
+      //
+      // Only for a bare name. A reference that already carries a directory is
+      // either found (same path back) or missing (opened anyway, just below),
+      // so probing it would buy nothing and cost a sync round trip on the most
+      // common tap of all — the full paths on tool-result file chips.
+      let probe = workIndexNormalizedPath(relativePath).contains("/")
+        ? WorkFileReferenceProbe.file(relativePath)
+        : await probeWorkFileReference(workspaceId: workspace.id, path: relativePath)
+      switch probe {
       case .file(let resolvedPath):
         syncService.requestedFilesNavigation = FilesNavigationRequest(
           workspaceId: workspace.id,

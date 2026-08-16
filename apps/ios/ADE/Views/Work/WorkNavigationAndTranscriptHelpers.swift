@@ -788,7 +788,7 @@ enum WorkFileReferenceProbe: Equatable {
   case missing
 }
 
-private func workIndexNormalizedPath(_ path: String) -> String {
+func workIndexNormalizedPath(_ path: String) -> String {
   path
     .replacingOccurrences(of: "\\", with: "/")
     .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))

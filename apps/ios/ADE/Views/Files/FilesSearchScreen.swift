@@ -29,8 +29,8 @@ struct FilesSearchScreen: View {
   @FocusState private var searchFieldFocused: Bool
 
   /// Ignored trees (build output, `.env`, most of `.ade/`) stay out of results
-  /// unless the user asks for them — same default and same stored key as the
-  /// desktop search panel.
+  /// unless the user asks for them. Key and default match the desktop panel's,
+  /// but the stores are separate — this preference does not sync between them.
   @AppStorage("ade.files.search.includeIgnored") private var includeIgnored = false
 
   @State private var query = ""
@@ -144,6 +144,7 @@ struct FilesSearchScreen: View {
     .toggleStyle(.switch)
     .tint(ADEColor.accent)
     .frame(minHeight: 44)
+      .contentShape(Rectangle())
     .padding(.horizontal, 16)
     .padding(.vertical, 2)
     .background(ADEColor.pageBackground.opacity(0.94))

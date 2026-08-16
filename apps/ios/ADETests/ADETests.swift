@@ -20060,7 +20060,12 @@ final class ADETests: XCTestCase {
       filesPartialPreviewLimit(blob: partial, focusLine: 40_000)?.title,
       "Line 40000 didn't load"
     )
-    XCTAssertNil(filesPartialPreviewLimit(blob: partial, focusLine: 2))
+    // focusLine 2 IS within the loaded prefix, so this is the generic
+    // partial-file message, not nil — the file is still only partly loaded.
+    XCTAssertEqual(
+      filesPartialPreviewLimit(blob: partial, focusLine: 2)?.title,
+      "Only the start of this file loaded"
+    )
 
     let whole = SyncFileBlob(
       path: "src/main.swift",
