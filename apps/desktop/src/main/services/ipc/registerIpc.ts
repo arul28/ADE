@@ -4569,13 +4569,20 @@ export function registerIpc({
     return await projectRecoveryService.diagnose(projectRoot);
   });
 
-  // Return the complete ordered step array with the final report. The current
-  // alert only needs one result, so it does not need a separate event lifecycle.
-  ipcMain.handle(IPC.recoveryRepair, async (_event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
+  // The complete ordered step array comes back with the final report; each
+  // step is ALSO pushed to the calling window as it finishes. A repair can
+  // legitimately wait a minute or more for the background service to answer,
+  // and a spinner with no steps for that long reads as a hang.
+  ipcMain.handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
     const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
     if (!projectRoot) throw new Error("Project root path is required.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
-    return await projectRecoveryService.repair(projectRoot);
+    return await projectRecoveryService.repair(projectRoot, {
+      onStep: (step) => {
+        if (event.sender.isDestroyed()) return;
+        event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
+      },
+    });
   });
 
   ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {

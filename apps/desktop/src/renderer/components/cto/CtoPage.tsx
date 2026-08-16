@@ -30,6 +30,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const [session, setSession] = useState<AgentChatSession | null>(() => ctoPrimarySession);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by "Try again" on the failure pane; re-runs the wake effect from a
+  // clean retry budget instead of leaving the user stranded on the error.
+  const [wakeAttempt, setWakeAttempt] = useState(0);
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
@@ -138,7 +141,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, onboardingState, onboardingVisible, primaryLaneId]);
+  }, [active, onboardingState, onboardingVisible, primaryLaneId, wakeAttempt]);
 
   /* ── Callbacks ── */
 
@@ -367,7 +370,19 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             presentation={presentation}
           />
         ) : error ? (
-          <WakingState theme={theme} title="Couldn't reach the CTO" subtitle={error} />
+          <WakingState
+            theme={theme}
+            title="Couldn't reach the CTO"
+            subtitle={error}
+            action={{
+              label: "Try again",
+              onClick: () => {
+                wakingRetriesRef.current = 0;
+                setError(null);
+                setWakeAttempt((n) => n + 1);
+              },
+            }}
+          />
         ) : (
           <WakingState
             theme={theme}
@@ -430,11 +445,14 @@ function WakingState({
   title,
   subtitle,
   pulsing = false,
+  action,
 }: {
   theme: ReturnType<typeof getPersonalityTheme>;
   title: string;
   subtitle: string;
   pulsing?: boolean;
+  /** A failure pane with no way out is a dead end; give it one. */
+  action?: { label: string; onClick: () => void };
 }) {
   const Icon = theme.icon;
   return (
@@ -454,6 +472,15 @@ function WakingState({
         </div>
         <div className="mt-4 text-[14px] font-semibold text-fg">{title}</div>
         <div className="mt-1 max-w-xs text-[12.5px] leading-5 text-muted-fg/50">{subtitle}</div>
+        {action ? (
+          <button
+            type="button"
+            onClick={action.onClick}
+            className="mt-4 rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] font-medium text-fg/85 transition-colors hover:bg-white/[0.05]"
+          >
+            {action.label}
+          </button>
+        ) : null}
       </div>
     </div>
   );

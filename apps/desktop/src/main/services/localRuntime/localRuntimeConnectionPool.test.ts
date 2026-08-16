@@ -979,7 +979,16 @@ describe("local runtime connection pool", () => {
       ok: false,
       path: "/Users/admin/Library/LaunchAgents/com.ade.runtime.plist",
       message: "launchctl failed",
+      starting: false,
+      restarted: false,
     });
+    expect(parseRuntimeServiceManagerOutput(JSON.stringify({
+      ok: true,
+      action: "install",
+      starting: true,
+      path: "/Users/admin/Library/LaunchAgents/com.ade.runtime.plist",
+      message: "still starting",
+    }))?.starting).toBe(true);
 
     expect(parseRuntimeServiceManagerOutput("not json")).toBeNull();
   });

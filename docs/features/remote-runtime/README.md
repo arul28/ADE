@@ -187,7 +187,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   database, migration, endpoint, and chat continuity failures. It also owns
   `restartBrain()`, the machine-scoped restart behind the Connections **Repair**
   button. Both it and `repair()`'s restart_service/verify_endpoint steps go
-  through one `restartServiceAndWait()` sequence — install, wait up to 20 s for
+  through one `restartServiceAndWait()` sequence — install, wait up to 90 s for
   the machine endpoint to rebind, then `ping` — which reports which stage lost
   rather than the copy, because its two callers phrase the same stage
   differently (`repair()` speaks in repair steps, `restartBrain()` throws).
@@ -201,6 +201,29 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   repair stops the service and then does exclusive database work, and
   reinstalling the brain underneath it would put a writer back on the database
   mid-check. Repair wins; the button can be pressed again afterwards.
+- **A slow brain is not a broken brain.** The brain binds `ade.sock` *before*
+  it starts the mobile sync host (`runServe` in `apps/ade-cli/src/cli.ts`
+  starts `runSyncHostStartupLoop` in the background right after the socket is
+  published), so a desktop can reach it within a second or two of spawn even
+  while a project scope is still opening or the sync port band is being
+  reclaimed. The launchd/Windows installers wait
+  `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS` (30 s; Windows 15 s) for the
+  replacement to answer and, if it is alive but still quiet, return
+  `ok: true, starting: true` instead of a `replacement_responsive` failure —
+  the supervisor owns that child and it will answer. The desktop then keeps
+  dialling the socket for `LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`
+  (90 s). A forced install (Repair) that finds an unchanged agent whose child
+  is younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) and not answering
+  yet waits for that child rather than killing it — restarting a booting brain
+  only resets its clock, and doing it on every Repair click was how a slow
+  machine could never finish starting one. `projectRecoveryService.diagnose`
+  reports the same window as `brain_starting` (no Repair offered; the recovery
+  screen re-diagnoses every 2 s and reopens the project itself once healthy),
+  and `repair()` streams each step to the window via `IPC.recoveryRepairStep`
+  so a long restart wait reads as progress, not a hang. Before this, a 10 s
+  handover budget expired against healthy-but-slow brains on cold or slower
+  machines, the update transaction reported "couldn't be set up", and the
+  recovery screen's Repair killed the brain that was seconds from ready.
 - `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
   one-time packaged-release reset of the old machine-connection trust files.
   It preserves account auth, machine identity, pairing PINs, projects, and SSH

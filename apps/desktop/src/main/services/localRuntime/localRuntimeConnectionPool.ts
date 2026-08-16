@@ -84,6 +84,10 @@ type RuntimeServiceManagerOutput = {
   ok: boolean | null;
   path: string | null;
   message: string | null;
+  /** The installer left a live brain that has not answered yet; see `ServiceManagerResult.starting`. */
+  starting: boolean;
+  /** The installer actually (re)started the service child; see `ServiceManagerResult.restarted`. */
+  restarted: boolean;
 };
 
 /**
@@ -127,7 +131,19 @@ const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 // `serve --install-service` does an unload → reap → load handover, so it is
 // allowed longer than the uninstall — but never forever: a wedged installer
 // used to pin `serviceInstallPromise` and block every later install.
-const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = 60_000;
+// Must cover the installer's own waits: the shared handover budget
+// (RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS, 30 s) plus one blocking probe overrun,
+// predecessor termination and the launchctl round-trips. A child killed at
+// this deadline reads as a failed install even when launchd's replacement is
+// coming up, so the budget errs long.
+const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = 90_000;
+/**
+ * How long a freshly (re)installed service gets to answer on the socket before
+ * the desktop gives up on it. Longer than the installer's own handover wait on
+ * purpose: the installer may return `starting` with a live brain that is still
+ * booting, and this is where that brain gets the rest of its time.
+ */
+const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = 90_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
@@ -943,6 +959,8 @@ export function parseRuntimeServiceManagerOutput(output: string): RuntimeService
     ok: typeof record.ok === "boolean" ? record.ok : null,
     path: typeof record.path === "string" && record.path.trim() ? record.path.trim() : null,
     message: typeof record.message === "string" && record.message.trim() ? record.message.trim() : null,
+    starting: record.starting === true,
+    restarted: record.restarted === true,
   };
 }
 
@@ -976,6 +994,8 @@ export class LocalRuntimeConnectionPool {
     intent: ProjectRegistrationIntent;
     promise: Promise<RemoteRuntimeProjectRecord>;
   }>();
+  /** ISO time of the first install attempt since the last successful connect; see `runServiceInstallBestEffort`. */
+  private serviceStartupStreakStartedAt: string | null = null;
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
     state: "not_attempted",
     attempted: false,
@@ -1430,13 +1450,22 @@ export class LocalRuntimeConnectionPool {
       });
       return;
     }
+    // The streak start, not this attempt's start: installs recur (connect
+    // failures re-run them, isolated recovery re-runs them every 60s), and a
+    // brain that has not answered since the FIRST of those attempts is what
+    // recovery needs to age. The streak resets when a connection succeeds.
+    if (this.serviceStartupStreakStartedAt == null) {
+      this.serviceStartupStreakStartedAt = new Date().toISOString();
+    }
+    const attemptStartedAt = this.serviceStartupStreakStartedAt;
     this.serviceInstallStatus = {
       state: "installing",
       attempted: true,
       path: cliPath,
       message: "Installing the ADE service login item.",
       exitCode: null,
-      updatedAt: new Date().toISOString(),
+      updatedAt: attemptStartedAt,
+      attemptStartedAt,
     };
     let result: ServiceManagerCommandResult;
     try {
@@ -1462,6 +1491,7 @@ export class LocalRuntimeConnectionPool {
         message,
         exitCode: null,
         updatedAt: new Date().toISOString(),
+        attemptStartedAt,
       };
       this.logger.warn("local_runtime.service_install_failed", { error: message });
       return;
@@ -1475,6 +1505,7 @@ export class LocalRuntimeConnectionPool {
         message,
         exitCode: null,
         updatedAt: new Date().toISOString(),
+        attemptStartedAt,
       };
       this.logger.warn("local_runtime.service_install_failed", { cliPath, reason: "timeout", message });
       return;
@@ -1497,8 +1528,14 @@ export class LocalRuntimeConnectionPool {
         message: parsed?.message || output || "ADE service login item is installed.",
         exitCode: code,
         updatedAt: new Date().toISOString(),
+        starting: parsed?.starting === true,
+        restarted: parsed?.restarted === true,
+        attemptStartedAt,
       };
-      this.logger.info("local_runtime.service_install_succeeded", payload);
+      this.logger.info(
+        parsed?.starting ? "local_runtime.service_install_starting" : "local_runtime.service_install_succeeded",
+        payload,
+      );
     } else {
       this.serviceInstallStatus = {
         state: "failed",
@@ -1507,6 +1544,7 @@ export class LocalRuntimeConnectionPool {
         message: parsed?.message || errorOutput || output || "ADE service login item installation failed.",
         exitCode: code,
         updatedAt: new Date().toISOString(),
+        attemptStartedAt,
       };
       this.logger.warn("local_runtime.service_install_failed", payload);
     }
@@ -2355,8 +2393,10 @@ export class LocalRuntimeConnectionPool {
     // attempt lands in that churn window and strands this desktop on an
     // isolated no-sync runtime, so keep retrying — through connect failures
     // AND through compatibility errors from the not-yet-replaced old brain —
-    // until the repaired service is actually reachable.
-    const deadline = Date.now() + 20_000;
+    // until the repaired service is actually reachable. The budget covers a
+    // brain the installer reported as `starting`: launchd/the supervisor owns
+    // it and it will answer, so waiting is right and restarting it is not.
+    const deadline = Date.now() + LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS;
     let lastError: unknown = null;
     for (;;) {
       try {
@@ -2595,6 +2635,7 @@ export class LocalRuntimeConnectionPool {
       this.clearVersionSkewStatus();
     }
     this.activeClient = client;
+    this.serviceStartupStreakStartedAt = null;
     this.activeRuntimePid = runtimeInfo.pid;
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;

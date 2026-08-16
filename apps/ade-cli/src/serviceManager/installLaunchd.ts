@@ -7,8 +7,11 @@ import {
   type AdeServiceCommand,
   isCurrentProcessDescendantOfPid,
   listStaleChannelServePids,
+  readPidElapsedMs,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
+  RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
+  RUNTIME_SERVICE_YOUNG_BRAIN_MS,
   serviceManagerResultText,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
@@ -27,6 +30,10 @@ import {
   isSameChannelSyncHostOwner,
   type SyncHostSingletonDeps,
 } from "../services/sync/syncHostSingleton";
+import {
+  LAST_FAILURE_CRASH_LOOP_WINDOW_MS,
+  readLastFailure,
+} from "../../../desktop/src/main/services/runtime/lastFailureStore";
 
 type LaunchdServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -47,6 +54,10 @@ type LaunchdServiceManagerDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   handoverPidAlive?: (pid: number) => boolean;
+  /** Age of a live service pid; tests inject it, production asks `ps`. */
+  pidElapsedMs?: (pid: number, run: ServiceManagerSpawnSync) => number | null;
+  /** Whether the brain has recorded a fresh streak of startup failures; tests inject it. */
+  recentCrashLoop?: () => boolean;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -258,6 +269,16 @@ function runtimeStatusArgs(command: AdeServiceCommand, socketPath: string): stri
   return args;
 }
 
+/**
+ * The probe is a whole `ade runtime status` child process: Node/Electron
+ * start-up plus loading the CLI bundle BEFORE it can even dial the socket. Its
+ * kill timeout therefore has to be the socket wait plus a start-up allowance;
+ * when the two were equal, a machine where the CLI took longer than the socket
+ * budget to start killed every probe before it could answer, and a perfectly
+ * healthy brain read as "never responsive".
+ */
+const RESPONSIVENESS_PROBE_STARTUP_ALLOWANCE_MS = 8_000;
+
 function defaultResponsivenessProbe(args: {
   socketPath: string;
   timeoutMs: number;
@@ -274,11 +295,39 @@ function defaultResponsivenessProbe(args: {
     {
       encoding: "utf8",
       env,
-      timeout: args.timeoutMs,
+      timeout: args.timeoutMs + RESPONSIVENESS_PROBE_STARTUP_ALLOWANCE_MS,
       stdio: "ignore",
     },
   );
   return result.status === 0 && !result.error;
+}
+
+/**
+ * A running service child that is younger than the young-brain window and not
+ * answering yet is presumed to still be starting. Unknown age (ps failed)
+ * counts as not young, so a wedged brain is never mistaken for a booting one.
+ */
+/**
+ * A fresh failure streak recorded by the brain itself (`last-failure.json`,
+ * the same record project recovery and the startup backoff read). Two or more
+ * failures inside the crash-loop window means launchd is respawning a brain
+ * that dies, and its youth is not a reason to wait for it.
+ */
+function defaultRecentCrashLoop(): boolean {
+  const report = readLastFailure({ kind: "machine" });
+  if (!report || report.count < 2) return false;
+  const firstAt = Date.parse(report.firstAt);
+  return Number.isFinite(firstAt) && Date.now() - firstAt <= LAST_FAILURE_CRASH_LOOP_WINDOW_MS;
+}
+
+function isYoungBrain(
+  pid: number | null | undefined,
+  run: ServiceManagerSpawnSync,
+  elapsedMs: (pid: number, run: ServiceManagerSpawnSync) => number | null,
+): boolean {
+  if (!pid) return false;
+  const elapsed = elapsedMs(pid, run);
+  return elapsed != null && elapsed < RUNTIME_SERVICE_YOUNG_BRAIN_MS;
 }
 
 function handoverFailure(
@@ -321,7 +370,7 @@ export async function installLaunchdService(
     : null;
   const plistUnchanged = existingPlist === plist;
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
-  const loaded = getLoadedLaunchdState(run);
+  let loaded = getLoadedLaunchdState(run);
   if (!forceRestart && plistUnchanged && loaded?.running === true) {
     if (
       deps.probeResponsiveness === false
@@ -339,6 +388,99 @@ export async function installLaunchdService(
         message: "ADE service launchd service is already installed and running.",
       };
     }
+  }
+  const isAlive = deps.handoverPidAlive ?? deps.terminateDeps?.pidAlive ?? pidAlive;
+  const sleep = deps.sleep ?? sleepAsync;
+  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS);
+  const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
+  const pidElapsedMs = deps.pidElapsedMs ?? readPidElapsedMs;
+  const responsivenessProbeIntervalMs = 750;
+
+  /**
+   * Waits for a distinct replacement child to answer on the socket. Shared by
+   * the young-brain wait (no predecessor to outlive) and the real handover.
+   */
+  // One budget for the whole install: a young-brain wait that gives up and a
+  // real handover after it share this deadline, so the desktop's child timeout
+  // can be sized against a known worst case.
+  const installDeadline = Date.now() + timeoutMs;
+  const awaitHandover = async (oldPid: number | null): Promise<{
+    predecessorGone: boolean;
+    replacementPid: number | null;
+    replacementResponsive: boolean;
+  }> => {
+    const deadline = installDeadline;
+    let predecessorGone = oldPid == null || !isAlive(oldPid);
+    let replacementPid: number | null = null;
+    let replacementResponsive = false;
+    let lastProbeAt = 0;
+    do {
+      predecessorGone = oldPid == null || !isAlive(oldPid);
+      const replacement = getLoadedLaunchdState(run);
+      replacementPid = replacement?.running === true ? replacement.pid : null;
+      const replacementDiffers = replacementPid != null && replacementPid !== oldPid;
+      // Each probe is a full CLI child process; on the slow machines this wait
+      // exists for, running one every poll tick would compete with the very
+      // brain it is waiting on. Poll launchd cheaply, probe at a slower cadence.
+      if (
+        predecessorGone
+        && replacementDiffers
+        && Date.now() - lastProbeAt >= responsivenessProbeIntervalMs
+      ) {
+        lastProbeAt = Date.now();
+        replacementResponsive = probeResponsiveness({
+          socketPath,
+          timeoutMs: Math.min(1_500, Math.max(1, deadline - Date.now())),
+          command,
+        });
+        if (replacementResponsive) break;
+      }
+      if (Date.now() >= deadline) break;
+      await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+    } while (Date.now() <= deadline);
+    return { predecessorGone, replacementPid, replacementResponsive };
+  };
+
+  // The service definition is current and launchd has a live child that is
+  // simply not answering yet. If that child is young it is still starting —
+  // first launch, cold disk, big project database — and restarting it (which
+  // is what a forced install would do next) only resets its clock. Wait for it
+  // instead. This is what keeps a Repair click from killing the very brain
+  // that was seconds from being ready.
+  // A brain that keeps dying is always "young" (launchd just respawned it), so
+  // the recorded failure streak vetoes the wait: that brain needs the restart
+  // and the crash-loop diagnosis, not more patience.
+  const crashLooping = (deps.recentCrashLoop ?? defaultRecentCrashLoop)();
+  if (
+    plistUnchanged
+    && loaded?.running === true
+    && !crashLooping
+    && isYoungBrain(loaded.pid, run, pidElapsedMs)
+  ) {
+    const young = await awaitHandover(null);
+    if (young.replacementResponsive) {
+      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+      return {
+        ok: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: "ADE service launchd service is already installed; its background service finished starting.",
+      };
+    }
+    if (young.replacementPid != null && isAlive(young.replacementPid)) {
+      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+      return {
+        ok: true,
+        starting: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: `ADE service launchd service is installed; the background service (pid ${young.replacementPid}) is still starting.`,
+      };
+    }
+    // The young child died while we waited: fall through and (re)start it.
+    loaded = getLoadedLaunchdState(run);
   }
   const selfBlock = selfServiceMutationBlock({
     action: "install",
@@ -414,30 +556,7 @@ export async function installLaunchdService(
     };
   }
   const oldPid = loaded?.pid ?? null;
-  const isAlive = deps.handoverPidAlive ?? deps.terminateDeps?.pidAlive ?? pidAlive;
-  const sleep = deps.sleep ?? sleepAsync;
-  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? 10_000);
-  const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
-  const deadline = Date.now() + timeoutMs;
-  let predecessorGone = oldPid == null || !isAlive(oldPid);
-  let replacementPid: number | null = null;
-  let replacementResponsive = false;
-  do {
-    predecessorGone = oldPid == null || !isAlive(oldPid);
-    const replacement = getLoadedLaunchdState(run);
-    replacementPid = replacement?.running === true ? replacement.pid : null;
-    const replacementDiffers = replacementPid != null && replacementPid !== oldPid;
-    if (predecessorGone && replacementDiffers) {
-      replacementResponsive = probeResponsiveness({
-        socketPath,
-        timeoutMs: Math.min(1_500, Math.max(1, deadline - Date.now())),
-        command,
-      });
-      if (replacementResponsive) break;
-    }
-    if (Date.now() >= deadline) break;
-    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
-  } while (Date.now() <= deadline);
+  const { predecessorGone, replacementPid, replacementResponsive } = await awaitHandover(oldPid);
 
   if (!predecessorGone) {
     return handoverFailure(
@@ -454,6 +573,22 @@ export async function installLaunchdService(
     );
   }
   if (!replacementResponsive) {
+    if (isAlive(replacementPid)) {
+      // launchd owns a live replacement that has not answered yet. That is a
+      // slow start, not a failed install; the supervisor keeps the child and
+      // the caller keeps waiting for the endpoint. Reporting this as a failure
+      // was what made every slow machine read as a broken one.
+      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+      return {
+        ok: true,
+        starting: true,
+        restarted: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: `ADE service launchd service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.`,
+      };
+    }
     return handoverFailure(
       servicePath,
       "replacement_responsive",
@@ -470,6 +605,7 @@ export async function installLaunchdService(
   });
   return {
     ok: true,
+    restarted: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: servicePath,

@@ -35,7 +35,11 @@ export function BrainRepairButton({
           style={{ color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11 }}
           title={repair.error}
         >
-          Repair failed — quit and reopen ADE.
+          {/* The main process already phrases restart failures for people
+              ("A newer ADE runtime is already running — quit and reopen ADE
+              instead."); hiding that behind a generic line and a tooltip
+              left users with an instruction and no reason. */}
+          {`Repair didn't finish — ${repair.error.replace(/\.?\s*$/, ".")}`}
         </span>
       ) : repair.notice ? (
         <span

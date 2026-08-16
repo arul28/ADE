@@ -18,7 +18,68 @@ export type ServiceManagerResult = {
   selfMutationBlocked?: boolean;
   /** Typed install verification stage for callers that need repair diagnostics. */
   failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive";
+  /**
+   * The service is registered and its brain process is alive, but it had not
+   * answered on the socket when the install's wait budget ran out. That is a
+   * brain still coming up (first launch, slow disk, big project database), not
+   * a broken one — the platform supervisor keeps it, and callers should keep
+   * waiting for the endpoint rather than restart it.
+   */
+  starting?: boolean;
+  /**
+   * The install actually (re)started the service child. Absent/false when the
+   * install was a no-op (already running and answering) or when it chose to
+   * wait for a young brain instead of restarting it — callers that need a
+   * restart to have happened (the one-time trust reset) check this rather than
+   * `ok`.
+   */
+  restarted?: boolean;
 };
+
+/**
+ * How long a freshly (re)started brain gets to answer before the installer
+ * stops waiting and reports it as `starting` instead of ready. Generous on
+ * purpose: this used to be 10s, and a brain that legitimately took longer on a
+ * cold machine was reported as a failed install, which the desktop turned into
+ * "couldn't be set up" plus a Repair that killed the brain and started the
+ * same race over.
+ */
+export const RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS = 30_000;
+
+/**
+ * A brain younger than this that is not answering yet is presumed to still be
+ * starting. Installers leave it alone and wait for it instead of restarting it:
+ * restarting a booting brain only resets its clock, and doing so on every
+ * Repair click is how a slow machine could never finish starting one.
+ */
+export const RUNTIME_SERVICE_YOUNG_BRAIN_MS = 120_000;
+
+/**
+ * Parses `ps -o etime=` output (`[[dd-]hh:]mm:ss`) into milliseconds.
+ * Returns null for anything it does not recognise so callers fail open.
+ */
+export function parsePsElapsedMs(raw: string): number | null {
+  const text = raw.trim();
+  const match = text.match(/^(?:(\d+)-)?(?:(\d+):)?(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const days = Number(match[1] ?? 0);
+  const hours = Number(match[2] ?? 0);
+  const minutes = Number(match[3]);
+  const seconds = Number(match[4]);
+  if (![days, hours, minutes, seconds].every((value) => Number.isFinite(value))) return null;
+  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1_000;
+}
+
+/** Milliseconds a POSIX process has been alive, or null when unknown. */
+export function readPidElapsedMs(
+  pid: number,
+  run: ServiceManagerSpawnSync = spawnSync,
+): number | null {
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  const result = run("ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8" });
+  if (result.status !== 0) return null;
+  return parsePsElapsedMs(processOutputRaw(result));
+}
 
 /**
  * A replacement that reached its readiness phase is already registered with

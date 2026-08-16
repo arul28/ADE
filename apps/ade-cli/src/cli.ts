@@ -15409,11 +15409,24 @@ async function repairMachineRuntimeServiceConnection(args: {
       }
       return null;
     }
-    client = await SocketJsonRpcClient.connect(
-      args.socketPath,
-      args.options.timeoutMs,
-      "ADE runtime endpoint",
-    );
+    // A `starting` result means the supervisor has a live brain that had not
+    // answered inside the installer's budget. Keep dialing it — the socket
+    // appears the moment the brain finishes coming up — instead of failing on
+    // the first connect and leaving the CLI to spawn a rival brain.
+    const connectDeadline = Date.now() + (result.starting ? 60_000 : 0);
+    for (;;) {
+      try {
+        client = await SocketJsonRpcClient.connect(
+          args.socketPath,
+          args.options.timeoutMs,
+          "ADE runtime endpoint",
+        );
+        break;
+      } catch (error) {
+        if (Date.now() >= connectDeadline) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      }
+    }
     const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
       args.options,
@@ -17342,6 +17355,26 @@ async function runServe(
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
+    if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
+      // A null here can mean "superseded": the RPC socket is already published
+      // when this loop runs, so a desktop that connected meanwhile may have
+      // requested its own sync-host switch and bumped the transition past ours.
+      // That is a project host in progress, not the absence of one — taking
+      // the projectless lease now would clobber it. Give that switch time to
+      // land and adopt its result; only if nothing lands does the loop retry.
+      const adoptDeadline = Date.now() + 30_000;
+      while (Date.now() < adoptDeadline) {
+        const activeId = scopeRegistry.getActiveSyncHostProjectId();
+        if (activeId) {
+          activeScope = await scopeRegistry.get(activeId);
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      }
+      if (!activeScope) {
+        throw new Error("Sync host switch superseded by a concurrent project switch; retrying.");
+      }
+    }
     if (!activeScope && sharedSyncListener) {
       // Binding the shared listener IS hosting phone sync, even with no project
       // scope to attach to it. Take the machine-wide lease first so this path
@@ -17470,58 +17503,64 @@ async function runServe(
     }
   }
 
-  if (syncEnabled) {
+  // The mobile sync host is started AFTER the RPC socket is bound (see
+  // `startSyncHostInBackground` below). It used to be awaited here, before the
+  // bind, which coupled every desktop connection to phone-sync hosting: a
+  // project scope that was slow to open, a sync port band that was busy, a
+  // stale lease from a just-killed predecessor — anything the startup loop
+  // retried — kept `ade.sock` unpublished, and the desktop's service handover
+  // budget expired against a brain that was alive and healthy. Nothing about
+  // serving desktop RPC needs the sync host up first.
+  let syncHostStartupFailure: unknown = null;
+  const startSyncHostInBackground = async (): Promise<void> => {
+    if (!syncEnabled) {
+      clearLastFailure({ kind: "machine" });
+      return;
+    }
     try {
       const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
         import("./services/sync/syncHostStartupLoop"),
         import("./serviceManager"),
       ]);
+      // No `abortIf`: the socket-liveness abort guarded against a rival brain
+      // taking the RPC socket while this one waited for sync (PR #949's
+      // zombies). The socket is bound before this loop runs now, so a rival
+      // that dials it finds a live owner and refuses; the bind itself is the
+      // claim. (A rival could only steal the path by unlinking a socket it
+      // proved stale, which a bound socket never is.)
       await runSyncHostStartupLoop({
         startSyncHost,
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
         getServiceMainPid: getRuntimeServiceMainPid,
-        // The pre-loop claim above only sees a socket that ALREADY existed. Two
-        // brains started together on a fresh path both pass it, then one wins
-        // the lease and binds while the loser waits here forever — never
-        // reaching its own bind check. Re-check while we wait, and only for a
-        // provably live owner so a probe hiccup can't make a brain quit on
-        // itself.
-        abortIf: async () => {
-          if (!isAdeRuntimeNamedPipePath(socketPath) && !fs.existsSync(socketPath)) return false;
-          return await probeLocalSocketForLiveness(socketPath) === "live";
-        },
       });
+      // A recorded sync-host failure is cleared only once the sync host is
+      // really up; clearing it on the bind would reset the crash-loop counter
+      // on every restart of a brain that keeps dying right here.
+      if (!done) clearLastFailure({ kind: "machine" });
     } catch (error: unknown) {
+      if (done) return;
       // Cross-channel conflict (another build's live brain owns mobile sync):
-      // real builds never run sync-less, so fail before publishing ade.sock.
-      const [{ SyncHostSingletonConflictError }, { SyncHostStartupAbortedError }] = await Promise.all([
-        import("./services/sync/syncHostSingleton"),
-        import("./services/sync/syncHostStartupLoop"),
-      ]);
+      // real builds never run sync-less, so the brain still refuses to keep
+      // running. The RPC socket is already published by now; closing it is
+      // what `finish()` does, and the recorded failure carries the same code
+      // project recovery keyed on before.
+      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof SyncHostStartupAbortedError) {
-        await disposeServeResources();
-        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-          socketPath,
-          cause: "Another ADE brain took this socket while this one waited for mobile sync.",
-          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-        }), { code: "socket_owned_by_other" as const });
-      }
       if (error instanceof SyncHostSingletonConflictError) {
-        await disposeServeResources();
-        throw new CliExecutionError("ADE brain refusing to run without mobile sync.", {
+        syncHostStartupFailure = new CliExecutionError("ADE brain refusing to run without mobile sync.", {
           cause: message,
           socketPath,
           nextAction:
             "Stop the other ADE brain that owns mobile sync, then start this build again.",
         });
+      } else {
+        process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+        syncHostStartupFailure = error;
       }
-      process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
-      await disposeServeResources();
-      throw error;
+      finish();
     }
-  }
+  };
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
   if (isAdeRuntimeNamedPipePath(socketPath)) {
@@ -17678,8 +17717,19 @@ async function runServe(
   process.stderr.write(
     `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
-  clearLastFailure({ kind: "machine" });
   serveStarted = true;
+  // The RPC socket is up: any recorded startup failure that was NOT about the
+  // sync host is over. Sync-host failures stay recorded until the sync host
+  // actually comes up (below), so a brain that binds and then dies on a
+  // cross-channel conflict every time still accumulates a crash-loop count.
+  if (readLastFailure({ kind: "machine" })?.component !== "sync_host") {
+    clearLastFailure({ kind: "machine" });
+  }
+  // Started after the account-publisher subscription above so the lease the
+  // sync host takes is what starts the publisher, and after the socket is
+  // published so a desktop can already reach this brain while phone sync
+  // hosting is still coming up (or still retrying).
+  void startSyncHostInBackground();
 
   // Pinned agent tools are fetched, not bundled — roughly 600 MB across the
   // three of them. A source checkout still resolves all three out of the repo's
@@ -17791,6 +17841,13 @@ async function runServe(
     try {
       fs.unlinkSync(socketPath);
     } catch {}
+  }
+  if (syncHostStartupFailure != null) {
+    // A sync-host startup failure ends the brain even though the socket was
+    // already published; record it like any other startup failure so project
+    // recovery diagnoses the conflict instead of an unexplained exit.
+    serveStarted = false;
+    throw syncHostStartupFailure;
   }
   return null;
   } finally {

@@ -9,6 +9,7 @@ import {
   buildWindowsParentPidQueryArgs,
   buildWindowsProcessCommandLineQueryArgs,
   listStaleChannelServePids,
+  parsePsElapsedMs,
   isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
   PARENT_PID_UNKNOWN,
@@ -737,6 +738,21 @@ describe("launchd service rendering", () => {
   });
 });
 
+describe("parsePsElapsedMs", () => {
+  it("reads every `ps -o etime=` shape", () => {
+    expect(parsePsElapsedMs("00:05")).toBe(5_000);
+    expect(parsePsElapsedMs("   12:34\n")).toBe((12 * 60 + 34) * 1_000);
+    expect(parsePsElapsedMs("01:02:03")).toBe(((1 * 60 + 2) * 60 + 3) * 1_000);
+    expect(parsePsElapsedMs("2-01:02:03")).toBe((((2 * 24 + 1) * 60 + 2) * 60 + 3) * 1_000);
+  });
+
+  it("fails open on anything it does not recognise", () => {
+    expect(parsePsElapsedMs("")).toBeNull();
+    expect(parsePsElapsedMs("garbage")).toBeNull();
+    expect(parsePsElapsedMs("1:2:3:4")).toBeNull();
+  });
+});
+
 describe("launchd service install", () => {
   const serviceCommand: AdeServiceCommand = {
     command: "/Applications/ADE.app/Contents/MacOS/ade",
@@ -747,6 +763,10 @@ describe("launchd service install", () => {
     deps: NonNullable<Parameters<typeof installLaunchdService>[0]>,
   ) => installLaunchdService({
     responsivenessProbe: () => true,
+    // Unknown age by default, so a running-but-quiet agent takes the restart
+    // path these tests were written for; the young-brain tests inject an age.
+    pidElapsedMs: () => null,
+    recentCrashLoop: () => false,
     ...deps,
   });
 
@@ -873,6 +893,148 @@ describe("launchd service install", () => {
       action: "install",
       failureStep: "replacement_responsive",
     });
+  });
+
+  it("reports a live replacement that has not answered yet as starting, not failed", async () => {
+    const homeDir = makeTempHome("ade-launchd-handover-starting-");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      // The handover poll sees launchd's replacement child running.
+      { status: 0, stdout: "state = running\npid = 4321\n", stderr: "" },
+    ]);
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => false,
+      handoverPidAlive: (pid) => pid === 4321,
+      handoverTimeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      starting: true,
+      action: "install",
+    });
+    expect(result.failureStep).toBeUndefined();
+    expect(result.message).toContain("still starting");
+  });
+
+  it("waits for a young unresponsive brain instead of restarting it", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-brain-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = runningAgentSpawn(calls, 1234);
+    // Not answering on the first probe, answering once waited for.
+    const responsivenessProbe = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" },
+      responsivenessProbe,
+      pidElapsedMs: () => 5_000,
+      handoverPidAlive: () => true,
+      terminateDeps: { kill, pidAlive: () => true },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.starting).toBeUndefined();
+    expect(kill).not.toHaveBeenCalled();
+    // No unload/load of the brain agent: only the watchdog is (re)armed.
+    expect(calls.filter((call) => call.command === "launchctl" && call.args[1] === servicePath)).toEqual([]);
+  });
+
+  it("restarts a young quiet brain anyway when the machine is crash-looping", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-crashloop-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" },
+      responsivenessProbe: () => true,
+      pidElapsedMs: () => 5_000,
+      recentCrashLoop: () => true,
+      currentPid: 9999,
+      parentPid: () => null,
+      terminateDeps: { kill, pidAlive: () => false },
+    });
+
+    expect(result).toMatchObject({ ok: true, restarted: true });
+    expect(calls.map((call) => call.args[0])).toContain("load");
+  });
+
+  it("does not restart a young brain that answers, even when a restart was forced", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-answering-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = runningAgentSpawn(calls, 1234);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" },
+      responsivenessProbe: () => true,
+      pidElapsedMs: () => 5_000,
+      handoverPidAlive: () => true,
+      terminateDeps: { kill, pidAlive: () => true },
+    });
+
+    expect(result.ok).toBe(true);
+    // Not a restart: the trust-reset caller must see that and try again later.
+    expect(result.restarted).toBeUndefined();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("returns starting for a young brain that is still quiet after the wait", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-brain-quiet-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = runningAgentSpawn(calls, 1234);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => false,
+      pidElapsedMs: () => 5_000,
+      handoverPidAlive: () => true,
+      handoverTimeoutMs: 0,
+      terminateDeps: { kill, pidAlive: () => true },
+    });
+
+    expect(result).toMatchObject({ ok: true, starting: true });
+    expect(kill).not.toHaveBeenCalled();
   });
 
   it("reloads an unchanged running launch agent when a packaged trust reset requests it", async () => {
@@ -1373,6 +1535,20 @@ describe("systemd service install", () => {
   });
 });
 
+
+/** launchd that keeps reporting one running agent child, whatever is asked of it. */
+function runningAgentSpawn(
+  calls: Array<{ command: string; args: string[] }>,
+  pid: number,
+): ServiceManagerSpawnSync {
+  return (command, args) => {
+    calls.push({ command, args });
+    if (command === "launchctl" && args[0] === "print") {
+      return { status: 0, stdout: `state = running\npid = ${pid}\n`, stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+}
 
 function spawnSequence(
   calls: Array<{ command: string; args: string[] }>,

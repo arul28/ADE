@@ -54,8 +54,8 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
         return {
           tone: "warn",
           text: result.outcome === "repaired"
-            ? "Your sign-in is back, but the ADE background service didn't restart. Try again."
-            : "The ADE background service didn't restart. Try again.",
+            ? "Your sign-in is back, but the ADE background service didn't come back. Wait a moment and try again; if it keeps failing, quit and reopen ADE."
+            : "The ADE background service didn't come back. Wait a moment and try again; if it keeps failing, quit and reopen ADE.",
         };
       }
       if (result.outcome === "repaired") {

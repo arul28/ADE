@@ -12,6 +12,7 @@ import {
 import {
   type AdeServiceCommand,
   cmdQuote,
+  isPidAlive,
   serviceManagerResultText,
   type ServiceManagerSpawnSync,
 } from "./common";
@@ -82,6 +83,12 @@ export type WindowsServicePidRecord = {
 export type WindowsRuntimeReadiness = {
   ready: boolean;
   diagnostic: string;
+  /**
+   * The supervisor published a PID record during the wait, i.e. it is running
+   * a brain that has not answered yet. Callers treat that as "still starting"
+   * rather than a failed install.
+   */
+  supervised?: boolean;
 };
 
 export type WindowsRuntimeReadinessProbe = (args: {
@@ -629,15 +636,21 @@ export async function waitForWindowsRuntimeReadiness(args: {
   timeoutMs: number;
   pollMs: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Liveness of the supervisor pid named in the record; tests inject it. */
+  pidAlive?: (pid: number) => boolean;
 }): Promise<WindowsRuntimeReadiness> {
   const deadline = Date.now() + Math.max(0, args.timeoutMs);
   const readPidRecord = args.readPidRecord ?? readWindowsServicePidRecord;
   const readinessProbe = args.readinessProbe ?? defaultWindowsRuntimeReadiness;
   const sleep = args.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   let diagnostic = "The Windows brain supervisor did not publish a PID record.";
+  let supervised = false;
   do {
     const pidRecord = readPidRecord(args.pidPath);
     if (pidRecord) {
+      // A record alone is not a supervisor: a stale file from a supervisor
+      // that already died must not read as "still starting".
+      supervised = (args.pidAlive ?? isPidAlive)(pidRecord.supervisorPid);
       const result = readinessProbe({
         command: args.command,
         launcherPath: args.launcherPath,
@@ -652,5 +665,5 @@ export async function waitForWindowsRuntimeReadiness(args: {
     if (remaining <= 0) break;
     await sleep(Math.min(Math.max(10, args.pollMs), remaining));
   } while (Date.now() <= deadline);
-  return { ready: false, diagnostic };
+  return { ready: false, diagnostic, supervised };
 }

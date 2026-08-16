@@ -26,7 +26,7 @@ import {
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
@@ -3974,6 +3974,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.recoveryDiagnose, { projectRoot }),
     repair: (projectRoot: string): Promise<ProjectRepairReport> =>
       ipcRenderer.invoke(IPC.recoveryRepair, { projectRoot }),
+    onRepairStep: (
+      cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { projectRoot: string; step: RepairStepResult },
+      ) => cb(payload);
+      ipcRenderer.on(IPC.recoveryRepairStep, listener);
+      return () => ipcRenderer.removeListener(IPC.recoveryRepairStep, listener);
+    },
   },
   remoteRuntime: {
     listTargets: async (): Promise<RemoteRuntimeTarget[]> =>

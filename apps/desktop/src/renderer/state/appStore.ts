@@ -1013,6 +1013,12 @@ export type ProjectTransitionError = {
   code?: string;
   detail?: string;
   rootPath?: string;
+  /**
+   * The project the failed transition was heading to, for the banner's
+   * "Try again". Separate from `rootPath`, which together with `code` selects
+   * the full-screen recovery flow.
+   */
+  retryRootPath?: string;
 };
 
 /**
@@ -2672,7 +2678,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanesLoading: false,
         projectTransitionError: projectTransitionError.code
           ? { ...projectTransitionError, rootPath }
-          : projectTransitionError,
+          : { ...projectTransitionError, retryRootPath: rootPath },
       });
       throw error;
     }

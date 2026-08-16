@@ -13,9 +13,11 @@ export function ProjectTransitionErrorAlert() {
   const clearProjectTransitionError = useAppStore(
     (state) => state.clearProjectTransitionError,
   );
+  const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
 
   if (projectTransition || !projectTransitionError) return null;
   if (projectTransitionError.code && projectTransitionError.rootPath) return null;
+  const retryRootPath = projectTransitionError.retryRootPath ?? null;
 
   return (
     <div
@@ -32,6 +34,18 @@ export function ProjectTransitionErrorAlert() {
           </details>
         ) : null}
       </div>
+      {retryRootPath ? (
+        <button
+          type="button"
+          className="shrink-0 rounded border border-red-300/30 px-2 py-0.5 text-[11.5px] font-medium text-red-100 transition-colors hover:bg-red-400/15"
+          onClick={() => {
+            clearProjectTransitionError();
+            void switchProjectToPath(retryRootPath).catch(() => {});
+          }}
+        >
+          Try again
+        </button>
+      ) : null}
       <button
         type="button"
         className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-current opacity-75 transition-opacity hover:opacity-100"

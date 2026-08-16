@@ -17,6 +17,7 @@ import {
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   resolveRuntimeServiceName,
+  RUNTIME_SERVICE_YOUNG_BRAIN_MS,
   serviceManagerResultText,
   terminatePidGracefullyAsync,
   type ServiceManagerResult,
@@ -116,6 +117,8 @@ type WindowsServiceManagerDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Process liveness for the supervisor/brain pids in the record; tests inject it. */
+  pidAlive?: (pid: number) => boolean;
 };
 
 function resolvedServiceName(
@@ -780,14 +783,22 @@ async function installWindowsServiceImpl(
     machineLayout.runtimeDir,
     BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
   );
+  const renderedLauncher = `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
+    pidPath,
+    logPath,
+    heartbeatPath,
+    wedgeBreadcrumbPath,
+  })}`;
+  let existingLauncher: string | null = null;
+  try {
+    existingLauncher = fs.readFileSync(launcherPath, "utf8");
+  } catch {
+    existingLauncher = null;
+  }
+  const launcherUnchanged = existingLauncher === renderedLauncher;
   try {
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
-      pidPath,
-      logPath,
-      heartbeatPath,
-      wedgeBreadcrumbPath,
-    })}`, {
+    fs.writeFileSync(launcherPath, renderedLauncher, {
       encoding: "utf8",
       mode: 0o600,
     });
@@ -816,6 +827,56 @@ async function installWindowsServiceImpl(
       path: taskName,
       message: legacyRemoval.message,
     };
+  }
+  // launchd parity for the young-brain wait: an unchanged launcher whose
+  // supervisor and brain are alive, started less than RUNTIME_SERVICE_YOUNG_BRAIN_MS
+  // ago and never restarted, is a brain still coming up. Wait for it instead of
+  // ending and replacing it — every Repair used to kill exactly that brain.
+  const readPidRecord = deps.readPidRecord
+    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
+  const youngRecord = launcherUnchanged ? readPidRecord(pidPath) : null;
+  if (
+    youngRecord
+    && youngRecord.restartCount === 0
+    && youngRecord.runtimePid != null
+    && youngRecord.runtimeStartedAtMs != null
+    && Date.now() - youngRecord.runtimeStartedAtMs < RUNTIME_SERVICE_YOUNG_BRAIN_MS
+    && (deps.pidAlive ?? isPidAlive)(youngRecord.supervisorPid)
+    && (deps.pidAlive ?? isPidAlive)(youngRecord.runtimePid)
+  ) {
+    const youngReadiness = await waitForWindowsRuntimeReadiness({
+      command: serviceCommand,
+      launcherPath,
+      pidPath,
+      socketPath,
+      spawnSync: run,
+      readPidRecord,
+      readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
+      timeoutMs: deps.handoverTimeoutMs ?? 15_000,
+      pollMs: deps.handoverPollMs ?? 100,
+      sleep: deps.sleep,
+      pidAlive: deps.pidAlive,
+    });
+    if (youngReadiness.ready) {
+      return {
+        ok: true,
+        serviceName,
+        action: "install",
+        path: taskName,
+        message: "ADE per-user startup entry is already installed; the channel brain finished starting.",
+      };
+    }
+    if (youngReadiness.supervised) {
+      return {
+        ok: true,
+        starting: true,
+        serviceName,
+        action: "install",
+        path: taskName,
+        message: `ADE per-user startup entry is installed; the channel brain is still starting on ${socketPath}: ${youngReadiness.diagnostic}`,
+      };
+    }
+    // The young brain died while we waited: fall through and replace it.
   }
   const currentRemoval = removeWindowsTaskIfPresent(
     run,
@@ -888,8 +949,6 @@ async function installWindowsServiceImpl(
       message: `ADE per-user startup entry was installed, but the background service failed to start: ${startFailure}`,
     };
   }
-  const readPidRecord = deps.readPidRecord
-    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
   const readiness = await waitForWindowsRuntimeReadiness({
     command: serviceCommand,
     launcherPath,
@@ -898,10 +957,31 @@ async function installWindowsServiceImpl(
     spawnSync: run,
     readPidRecord,
     readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
+    // Shorter than launchd's shared budget on purpose: the Windows install
+    // already spends several PowerShell round-trips before this wait, and the
+    // desktop bounds the whole child at 60s. A supervised brain that is not
+    // ready by then is reported as `starting`, not as a failure.
     timeoutMs: deps.handoverTimeoutMs ?? 15_000,
     pollMs: deps.handoverPollMs ?? 100,
     sleep: deps.sleep,
+    pidAlive: deps.pidAlive,
   });
+  if (!readiness.ready && readiness.supervised) {
+    // Same contract as launchd: a supervised brain that has not answered yet
+    // is still starting, not broken. The supervisor keeps it; the caller keeps
+    // waiting for the endpoint.
+    return {
+      ok: true,
+      starting: true,
+      restarted: true,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message:
+        `ADE per-user startup entry installed; the channel brain is still starting on ${socketPath}: `
+        + readiness.diagnostic,
+    };
+  }
   if (!readiness.ready) {
     return {
       ok: false,
@@ -920,6 +1000,7 @@ async function installWindowsServiceImpl(
   const sessionBound = readPidRecord(pidPath)?.sessionBound === true;
   return {
     ok: true,
+    restarted: true,
     serviceName,
     action: "install",
     path: taskName,

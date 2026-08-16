@@ -46,6 +46,12 @@ export type ProjectRecoveryDiagnosis = {
     | "brain_not_installed"
     | "socket_stale_no_owner"
     | "socket_owned_by_other"
+    /**
+     * The background service is registered and its brain is alive but has not
+     * bound the socket yet. Nothing to repair — the desktop keeps checking and
+     * opens the project as soon as it answers.
+     */
+    | "brain_starting"
     | "unknown_failure";
   code: AdeRecoveryErrorCode;
   headline: string;
@@ -66,6 +72,22 @@ export type RepairStepId =
   | "verify_endpoint"
   | "verify_project_rpc"
   | "reconcile_chats";
+
+/**
+ * The repair steps in the order `ProjectRecoveryService.repair` runs them,
+ * with the wording each one shows. Shared so the recovery screen can name the
+ * step that is running before it has reported, from the same list.
+ */
+export const REPAIR_STEPS: ReadonlyArray<{ id: RepairStepId; label: string }> = [
+  { id: "check_space", label: "Checking storage space" },
+  { id: "stop_service", label: "Stopping ADE's background service" },
+  { id: "validate_database", label: "Checking project data" },
+  { id: "resolve_migrations", label: "Finishing interrupted saves" },
+  { id: "restart_service", label: "Restarting ADE's background service" },
+  { id: "verify_endpoint", label: "Checking the background service" },
+  { id: "verify_project_rpc", label: "Checking this project" },
+  { id: "reconcile_chats", label: "Checking chats" },
+];
 
 export type RepairStepResult = {
   id: RepairStepId;

@@ -10,7 +10,8 @@ import { readValidJson, writeFileAtomic } from "../state/durableFile";
 
 const MESSAGE_MAX_BYTES = 2 * 1024;
 const DETAIL_MAX_BYTES = 8 * 1024;
-const CRASH_LOOP_WINDOW_MS = 5 * 60 * 1_000;
+export const LAST_FAILURE_CRASH_LOOP_WINDOW_MS = 5 * 60 * 1_000;
+const CRASH_LOOP_WINDOW_MS = LAST_FAILURE_CRASH_LOOP_WINDOW_MS;
 
 export type LastFailureTarget =
   | { kind: "machine"; env?: NodeJS.ProcessEnv }

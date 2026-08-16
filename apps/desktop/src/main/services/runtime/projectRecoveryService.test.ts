@@ -22,6 +22,8 @@ function tempRoot(): string {
   return root;
 }
 
+const NOW = Date.parse("2026-07-12T12:01:00.000Z");
+
 function logger(): Logger {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
@@ -98,7 +100,7 @@ function deps(overrides: Partial<ProjectRecoveryServiceDeps> = {}): ProjectRecov
     readFailureReports: vi.fn(async () => ({ project: null, machine: null })),
     clearFailureReports: vi.fn(async () => {}),
     socketExists: vi.fn(() => false),
-    now: () => Date.parse("2026-07-12T12:01:00.000Z"),
+    now: () => NOW,
     ...overrides,
   };
 }
@@ -161,6 +163,36 @@ describe("ProjectRecoveryService.diagnose", () => {
       expected: "socket_owned_by_other",
       canAutoRepair: false,
       overrides: { probeSocket: vi.fn(async () => true), pingEndpoint: vi.fn(async () => false) },
+    },
+    {
+      name: "starting brain (service running, install just began, socket not up yet)",
+      expected: "brain_starting",
+      canAutoRepair: false,
+      overrides: {
+        connectionPool: pool(status({
+          serviceInstall: {
+            state: "installed", attempted: true, path: null, message: null, exitCode: null,
+            updatedAt: new Date(NOW).toISOString(), starting: true,
+            attemptStartedAt: new Date(NOW - 15_000).toISOString(),
+          },
+          serviceHealth: { state: "running", installed: true, running: true, path: null, message: null, checkedAt: null },
+        })),
+      },
+    },
+    {
+      name: "brain still quiet long after its install began (not starting any more)",
+      expected: "brain_crash_looping",
+      canAutoRepair: true,
+      overrides: {
+        connectionPool: pool(status({
+          serviceInstall: {
+            state: "installed", attempted: true, path: null, message: null, exitCode: null,
+            updatedAt: new Date(NOW).toISOString(), starting: true,
+            attemptStartedAt: new Date(NOW - 10 * 60_000).toISOString(),
+          },
+          serviceHealth: { state: "installed", installed: true, running: false, path: null, message: null, checkedAt: null },
+        })),
+      },
     },
     {
       name: "unknown",
@@ -330,7 +362,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
     // The ping is explicitly bounded: the RPC client's default is 10 minutes,
     // which would park this call — and any repair waiting on it — on a brain
     // that binds the socket but never answers.
-    expect(connectionPool.callSync).toHaveBeenCalledWith("ping", {}, { timeoutMs: 20_000 });
+    expect(connectionPool.callSync).toHaveBeenCalledWith("ping", {}, { timeoutMs: 90_000 });
   });
 
   const installStatusPool = (

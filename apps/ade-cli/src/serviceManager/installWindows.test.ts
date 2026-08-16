@@ -476,6 +476,143 @@ describe("Windows background service helpers", () => {
     });
   });
 
+  it("reports a supervised brain that has not answered yet as starting, not failed", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-starting-"), "brain-service.ps1");
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      readPidRecord: immediateReadiness.readPidRecord,
+      readinessProbe: () => ({ ready: false, diagnostic: "Runtime PID 5678 has not bound the pipe yet." }),
+      handoverTimeoutMs: 0,
+      pidAlive: () => true,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      starting: true,
+      serviceName,
+      action: "install",
+      path: taskName,
+    });
+    expect(result.failureStep).toBeUndefined();
+    expect(result.message).toContain("still starting");
+  });
+
+  it("fails, not starting, when the record's supervisor is dead", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-dead-sup-"), "brain-service.ps1");
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      readPidRecord: immediateReadiness.readPidRecord,
+      readinessProbe: () => ({ ready: false, diagnostic: "not bound" }),
+      handoverTimeoutMs: 0,
+      pidAlive: () => false,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({ ok: false, failureStep: "replacement_responsive" });
+  });
+
+  it("waits for a young unresponsive brain instead of replacing it", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      // legacy task lookups (none)
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-young-"), "brain-service.ps1");
+    const pidPath = `${launcherPath}.pid.json`;
+    // Pre-render the launcher exactly as the install would, so it reads as unchanged.
+    const machineLayout = resolveMachineAdeLayout(
+      { ...process.env, ...(serviceCommand.env ?? {}) },
+      "win32",
+    );
+    fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
+      pidPath,
+      logPath: `${launcherPath}.log`,
+      heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
+      wedgeBreadcrumbPath: path.win32.join(machineLayout.runtimeDir, "event-loop-wedge.json"),
+    })}`, "utf8");
+    const youngRecord = { ...readyPidRecord, runtimeStartedAtMs: Date.now() - 5_000 };
+    const readinessProbe = vi.fn()
+      .mockReturnValueOnce({ ready: false, diagnostic: "not yet" })
+      .mockReturnValue({ ready: true, diagnostic: "ready" });
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      pidPath,
+      readPidRecord: () => youngRecord,
+      readinessProbe,
+      handoverTimeoutMs: 5_000,
+      handoverPollMs: 10,
+      pidAlive: () => true,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({ ok: true, action: "install" });
+    expect(result.restarted).toBeUndefined();
+    // No run-key rewrite, no supervisor start: the brain was left alone.
+    expect(calls.some((call) => call.args.some((arg) => /Add|\/Run|Start-Process/i.test(arg)))).toBe(false);
+  });
+
+  it("still fails the install when the supervisor never publishes a brain at all", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-no-brain-"), "brain-service.ps1");
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      readPidRecord: () => null,
+      readinessProbe: () => ({ ready: false, diagnostic: "unused" }),
+      handoverTimeoutMs: 0,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failureStep: "replacement_responsive",
+    });
+  });
+
   it("ends and replaces a running channel task before starting the repaired runtime", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [

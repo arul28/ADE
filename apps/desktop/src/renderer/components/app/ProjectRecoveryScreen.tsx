@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  REPAIR_STEPS,
   toAdeRecoveryErrorCode,
   type AdeRecoveryErrorCode,
   type ProjectRecoveryDiagnosis,
@@ -45,6 +46,14 @@ const STEP_REVEAL_MS = 150;
 const SETTLE_MS = 250;
 /** Beat the success card stays up before ADE re-attempts the project open. */
 const REOPEN_DELAY_MS = 700;
+/**
+ * While the background service is still starting there is nothing for the
+ * user to do, so this surface keeps re-diagnosing on its own and reopens the
+ * project the moment the service answers. The diagnosis itself stops saying
+ * "starting" once the brain has been quiet for too long, so this cannot spin
+ * forever on a wedged brain — it degrades into the normal repair offer.
+ */
+const STARTING_POLL_MS = 2_000;
 
 /**
  * Plain-language headline/body used only when a live diagnosis is unavailable
@@ -105,11 +114,22 @@ const FALLBACK_COPY: Record<AdeRecoveryErrorCode, { headline: string; body: stri
   },
   unknown: {
     headline: "ADE couldn't open this project",
-    body: "ADE can run a repair pass and try opening the project again.",
+    body: "Something stopped ADE's background service from answering. Repair restarts it and checks the project's data — your files and chats are not touched.",
   },
 };
 
 type Phase = "diagnosing" | "idle" | "repairing" | "success" | "failure";
+
+/**
+ * The "now doing" line names the next step from the shared ordered list.
+ * Restarting the background service is the one that can take a while (it
+ * waits for the service to answer), and it deserves to say so.
+ */
+const REPAIR_STEP_LABELS: readonly string[] = REPAIR_STEPS.map((step) =>
+  step.id === "restart_service"
+    ? `${step.label} (this can take a few minutes)`
+    : step.label,
+);
 
 function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -150,6 +170,9 @@ export function ProjectRecoveryScreen() {
   const [phase, setPhase] = useState<Phase>("diagnosing");
   const [report, setReport] = useState<ProjectRepairReport | null>(null);
   const [revealed, setRevealed] = useState(0);
+  // Steps pushed by the main process while the repair is still running. The
+  // final report replaces them; until then they are what the user watches.
+  const [liveSteps, setLiveSteps] = useState<RepairStepResult[]>([]);
   const [repairError, setRepairError] = useState<string | null>(null);
   const { copy, copied } = useCopyToClipboard();
   const reopenStartedRef = useRef(false);
@@ -179,7 +202,10 @@ export function ProjectRecoveryScreen() {
     return () => {
       cancelled = true;
     };
-  }, [rootPath]);
+    // Keyed on the error object, not just its root: a fresh failure for the
+    // same project (e.g. the automatic reopen above hitting a different problem)
+    // must be diagnosed again rather than shown under the previous verdict.
+  }, [rootPath, projectTransitionError]);
 
   // Reveal repair steps sequentially, then resolve to success/failure. The API
   // returns the whole array at once; the stagger makes it read as a checklist.
@@ -201,6 +227,40 @@ export function ProjectRecoveryScreen() {
     return () => window.clearTimeout(timer);
   }, [phase, report, revealed]);
 
+  // Nothing to repair while the service is booting: keep asking, and reopen the
+  // project ourselves as soon as it is healthy. The user should never have to
+  // click Repair (which restarts the brain) to recover from a slow start.
+  useEffect(() => {
+    if (phase !== "idle" || diagnosis?.state !== "brain_starting" || !rootPath) return;
+    if (!window.ade?.recovery?.diagnose) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      window.ade.recovery
+        .diagnose(rootPath)
+        .then((result) => {
+          if (cancelled) return;
+          if (result.state === "healthy") {
+            if (reopenStartedRef.current) return;
+            reopenStartedRef.current = true;
+            void switchProjectToPath(rootPath).catch(() => {
+              // The open failed for a new reason; the store has replaced the
+              // transition error and the diagnose effect below re-runs.
+              reopenStartedRef.current = false;
+            });
+            return;
+          }
+          setDiagnosis(result);
+        })
+        .catch(() => {
+          // Keep polling; a failed diagnosis is not a verdict.
+        });
+    }, STARTING_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [phase, diagnosis?.state, rootPath, switchProjectToPath]);
+
   // Once repaired, keep the success card up for a beat, then re-attempt the open.
   // A successful open clears the transition error and unmounts this surface.
   useEffect(() => {
@@ -212,15 +272,28 @@ export function ProjectRecoveryScreen() {
     return () => window.clearTimeout(timer);
   }, [phase, rootPath, switchProjectToPath]);
 
+  // Subscribe for the whole life of the surface: a repair started from this
+  // window streams its steps here as each one finishes.
+  useEffect(() => {
+    if (!rootPath || !window.ade?.recovery?.onRepairStep) return;
+    return window.ade.recovery.onRepairStep(({ projectRoot, step }) => {
+      if (projectRoot !== rootPath) return;
+      setLiveSteps((prev) => (prev.some((s) => s.id === step.id) ? prev : [...prev, step]));
+    });
+  }, [rootPath]);
+
   const runRepair = useCallback(async () => {
     if (!rootPath || phase === "repairing") return;
     reopenStartedRef.current = false;
     setReport(null);
     setRevealed(0);
+    setLiveSteps([]);
     setRepairError(null);
     setPhase("repairing");
     try {
       const result = await window.ade.recovery.repair(rootPath);
+      // Everything streamed already showed; reveal the rest without the stagger.
+      setRevealed(result.steps.length);
       setReport(result);
     } catch (error) {
       setRepairError(error instanceof Error ? error.message : String(error));
@@ -251,7 +324,13 @@ export function ProjectRecoveryScreen() {
     .filter((line): line is string => Boolean(line && line.trim()))
     .join("\n");
 
-  const visibleSteps = report ? report.steps.slice(0, phase === "repairing" ? revealed : undefined) : [];
+  const visibleSteps = report
+    ? report.steps.slice(0, phase === "repairing" ? revealed : undefined)
+    : liveSteps;
+  // What the repair is doing right now: the step after the last finished one.
+  const activeStepLabel = phase === "repairing" && !report
+    ? (liveSteps.length ? REPAIR_STEP_LABELS[liveSteps.length] ?? null : REPAIR_STEP_LABELS[0])
+    : null;
 
   const isSuccess = phase === "success";
 
@@ -312,7 +391,7 @@ export function ProjectRecoveryScreen() {
                   aria-hidden="true"
                   className="h-3 w-3 shrink-0 animate-spin rounded-full border border-amber-200/30 border-t-amber-300"
                 />
-                Repairing…
+                {activeStepLabel ? `${activeStepLabel}…` : "Repairing…"}
               </div>
             ) : null}
             {visibleSteps.length ? (
@@ -325,16 +404,46 @@ export function ProjectRecoveryScreen() {
           </div>
         ) : null}
 
-        {/* Actions */}
+        {/* Booting service: no actions, just a live status line. */}
+        {phase === "idle" && diagnosis?.state === "brain_starting" ? (
+          <div className="mt-6 flex items-center justify-center gap-2 text-[12.5px] font-medium text-fg/60">
+            <span
+              aria-hidden="true"
+              className="h-3 w-3 shrink-0 animate-spin rounded-full border border-fg/20 border-t-fg/60"
+            />
+            Waiting for the background service…
+          </div>
+        ) : null}
+
+        {/* Actions. While the service is merely starting, Repair is withheld
+            (it would restart the very brain we are waiting for) but the other
+            ways out stay: a person must never be pinned on a spinner. */}
         {phase !== "repairing" && !isSuccess ? (
           <div className="mt-7 flex flex-wrap items-center justify-center gap-2.5">
-            {canAutoRepair ? (
+            {canAutoRepair && diagnosis?.state !== "brain_starting" ? (
               <button
                 type="button"
                 onClick={() => void runRepair()}
                 className="inline-flex h-9 items-center justify-center rounded-lg bg-amber-400/90 px-4 text-[13px] font-semibold text-[#1a1206] transition-colors hover:bg-amber-300"
               >
                 {phase === "failure" ? "Try again" : "Repair ADE"}
+              </button>
+            ) : null}
+            {rootPath ? (
+              <button
+                type="button"
+                onClick={() => {
+                  // Plain reopen, no repair: right after "close the other
+                  // copy of ADE" or a transient failure this is the whole fix,
+                  // and Back alone left people re-clicking the project.
+                  reopenStartedRef.current = true;
+                  void switchProjectToPath(rootPath).catch(() => {
+                    reopenStartedRef.current = false;
+                  });
+                }}
+                className="inline-flex h-9 items-center justify-center rounded-lg border border-border/80 bg-fg/[0.03] px-4 text-[13px] font-medium text-fg/75 transition-colors hover:bg-fg/[0.07]"
+              >
+                {canAutoRepair ? "Open without repairing" : "Try again"}
               </button>
             ) : null}
             <button

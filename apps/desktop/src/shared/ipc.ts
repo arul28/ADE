@@ -77,6 +77,8 @@ export const IPC = {
   projectSwitchToPath: "ade.project.switchToPath",
   recoveryDiagnose: "ade.recovery.diagnose",
   recoveryRepair: "ade.recovery.repair",
+  /** Main → renderer: one repair step as it finishes, so a long repair reads live. */
+  recoveryRepairStep: "ade.recovery.repairStep",
   projectForgetRecent: "ade.project.forgetRecent",
   projectReorderRecent: "ade.project.reorderRecent",
   projectSetRecentPinned: "ade.project.setRecentPinned",

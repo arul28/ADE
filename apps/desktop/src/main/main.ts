@@ -1694,7 +1694,12 @@ app.whenReady().then(async () => {
         const status = localRuntimePool.getStatus().serviceInstall;
         if (status.state === "installed") {
           markMachineStateMigrationComplete({ layout: machineAdeLayout });
-          if (machineTrustResetRestartRequired) {
+          // The reset is complete only once the brain has actually been
+          // replaced. A forced install may legitimately decline to restart a
+          // brain that is still starting up (it waits for it instead), and
+          // that brain loaded the pre-reset files; leaving the marker unset
+          // makes the next launch restart it for real.
+          if (machineTrustResetRestartRequired && status.restarted === true) {
             markMachineTrustResetComplete(machineAdeLayout);
           }
         }

@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import type {
-  AdeLastFailureReport,
-  AdeRecoveryErrorCode,
-  ProjectRecoveryDiagnosis,
-  ProjectRepairReport,
-  RepairStepId,
-  RepairStepResult,
+import {
+  REPAIR_STEPS,
+  type AdeLastFailureReport,
+  type AdeRecoveryErrorCode,
+  type ProjectRecoveryDiagnosis,
+  type ProjectRepairReport,
+  type RepairStepId,
+  type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { Logger } from "../logging/logger";
@@ -28,30 +29,21 @@ const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const FRESH_FAILURE_MS = 5 * 60 * 1_000;
 // How long a restarted brain gets to rebind the machine endpoint, shared by
-// `repair()`'s restart_service step and `restartBrain()`.
-const BRAIN_RESTART_TIMEOUT_MS = 20_000;
+// `repair()`'s restart_service step and `restartBrain()`. Generous on purpose:
+// the installer reports a live-but-slow brain as `starting`, and this wait is
+// where such a brain gets the rest of its time. It used to be 20s, which on a
+// cold or slow machine expired against a healthy brain and turned into
+// "didn't restart — try again".
+const BRAIN_RESTART_TIMEOUT_MS = 90_000;
+// A brain whose install/restart began less than this long ago and that is not
+// answering yet is presumed to still be starting, not stuck.
+const BRAIN_STARTING_WINDOW_MS = 120_000;
 
-const STEP_LABELS: Record<RepairStepId, string> = {
-  check_space: "Checking storage space",
-  stop_service: "Stopping ADE's background service",
-  validate_database: "Checking project data",
-  resolve_migrations: "Finishing interrupted saves",
-  restart_service: "Restarting ADE's background service",
-  verify_endpoint: "Checking the background service",
-  verify_project_rpc: "Checking this project",
-  reconcile_chats: "Checking chats",
-};
+const STEP_LABELS: Record<RepairStepId, string> = Object.fromEntries(
+  REPAIR_STEPS.map((step) => [step.id, step.label]),
+) as Record<RepairStepId, string>;
 
-const STEP_ORDER: readonly RepairStepId[] = [
-  "check_space",
-  "stop_service",
-  "validate_database",
-  "resolve_migrations",
-  "restart_service",
-  "verify_endpoint",
-  "verify_project_rpc",
-  "reconcile_chats",
-];
+const STEP_ORDER: readonly RepairStepId[] = REPAIR_STEPS.map((step) => step.id);
 
 const REPAIR_MIN_FREE_BYTES = (dbSize: number): number => Math.max(GIB, dbSize + 512 * MIB);
 // Advice = repair gate + margin, so following the advice always satisfies repair.
@@ -187,6 +179,12 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
       return {
         headline: "Another copy of ADE is already managing projects on this computer.",
         body: "Close other copies of ADE, then try again.",
+        canAutoRepair: false,
+      };
+    case "brain_starting":
+      return {
+        headline: "ADE's background service is starting.",
+        body: "This can take a minute the first time or right after an update. ADE will open the project as soon as it's ready — nothing to do.",
         canAutoRepair: false,
       };
     default:
@@ -504,6 +502,14 @@ export class ProjectRecoveryService {
     const socketReachable = await this.probeSocket(this.socketPath, 750);
     const endpointHealthy = socketReachable && await this.pingEndpoint(this.socketPath, 1_500);
     const serviceStatus = this.deps.connectionPool.getStatus();
+    const installStartedAt = Date.parse(serviceStatus.serviceInstall.attemptStartedAt ?? "");
+    // Time-bounded on purpose: the installer's `starting` flag alone would keep
+    // a brain that wedged during boot reading as "starting" forever.
+    const brainStarting =
+      !socketReachable
+      && serviceStatus.serviceHealth.running === true
+      && Number.isFinite(installStartedAt)
+      && this.now() - installStartedAt < BRAIN_STARTING_WINDOW_MS;
     const dbCheck = endpointHealthy
       ? { healthy: null, detail: "Project data check skipped because the background service is using it." }
       : await this.quickCheck(dbPath);
@@ -513,7 +519,7 @@ export class ProjectRecoveryService {
       `socketPath=${this.socketPath}`,
       `socketReachable=${socketReachable}`,
       `endpointHealthy=${endpointHealthy}`,
-      `serviceInstall=${serviceStatus.serviceInstall.state}`,
+      `serviceInstall=${serviceStatus.serviceInstall.state}${serviceStatus.serviceInstall.starting ? " (starting)" : ""}`,
       `serviceHealth=${serviceStatus.serviceHealth.state}`,
       `database=${dbCheck.detail}`,
       ...(latestFailure ? [`lastFailure=${latestFailure.code}: ${latestFailure.message}${latestFailure.detail ? ` (${latestFailure.detail})` : ""}`] : []),
@@ -536,6 +542,13 @@ export class ProjectRecoveryService {
     } else if (socketReachable) {
       state = "socket_owned_by_other";
       code = "socket_owned_by_other";
+    } else if (brainStarting) {
+      // Ahead of the crash-loop and stale-socket branches: a brain that the
+      // installer just started (or reported as still starting) and that
+      // launchd/the supervisor shows running is booting, not broken. Repair
+      // here would only kill it and start its clock over.
+      state = "brain_starting";
+      code = "unknown";
     } else if (serviceStatus.serviceHealth.installed === false) {
       state = "brain_not_installed";
       code = "brain_not_installed";

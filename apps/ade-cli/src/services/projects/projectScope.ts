@@ -181,6 +181,16 @@ export class ProjectScopeRegistry {
     return this.syncHostProjectId;
   }
 
+  /**
+   * The project a caller most recently asked to host sync, whether or not that
+   * switch has completed. `switchSyncHost` returns null both for "superseded by
+   * a newer switch" and for a genuinely absent host, and the brain's startup
+   * loop must not read the former as "no project, host projectless".
+   */
+  getRequestedSyncHostProjectId(): ProjectId | null {
+    return this.latestSyncHostTransitionProjectId;
+  }
+
   async resolveActiveSyncHost(): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
     const existingHostId = this.syncHostProjectId;

@@ -107,6 +107,55 @@ describe("ProjectRecoveryScreen", () => {
     expect(screen.getByRole("button", { name: "Review storage" })).toBeTruthy();
   });
 
+  it("waits out a starting background service and reopens the project by itself", async () => {
+    vi.useFakeTimers();
+    try {
+      const starting = makeDiagnosis({
+        state: "brain_starting",
+        code: "unknown",
+        headline: "ADE's background service is starting.",
+        body: "This can take a minute the first time. ADE will open the project as soon as it's ready.",
+        canAutoRepair: false,
+      });
+      const healthy = makeDiagnosis({
+        state: "healthy",
+        code: "unknown",
+        headline: "ADE is ready to open this project.",
+        body: "No repair is needed.",
+        canAutoRepair: false,
+      });
+      const diagnose = vi.fn()
+        .mockResolvedValueOnce(starting)
+        .mockResolvedValueOnce(starting)
+        .mockResolvedValue(healthy);
+      const repair = vi.fn();
+      globalThis.window.ade = { recovery: { diagnose, repair, onRepairStep: () => () => {} } } as any;
+      const switchProjectToPath = vi.fn(async () => {});
+      useAppStore.setState({ switchProjectToPath });
+      setError({ code: "unknown" });
+
+      render(<ProjectRecoveryScreen />);
+      await vi.waitFor(() => {
+        expect(screen.getByText("ADE's background service is starting.")).toBeTruthy();
+      });
+      expect(screen.getByText("Waiting for the background service…")).toBeTruthy();
+      // No Repair offer while it is merely starting: Repair would restart it.
+      expect(screen.queryByRole("button", { name: "Repair ADE" })).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(diagnose).toHaveBeenCalledTimes(2);
+      expect(switchProjectToPath).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(2_100);
+      await vi.waitFor(() => {
+        expect(switchProjectToPath).toHaveBeenCalledWith(ROOT);
+      });
+      expect(repair).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     "provider_thread_missing",
     "provider_resume_failed",
