@@ -33,7 +33,20 @@ import {
 import { localDayKey } from "./localDay";
 import { createUsageTrackingService } from "./usageTrackingService";
 
-const NOW_MS = Date.parse("2026-08-09T18:00:00.000Z");
+/**
+ * "Now" for the fixtures, anchored to the real current day rather than a fixed
+ * calendar date.
+ *
+ * These tests build rollup rows dated `TODAY`/`YESTERDAY` and then assert what a
+ * `7d` window sums to — but the service derives that window from the real clock.
+ * A hardcoded date is therefore a time bomb: it works until the wall clock walks
+ * past it, and on 2026-08-16 the old `2026-08-09` anchor fell exactly 7 days
+ * behind and three account-scope tests started failing for everyone, on every
+ * branch, with no code change. Anchoring to today keeps the fixtures inside
+ * every window by construction; the tests assert relationships between rows,
+ * never a literal date string.
+ */
+const NOW_MS = Date.parse(`${new Date().toISOString().slice(0, 10)}T18:00:00.000Z`);
 const TODAY = localDayKey(NOW_MS);
 const YESTERDAY = localDayKey(NOW_MS - 86_400_000);
 
