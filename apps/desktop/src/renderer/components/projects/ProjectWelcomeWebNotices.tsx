@@ -17,6 +17,12 @@ export type WebZeroMachinesNotice = {
   kind: "loading" | "no_machines" | "signed_out" | "unconfigured" | "unavailable";
   headline: string;
   detail: string | null;
+  /**
+   * What still works while this is broken. Only set where it is true and not
+   * obvious — a failure that costs nothing should say so, and a failure that
+   * costs something must not be dressed up as harmless.
+   */
+  reassurance?: string | null;
   action: { label: string; onSelect: () => void; busy: boolean } | null;
 };
 
@@ -66,6 +72,7 @@ export function webZeroMachinesNotice(args: {
         kind: "unavailable",
         headline: "Couldn't load your machines.",
         detail: account.message ?? "Your ADE account session expired.",
+        reassurance: "Your machines and their projects are untouched — signing in again brings the list back.",
         action: { label: "Sign in again", onSelect: args.onSignIn, busy: false },
       };
     case "loading":
@@ -85,6 +92,7 @@ export function webZeroMachinesNotice(args: {
         detail: args.retryError
           ?? account.message
           ?? "The machine directory didn't answer.",
+        reassurance: "Only the list failed to load. Your machines and their projects are still running.",
         action: {
           label: directoryLoading ? "Retrying…" : "Retry",
           onSelect: args.onRetry,
@@ -180,6 +188,9 @@ export function WebZeroMachines({ notice }: { notice: WebZeroMachinesNotice }) {
       <span>{notice.headline}</span>
       {notice.detail ? (
         <span style={{ color: COLORS.textDim }}>{notice.detail}</span>
+      ) : null}
+      {notice.reassurance ? (
+        <span style={{ color: COLORS.textDim }}>{notice.reassurance}</span>
       ) : null}
       {notice.action ? (
         <button

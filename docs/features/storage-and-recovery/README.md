@@ -19,7 +19,7 @@
 | `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
 | `apps/ade-cli/src/commands/doctor.ts` | `ade doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account); exits non-zero on any `fail`. `evaluateDoctorRows` is pure and dependency-injected so the desktop connection-doctor card and the CLI share one verdict. |
 | `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
-| `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button — which shares one `restartServiceAndWait()` sequence (install → wait ≤20 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer ADE runtime is already running — quit and reopen ADE instead."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
+| `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer ADE runtime is already running — quit and reopen ADE instead."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
 | `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes lane files in the background. The **storage doctor** compresses history and maintains the database; filesystem candidates such as staging, backups, DerivedData, and build output remain review-first. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
@@ -31,12 +31,21 @@
 | `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
 | `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures, diagnosis, repair progress, next action, and technical details. `ProjectTabHost` in `App.tsx` renders it full-viewport whenever `projectTransitionError` carries a `code` and `rootPath`. |
 | `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` | Fallback dismissible banner for project open/switch failures that lack a code/rootPath (un-coded string errors); it renders nothing once a coded error hands the surface to `ProjectRecoveryScreen`. |
+| `apps/desktop/src/main/services/ipc/knownProjectRoots.ts` | Validation for renderer-supplied project roots on the recovery and diagnostics channels. A renderer may only name the open project, a local recent-projects entry, or a root main itself recently attempted to open; `AttemptedProjectRoots` is that last, bounded and expiring, single-writer registry, recorded only after the repo path resolves. Comparison goes through `pathsEqual` (case folding) and falls back to `path.resolve` when a root has no realpath, so a project on an unmounted volume is not refused. |
+| `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of **Report issue**: shared machine sources plus the desktop's own jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Saves the report `0600`, copies it, and opens a prefilled GitHub issue. |
+| `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder, the redactor (`redactDiagnosticText`), and `buildDiagnosticIssueUrl`. No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
+| `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — the machine-level logs, layout, disk figures and redaction context both surfaces read, so a log added for one appears in both. |
+| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open]`, the headless equivalent. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
+| `apps/ade-cli/src/lib/externalLinks.ts` | `normalizeExternalUrl` / `openExternalUrl` for the CLI: allows only `http(s)` and `mailto:`, opens through the platform helper (`open` / `rundll32` via the trusted-tool resolver / `xdg-open`), and falls back to Electron's `shell.openExternal` only when actually running inside Electron — a static `electron` import crashes headless startup. |
+| `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
+| `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The button itself, on every error surface. One press assembles, saves, copies, and opens the issue; it reports what actually happened rather than claiming success. |
+| `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces — `ErrorSurfaceCard`, `WhatToDo`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top. |
 | `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | In-transcript choices to retry the original thread, rebuild from ADE history, or start a separate chat. `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`. |
 | `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Storage dashboard: plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageDiagnostics.tsx` | The "Health & diagnostics" strip: four tiles — database size (with a journal-fed sparkline + trend arrow), background-service resident memory, slow responses in 24 h (from `getRuntimeHealth`), and last cleanup — plus the overall health chip. Deep-linked as `#diagnostics` from the top-bar load pill. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageMaintenanceJournal.tsx` | Collapsible "Recent cleanups" panel rendering the last runs from the maintenance journal, one humanized line per action. |
 | `apps/desktop/src/renderer/components/settings/storage/storageUiConstants.ts` | Shared presentational constants (`STORAGE_BRAND`, `PANEL_STYLE`) for the section shell and the split-out diagnostics/journal components, so they share styling without a circular import. |
-| `apps/desktop/src/renderer/components/settings/storage/StorageCleanupDialog.tsx` | Preview-confirmed cleanup dialog: lists selected removable items with sizes, surfaces blocked paths and reasons, and only enables Remove once a fresh preview is in hand. Also hosts the itemized "Clean up safely" plan and its `runMaintenance` path. |
+| `apps/desktop/src/renderer/components/settings/storage/StorageCleanupDialog.tsx` | Preview-confirmed cleanup dialog: lists selected removable items with sizes, surfaces blocked paths and reasons, and only enables Remove once a fresh preview is in hand. Its failure state is phase-aware — failing to *look* and failing to *remove* leave the disk in different states and call for different next steps — and it carries a Try again that re-runs the preview. Overlapping previews are retired by request id, so a stale answer cannot paint over a fresh one or drag a settled dialog back to "error". Also hosts the itemized "Clean up safely" plan and its `runMaintenance` path. |
 | `apps/desktop/src/renderer/components/settings/storage/storageView.ts` | Pure, DOM-free presentation + policy helpers. Category metadata/order/hues, safety labels, and `buildCleanupTarget` / `cleanableEntries` / `groupLaneItems` map a snapshot item to a typed `StorageCleanupTarget`. The overhaul adds the diagnostics/maintenance view-model: `dbBreakdownRows`, `buildSafeCleanupPlan`, journal/db-size-sparkline/trend helpers, `daemonMemoryBytes`, `healthChip`, `formatSlowActions`, and `categoryPolicyChip` — each degrading to a sensible "not available" value so the UI renders against an older daemon that never sends `extras`. |
 | `apps/desktop/src/shared/types/storage.ts` | Shared storage contracts: disk-pressure types, `StorageCategoryId`, `StorageSafety`, `StorageItem`/`StorageCategorySnapshot`/`StorageSnapshot`, and the `StorageCleanupTarget`/`StorageCleanupPreview`/`StorageCleanupResult` DTOs. `StorageItem` carries ownership, age, blocked reasons, reclaim estimate/state, and lane ownership for the review screen; `StorageLifecycleSnapshot` carries the effective four-rule policy plus last/next scan and review counts. The ledger/maintenance surface includes `StorageLedgerEntry`/`StoragePolicyClass`, `MaintenanceAction`/`MaintenanceRunReport`/`MaintenanceTrigger`, `DbBreakdownEntry`, `StorageSnapshotExtras`, and `RuntimeHealthSnapshot`. |
 | `apps/desktop/src/shared/types/recovery.ts` | Typed recovery contracts: the `AdeRecoveryErrorCode` union + `toAdeRecoveryErrorCode`, `AdeLastFailureReport`, `ProjectRecoveryDiagnosis`, the ordered `RepairStepId` list + `ProjectRepairReport`, and `mapKvDbOpenErrorCode`. |
@@ -101,9 +110,32 @@ local runtime pool reads that report and throws a coded refusal instead of
 starting a second app-owned brain on the primary socket. IPC carries the code
 through project transition state. `ProjectRecoveryScreen` requests a fresh
 diagnosis and renders plain-language repair actions, while technical detail
-stays behind disclosure. `projectRecoveryService` does not depend on a healthy
+stays behind disclosure. `repair()` streams each step to the window as it
+finishes (`IPC.recoveryRepairStep`), so a long service restart reads as
+progress rather than a hang, and the screen names the step currently running
+from `REPAIR_STEPS` in `shared/types/recovery.ts` — the same ordered list the
+service runs. `stateForCode` lives there too, so a screen falling back to the
+last recorded failure can never offer a different verdict, or a different
+repair offer, than the service would have given.
+
+One diagnosis deliberately offers no repair: `brain_starting`, when the service
+is registered and its brain is alive but has not bound the socket yet (see
+[remote runtime](../remote-runtime/README.md)). There is nothing to fix and a
+repair would only kill a booting brain and restart its clock, so the screen
+re-diagnoses every 2 s and reopens the project itself the moment the endpoint
+answers. `projectRecoveryService` does not depend on a healthy
 brain, so it can validate and repair the database that prevented the brain from
 starting.
+
+Both `recovery.diagnose` and `recovery.repair` validate the root the renderer
+names before acting on it (`apps/desktop/src/main/services/ipc/knownProjectRoots.ts`):
+a renderer may only name the open project, a local recent-projects entry, or a
+root main itself recently attempted to open. That last source is what keeps the
+recovery screen working — a folder whose *first* open failed never reaches the
+recent-projects list, so main records every open attempt in a bounded, expiring
+registry and treats those roots as known. Diagnostics applies the same rule; a
+root it cannot place is dropped rather than swapped for the open project, and
+the report says it carries machine-level state only.
 
 The repair sequence stops at the first unsafe step. It checks free space,
 establishes exclusive ownership, runs `quick_check`, opens the database so the
@@ -466,6 +498,81 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 | Desktop JSONL logs | 10 MiB × 2 generations | Current log plus one `.1` rotation; the older rotation is replaced. |
 | Transparent compressed history read | 256 MiB decompressed | Larger inputs are rejected rather than expanded in memory. |
 | Automatic compression sweep | 25 files | Oldest eligible files first, with a delay between files. |
+
+### Diagnostic reports ("Report issue")
+
+Every error surface — the project recovery screen, the renderer and page error
+boundaries, the update-transaction notice, the brain Repair control, and the
+Connections pane's publish-failure line — carries a **Report issue** button
+(`renderer/components/app/ReportIssueButton.tsx`). One press assembles a
+redacted Markdown report, saves it, copies it to the clipboard, and opens a
+prefilled GitHub new-issue page for `arul28/ADE` in the default browser. The URL
+carries only a short stub: GitHub rejects issue URLs somewhere north of 8 KB, so
+`buildDiagnosticIssueUrl` caps the whole URL at `ISSUE_URL_MAX_LENGTH` (6,000
+characters) and falls back to a title-and-stub URL past it. The full report
+rides the clipboard.
+
+| Piece | Where |
+| --- | --- |
+| Pure builder + redactor | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` |
+| Shared collection (logs, disk, notes, redaction context) | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` (`collectMachineDiagnosticSources`) |
+| Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
+| IPC | `IPC.diagnosticsOpenIssue` |
+| Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
+| Headless equivalent | `ade report-issue [--open]` |
+
+`ade report-issue` and the desktop button read the same machine sources through
+`collectMachineDiagnosticSources`, so a log added for one appears in both; the
+CLI adds the project's `ade-cli.jsonl` and the desktop adds its own jsonl logs
+and Electron-aware volume reader on top.
+
+The report contains: app version/channel/packaging, platform, arch, OS release
+(plus `sw_vers -productVersion` on macOS), Electron/Node/Chrome versions,
+timezone offset, the surface and recovery code the user hit, the technical
+detail that screen already showed, the local runtime status snapshot, the
+machine and project `last-failure.json`, `last-wedge.json`, the recovery
+diagnosis for the open project, free disk for the ADE home and the project, and
+a bounded tail (120 lines / 32 KB each) of the background-service log
+(`launchd.err.log`, or the Windows supervisor log), `brain.jsonl`,
+`local-runtime.jsonl`, `ade-update.jsonl` and the project's `main.jsonl`. The
+`ade doctor` checks are **not** run: the report must be collectable on a machine
+whose brain will not start.
+
+**Redaction guarantees.** `redactDiagnosticText` runs over the whole assembled
+document as the last step — not per field — so a section added later cannot leak
+by forgetting to opt in. It removes, in order: project roots (collapsed to
+`<project:<name>#<6 hex>>`, stable per path so two reports about one project
+correlate without naming its location), the home directory in every spelling
+(native, JSON-escaped backslashes, percent-encoded, `file://`), any other
+`/Users/…`, `/home/…` or `X:\Users\…` shape, the OS account name, email
+addresses, credentials (JWTs, `Bearer`/`Basic`/`Token` headers, `sk-`/`gh?_`/
+`ph[cx]_`/`xox?-` prefixes, `?token=`-style query params, and hex/base64 blobs
+of 32+ characters adjacent to a key/secret/authorization/cookie word), URL
+userinfo, non-loopback IPv4 and IPv6 addresses (`127.0.0.0/8` and `::1` are
+kept — "the brain answered on 127.0.0.1" is signal and identifies nobody), this
+machine's hostname (the fully-qualified name and its short form, case
+insensitive, on word boundaries), `*.ts.net` tailnet names, and `*.local`
+names. The GitHub issue **title and stub body** go through the same redaction
+before the URL is built — the headline they are made from is caller-supplied
+and routinely carries OS paths (an update failure message, for instance). What
+is redacted is the plain text, never the encoded URL. Environment
+variables, the credential store, `~/.ade/secrets/*`, keychain output and
+pairing PINs are never collected at all. The function is idempotent, so
+re-redacting a stored report is a no-op.
+
+**Correlating a report with PostHog.** The report's `Install id (PostHog
+distinct_id)` line is exactly the value the desktop sends as PostHog's
+`distinct_id` (`productAnalyticsService.getDistinctId()` — the identified
+account hash when signed in, otherwise the anonymous `ade_<32 hex>` install
+token). Search PostHog for that `distinct_id` to get the same installation's
+event history. When an account is signed in, `Account hash` carries a 12-hex
+truncated SHA-256 of the account user id — enough to tell two reports apart,
+never enough to recover the account. The account email and name are never
+included.
+
+One coarse analytics event is emitted per press:
+`ade_feature_used { feature: "connections", action: "issue_report", outcome:
+"opened" | "failed" }`, deduped to one per hour per outcome.
 
 ## Gotchas
 

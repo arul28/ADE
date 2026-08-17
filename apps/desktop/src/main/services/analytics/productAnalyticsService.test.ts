@@ -1264,6 +1264,45 @@ describe("product analytics producers", () => {
     })).not.toHaveProperty("count_bucket");
   });
 
+  it("keeps the Report-issue outcome through the sanitizer and nothing else", () => {
+    // "Report issue" is the one control on ADE's error screens, so the only
+    // product question is whether pressing it reaches GitHub. `action` is
+    // allowlisted separately from the event's key list, so a new coarse action
+    // that is not registered ships anonymous rather than not at all.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "connections",
+      action: "issue_report",
+      outcome: "opened",
+    })).toEqual({ feature: "connections", action: "issue_report", outcome: "opened" });
+
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "connections",
+      action: "issue_report",
+      outcome: "failed",
+    })).toMatchObject({ outcome: "failed" });
+
+    // The report itself, the screen it came from and the install id it carries
+    // are for the local file and the clipboard. None of them may ride along on
+    // the event, whether they arrive under a known key or an invented one.
+    const leaky = sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "connections",
+      action: "issue_report",
+      outcome: "opened",
+      surface: "project_recovery",
+      code: "db_integrity",
+      install_id: "ade_0123456789abcdef0123456789abcdef",
+      headline: "ADE couldn't open /Users/ada/photon",
+    });
+    expect(leaky).toEqual({ feature: "connections", action: "issue_report", outcome: "opened" });
+
+    // An outcome outside the closed set is dropped, not passed through.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "connections",
+      action: "issue_report",
+      outcome: "ENOSPC: no space left on device",
+    })).not.toHaveProperty("outcome");
+  });
+
   it("maps automation completion and failed chat turns into canonical bounded outcomes", () => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);

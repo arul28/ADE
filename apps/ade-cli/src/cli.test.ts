@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "./services/account/accountMachinePublisherService";
 import {
@@ -24,6 +25,8 @@ import {
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
+  monitorBrainSocketOwnership,
+  unlinkOwnedRuntimeSocket,
   parseCliArgs,
   parseSnoozeDurationMs,
   readRuntimeIdleExitMs,
@@ -36,7 +39,9 @@ import {
   startHeadlessRpcSocketServer,
   startHeadlessRpcTcpServer,
   shouldAutoRegisterProjectForPlan,
+  formatBrainStatus,
   shouldBlockManualMachineRuntimeSpawn,
+  shouldProbeBrainStartupState,
   shouldEnforceMachineRuntimeBuildCompatibility,
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
@@ -147,6 +152,64 @@ function writeSyncHostSingletonLock(args: {
       updatedAt: now,
     },
   }, null, 2)}\n`, "utf8");
+}
+
+function withTsxNodeOptions(value: string | undefined): string {
+  const existing = value?.trim();
+  return existing ? `${existing} --import tsx` : "--import tsx";
+}
+
+/**
+ * A sync-host singleton lock owned by a SAME-channel brain (same ADE_HOME),
+ * which the startup loop retries against forever rather than failing the brain
+ * outright the way a cross-channel owner does.
+ */
+function writeSameChannelSyncHostLock(args: {
+  lockPath: string;
+  pid: number;
+  port: number;
+  adeHome: string;
+}): void {
+  const now = new Date().toISOString();
+  fs.mkdirSync(path.dirname(args.lockPath), { recursive: true });
+  fs.writeFileSync(args.lockPath, `${JSON.stringify({
+    version: 1,
+    owner: {
+      id: "sync-host-squatter",
+      pid: args.pid,
+      port: args.port,
+      appName: "ADE",
+      packageChannel: null,
+      adeHome: args.adeHome,
+      serviceName: "com.ade.runtime",
+      socketPath: path.join(args.adeHome, "sock", "ade.sock"),
+      projectRoot: null,
+      commandLine: null,
+      quitCommand: `ADE_HOME='${args.adeHome}' ade brain stop --text`,
+      createdAt: now,
+      updatedAt: now,
+    },
+  }, null, 2)}\n`, "utf8");
+}
+
+function readSyncHostLockOwnerPid(lockPath: string): number | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as {
+      owner?: { pid?: unknown };
+    };
+    return typeof parsed.owner?.pid === "number" ? parsed.owner.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function killChildQuietly(child: ChildProcess | null, signal: NodeJS.Signals): void {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  try {
+    child.kill(signal);
+  } catch {
+    // Already gone.
+  }
 }
 
 describe("ADE CLI", () => {
@@ -876,6 +939,151 @@ describe("ADE CLI", () => {
     }
   });
 
+  /**
+   * `ade serve` publishes its RPC socket BEFORE the mobile sync host is up.
+   *
+   * The brain used to bind `ade.sock` only after `runSyncHostStartupLoop`
+   * returned, which coupled desktop reachability to phone-sync hosting: a busy
+   * sync port band, a stale lease from a just-killed predecessor, a slow
+   * project scope — anything that loop retried kept the socket unpublished,
+   * and the desktop's service handover budget expired against a brain that was
+   * alive and healthy ("the background service couldn't be set up — click
+   * Repair", then "ADE couldn't open this project").
+   *
+   * This drives a real `ade serve` child with the machine-wide sync-host lease
+   * held by a live same-channel pid, so the startup loop can never finish, and
+   * proves the socket is nonetheless bound, listening, and answering RPC.
+   * Verified to fail against the pre-reorder `cli.ts` (socket never appears).
+   *
+   * A child process rather than an in-process `runCli`: a fully started brain
+   * owns background services (ingress pollers, sync status refreshers) whose
+   * teardown races surface as unhandled rejections in the runner, and killing
+   * a child is the only way to end a brain the way the OS does.
+   */
+  // DARWIN-GATE: booting a real brain needs the cr-sqlite extension, which ships
+  // only for macOS, so this can run nowhere else.
+  crdtHostIt(
+    "binds and serves the RPC socket while the mobile sync host is still retrying",
+    async () => {
+      const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+      const cliPath = path.join(packageRoot, "src", "cli.ts");
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-serve-order-"));
+      const projectRoot = path.join(adeHome, "project");
+      const lockPath = path.join(adeHome, "sync-host-lock.json");
+      // Deliberately NOT `<adeHome>/sock/ade.sock`: that is the machine layout
+      // socket, which would make this brain the "primary" one and start the
+      // freshness-monitor / service-reinstall paths this test has no business
+      // in.
+      const socketPath = path.join(adeHome, "sock", "ade-order.sock");
+      fs.mkdirSync(projectRoot, { recursive: true });
+
+      // A live pid the sync-host singleton must treat as a real owner.
+      const squatter = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
+        stdio: "ignore",
+      });
+      squatter.on("error", () => {});
+      if (!squatter.pid) throw new Error("Failed to start the fake sync-host owner process.");
+      writeSameChannelSyncHostLock({ lockPath, pid: squatter.pid, port: 8802, adeHome });
+
+      let brain: ChildProcess | null = null;
+      let brainExit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+      let stderr = "";
+      try {
+        brain = spawn(process.execPath, [cliPath, "serve", "--socket", socketPath], {
+          cwd: packageRoot,
+          env: {
+            ...process.env,
+            ADE_HOME: adeHome,
+            ADE_PROJECT_ROOT: projectRoot,
+            ADE_PACKAGE_CHANNEL: "",
+            ADE_SYNC_HOST_LOCK_PATH: lockPath,
+            ADE_SYNC_HOST_SINGLETON_TEST_MODE: "1",
+            ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+            ADE_DISABLE_TOOLS_FETCH: "1",
+            NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        brain.stderr?.setEncoding("utf8");
+        brain.stderr?.on("data", (chunk: string) => { stderr += chunk; });
+        brain.on("exit", (code, signal) => { brainExit = { code, signal }; });
+
+        let client: JsonRpcClient | null = null;
+        // 60s + 45s worst case leaves headroom inside the 150s test timeout, so
+        // a stuck brain fails with the diagnostic below and still runs `finally`
+        // (which kills the squatter) instead of being cut off by the runner.
+        const deadline = Date.now() + 60_000;
+        for (;;) {
+          if (brainExit) {
+            throw new Error(
+              `ADE brain exited (${JSON.stringify(brainExit)}) instead of serving:\n${stderr}`,
+            );
+          }
+          if (fs.existsSync(socketPath)) {
+            try {
+              client = await JsonRpcClient.connect(socketPath);
+              break;
+            } catch {
+              // Not listening yet.
+            }
+          }
+          if (Date.now() >= deadline) {
+            throw new Error(`Timed out waiting for ${socketPath} to accept connections:\n${stderr}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+
+        try {
+          // Bound is not enough: it has to be serving desktop RPC.
+          await client.request("ade/initialize", {
+            protocolVersion: "2025-06-18",
+            clientName: "serve-socket-ordering-test",
+            identity: { role: "external", callerId: "serve-socket-ordering-test" },
+          });
+          await expect(client.request("ping")).resolves.toMatchObject({ pong: true });
+        } finally {
+          client.close();
+        }
+
+        // ...and the sync host is provably still down: the squatter keeps the
+        // machine-wide lease, so the startup loop is still retrying. This is
+        // the assertion the old ordering could not satisfy — the socket did
+        // not exist until that loop returned.
+        expect(readSyncHostLockOwnerPid(lockPath)).toBe(squatter.pid);
+
+        // The loop is genuinely running and losing, not silently skipped. Not
+        // asserted at the moment of connect on purpose: the socket can be (and
+        // routinely is) reachable before the first attempt has even failed
+        // once, which is the whole point of the reorder.
+        const logDeadline = Date.now() + 45_000;
+        while (!stderr.includes("ADE brain sync host failed")) {
+          if (Date.now() >= logDeadline) {
+            throw new Error(`ADE brain never reported a sync host failure:\n${stderr}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        // A sync host that never starts must not take the brain down with it,
+        // and must not hand the lease over either.
+        expect(brainExit).toBeNull();
+        expect(readSyncHostLockOwnerPid(lockPath)).toBe(squatter.pid);
+      } finally {
+        // SIGKILL, not SIGTERM: a graceful brain shutdown spends seconds
+        // tearing down scopes, and the next test in this file spawns its own
+        // brain — leaving this one competing for CPU is how neighbouring
+        // startup waits start timing out.
+        const exited = brain ? new Promise<void>((resolve) => {
+          if (brain?.exitCode != null || brain?.signalCode != null) resolve();
+          else brain?.once("exit", () => resolve());
+        }) : null;
+        killChildQuietly(brain, "SIGKILL");
+        if (exited) await exited;
+        killChildQuietly(squatter, "SIGKILL");
+        fs.rmSync(adeHome, { recursive: true, force: true });
+      }
+    },
+    150_000,
+  );
+
   const posixIt = process.platform === "win32" ? it.skip : it;
   posixIt(
     "creates the headless RPC unix socket with 0600 perms and parent dir 0700",
@@ -1053,6 +1261,57 @@ describe("ADE CLI", () => {
     expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(false);
+  });
+
+  it("renders the brain starting verdict in --text next to the last-failure line", () => {
+    const text = formatBrainStatus({
+      ok: false,
+      starting: true,
+      runtime: { running: false, starting: true, socketPath: "/Users/example/.ade/sock/ade.sock" },
+      service: { message: "ADE login service is loaded." },
+      lastFailure: "brain serve failed 2x",
+    });
+    expect(text).toContain("nothing to repair");
+    expect(text).toContain("brain serve failed 2x");
+    // The same output has to read as a plain failure when nothing is coming up.
+    expect(formatBrainStatus({ ok: false, starting: false, runtime: { running: false } }))
+      .not.toContain("nothing to repair");
+  });
+
+  it("skips the brain-starting probe inside supervisor and handover probe children", () => {
+    // Those children run `ade runtime status` with the install lock set. On
+    // Windows the probe would ask the service manager, which spawns another
+    // `ade runtime status` — an unbounded recursive fan-out that leaks
+    // descendants past the spawn timeout.
+    expect(shouldProbeBrainStartupState({
+      socketOverride: null,
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: { ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1" },
+    })).toBe(false);
+    expect(shouldProbeBrainStartupState({
+      socketOverride: null,
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(true);
+  });
+
+  it("skips the brain-starting probe when --socket points at another runtime", () => {
+    expect(shouldProbeBrainStartupState({
+      socketOverride: "/tmp/other.sock",
+      socketPath: "/tmp/other.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(false);
+    // An override that resolves back to this machine's own brain is still the
+    // machine brain, so it keeps the starting verdict.
+    expect(shouldProbeBrainStartupState({
+      socketOverride: "/Users/example/.ade/sock/ade.sock",
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(true);
   });
 
   it("parses runtime idle expiry with a minimum clamp", () => {
@@ -11239,5 +11498,163 @@ describe("describeLastFailureForStartupLog", () => {
     );
     expect(described.length).toBeLessThanOrEqual("db_integrity · ".length + 40);
     expect(described.endsWith("…")).toBe(true);
+  });
+});
+
+describe("monitorBrainSocketOwnership", () => {
+  const flush = async (): Promise<void> => {
+    // The monitor floors its poll interval at 250ms; outlast one tick.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  };
+  const socketPath = "/tmp/ade-ownership/ade.sock";
+
+  it("ends the brain when another brain replaces the socket it bound", async () => {
+    let inode: bigint | null = 100n;
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => inode,
+    });
+    await flush();
+    expect(lost).toEqual([]);
+    // A rival that had already probed this path as stale unlinked our inode
+    // and bound its own. No EADDRINUSE ever happened; only the inode changed.
+    inode = 200n;
+    await flush();
+    expect(lost).toEqual(["replaced"]);
+    stop();
+  });
+
+  it("ends the brain when the socket path is removed underneath it", async () => {
+    let inode: bigint | null = 100n;
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => inode,
+    });
+    inode = null;
+    await flush();
+    expect(lost).toEqual(["removed"]);
+    stop();
+  });
+
+  it("stays quiet while the inode is unchanged, and reports nothing after stop", async () => {
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => 100n,
+    });
+    await flush();
+    stop();
+    await flush();
+    expect(lost).toEqual([]);
+  });
+
+  it("is a no-op for a Windows named pipe, which has no directory entry to steal", () => {
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(
+      String.raw`\\.\pipe\ade-runtime-abc`,
+      (reason) => lost.push(reason),
+      { intervalMs: 250, readInode: () => { throw new Error("must not stat a named pipe"); } },
+    );
+    stop();
+    expect(lost).toEqual([]);
+  });
+
+  it("fails open when the socket reports no inode", () => {
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => null,
+    });
+    stop();
+    expect(lost).toEqual([]);
+  });
+});
+
+describe("unlinkOwnedRuntimeSocket", () => {
+  const socketPath = "/tmp/ade-ownership/ade.sock";
+
+  // Regression: the shutdown that follows a "replaced" ownership loss used to
+  // unlink unconditionally, deleting the rival brain's socket — the winner
+  // then listened on an inode nothing could reach.
+  it("refuses to remove a socket another process rebound", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 200n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("not_owned");
+    expect(unlinked).toEqual([]);
+  });
+
+  it("removes the socket while we still own the inode we bound", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("unlinked");
+    expect(unlinked).toEqual([socketPath]);
+  });
+
+  it("reports an already-gone socket without touching the filesystem", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => null,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("absent");
+    expect(unlinked).toEqual([]);
+  });
+
+  // A failed unlink used to be reported as "absent", which is the opposite of
+  // what happened: the socket file is still there, still ours, and the next
+  // brain will probe it as stale. The caller logs the difference.
+  it("reports a failed unlink as failed, not absent", () => {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: () => { throw new Error("EPERM"); },
+    });
+
+    expect(outcome).toBe("failed");
+  });
+
+  // ENOENT between the stat and the unlink is the one failure that is not a
+  // failure: the path is gone, which is exactly what we were trying to do.
+  it("reports an unlink that lost the race to ENOENT as absent", () => {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: () => {
+        throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+      },
+    });
+
+    expect(outcome).toBe("absent");
+  });
+
+  it("falls back to the unconditional unlink when no inode was recorded at bind time", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, null, {
+      readInode: () => 200n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("unlinked");
+    expect(unlinked).toEqual([socketPath]);
+  });
+
+  it("never unlinks a Windows named pipe, which has no directory entry", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(String.raw`\\.\pipe\ade-runtime-abc`, 100n, {
+      readInode: () => { throw new Error("must not stat a named pipe"); },
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("not_owned");
+    expect(unlinked).toEqual([]);
   });
 });

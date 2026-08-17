@@ -448,25 +448,210 @@ downloaded_bytes="$((
   $(file_size_bytes "$tmp_dir/ade") + $(file_size_bytes "$tmp_dir/native.tar.gz")
 ))"
 
-chmod 755 "$tmp_dir/ade"
-cp "$tmp_dir/ade" "$dest_dir/ade"
-chmod 755 "$dest_dir/ade"
-
-staged_runtime_dir="$tmp_dir/runtime"
+staged_binary="$tmp_dir/ade"
+# The staged runtime, the runtime backup, the staged binary copy and the binary
+# backup all live next to what they replace, under the ADE home -- never in
+# $TMPDIR. Two reasons, and both have bitten this script:
+#   - promoting and restoring have to be same-directory renames, which are
+#     atomic. A `mv` out of $TMPDIR is a copy across filesystems, and a
+#     half-copied `ade` or runtime is the broken install this block exists to
+#     prevent;
+#   - a /tmp mounted `noexec` (common on hardened Linux hosts and in
+#     containers) makes the preflight fail on every install. The binary is not
+#     the only thing that has to be executable: it `dlopen`s the .node modules
+#     NODE_PATH points at, and those come out of the runtime archive. Staging
+#     the runtime under the ADE home is what makes the preflight test the same
+#     files the promoted install will load.
+staged_runtime_dir="$runtime_dir.new"
 staged_node_modules="$staged_runtime_dir/node_modules"
-backup_runtime_dir="$tmp_dir/runtime.previous"
+backup_runtime_dir="$runtime_dir.previous"
+pending_binary="$dest_dir/ade.new"
+backup_binary="$dest_dir/ade.bak"
+promoted_runtime=0
+promoted_binary=0
+have_backup_binary=0
+# Kept out of $tmp_dir so it survives the EXIT trap: the failure message points
+# a stuck user at it, and a log deleted on the way out points at nothing.
+install_log="$ade_home/install-failure.log"
+
+# Scratch state only: the download, the staged runtime, and the staged binary
+# copy. The two backups go too, but only once neither is still the machine's
+# only copy of what it replaced -- an abort (Ctrl-C, SIGTERM) part-way through
+# the promotion would otherwise leave the machine with no runtime at all, or
+# with a restore that silently failed and its backup deleted anyway.
+cleanup_install_scratch() {
+  rm -rf "$tmp_dir"
+  rm -f "$pending_binary"
+  rm -rf "$staged_runtime_dir"
+  # The binary first, because whether the old binary goes back decides whether
+  # the old runtime has to go back with it. This script *copies* the old `ade`
+  # aside, so $dest_dir/ade is never absent; the window that matters is the one
+  # between the new binary being renamed into place and its `--version` check
+  # passing. Abort in there (the obvious Ctrl-C when a bad build hangs) and what
+  # is installed is an unverified binary, so the backup goes back over it. Only
+  # after the check passes is the backup just disk. (install-runtime.ps1 uses
+  # Move-Item, so there the backup really is the only copy for a moment --
+  # hence its own restore-if-missing branch.)
+  restored_old_binary=0
+  if [ "$promoted_binary" -eq 0 ] && [ -e "$backup_binary" ]; then
+    if mv "$backup_binary" "$dest_dir/ade" 2>/dev/null; then
+      restored_old_binary=1
+    fi
+  fi
+  # Deleting the backup once it is no longer needed keeps an abandoned
+  # `ade.bak` from sitting in the install dir forever -- but a restore that
+  # failed leaves it as the last copy of the working binary, so it stays.
+  if [ "$promoted_binary" -eq 1 ] || [ "$restored_old_binary" -eq 1 ]; then
+    rm -f "$backup_binary"
+  fi
+
+  # The runtime backup has two ways of still being needed. Before the runtime
+  # is promoted it is the machine's only runtime, so it goes back if the
+  # directory it came from is empty. After the runtime is promoted but before
+  # the new binary passes its check, the old binary is what the restore above
+  # just put back -- and an old binary paired with the new native sidecar is
+  # the broken install this whole block exists to prevent, so the old runtime
+  # goes back with it.
+  restore_old_runtime=0
+  if [ "$promoted_runtime" -eq 0 ]; then
+    if [ -e "$backup_runtime_dir" ] && [ ! -e "$runtime_dir" ]; then
+      restore_old_runtime=1
+    fi
+  elif [ "$restored_old_binary" -eq 1 ] && [ -e "$backup_runtime_dir" ]; then
+    restore_old_runtime=1
+    rm -rf "$runtime_dir" 2>/dev/null || true
+  fi
+  runtime_restore_failed=0
+  if [ "$restore_old_runtime" -eq 1 ]; then
+    mv "$backup_runtime_dir" "$runtime_dir" 2>/dev/null || runtime_restore_failed=1
+  fi
+  # A restore that failed is not the only way the backup can still be the
+  # machine's only runtime. `restore_previous_install` removes $runtime_dir
+  # before its own best-effort `mv`, so if that `mv` failed there is nothing at
+  # $runtime_dir at all -- and none of the flags above record it, because the
+  # runtime was promoted and the old binary was put back by that function
+  # rather than by this one. Believe the disk: the backup only goes when a
+  # runtime is actually installed.
+  if [ "$runtime_restore_failed" -eq 0 ] && [ -e "$runtime_dir" ]; then
+    rm -rf "$backup_runtime_dir"
+  fi
+}
+
+# The EXIT trap alone is not enough: a handler for HUP/INT/TERM that does not
+# exit returns to the interrupted command, so a Ctrl-C mid-download deleted the
+# scratch state and then carried on against paths that no longer existed. Each
+# signal cleans up once (the EXIT trap is cleared first) and aborts with that
+# signal's conventional status.
+trap 'cleanup_install_scratch' EXIT
+trap 'trap - EXIT; cleanup_install_scratch; exit 129' HUP
+trap 'trap - EXIT; cleanup_install_scratch; exit 130' INT
+trap 'trap - EXIT; cleanup_install_scratch; exit 143' TERM
+
+# The runtime sidecar env has to be in place before *any* `--version` check:
+# the binary loads its native modules through it, so a preflight run without it
+# tests something the real ade never does. Called once for the staged runtime
+# and again for the promoted one.
+previous_node_path="${NODE_PATH:-}"
+set_runtime_env() {
+  ADE_RUNTIME_ROOT="$1"
+  ADE_RUNTIME_NODE_MODULES="$1/node_modules"
+  NODE_PATH="$1/node_modules${previous_node_path:+:$previous_node_path}"
+  export ADE_RUNTIME_ROOT ADE_RUNTIME_NODE_MODULES NODE_PATH
+}
+
+# Runs `ade --version` and keeps whatever it printed, so a failure has evidence
+# instead of just an exit status. Returns the binary's status.
+version_check() {
+  version_check_binary="$1"
+  version_check_stage="$2"
+  if : >"$install_log" 2>/dev/null; then
+    printf 'ade install: %s check of %s\n' "$version_check_stage" "$version_check_binary" \
+      >>"$install_log" 2>/dev/null || true
+    "$version_check_binary" --version >>"$install_log" 2>&1
+  else
+    "$version_check_binary" --version >/dev/null 2>&1
+  fi
+}
+
+# Puts the machine back on the install it had. Best effort by design: every
+# branch here runs while something has already gone wrong, and a failed restore
+# must still let the caller print the real reason rather than abort on `set -e`.
+restore_previous_install() {
+  if [ "$have_backup_binary" -eq 1 ] && [ -e "$backup_binary" ]; then
+    mv "$backup_binary" "$dest_dir/ade" 2>/dev/null || true
+  else
+    # Nothing to restore means this was a first install; leaving the binary that
+    # just failed its own version check is worse than leaving none.
+    rm -f "$dest_dir/ade" 2>/dev/null || true
+  fi
+  if [ "$promoted_runtime" -eq 1 ] && [ -e "$backup_runtime_dir" ]; then
+    rm -rf "$runtime_dir" 2>/dev/null || true
+    mv "$backup_runtime_dir" "$runtime_dir" 2>/dev/null || true
+  fi
+}
+
+# "staged" until the new binary is promoted, "installed" afterwards. The two
+# stages leave the machine in different states, and a message that describes
+# the wrong one sends a user looking for damage that is not there.
+install_stage="staged"
+
+die_runtime_unusable() {
+  if [ "$install_stage" = "staged" ]; then
+    if [ -e "$dest_dir/ade" ]; then
+      printf 'ade install: your existing ADE at %s was not touched.\n' "$dest_dir/ade" >&2
+    else
+      printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
+    fi
+  elif [ "$have_backup_binary" -eq 1 ]; then
+    printf 'ade install: the ADE you already had was put back, so nothing is broken.\n' >&2
+  elif [ -e "$dest_dir/ade" ]; then
+    # The rollback is best effort, so the disk is the only thing worth
+    # believing here: if it could not remove the binary that just failed, the
+    # broken one is still what runs, and saying "nothing was left installed"
+    # sends the user looking in the wrong place.
+    printf 'ade install: the ADE at %s is the one that just failed to start.\n' "$dest_dir/ade" >&2
+  else
+    printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
+  fi
+  if [ -s "$install_log" ]; then
+    printf 'ade install: what it printed is in %s\n' "$install_log" >&2
+  fi
+  printf 'ade install: next: run the installer again; if it fails the same way, open an issue at https://github.com/%s/issues with that log.\n' \
+    "$repo" >&2
+  die "$1"
+}
+
+chmod 755 "$staged_binary"
 
 rm -rf "$staged_runtime_dir" "$backup_runtime_dir"
 mkdir -p "$staged_runtime_dir"
 tar -xzf "$tmp_dir/native.tar.gz" -C "$staged_runtime_dir"
 [ -d "$staged_node_modules" ] || die "native dependency archive is missing node_modules"
 
+# The preflight copy lands in $dest_dir, not $TMPDIR -- see the noexec note
+# above. $dest_dir/ade.new is the scratch name the promotion below renames
+# from, and the EXIT trap already removes it, so this costs nothing but the
+# copy.
+rm -f "$pending_binary"
+cp "$staged_binary" "$pending_binary"
+chmod 755 "$pending_binary"
+
+# Preflight before anything is promoted: the new binary against the staged
+# runtime, both under the ADE home so neither is executed or `dlopen`ed out of
+# $TMPDIR. A download that cannot even print its version never replaces
+# $dest_dir/ade, so the previous install is still there and still working.
+set_runtime_env "$staged_runtime_dir"
+if ! version_check "$pending_binary" "staged"; then
+  rm -f "$pending_binary"
+  die_runtime_unusable "the ADE runtime that was just downloaded could not start"
+fi
+
 if [ -e "$runtime_dir" ]; then
   mv "$runtime_dir" "$backup_runtime_dir"
 fi
 
 if mv "$staged_runtime_dir" "$runtime_dir"; then
-  rm -rf "$backup_runtime_dir"
+  promoted_runtime=1
 else
   if [ -e "$backup_runtime_dir" ]; then
     rm -rf "$runtime_dir"
@@ -475,11 +660,38 @@ else
   die "failed to install ADE native runtime dependencies"
 fi
 
-export ADE_RUNTIME_ROOT="$runtime_dir"
-export ADE_RUNTIME_NODE_MODULES="$runtime_dir/node_modules"
-export NODE_PATH="$runtime_dir/node_modules${NODE_PATH:+:$NODE_PATH}"
+# Promote the binary last, and only by rename -- of the very copy the preflight
+# above just ran, so a truncated write can never be the thing at $dest_dir/ade.
+rm -f "$backup_binary"
+if [ -e "$dest_dir/ade" ]; then
+  if cp "$dest_dir/ade" "$backup_binary"; then
+    chmod 755 "$backup_binary" 2>/dev/null || true
+    have_backup_binary=1
+  else
+    rm -f "$pending_binary"
+    die "could not back up the existing ADE runtime at $dest_dir/ade"
+  fi
+fi
+mv "$pending_binary" "$dest_dir/ade"
 
-"$dest_dir/ade" --version >/dev/null || die "installed ade binary failed to run"
+set_runtime_env "$runtime_dir"
+install_stage="installed"
+
+if ! version_check "$dest_dir/ade" "installed"; then
+  restore_previous_install
+  die_runtime_unusable "the newly installed ADE runtime could not start"
+fi
+# The new binary has now proved it runs, so the cleanup handlers must stop
+# treating $dest_dir/ade as unverified and rolling the backup back over it.
+promoted_binary=1
+
+# Past the point of no return: the install is good, so the rollback copies are
+# just disk. ~150 MB of it, which is why they are not kept around. The log goes
+# with them: a file called install-failure.log left behind by a successful
+# install is a false alarm waiting to be found.
+rm -f "$backup_binary"
+rm -rf "$backup_runtime_dir"
+rm -f "$install_log"
 
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   try_install_service

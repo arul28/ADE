@@ -709,6 +709,92 @@ describe("ProjectScopeRegistry", () => {
   });
 });
 
+describe("ProjectScopeRegistry.adoptRequestedSyncHost", () => {
+  beforeEach(() => {
+    createAdeRuntimeMock.mockReset();
+    createAdeRuntimeMock.mockImplementation(async () => ({ dispose: vi.fn() }));
+  });
+
+  /**
+   * `get()` is stubbed throughout: opening a real scope boots a whole sync
+   * runtime, and what is under test here is only the waiting policy.
+   */
+  const stubScopeFor = (scopes: ProjectScopeRegistry, projectId: string) => {
+    const scope = { registryProjectId: projectId } as unknown as Awaited<
+      ReturnType<ProjectScopeRegistry["get"]>
+    >;
+    vi.spyOn(scopes, "get").mockResolvedValue(scope);
+    return scope;
+  };
+
+  it("adopts a sync host that lands while it is waiting", async () => {
+    const { registry, first } = createRegistry();
+    const scopes = new ProjectScopeRegistry(registry, { syncRuntime: { enabled: true } });
+    stubScopeFor(scopes, first.projectId);
+    let clock = 0;
+    let elapsedWhenSet = -1;
+
+    const adopted = await scopes.adoptRequestedSyncHost(30_000, {
+      now: () => clock,
+      pollMs: 250,
+      sleep: () => {
+        clock += 250;
+        // A concurrent switch completes a second into our wait.
+        if (clock >= 1_000 && elapsedWhenSet < 0) {
+          elapsedWhenSet = clock;
+          (scopes as unknown as { syncHostProjectId: string | null }).syncHostProjectId = first.projectId;
+        }
+        return Promise.resolve();
+      },
+    });
+
+    expect(adopted?.registryProjectId).toBe(first.projectId);
+    expect(elapsedWhenSet).toBe(1_000);
+  });
+
+  it("returns null when nothing lands inside the budget, so the caller retries", async () => {
+    const { registry } = createRegistry();
+    const scopes = new ProjectScopeRegistry(registry, { syncRuntime: { enabled: true } });
+    let clock = 0;
+    let polls = 0;
+
+    const adopted = await scopes.adoptRequestedSyncHost(1_000, {
+      now: () => clock,
+      pollMs: 250,
+      sleep: () => {
+        polls += 1;
+        clock += 250;
+        return Promise.resolve();
+      },
+    });
+
+    expect(adopted).toBeNull();
+    expect(polls).toBe(4);
+  });
+
+  it("returns immediately when a host is already active", async () => {
+    const { registry, first } = createRegistry();
+    const scopes = new ProjectScopeRegistry(registry, { syncRuntime: { enabled: true } });
+    stubScopeFor(scopes, first.projectId);
+    (scopes as unknown as { syncHostProjectId: string | null }).syncHostProjectId = first.projectId;
+    const sleep = vi.fn(() => Promise.resolve());
+
+    const adopted = await scopes.adoptRequestedSyncHost(30_000, { sleep });
+
+    expect(adopted?.registryProjectId).toBe(first.projectId);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("does not wait at all with a zero budget", async () => {
+    const { registry } = createRegistry();
+    const scopes = new ProjectScopeRegistry(registry, { syncRuntime: { enabled: true } });
+    const sleep = vi.fn(() => Promise.resolve());
+
+    expect(await scopes.adoptRequestedSyncHost(0, { sleep })).toBeNull();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
 describe("markActiveHostProjectOpen", () => {
   it("marks the current sync host open even when a stale project is first", () => {
     const catalog = [

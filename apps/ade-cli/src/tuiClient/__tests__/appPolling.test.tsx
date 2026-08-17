@@ -7,6 +7,7 @@ import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { BufferedEvent } from "../../eventBuffer";
 import type { AdeCodeConnection, ProjectLaunchContext } from "../types";
 import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "../productAnalytics";
+import { RuntimeServiceStillStartingError } from "../../serviceManager/common";
 
 const mocks = vi.hoisted(() => ({
   connectToAde: vi.fn(),
@@ -508,6 +509,28 @@ describe("AdeCodeApp polling", () => {
     await flushAsyncEffects();
 
     expect(mocks.connectToAde.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+
+    await unmountApp(instance);
+  });
+
+  it("shows a waiting state, not a failure, while the background service is starting", async () => {
+    // The desktop stopped calling a slow-starting brain a broken one; the TUI
+    // must not keep telling the same user that ADE Code failed to start.
+    mocks.connectToAde.mockImplementation(async () => {
+      throw new RuntimeServiceStillStartingError({
+        kind: "not_answered",
+        socketPath: "/tmp/ade/sock/ade.sock",
+        installMessage: "ADE brain service is registered and starting",
+      });
+    });
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await waitForFrame(instance, "ADE's background service is starting");
+    const frame = stripAnsi(instance.frames.join("\n"));
+    expect(frame).toContain("there is nothing to do");
+    expect(frame).toContain("r retry now");
+    expect(frame).not.toContain("ADE Code failed to start");
 
     await unmountApp(instance);
   });

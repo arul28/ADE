@@ -1,0 +1,138 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { collectDiagnosticReport } from "./diagnosticReportService";
+
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diag-report-"));
+
+afterAll(() => {
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+function deps() {
+  return {
+    appVersion: "1.2.3",
+    packageChannel: null,
+    isPackaged: false,
+    userDataPath: path.join(tempRoot, "userData"),
+    reportsDir: path.join(tempRoot, "reports"),
+    installId: "install-abc",
+  };
+}
+
+describe("collectDiagnosticReport", () => {
+  // Regression: when the renderer named a project root main did not recognise,
+  // the handler silently substituted the currently open project, so a report
+  // about a failed open carried a different project's logs and diagnosis. It
+  // now degrades to machine-level state — and has to SAY so, or the reader
+  // draws conclusions from an absence they were never told about.
+  it("renders caller notes about a degraded report alongside the machine ones", async () => {
+    const { report } = await collectDiagnosticReport(deps(), {
+      surface: "project_recovery",
+      projectRoot: null,
+      extraNotes: ["requested project root was not recognised; machine-level state only"],
+    });
+
+    expect(report).toContain("## Notes");
+    expect(report).toContain("- requested project root was not recognised; machine-level state only");
+  });
+
+  // The other half of the same regression: refusing the renderer's root has to
+  // mean the report is genuinely machine-scoped. If the collector still ran a
+  // project diagnosis, the note would say "machine-level state only" over a
+  // body that quietly carried the open project's recovery verdict.
+  it("runs no project diagnosis at all for a machine-level report", async () => {
+    const diagnoseProject = vi.fn(async () => ({ state: "healthy" }));
+
+    const machineLevel = await collectDiagnosticReport(
+      { ...deps(), diagnoseProject },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(diagnoseProject).not.toHaveBeenCalled();
+    expect(machineLevel.report).not.toContain("healthy");
+
+    // ...and the project-scoped path is still wired, so the assertion above is
+    // about the null root rather than a diagnosis that never runs.
+    const projectRoot = path.join(tempRoot, "photon");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const scoped = await collectDiagnosticReport(
+      { ...deps(), diagnoseProject },
+      { surface: "project_recovery", projectRoot },
+    );
+
+    expect(diagnoseProject).toHaveBeenCalledTimes(1);
+    expect(diagnoseProject).toHaveBeenCalledWith(projectRoot);
+    expect(scoped.report).toContain("healthy");
+  });
+
+  it("still returns when the runtime never answers", async () => {
+    // Both optional steps talk to the subsystem the user is reporting as
+    // broken. A step that never settles used to hold the whole report, leaving
+    // the "Report issue" button spinning forever.
+    const projectRoot = fs.mkdtempSync(path.join(tempRoot, "project-"));
+    const { report } = await collectDiagnosticReport(
+      {
+        ...deps(),
+        stepTimeoutMs: 20,
+        getLocalRuntimeStatus: () => new Promise<never>(() => {}),
+        diagnoseProject: () => new Promise<never>(() => {}),
+      },
+      { surface: "project_recovery", projectRoot },
+    );
+
+    expect(report).toContain("## Notes");
+  });
+
+  // The step deadline is a race, and losing a race does not cancel a timer.
+  // Every report used to leave one pending 8s timer per optional step behind
+  // it -- unref'd, so it held nothing open, but still a handle the process is
+  // carrying and enough to hang a fake-timer test that runs after it.
+  it("cancels the step deadline once the step has answered", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(tempRoot, "project-"));
+    vi.useFakeTimers();
+    try {
+      await collectDiagnosticReport(
+        {
+          ...deps(),
+          stepTimeoutMs: 60_000,
+          getLocalRuntimeStatus: async () => ({ state: "running" }),
+          diagnoseProject: async () => ({ state: "healthy" }),
+        },
+        { surface: "project_recovery", projectRoot },
+      );
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still returns when a collection step throws synchronously", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(tempRoot, "project-"));
+    const { report } = await collectDiagnosticReport(
+      {
+        ...deps(),
+        getLocalRuntimeStatus: () => {
+          throw new Error("runtime module is not loaded");
+        },
+        diagnoseProject: () => {
+          throw new Error("recovery service is gone");
+        },
+      },
+      { surface: "project_recovery", projectRoot },
+    );
+
+    expect(report).toContain("## Notes");
+  });
+
+  it("omits the notes line when there is nothing to say", async () => {
+    const { report } = await collectDiagnosticReport(deps(), {
+      surface: "project_recovery",
+      projectRoot: null,
+    });
+
+    expect(report).not.toContain("requested project root was not recognised");
+  });
+});

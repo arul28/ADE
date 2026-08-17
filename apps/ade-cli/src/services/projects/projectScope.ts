@@ -10,6 +10,12 @@ type SwitchSyncHostOptions = {
 const SYNC_HOST_COLD_BOOT_TIMEOUT_MS = 60_000;
 const SYNC_HOST_INITIALIZE_TIMEOUT_MS = 30_000;
 const SYNC_HOST_CONFIGURE_TIMEOUT_MS = 10_000;
+/**
+ * How long the brain waits for a sync-host switch that superseded its own to
+ * land before it gives up and retries the whole resolution.
+ */
+export const SYNC_HOST_ADOPT_TIMEOUT_MS = 30_000;
+const SYNC_HOST_ADOPT_POLL_MS = 250;
 
 class SyncHostPhaseTimeoutError extends Error {}
 
@@ -179,6 +185,45 @@ export class ProjectScopeRegistry {
 
   getActiveSyncHostProjectId(): ProjectId | null {
     return this.syncHostProjectId;
+  }
+
+  /**
+   * The project a caller most recently asked to host sync, whether or not that
+   * switch has completed. `switchSyncHost` returns null both for "superseded by
+   * a newer switch" and for a genuinely absent host, and the brain's startup
+   * loop must not read the former as "no project, host projectless".
+   */
+  getRequestedSyncHostProjectId(): ProjectId | null {
+    return this.latestSyncHostTransitionProjectId;
+  }
+
+  /**
+   * Waits for a sync-host switch that superseded ours to land, and adopts its
+   * result.
+   *
+   * `switchSyncHost` returning null when a request is outstanding means
+   * "superseded": the RPC socket is published before the brain's startup loop
+   * runs, so a desktop that connected meanwhile may have requested its own
+   * switch and bumped the transition past ours. That is a project host in
+   * progress, not the absence of one — taking the projectless lease now would
+   * clobber it. Returns null if nothing lands inside the budget, which the
+   * caller retries.
+   */
+  async adoptRequestedSyncHost(
+    timeoutMs: number,
+    deps: { sleep?: (ms: number) => Promise<void>; now?: () => number; pollMs?: number } = {},
+  ): Promise<ProjectScope | null> {
+    const now = deps.now ?? Date.now;
+    const sleep = deps.sleep
+      ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const pollMs = Math.max(1, deps.pollMs ?? SYNC_HOST_ADOPT_POLL_MS);
+    const deadline = now() + Math.max(0, timeoutMs);
+    while (now() < deadline) {
+      const activeId = this.getActiveSyncHostProjectId();
+      if (activeId) return await this.get(activeId);
+      await sleep(pollMs);
+    }
+    return null;
   }
 
   async resolveActiveSyncHost(): Promise<ProjectScope | null> {

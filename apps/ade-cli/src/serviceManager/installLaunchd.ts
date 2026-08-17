@@ -7,8 +7,10 @@ import {
   type AdeServiceCommand,
   isCurrentProcessDescendantOfPid,
   listStaleChannelServePids,
+  readPidElapsedMs,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
+  RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
   serviceManagerResultText,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
@@ -21,6 +23,13 @@ import {
   installLaunchdWatchdogAgent,
   uninstallLaunchdWatchdogAgent,
 } from "./installLaunchdWatchdog";
+import {
+  awaitServiceHandover,
+  awaitYoungBrainStart,
+  defaultResponsivenessProbe,
+  type HandoverWaitDeps,
+  serviceHandoverSleep,
+} from "./serviceHandover";
 import {
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
@@ -47,6 +56,10 @@ type LaunchdServiceManagerDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   handoverPidAlive?: (pid: number) => boolean;
+  /** Age of a live service pid; tests inject it, production asks `ps`. */
+  pidElapsedMs?: (pid: number, run: ServiceManagerSpawnSync) => number | null;
+  /** Whether the brain has recorded a fresh streak of startup failures; tests inject it. */
+  recentCrashLoop?: () => boolean;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -237,50 +250,6 @@ function launchdTerminateDeps(deps: TerminatePidDeps | undefined): TerminatePidD
   return { ...deps, platform: deps?.platform ?? "darwin" };
 }
 
-async function sleepAsync(ms: number): Promise<void> {
-  // Awaited lifecycle delays must stay referenced: in a standalone CLI the
-  // handover polling can be the only pending work, and an unref'd timer lets
-  // the process exit mid-repair (before SIGKILL escalation / launchctl load).
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function runtimeStatusArgs(command: AdeServiceCommand, socketPath: string): string[] {
-  const args = [...command.args];
-  const serveIndex = args.lastIndexOf("serve");
-  if (serveIndex >= 0) {
-    args.splice(serveIndex, 1, "runtime", "status");
-  } else {
-    args.push("runtime", "status");
-  }
-  args.push("--socket", socketPath, "--timeout", "1500", "--text");
-  return args;
-}
-
-function defaultResponsivenessProbe(args: {
-  socketPath: string;
-  timeoutMs: number;
-  command: AdeServiceCommand;
-}): boolean {
-  const env = {
-    ...process.env,
-    ...(args.command.env ?? {}),
-    ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
-  };
-  const result = spawnSync(
-    args.command.command,
-    runtimeStatusArgs(args.command, args.socketPath),
-    {
-      encoding: "utf8",
-      env,
-      timeout: args.timeoutMs,
-      stdio: "ignore",
-    },
-  );
-  return result.status === 0 && !result.error;
-}
-
 function handoverFailure(
   servicePath: string,
   failureStep: NonNullable<ServiceManagerResult["failureStep"]>,
@@ -321,7 +290,7 @@ export async function installLaunchdService(
     : null;
   const plistUnchanged = existingPlist === plist;
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
-  const loaded = getLoadedLaunchdState(run);
+  let loaded = getLoadedLaunchdState(run);
   if (!forceRestart && plistUnchanged && loaded?.running === true) {
     if (
       deps.probeResponsiveness === false
@@ -339,6 +308,61 @@ export async function installLaunchdService(
         message: "ADE service launchd service is already installed and running.",
       };
     }
+  }
+  const isAlive = deps.handoverPidAlive ?? deps.terminateDeps?.pidAlive ?? pidAlive;
+  const sleep = deps.sleep ?? serviceHandoverSleep;
+  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS);
+  const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
+  const pidElapsedMs = deps.pidElapsedMs ?? readPidElapsedMs;
+
+  const handoverWait: HandoverWaitDeps = {
+    readSupervisedPid: () => {
+      const replacement = getLoadedLaunchdState(run);
+      return replacement?.running === true ? replacement.pid : null;
+    },
+    isAlive,
+    probeResponsiveness,
+    socketPath,
+    command,
+    sleep,
+    pollMs,
+  };
+
+  const young = await awaitYoungBrainStart({
+    definitionUnchanged: plistUnchanged,
+    supervisedPid: loaded?.pid,
+    running: loaded?.running === true,
+    adeHome,
+    recentCrashLoop: deps.recentCrashLoop,
+    run,
+    pidElapsedMs,
+    timeoutMs,
+    wait: handoverWait,
+  });
+  if (young.kind === "responsive") {
+    installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+    return {
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: "ADE service launchd service is already installed; its background service finished starting.",
+    };
+  }
+  if (young.kind === "starting") {
+    installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+    return {
+      ok: true,
+      starting: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: `ADE service launchd service is installed; the background service (pid ${young.pid}) is still starting.`,
+    };
+  }
+  if (young.kind === "died") {
+    // The young child died while we waited: fall through and (re)start it.
+    loaded = getLoadedLaunchdState(run);
   }
   const selfBlock = selfServiceMutationBlock({
     action: "install",
@@ -414,30 +438,14 @@ export async function installLaunchdService(
     };
   }
   const oldPid = loaded?.pid ?? null;
-  const isAlive = deps.handoverPidAlive ?? deps.terminateDeps?.pidAlive ?? pidAlive;
-  const sleep = deps.sleep ?? sleepAsync;
-  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? 10_000);
-  const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
-  const deadline = Date.now() + timeoutMs;
-  let predecessorGone = oldPid == null || !isAlive(oldPid);
-  let replacementPid: number | null = null;
-  let replacementResponsive = false;
-  do {
-    predecessorGone = oldPid == null || !isAlive(oldPid);
-    const replacement = getLoadedLaunchdState(run);
-    replacementPid = replacement?.running === true ? replacement.pid : null;
-    const replacementDiffers = replacementPid != null && replacementPid !== oldPid;
-    if (predecessorGone && replacementDiffers) {
-      replacementResponsive = probeResponsiveness({
-        socketPath,
-        timeoutMs: Math.min(1_500, Math.max(1, deadline - Date.now())),
-        command,
-      });
-      if (replacementResponsive) break;
-    }
-    if (Date.now() >= deadline) break;
-    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
-  } while (Date.now() <= deadline);
+  // A fresh full budget: the young-brain wait above may have spent all of its
+  // own, and the real handover is the one whose outcome decides whether this
+  // install reports `starting` or a failure.
+  const { predecessorGone, replacementPid, replacementResponsive } = await awaitServiceHandover(
+    handoverWait,
+    oldPid,
+    timeoutMs,
+  );
 
   if (!predecessorGone) {
     return handoverFailure(
@@ -454,6 +462,25 @@ export async function installLaunchdService(
     );
   }
   if (!replacementResponsive) {
+    // `replacementPid != null` first: `isAlive` is injectable, and a test (or
+    // a future caller) that answers `true` unconditionally must not turn "no
+    // replacement at all" into a `starting` result the caller waits on.
+    if (replacementPid != null && isAlive(replacementPid)) {
+      // launchd owns a live replacement that has not answered yet. That is a
+      // slow start, not a failed install; the supervisor keeps the child and
+      // the caller keeps waiting for the endpoint. Reporting this as a failure
+      // was what made every slow machine read as a broken one.
+      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+      return {
+        ok: true,
+        starting: true,
+        restarted: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: `ADE service launchd service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.`,
+      };
+    }
     return handoverFailure(
       servicePath,
       "replacement_responsive",
@@ -470,6 +497,7 @@ export async function installLaunchdService(
   });
   return {
     ok: true,
+    restarted: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: servicePath,

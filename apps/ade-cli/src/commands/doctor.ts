@@ -21,6 +21,7 @@ import {
   type CredentialStoreHealth,
 } from "../services/credentials/credentialStore";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { readBrainStartupState } from "../services/runtime/brainStartupState";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
 import type {
   SyncListenerPortDiagnosis,
@@ -45,6 +46,16 @@ export type DoctorRow = {
 
 export type DoctorBrainInput = {
   running: boolean;
+  /**
+   * The brain is not answering, but its service is registered and the brain
+   * process behind it is alive and young — it is still coming up. Reported as
+   * a warning, not a failure: this is the CLI's read of the desktop's
+   * `brain_starting` recovery state, and repairing here would only restart a
+   * booting brain. See `services/runtime/brainStartupState`.
+   */
+  starting?: boolean;
+  /** Age of the starting brain in ms when known, for the row's wording. */
+  startingAgeMs?: number | null;
   version: string | null;
   buildHash: string | null;
   pid: number | null;
@@ -556,6 +567,18 @@ function appRow(input: DoctorInput["app"]): DoctorRow {
 
 function brainRow(input: DoctorBrainInput): DoctorRow {
   if (!input.running) {
+    // A registered, alive, young brain that has not bound its socket yet is
+    // starting, not broken. Calling that a failure is what sent people into a
+    // Repair that killed the booting brain and started the race over.
+    if (input.starting) {
+      const age = input.startingAgeMs != null ? ` (${compactDuration(input.startingAgeMs)} so far)` : "";
+      return {
+        key: "brain",
+        label: "Brain",
+        status: "warn",
+        detail: `starting · the background service is up and its brain is coming up${age}; nothing to repair`,
+      };
+    }
     return {
       key: "brain",
       label: "Brain",
@@ -879,6 +902,11 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
   }
   const wedge = readBrainLoopWatchdogLastWedge(layout.runtimeDir)
     ?? brainProbe.runtimeLastWedge;
+  // Asked only of a brain that did not answer: a responding brain is running,
+  // never starting.
+  const startupState = brainProbe.brain.running
+    ? null
+    : await readBrainStartupState();
   const input: DoctorInput = {
     nowMs,
     app: {
@@ -887,7 +915,13 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
       path: installedApp.path,
       online,
     },
-    brain: brainProbe.brain,
+    brain: startupState
+      ? {
+        ...brainProbe.brain,
+        starting: startupState.starting,
+        startingAgeMs: startupState.ageMs,
+      }
+      : brainProbe.brain,
     wedge,
     syncPort,
     portDiagnoses,

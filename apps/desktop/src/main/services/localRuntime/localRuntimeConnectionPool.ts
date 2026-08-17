@@ -43,6 +43,7 @@ import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
 import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../../ade-cli/src/serviceManager/common";
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
@@ -84,6 +85,10 @@ type RuntimeServiceManagerOutput = {
   ok: boolean | null;
   path: string | null;
   message: string | null;
+  /** The installer left a live brain that has not answered yet; see `ServiceManagerResult.starting`. */
+  starting: boolean;
+  /** The installer actually (re)started the service child; see `ServiceManagerResult.restarted`. */
+  restarted: boolean;
 };
 
 /**
@@ -127,7 +132,23 @@ const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 // `serve --install-service` does an unload → reap → load handover, so it is
 // allowed longer than the uninstall — but never forever: a wedged installer
 // used to pin `serviceInstallPromise` and block every later install.
-const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = 60_000;
+// Must cover the installer's own waits: the shared handover budget
+// (RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS, 30 s) plus one blocking probe overrun,
+// predecessor termination and the launchctl round-trips. A child killed at
+// this deadline reads as a failed install even when launchd's replacement is
+// coming up, so the budget errs long.
+const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
+/**
+ * How long a freshly (re)installed service gets to answer on the socket before
+ * the desktop gives up on it.
+ *
+ * The same size as the install budget, and spent *after* it rather than
+ * instead of it: `tryRepairServiceConnection` runs the install first and then
+ * this connect loop, so a brain the installer returned as `starting` gets a
+ * second full window to come up (and one `createConnection` can therefore stay
+ * pending for up to about twice RUNTIME_SERVICE_START_WAIT_MS).
+ */
+const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
@@ -943,6 +964,8 @@ export function parseRuntimeServiceManagerOutput(output: string): RuntimeService
     ok: typeof record.ok === "boolean" ? record.ok : null,
     path: typeof record.path === "string" && record.path.trim() ? record.path.trim() : null,
     message: typeof record.message === "string" && record.message.trim() ? record.message.trim() : null,
+    starting: record.starting === true,
+    restarted: record.restarted === true,
   };
 }
 
@@ -976,6 +999,8 @@ export class LocalRuntimeConnectionPool {
     intent: ProjectRegistrationIntent;
     promise: Promise<RemoteRuntimeProjectRecord>;
   }>();
+  /** ISO time of the first install attempt since the last successful connect; see `runServiceInstallBestEffort`. */
+  private serviceStartupStreakStartedAt: string | null = null;
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
     state: "not_attempted",
     attempted: false,
@@ -1430,13 +1455,24 @@ export class LocalRuntimeConnectionPool {
       });
       return;
     }
+    // The streak start, not this attempt's start: installs recur (connect
+    // failures re-run them, isolated recovery re-runs them every 60s), and a
+    // brain that has not answered since the FIRST of those attempts is what
+    // recovery needs to age. The streak resets when a connection succeeds.
+    if (this.serviceStartupStreakStartedAt == null) {
+      this.serviceStartupStreakStartedAt = new Date().toISOString();
+    }
+    const attemptStartedAt = this.serviceStartupStreakStartedAt;
     this.serviceInstallStatus = {
       state: "installing",
       attempted: true,
       path: cliPath,
       message: "Installing the ADE service login item.",
       exitCode: null,
+      // This transition is happening now; `attemptStartedAt` is the streak
+      // marker and the only field that reaches back to the first attempt.
       updatedAt: new Date().toISOString(),
+      attemptStartedAt,
     };
     let result: ServiceManagerCommandResult;
     try {
@@ -1462,6 +1498,7 @@ export class LocalRuntimeConnectionPool {
         message,
         exitCode: null,
         updatedAt: new Date().toISOString(),
+        attemptStartedAt,
       };
       this.logger.warn("local_runtime.service_install_failed", { error: message });
       return;
@@ -1475,6 +1512,7 @@ export class LocalRuntimeConnectionPool {
         message,
         exitCode: null,
         updatedAt: new Date().toISOString(),
+        attemptStartedAt,
       };
       this.logger.warn("local_runtime.service_install_failed", { cliPath, reason: "timeout", message });
       return;
@@ -1497,8 +1535,14 @@ export class LocalRuntimeConnectionPool {
         message: parsed?.message || output || "ADE service login item is installed.",
         exitCode: code,
         updatedAt: new Date().toISOString(),
+        starting: parsed?.starting === true,
+        restarted: parsed?.restarted === true,
+        attemptStartedAt,
       };
-      this.logger.info("local_runtime.service_install_succeeded", payload);
+      this.logger.info(
+        parsed?.starting ? "local_runtime.service_install_starting" : "local_runtime.service_install_succeeded",
+        payload,
+      );
     } else {
       this.serviceInstallStatus = {
         state: "failed",
@@ -1507,6 +1551,7 @@ export class LocalRuntimeConnectionPool {
         message: parsed?.message || errorOutput || output || "ADE service login item installation failed.",
         exitCode: code,
         updatedAt: new Date().toISOString(),
+        attemptStartedAt,
       };
       this.logger.warn("local_runtime.service_install_failed", payload);
     }
@@ -2285,7 +2330,7 @@ export class LocalRuntimeConnectionPool {
 
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
     try {
-      const client = await this.connectClient(socketPath);
+      const client = await this.connectClient(socketPath, { isMachineService: true });
       this.ownedRuntimeChild = null;
       return { client, child: null, socketPath };
     } catch (error) {
@@ -2355,13 +2400,15 @@ export class LocalRuntimeConnectionPool {
     // attempt lands in that churn window and strands this desktop on an
     // isolated no-sync runtime, so keep retrying — through connect failures
     // AND through compatibility errors from the not-yet-replaced old brain —
-    // until the repaired service is actually reachable.
-    const deadline = Date.now() + 20_000;
+    // until the repaired service is actually reachable. The budget covers a
+    // brain the installer reported as `starting`: launchd/the supervisor owns
+    // it and it will answer, so waiting is right and restarting it is not.
+    const deadline = Date.now() + LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS;
     let lastError: unknown = null;
     for (;;) {
       try {
         await waitForSocket(socketPath, 2_000);
-        const client = await this.connectClient(socketPath);
+        const client = await this.connectClient(socketPath, { isMachineService: true });
         this.ownedRuntimeChild = null;
         return { client, child: null, socketPath };
       } catch (error) {
@@ -2557,10 +2604,30 @@ export class LocalRuntimeConnectionPool {
     return localReleaseBuildOutputRuntimeBlock(resolveCliScriptPath());
   }
 
+  /**
+   * Clears the service-install streak marker, but only when the connection
+   * that just succeeded is the machine background service.
+   *
+   * The streak answers "how long has the machine service been failing to
+   * answer", and recovery ages a `brain_starting` verdict off it. Connecting
+   * to an app-owned runtime — the isolated one, or a spawned primary — proves
+   * nothing about the service: it is what the desktop falls back to *because*
+   * the service did not answer. Clearing the marker there made the next
+   * isolated-recovery install (every 60s) restart the streak from now, so a
+   * service broken for an hour kept reporting a brand-new attempt and kept
+   * reading as a brain that is merely starting.
+   */
+  private noteConnectedRuntime(isMachineService: boolean): void {
+    if (!isMachineService) return;
+    this.serviceStartupStreakStartedAt = null;
+  }
+
   private async connectClient(
     socketPath: string,
     options: {
       preserveVersionSkew?: boolean;
+      /** True only for the machine service endpoint; gates the streak reset. */
+      isMachineService?: boolean;
       expectedPid?: number | null;
       connectTimeoutMs?: number;
       initializeTimeoutMs?: number;
@@ -2595,6 +2662,7 @@ export class LocalRuntimeConnectionPool {
       this.clearVersionSkewStatus();
     }
     this.activeClient = client;
+    this.noteConnectedRuntime(options.isMachineService === true);
     this.activeRuntimePid = runtimeInfo.pid;
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;

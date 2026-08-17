@@ -33,6 +33,11 @@ import {
   runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
+import {
+  buildCliDiagnosticReport,
+  buildReportIssuePayload,
+  openDiagnosticIssue,
+} from "./commands/reportIssue";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -131,8 +136,12 @@ import {
 import {
   isCurrentProcessDescendantOfPid,
   resolveAdeServeCommand,
+  RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
+import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
+import { readBrainStartupState } from "./services/runtime/brainStartupState";
+import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import {
   isIndefiniteSnooze,
@@ -243,6 +252,7 @@ type InvocationStep = {
 type FormatterId =
   | "status"
   | "doctor"
+  | "brain-status"
   | "auth"
   | "account-auth"
   | "account-token"
@@ -386,6 +396,7 @@ type CliPlan =
   | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
+  | { kind: "report-issue"; open: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -684,6 +695,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
+    $ ade report-issue [--open]                     Print a redacted diagnostic report for a bug report
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -12630,6 +12642,12 @@ function buildCliPlan(
       online: readFlag(args, ["--online"]),
     };
   }
+  if (primary === "report-issue") {
+    return {
+      kind: "report-issue",
+      open: readFlag(args, ["--open"]),
+    };
+  }
   if (primary === "auth") {
     const sub = firstPositional(args) ?? "status";
     if (sub !== "status")
@@ -15293,7 +15311,6 @@ function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): b
 }
 
 class RuntimeSelfShutdownBlockedError extends Error {}
-class RuntimeServiceRecoveryOwnedError extends Error {}
 
 function isLocalRuntimeSocketPath(socketPath: string): boolean {
   return !socketPath.startsWith("tcp://");
@@ -15368,6 +15385,32 @@ function isServiceManagedMachineRuntimeSocket(socketPath: string): boolean {
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
+/**
+ * Whether a silent socket earns the `brain_starting` probe.
+ *
+ * Two vetoes, both about not making a bad situation worse:
+ *
+ * - Supervisor and handover probes run `ade runtime status` as a CHILD process
+ *   with `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`. Probing the service manager
+ *   from inside such a child is recursive on Windows: the status probe asks the
+ *   service manager, which spawns another `ade runtime status`, which fails on
+ *   the same silent pipe and probes again. Windows has no process groups, so
+ *   the spawn timeout kills only the leader and leaks every descendant.
+ * - A `--socket` override points at a different runtime entirely. The default
+ *   machine service's youth says nothing about it, and "still starting, nothing
+ *   to repair" would bury that runtime's real connect error.
+ */
+export function shouldProbeBrainStartupState(args: {
+  socketOverride: string | null;
+  socketPath: string;
+  machineSocketPath: string;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  const env = args.env ?? process.env;
+  if (env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1") return false;
+  return !args.socketOverride || args.socketPath === args.machineSocketPath;
+}
+
 export function shouldBlockManualMachineRuntimeSpawn(
   socketPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -15403,17 +15446,22 @@ async function repairMachineRuntimeServiceConnection(args: {
     );
     if (!result.ok) {
       if (serviceManagerOwnsRuntimeRecovery(result)) {
-        throw new RuntimeServiceRecoveryOwnedError(
-          `${result.message} The registered service still owns recovery for this endpoint, so ADE did not start a competing manual brain.`,
-        );
+        throw new RuntimeServiceStillStartingError({
+          kind: "recovery_owned",
+          installMessage: result.message,
+        });
       }
       return null;
     }
-    client = await SocketJsonRpcClient.connect(
-      args.socketPath,
-      args.options.timeoutMs,
-      "ADE runtime endpoint",
-    );
+    client = await connectWhileServiceStarts({
+      install: result,
+      socketPath: args.socketPath,
+      connect: () => SocketJsonRpcClient.connect(
+        args.socketPath,
+        args.options.timeoutMs,
+        "ADE runtime endpoint",
+      ),
+    });
     const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
       args.options,
@@ -15439,7 +15487,7 @@ async function repairMachineRuntimeServiceConnection(args: {
   } catch (error) {
     if (
       error instanceof RuntimeSelfShutdownBlockedError
-      || error instanceof RuntimeServiceRecoveryOwnedError
+      || error instanceof RuntimeServiceStillStartingError
     ) throw error;
     return null;
   } finally {
@@ -15730,11 +15778,30 @@ async function runRuntimeCommand(
         client.close();
       }
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      // Not answering is not the same as broken. When the service is
+      // registered and the brain behind it is alive and young, it is still
+      // coming up — the same verdict the desktop calls `brain_starting`.
+      // Callers keep waiting for the endpoint instead of restarting it.
+      const starting = shouldProbeBrainStartupState({
+        socketOverride,
+        socketPath,
+        machineSocketPath: resolveMachineAdeLayout().socketPath,
+      })
+        ? (await readBrainStartupState()).starting
+        : false;
       return {
         ok: false,
         running: false,
+        starting,
         socketPath,
-        message: error instanceof Error ? error.message : String(error),
+        // `detail` is the raw connect error on both branches, so it is always
+        // present: a caller reading it should never have to know which verdict
+        // produced the message above it.
+        detail,
+        message: starting
+          ? `ADE brain is still starting; it has not answered on ${socketPath} yet. Keep waiting — there is nothing to repair.`
+          : detail,
       };
     }
   }
@@ -15985,6 +16052,34 @@ async function runSetupCli(
         return { ok: true, detail: names.join(", ") };
       },
       getAccountStatus: () => readSetupAccountStatus(options),
+      // The installer has just registered the brain service. A brain that is
+      // registered and alive but not answering yet is *starting*, not broken,
+      // so this waits for its endpoint instead of letting the account step run
+      // against a socket that was never given time to open.
+      awaitRuntimeService: async ({ budgetMs, onStarting }) => {
+        const socketPath = await resolveMachineRuntimeSocketPath(options.socketPath);
+        return await awaitRuntimeServiceEndpoint({
+          budgetMs,
+          onStarting,
+          probe: async () => {
+            try {
+              const client = await SocketJsonRpcClient.connect(
+                socketPath,
+                options.timeoutMs,
+                "ADE runtime endpoint",
+              );
+              client.close();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          installService: async () => {
+            const { installRuntimeService } = await import("./serviceManager");
+            return await withAdeDefaultRole("cto", () => installRuntimeService());
+          },
+        });
+      },
       // Delegates to the same `ade connect` implementation so the OAuth flow,
       // the service step and the machine-directory wait stay in one place.
       runConnect: async () => {
@@ -16142,6 +16237,7 @@ async function runConnectCli(
           ok: install.ok,
           message: install.message,
           selfMutationBlocked: install.selfMutationBlocked,
+          starting: install.starting,
         };
       },
       getMachineKey: () => machineKey,
@@ -16237,8 +16333,13 @@ async function runBrainCommand(
     // serve path clears it on a successful listen. Surface it as a plain
     // one-liner so `ade brain status --text` matches the Desktop recovery screen.
     const lastFailure = readLastFailure({ kind: "machine" });
+    // Mirrors `ade runtime status`: a registered service whose young brain has
+    // not bound the socket yet is starting, not broken, so `ade brain status`
+    // does not read as a failure that wants repairing.
+    const starting = isRecord(runtime) && runtime.starting === true;
     return {
       ok: service.ok && (!isRecord(runtime) || runtime.ok !== false),
+      starting,
       service,
       runtime,
       sync,
@@ -16282,7 +16383,12 @@ async function runBrainCommand(
       message: !stopped.ok
         ? `ADE brain restart attempted after stop warning: ${stopped.message}`
         : started.ok
-          ? "ADE brain restarted."
+          // `starting` means the replacement is alive but has not answered on
+          // the socket yet. Claiming "restarted." there reads as "ready now"
+          // and sends callers into a connect that is not due to succeed yet.
+          ? started.starting
+            ? started.message
+            : "ADE brain restarted."
           : started.message,
     };
   }
@@ -16651,7 +16757,7 @@ async function runServe(
   const [
     { resolveMachineAdeLayout },
     { ProjectRegistry },
-    { ProjectScopeRegistry },
+    { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS },
     {
       createMultiProjectRpcRequestHandler,
       createPersonalChatScope,
@@ -17342,6 +17448,15 @@ async function runServe(
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
+    if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
+      // A null here can mean "superseded" rather than "no host"; adopt the
+      // switch that overtook ours instead of clobbering it with the
+      // projectless lease. See `adoptRequestedSyncHost`.
+      activeScope = await scopeRegistry.adoptRequestedSyncHost(SYNC_HOST_ADOPT_TIMEOUT_MS);
+      if (!activeScope) {
+        throw new Error("Sync host switch superseded by a concurrent project switch; retrying.");
+      }
+    }
     if (!activeScope && sharedSyncListener) {
       // Binding the shared listener IS hosting phone sync, even with no project
       // scope to attach to it. Take the machine-wide lease first so this path
@@ -17470,58 +17585,87 @@ async function runServe(
     }
   }
 
-  if (syncEnabled) {
+  // The mobile sync host is started AFTER the RPC socket is bound (see
+  // `startSyncHostInBackground` below). It used to be awaited here, before the
+  // bind, which coupled every desktop connection to phone-sync hosting: a
+  // project scope that was slow to open, a sync port band that was busy, a
+  // stale lease from a just-killed predecessor — anything the startup loop
+  // retried — kept `ade.sock` unpublished, and the desktop's service handover
+  // budget expired against a brain that was alive and healthy. Nothing about
+  // serving desktop RPC needs the sync host up first.
+  let syncHostStartupFailure: unknown = null;
+  const startSyncHostInBackground = async (): Promise<void> => {
+    if (!syncEnabled) {
+      // Deliberately NOT clearing the machine failure record. The bind above
+      // already cleared every non-`sync_host` failure, and a `--no-sync` brain
+      // proves nothing about whether the sync host can start. The record is
+      // keyed by ADE_HOME, not by socket path, so the two brains that run with
+      // `--no-sync` — an ephemeral runtime socket and the desktop's isolated
+      // runtime, both spawned precisely BECAUSE the real brain is unhealthy —
+      // would otherwise erase the crash-loop streak that the installer's
+      // young-brain veto and the `brain_crash_looping` diagnosis depend on.
+      return;
+    }
     try {
       const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
         import("./services/sync/syncHostStartupLoop"),
         import("./serviceManager"),
       ]);
+      // This loop no longer needs a socket-liveness abort. That abort guarded
+      // against a rival brain taking the RPC socket while this one waited for
+      // sync (PR #949's zombies). The socket is bound before this loop runs
+      // now, so a rival that dials it finds a live owner and refuses; the bind
+      // itself is the claim. The one remaining way to lose the path — a rival
+      // unlinking a socket it proved stale, which a bound socket never is —
+      // is caught by `monitorBrainSocketOwnership`.
       await runSyncHostStartupLoop({
         startSyncHost,
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
         getServiceMainPid: getRuntimeServiceMainPid,
-        // The pre-loop claim above only sees a socket that ALREADY existed. Two
-        // brains started together on a fresh path both pass it, then one wins
-        // the lease and binds while the loser waits here forever — never
-        // reaching its own bind check. Re-check while we wait, and only for a
-        // provably live owner so a probe hiccup can't make a brain quit on
-        // itself.
-        abortIf: async () => {
-          if (!isAdeRuntimeNamedPipePath(socketPath) && !fs.existsSync(socketPath)) return false;
-          return await probeLocalSocketForLiveness(socketPath) === "live";
-        },
       });
+      // A recorded sync-host failure is cleared only once the sync host is
+      // really up; clearing it on the bind would reset the crash-loop counter
+      // on every restart of a brain that keeps dying right here.
+      if (!done) clearLastFailure({ kind: "machine" });
     } catch (error: unknown) {
+      if (done) return;
       // Cross-channel conflict (another build's live brain owns mobile sync):
-      // real builds never run sync-less, so fail before publishing ade.sock.
-      const [{ SyncHostSingletonConflictError }, { SyncHostStartupAbortedError }] = await Promise.all([
-        import("./services/sync/syncHostSingleton"),
-        import("./services/sync/syncHostStartupLoop"),
-      ]);
+      // real builds never run sync-less, so the brain still refuses to keep
+      // running. The RPC socket is already published by now; closing it is
+      // what `finish()` does, and the recorded failure carries the same code
+      // project recovery keyed on before.
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof SyncHostStartupAbortedError) {
-        await disposeServeResources();
-        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-          socketPath,
-          cause: "Another ADE brain took this socket while this one waited for mobile sync.",
-          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-        }), { code: "socket_owned_by_other" as const });
+      // The conflict class is loaded to classify the failure, and that import
+      // can itself reject (a torn install, a disk error). Letting it escape
+      // would skip `finish()` — the brain would keep serving a socket it has
+      // already decided to give up, and the rejection would surface as an
+      // unhandled one. An unclassifiable failure is still a failure.
+      let conflict = false;
+      try {
+        const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+        conflict = error instanceof SyncHostSingletonConflictError;
+      } catch (importError: unknown) {
+        process.stderr.write(
+          `ADE brain could not classify its sync host failure: ${
+            importError instanceof Error ? importError.message : String(importError)
+          }\n`,
+        );
       }
-      if (error instanceof SyncHostSingletonConflictError) {
-        await disposeServeResources();
-        throw new CliExecutionError("ADE brain refusing to run without mobile sync.", {
+      if (conflict) {
+        syncHostStartupFailure = new CliExecutionError("ADE brain refusing to run without mobile sync.", {
           cause: message,
           socketPath,
           nextAction:
             "Stop the other ADE brain that owns mobile sync, then start this build again.",
         });
+      } else {
+        process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+        syncHostStartupFailure = error;
       }
-      process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
-      await disposeServeResources();
-      throw error;
+      finish();
     }
-  }
+  };
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
   if (isAdeRuntimeNamedPipePath(socketPath)) {
@@ -17678,8 +17822,19 @@ async function runServe(
   process.stderr.write(
     `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
-  clearLastFailure({ kind: "machine" });
   serveStarted = true;
+  // The RPC socket is up: any recorded startup failure that was NOT about the
+  // sync host is over. Sync-host failures stay recorded until the sync host
+  // actually comes up (below), so a brain that binds and then dies on a
+  // cross-channel conflict every time still accumulates a crash-loop count.
+  if (readLastFailure({ kind: "machine" })?.component !== "sync_host") {
+    clearLastFailure({ kind: "machine" });
+  }
+  // Started after the account-publisher subscription above so the lease the
+  // sync host takes is what starts the publisher, and after the socket is
+  // published so a desktop can already reach this brain while phone sync
+  // hosting is still coming up (or still retrying).
+  void startSyncHostInBackground();
 
   // Pinned agent tools are fetched, not bundled — roughly 600 MB across the
   // three of them. A source checkout still resolves all three out of the repo's
@@ -17757,6 +17912,18 @@ async function runServe(
     stopBrainFreshnessMonitor = () => freshnessMonitor.stop();
   }
 
+  // Remembered so the shutdown below removes only the socket file this brain
+  // bound. If a rival rebinds the path, the inode there is theirs.
+  const boundSocketInode = readRuntimeSocketInode(socketPath);
+  let ownsSocketPath = !isAdeRuntimeNamedPipePath(socketPath);
+  const stopSocketOwnershipMonitor = monitorBrainSocketOwnership(socketPath, (reason) => {
+    // "replaced" means someone else's socket is at the path now; "removed"
+    // means there is nothing left to clean up. Either way this brain is no
+    // longer the owner and must not unlink on the way out.
+    ownsSocketPath = false;
+    headlessProjectLogger.warn("brain.socket_ownership_lost", { socketPath, reason });
+    finish();
+  });
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
   try {
@@ -17781,16 +17948,33 @@ async function runServe(
   } finally {
     stopParentMonitor();
     stopIdleMonitor();
+    stopSocketOwnershipMonitor();
   }
 
   for (const state of states) {
     stopHeadlessRpcServer(state);
   }
   await disposeServeResources();
-  if (!isAdeRuntimeNamedPipePath(socketPath)) {
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {}
+  if (ownsSocketPath) {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, boundSocketInode);
+    if (outcome === "not_owned") {
+      headlessProjectLogger.warn("brain.socket_unlink_skipped", {
+        socketPath,
+        reason: "Another process rebound this path; removing it would delete their socket.",
+      });
+    } else if (outcome === "failed") {
+      headlessProjectLogger.warn("brain.socket_unlink_failed", {
+        socketPath,
+        reason: "The socket file is still ours and still present; the next brain will probe it as stale.",
+      });
+    }
+  }
+  if (syncHostStartupFailure != null) {
+    // A sync-host startup failure ends the brain even though the socket was
+    // already published; record it like any other startup failure so project
+    // recovery diagnoses the conflict instead of an unexplained exit.
+    serveStarted = false;
+    throw syncHostStartupFailure;
   }
   return null;
   } finally {
@@ -17854,6 +18038,111 @@ function isPidAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** How often a bound brain re-checks that it still owns its socket path. */
+const BRAIN_SOCKET_OWNERSHIP_POLL_MS = 5_000;
+
+/** Inode of a socket path, or null when it is gone or unreadable. */
+export function readRuntimeSocketInode(target: string): bigint | null {
+  try {
+    return fs.statSync(target, { bigint: true }).ino;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Removes this brain's own socket file — and only its own.
+ *
+ * The shutdown path used to unlink unconditionally. When the ownership monitor
+ * fires with "replaced" a rival has already rebound the path, so that unlink
+ * deleted the *winner's* socket and left the machine with a live brain nothing
+ * could reach. Compare the inode against the one we bound before removing it.
+ *
+ * With no inode recorded at bind time (a filesystem that reports none) the old
+ * unconditional behaviour stands: leaking a stale socket file is worse than the
+ * race it would avoid.
+ */
+export function unlinkOwnedRuntimeSocket(
+  socketPath: string,
+  ownInode: bigint | null,
+  deps: {
+    readInode?: (target: string) => bigint | null;
+    unlink?: (target: string) => void;
+  } = {},
+): "unlinked" | "not_owned" | "absent" | "failed" {
+  if (isAdeRuntimeNamedPipePath(socketPath)) return "not_owned";
+  const readInode = deps.readInode ?? readRuntimeSocketInode;
+  const unlink = deps.unlink ?? ((target: string) => fs.unlinkSync(target));
+  const current = readInode(socketPath);
+  if (current == null) return "absent";
+  if (ownInode != null && current !== ownInode) return "not_owned";
+  try {
+    unlink(socketPath);
+  } catch (error) {
+    // ENOENT means someone else removed it between our stat and our unlink:
+    // the path is gone, which is the outcome "absent" describes and the
+    // outcome we wanted. Reporting it as "failed" would send the caller
+    // looking for a stale socket that does not exist.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return "absent";
+    // Distinct from "absent": the socket file is still there and still ours,
+    // so the next brain to start will probe a stale path we failed to clean up.
+    return "failed";
+  }
+  return "unlinked";
+}
+
+/**
+ * A unix-domain brain can lose its own endpoint AFTER a successful `listen()`.
+ * The bind is preceded by a check, not a lock: `existsSync` -> await
+ * `assertBrainSocketUnowned` -> `unlink` -> `listen`. Two brains that both
+ * probe the same *stale* socket file race across that await — the first
+ * unlinks and binds inode X, the second (whose probe predates that bind) then
+ * unlinks the path->X link and binds a fresh inode Y. Neither sees
+ * `EADDRINUSE`, so the guard around `listen` never fires, and the first brain
+ * lives on listening to an inode nothing can reach: the PR #949 zombie.
+ *
+ * The sync-host loop's socket-liveness abort used to catch this incidentally,
+ * because the loser was still inside that loop when the socket went live.
+ * Binding before the sync host removed that accident, so make the check
+ * explicit: remember the inode we bound and end the brain if the path stops
+ * pointing at it. The supervisor then restarts us, and the restarted brain
+ * finds the rival's live socket and reports `socket_owned_by_other` instead of
+ * squatting silently.
+ *
+ * Windows named pipes are exempt: a pipe name is a kernel object with no
+ * directory entry to steal, and a bound pipe can never be probed as stale.
+ */
+export function monitorBrainSocketOwnership(
+  socketPath: string,
+  onLost: (reason: "removed" | "replaced") => void,
+  options: {
+    intervalMs?: number;
+    readInode?: (target: string) => bigint | null;
+  } = {},
+): () => void {
+  if (isAdeRuntimeNamedPipePath(socketPath)) return () => {};
+  const readInode = options.readInode ?? readRuntimeSocketInode;
+  const ownInode = readInode(socketPath);
+  // No inode to compare against (a platform or filesystem that does not report
+  // one) means this guard cannot run. Fail open: a brain with no watchdog is
+  // strictly better than one that ends itself on an unreadable stat.
+  if (ownInode == null) return () => {};
+  let done = false;
+  const timer = setInterval(() => {
+    if (done) return;
+    const current = readInode(socketPath);
+    if (current === ownInode) return;
+    done = true;
+    clearInterval(timer);
+    onLost(current == null ? "removed" : "replaced");
+  }, Math.max(250, options.intervalMs ?? BRAIN_SOCKET_OWNERSHIP_POLL_MS));
+  timer.unref?.();
+  return () => {
+    done = true;
+    clearInterval(timer);
+  };
 }
 
 function monitorRuntimeParentProcess(onGone: () => void): () => void {
@@ -20273,6 +20562,49 @@ function formatAccountMachines(value: unknown): string {
   ].join("\n");
 }
 
+/**
+ * `ade brain status` and `ade runtime status` in --text mode.
+ *
+ * `starting` — the CLI's read of the desktop's `brain_starting` state — only
+ * means something if a human can see it, so it is printed here with the same
+ * wording as the `ade doctor` Brain row, next to the last-failure line it has
+ * to be read against. Accepts both shapes: `ade brain status` wraps the runtime
+ * result, `ade runtime status` is that result.
+ */
+function brainStatusFormatter(rest: string[]): FormatterId | undefined {
+  const sub = rest.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? "status";
+  return sub === "status" || sub === "show" ? "brain-status" : undefined;
+}
+
+export function formatBrainStatus(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const runtime = isRecord(result.runtime) ? result.runtime : result;
+  const service = isRecord(result.service) ? result.service : null;
+  const starting = result.starting === true || runtime.starting === true;
+  return renderKeyValues("ADE brain", [
+    ["ok", result.ok],
+    ["endpoint", runtime.running === true ? "running" : "not responding"],
+    ["socket", runtime.socketPath],
+    ["version", runtime.version],
+    ["pid", runtime.pid],
+    [
+      "starting",
+      starting
+        ? "yes \u00b7 the background service is up and its brain is coming up; nothing to repair"
+        : null,
+    ],
+    ["channel", runtime.packageChannel],
+    ["build", runtime.buildHash],
+    ["role", runtime.defaultRole],
+    ["project", runtime.projectRoot],
+    ["service", service ? service.message : null],
+    ["port", result.port],
+    ["connected peers", result.connectedPeers],
+    ["last failure", result.lastFailure],
+    ["message", starting ? null : result.message],
+  ]);
+}
+
 function formatTextOutput(
   value: unknown,
   formatter: FormatterId | undefined,
@@ -20293,12 +20625,14 @@ function formatTextOutput(
         ["workspace", isRecord(value) ? value.workspaceRoot : null],
         ["socket", isRecord(value) ? value.socketPath : null],
       ]);
+    case "brain-status":
+      return formatBrainStatus(value);
     case "doctor": {
       const doctorRows = isRecord(value) && Array.isArray(value.rows)
         ? value.rows.filter(isRecord)
         : [];
       if (doctorRows.length > 0) {
-        return renderTable(
+        const table = renderTable(
           ["check", "status", "detail"],
           doctorRows.map((row) => [
             asString(row.label) ?? asString(row.key) ?? "Unknown",
@@ -20311,6 +20645,11 @@ function formatTextOutput(
           ]),
           "No health checks were returned.",
         );
+        // A failing row that these checks cannot explain is the case
+        // `ade report-issue` exists for: it reads local files only, so it still
+        // works on the machine where the brain will not come up.
+        if (!doctorRows.some((row) => row.status === "fail")) return table;
+        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue\` and file the printed report.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
@@ -21920,6 +22259,34 @@ async function runCli(
         throw error;
       }
     }
+    if (plan.kind === "report-issue") {
+      const { projectRoot } = resolveRoots(parsed.options);
+      const built = buildCliDiagnosticReport({
+        surface: "cli",
+        projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
+        cliVersion: VERSION,
+      });
+      // Copy-then-open, the same order the desktop button uses: the issue
+      // template asks the user to paste the report from their clipboard, so
+      // opening it without copying first sends them to a form with nothing to
+      // paste. Both steps are best effort and the report is printed regardless.
+      const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
+      if (parsed.options.text) {
+        const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
+        return {
+          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}\n`,
+          exitCode: 0,
+        };
+      }
+      return {
+        output: formatOutput(
+          buildReportIssuePayload(built, openedIssue),
+          parsed.options,
+          undefined,
+        ),
+        exitCode: 0,
+      };
+    }
     if (plan.kind === "doctor") {
       const result = await runDoctorCommand(plan.online, parsed.options, {
         resolveMachineRuntimeSocketPath,
@@ -21945,14 +22312,14 @@ async function runCli(
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);
       return {
-        output: formatOutput(result, parsed.options, undefined),
+        output: formatOutput(result, parsed.options, brainStatusFormatter(plan.rest)),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
     }
     if (plan.kind === "brain") {
       const result = await runBrainCommand(plan.rest, parsed.options);
       return {
-        output: formatOutput(result, parsed.options, undefined),
+        output: formatOutput(result, parsed.options, brainStatusFormatter(plan.rest)),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
     }

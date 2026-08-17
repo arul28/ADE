@@ -82,6 +82,21 @@ export type WindowsServicePidRecord = {
 export type WindowsRuntimeReadiness = {
   ready: boolean;
   diagnostic: string;
+  /**
+   * A process that is verifiably OUR supervisor -- the recorded pid is alive
+   * AND is a powershell running THIS launcher, per
+   * `buildWindowsSupervisorQueryArgs` -- owns a brain that has not answered
+   * yet. Callers treat that as "still starting" rather than a failed install.
+   *
+   * Deliberately not a bare `process.kill(pid, 0)` liveness probe: the pid
+   * comes from an on-disk record, a pid that outlived its record can have been
+   * recycled by an unrelated process, and `isPidAlive` reports EPERM (a pid
+   * owned by somebody else entirely) as alive. Answering "still starting" for
+   * a recycled pid turns a genuinely failed install into an `ok: true` the
+   * caller waits on and never repairs, so the identity check the readiness
+   * probe already performs is what decides this.
+   */
+  supervised?: boolean;
 };
 
 export type WindowsRuntimeReadinessProbe = (args: {
@@ -499,18 +514,25 @@ export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (arg
     { encoding: "utf8", windowsHide: true },
   );
   if (supervisor.status !== 0) {
+    // Not supervised: either the pid is gone/recycled (3, 4) or the query
+    // itself could not answer. An unanswerable query is never reported as
+    // "still starting" -- unknown must not read as healthy.
     return {
       ready: false,
+      supervised: false,
       diagnostic: supervisor.status === 3 || supervisor.status === 4
         ? `Supervisor PID ${pidRecord.supervisorPid} is stale or belongs to another process.`
         : serviceManagerResultText(supervisor) || `Unable to inspect supervisor PID ${pidRecord.supervisorPid}.`,
     };
   }
+  // Past this point the recorded supervisor is verifiably ours, so every
+  // not-ready answer below is a brain still coming up under a live supervisor.
   if (pidRecord.runtimePid == null) {
     const restart = pidRecord.nextRestartAt ? `; restart scheduled for ${pidRecord.nextRestartAt}` : "";
     const launchError = pidRecord.lastLaunchError ? ` Last launch error: ${pidRecord.lastLaunchError}.` : "";
     return {
       ready: false,
+      supervised: true,
       diagnostic: `Supervisor PID ${pidRecord.supervisorPid} is running, but the ADE brain is between restart attempts${restart}.${launchError}`,
     };
   }
@@ -522,6 +544,7 @@ export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (arg
   if (runtime.status !== 0) {
     return {
       ready: false,
+      supervised: true,
       diagnostic: runtime.status === 3 || runtime.status === 4
         ? `Runtime PID ${pidRecord.runtimePid} is stale or does not match this channel executable.`
         : serviceManagerResultText(runtime) || `Unable to inspect runtime PID ${pidRecord.runtimePid}.`,
@@ -540,6 +563,7 @@ export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (arg
   if (status.status !== 0) {
     return {
       ready: false,
+      supervised: true,
       diagnostic: serviceManagerResultText(status)
         || `Runtime PID ${pidRecord.runtimePid} has not initialized on ${args.socketPath}.`,
     };
@@ -555,11 +579,13 @@ export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (arg
     }
     return {
       ready: false,
+      supervised: true,
       diagnostic: `Runtime endpoint responded with PID ${String(payload.pid ?? "unknown")}; expected ${pidRecord.runtimePid}.`,
     };
   } catch {
     return {
       ready: false,
+      supervised: true,
       diagnostic: `Runtime PID ${pidRecord.runtimePid} returned an invalid readiness payload.`,
     };
   }
@@ -635,6 +661,7 @@ export async function waitForWindowsRuntimeReadiness(args: {
   const readinessProbe = args.readinessProbe ?? defaultWindowsRuntimeReadiness;
   const sleep = args.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   let diagnostic = "The Windows brain supervisor did not publish a PID record.";
+  let supervised = false;
   do {
     const pidRecord = readPidRecord(args.pidPath);
     if (pidRecord) {
@@ -646,11 +673,15 @@ export async function waitForWindowsRuntimeReadiness(args: {
         spawnSync: args.spawnSync,
       });
       if (result.ready) return result;
+      // A record alone is not a supervisor. `supervised` is whatever the
+      // probe's identity check concluded about the recorded pid, so a stale
+      // record naming a recycled pid never reads as "still starting".
+      supervised = result.supervised === true;
       diagnostic = result.diagnostic;
     }
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     await sleep(Math.min(Math.max(10, args.pollMs), remaining));
   } while (Date.now() <= deadline);
-  return { ready: false, diagnostic };
+  return { ready: false, diagnostic, supervised };
 }

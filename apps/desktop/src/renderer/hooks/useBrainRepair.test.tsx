@@ -67,7 +67,7 @@ describe("useBrainRepair", () => {
     await runRepair(result);
 
     expect(result.current.notice?.tone).toBe("warn");
-    expect(result.current.notice?.text).toContain("didn't restart");
+    expect(result.current.notice?.text).toContain("didn't come back");
     expect(result.current.error).toBeNull();
   });
 

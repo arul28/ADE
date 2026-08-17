@@ -966,6 +966,30 @@ describe("local runtime connection pool", () => {
     pool.dispose();
   });
 
+  it("keeps the service startup streak when only an app-owned runtime connected", () => {
+    // The streak measures how long the MACHINE service has failed to answer.
+    // An isolated or spawned runtime is what the desktop falls back to because
+    // the service did not answer, so landing on one must not reset the marker
+    // -- doing so made every 60s isolated-recovery install restart the streak,
+    // and a long-broken service kept reading as a brain that is just starting.
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never, {});
+    const internals = pool as unknown as {
+      serviceStartupStreakStartedAt: string | null;
+      noteConnectedRuntime: (isMachineService: boolean) => void;
+    };
+
+    internals.serviceStartupStreakStartedAt = "2026-08-16T09:00:00.000Z";
+    internals.noteConnectedRuntime(false);
+    expect(internals.serviceStartupStreakStartedAt).toBe("2026-08-16T09:00:00.000Z");
+
+    internals.noteConnectedRuntime(true);
+    expect(internals.serviceStartupStreakStartedAt).toBeNull();
+
+    pool.dispose();
+  });
+
   it("parses structured service manager output for settings status", () => {
     expect(parseRuntimeServiceManagerOutput(JSON.stringify({
       ok: false,
@@ -979,7 +1003,16 @@ describe("local runtime connection pool", () => {
       ok: false,
       path: "/Users/admin/Library/LaunchAgents/com.ade.runtime.plist",
       message: "launchctl failed",
+      starting: false,
+      restarted: false,
     });
+    expect(parseRuntimeServiceManagerOutput(JSON.stringify({
+      ok: true,
+      action: "install",
+      starting: true,
+      path: "/Users/admin/Library/LaunchAgents/com.ade.runtime.plist",
+      message: "still starting",
+    }))?.starting).toBe(true);
 
     expect(parseRuntimeServiceManagerOutput("not json")).toBeNull();
   });

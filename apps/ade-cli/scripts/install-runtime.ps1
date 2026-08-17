@@ -327,13 +327,29 @@ $binaryAsset = "ade-$target.exe"
 $nativeAsset = "ade-$target.native.tar.gz"
 $runtimeDir = Join-Path $AdeHome "runtime\$target"
 $destinationBinary = Join-Path $InstallDir "ade.exe"
+# $TEMP holds downloads and nothing else. The staged runtime, the runtime
+# backup, the staged binary copy and the binary backup all live next to what
+# they replace, under the ADE home. Two reasons, and both have bitten the POSIX
+# installer this now mirrors (scripts/install-runtime.sh):
+#   - promoting and restoring have to be same-directory renames. `Move-Item`
+#     across volumes is a copy plus a delete, and %TEMP% is routinely on a
+#     different volume from the user profile (redirected TEMP, a RAM disk, a
+#     roaming profile), so a half-copied ade.exe or runtime tree is the broken
+#     install this block exists to prevent;
+#   - AppLocker and most EDR agents block execution out of %TEMP% outright, so
+#     a preflight staged there fails on every managed corporate machine. The
+#     binary is not the only thing that has to be executable: it loads the
+#     .node modules NODE_PATH points at, and those come out of the runtime
+#     archive. Staging the runtime under the ADE home is what makes the
+#     preflight test the same files the promoted install will load.
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ade-install-" + [Guid]::NewGuid().ToString("N"))
-$stagedBinary = Join-Path $tempRoot "ade.exe"
+$downloadedBinary = Join-Path $tempRoot "ade.exe"
 $stagedArchive = Join-Path $tempRoot $nativeAsset
 $checksumManifest = Join-Path $tempRoot "SHA256SUMS"
-$stagedRuntime = Join-Path $tempRoot "runtime"
-$backupBinary = Join-Path $tempRoot "ade.previous.exe"
-$backupRuntime = Join-Path $tempRoot "runtime.previous"
+$stagedRuntime = "$runtimeDir.new"
+$backupRuntime = "$runtimeDir.previous"
+$pendingBinary = Join-Path $InstallDir "ade.new.exe"
+$backupBinary = Join-Path $InstallDir "ade.bak.exe"
 $script:PreviousNodePath = $env:NODE_PATH
 $previousEnvironment = @{
   ADE_HOME = $env:ADE_HOME
@@ -345,19 +361,83 @@ $previousEnvironment = @{
 $previousServiceWasStopped = $false
 $previousServiceWasRunning = $false
 $promotedBinary = $false
+# $promotedBinary only says the new ade.exe was renamed into place. Whether it
+# can actually start is a separate fact, and the window between the two is
+# exactly where an abort must put the previous binary back -- so the cleanup
+# gates on this flag, not on the rename. Mirrors `promoted_binary` in
+# scripts/install-runtime.sh, which is set only once the check has passed.
+$binaryVerified = $false
 $promotedRuntime = $false
 $preserveTempForRecovery = $false
 $installSucceeded = $false
+# "staged" until the new binary is promoted, "installed" afterwards. The two
+# stages leave the machine in different states, and a message that describes
+# the wrong one sends a user looking for damage that is not there.
+$installStage = "staged"
+
+# Plain, stage-aware note about what is on disk after a failed install. Mirrors
+# `die_runtime_unusable` in scripts/install-runtime.sh.
+function Write-AdeInstallStateNote(
+  [string]$Stage,
+  [bool]$RestoredPreviousBinary,
+  [string]$BinaryPath
+) {
+  Clear-AdeActiveLine
+  if ($Stage -eq "staged") {
+    if (Test-Path -LiteralPath $BinaryPath -PathType Leaf) {
+      [Console]::Error.WriteLine("ade install: your existing ADE at $BinaryPath was not touched.")
+    } else {
+      [Console]::Error.WriteLine("ade install: nothing was left installed at $BinaryPath.")
+    }
+  } elseif ($RestoredPreviousBinary) {
+    [Console]::Error.WriteLine("ade install: the ADE you already had was put back, so nothing is broken.")
+  } elseif (Test-Path -LiteralPath $BinaryPath -PathType Leaf) {
+    # The rollback is best effort, so the disk is the only thing worth
+    # believing here: if it could not remove the binary that just failed, the
+    # broken one is still what runs, and saying "nothing was left installed"
+    # sends the user looking in the wrong place.
+    [Console]::Error.WriteLine("ade install: the ADE at $BinaryPath is the one that just failed to start.")
+  } else {
+    [Console]::Error.WriteLine("ade install: nothing was left installed at $BinaryPath.")
+  }
+  [Console]::Error.WriteLine(
+    "ade install: next: run the installer again; if it fails the same way, open an issue at https://github.com/$Repo/issues with the error below.")
+}
 
 try {
-  New-Item -ItemType Directory -Force -Path $tempRoot, $stagedRuntime | Out-Null
+  # The install dir and the runtime's parent are created up front now: the
+  # staged runtime and the staged binary copy live inside them, not in %TEMP%.
+  New-Item -ItemType Directory -Force -Path $InstallDir, (Split-Path $runtimeDir -Parent), $tempRoot | Out-Null
+  # Leftovers from an install that was killed before its cleanup ran. A backup
+  # is put back before it is deleted: if the earlier run died between the two
+  # renames, that backup is the machine's only copy, and deleting it outright
+  # is how a retry would turn a recoverable abort into no install at all.
+  Remove-Item -LiteralPath $stagedRuntime -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $pendingBinary -Force -ErrorAction SilentlyContinue
+  if ((Test-Path -LiteralPath $backupRuntime) -and -not (Test-Path -LiteralPath $runtimeDir)) {
+    Move-Item -LiteralPath $backupRuntime -Destination $runtimeDir -Force -ErrorAction SilentlyContinue
+  }
+  if ((Test-Path -LiteralPath $backupBinary -PathType Leaf) -and
+      -not (Test-Path -LiteralPath $destinationBinary -PathType Leaf)) {
+    Move-Item -LiteralPath $backupBinary -Destination $destinationBinary -Force -ErrorAction SilentlyContinue
+  }
+  # Each backup is dropped only once the thing it backs up is actually on disk.
+  # The restores above are best effort, and deleting a backup whose restore
+  # silently failed is what would turn a recoverable abort into no install.
+  if (Test-Path -LiteralPath $runtimeDir) {
+    Remove-Item -LiteralPath $backupRuntime -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  if (Test-Path -LiteralPath $destinationBinary -PathType Leaf) {
+    Remove-Item -LiteralPath $backupBinary -Force -ErrorAction SilentlyContinue
+  }
+  New-Item -ItemType Directory -Force -Path $stagedRuntime | Out-Null
   Write-AdeBanner
   Write-Host "  Installing ADE to $AdeHome"
   Write-Host ""
-  Download-Asset $binaryAsset $stagedBinary "ADE runtime"
+  Download-Asset $binaryAsset $downloadedBinary "ADE runtime"
   Download-Asset $nativeAsset $stagedArchive "Native dependencies"
   Download-Asset "SHA256SUMS" $checksumManifest
-  Verify-Checksum $checksumManifest $binaryAsset $stagedBinary
+  Verify-Checksum $checksumManifest $binaryAsset $downloadedBinary
   Verify-Checksum $checksumManifest $nativeAsset $stagedArchive
 
   & tar.exe -xzf $stagedArchive -C $stagedRuntime
@@ -366,8 +446,17 @@ try {
     Fail "native dependency archive is missing node_modules"
   }
 
+  # The preflight copy lands in $InstallDir, not %TEMP% -- see the note above.
+  # ade.new.exe is the scratch name the promotion below renames from, and the
+  # finally already removes it, so this costs nothing but the copy.
+  Copy-Item -LiteralPath $downloadedBinary -Destination $pendingBinary -Force
+
+  # Preflight before anything is promoted: the new binary against the staged
+  # runtime, both under the ADE home. A download that cannot even print its
+  # version never replaces ade.exe, so the previous install is still there and
+  # still working.
   Set-ProcessRuntimeEnvironment $AdeHome $stagedRuntime
-  & $stagedBinary --version | Out-Null
+  & $pendingBinary --version | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail "downloaded ADE runtime failed its version check" }
 
   if ((Test-Path -LiteralPath $destinationBinary -PathType Leaf) -and -not $NoService) {
@@ -393,21 +482,30 @@ try {
     }
   }
 
-  New-Item -ItemType Directory -Force -Path $InstallDir, (Split-Path $runtimeDir -Parent) | Out-Null
-  if (Test-Path -LiteralPath $destinationBinary -PathType Leaf) {
-    Move-Item -LiteralPath $destinationBinary -Destination $backupBinary
-  }
+  # Every move below is a same-directory rename: $runtimeDir.new/.previous sit
+  # beside $runtimeDir, and ade.new.exe/ade.bak.exe beside ade.exe. Nothing
+  # crosses a volume, so nothing can be half-copied.
   if (Test-Path -LiteralPath $runtimeDir) {
     Move-Item -LiteralPath $runtimeDir -Destination $backupRuntime
   }
   Move-Item -LiteralPath $stagedRuntime -Destination $runtimeDir
   $promotedRuntime = $true
-  Move-Item -LiteralPath $stagedBinary -Destination $destinationBinary
+  # Promote the binary last, and only by rename -- of the very copy the
+  # preflight above just ran, so a truncated write can never be what ends up at
+  # ade.exe.
+  if (Test-Path -LiteralPath $destinationBinary -PathType Leaf) {
+    Move-Item -LiteralPath $destinationBinary -Destination $backupBinary
+  }
+  Move-Item -LiteralPath $pendingBinary -Destination $destinationBinary
   $promotedBinary = $true
+  $installStage = "installed"
 
   Set-ProcessRuntimeEnvironment $AdeHome $runtimeDir
   & $destinationBinary --version | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail "installed ADE runtime failed its version check" }
+  # The new binary has now proved it runs, so the cleanup below must stop
+  # treating ade.exe as unverified and rolling the backup back over it.
+  $binaryVerified = $true
   if (-not $NoService) {
     # `brain start`, NOT `serve --install-service`. The latter registers the
     # service at whatever ADE_DEFAULT_ROLE happens to be, and in a fresh install
@@ -434,10 +532,12 @@ try {
       if ($LASTEXITCODE -ne 0) { $rollbackErrors.Add("new brain service cleanup exited with code $LASTEXITCODE") }
     } catch { $rollbackErrors.Add("new brain service cleanup failed: $($_.Exception.Message)") }
   }
+  $restoredPreviousBinary = $false
   try {
     if ($promotedBinary) { Remove-Item -LiteralPath $destinationBinary -Force -ErrorAction Stop }
     if (Test-Path -LiteralPath $backupBinary -PathType Leaf) {
       Move-Item -LiteralPath $backupBinary -Destination $destinationBinary -Force -ErrorAction Stop
+      $restoredPreviousBinary = $true
     }
   } catch { $rollbackErrors.Add("binary restore failed: $($_.Exception.Message)") }
   try {
@@ -463,15 +563,65 @@ try {
   }
   if ($rollbackErrors.Count -gt 0) {
     $preserveTempForRecovery = $true
-    throw "ADE runtime install failed ($($installError.Exception.Message)); rollback also failed: $($rollbackErrors -join '; '). Recovery files were retained at $tempRoot"
+    Write-AdeInstallStateNote $installStage $restoredPreviousBinary $destinationBinary
+    throw "ADE runtime install failed ($($installError.Exception.Message)); rollback also failed: $($rollbackErrors -join '; '). Recovery files were retained at $tempRoot, $backupBinary and $backupRuntime"
   }
+  Write-AdeInstallStateNote $installStage $restoredPreviousBinary $destinationBinary
   throw $installError
 } finally {
   foreach ($name in $previousEnvironment.Keys) {
     [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], "Process")
   }
   if (-not $preserveTempForRecovery) {
+    # Scratch state only: the downloads, the staged runtime and the staged
+    # binary copy. The two backups go too, but only after the window in which
+    # either is the machine's only copy -- an abort (Ctrl-C, a throw between
+    # the two renames) between moving the old one aside and moving the new one
+    # in would otherwise leave the machine with nothing installed.
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pendingBinary -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stagedRuntime -Recurse -Force -ErrorAction SilentlyContinue
+    # The binary first, because whether the old binary goes back decides
+    # whether the old runtime has to go back with it. What is at ade.exe
+    # between its rename and its version check is an unverified binary, so an
+    # abort in that window restores the backup over it -- Test-Path alone would
+    # see a file there and leave the broken one installed.
+    $restoredOldBinary = $false
+    if (-not $binaryVerified -and (Test-Path -LiteralPath $backupBinary -PathType Leaf)) {
+      try {
+        Move-Item -LiteralPath $backupBinary -Destination $destinationBinary -Force -ErrorAction Stop
+        $restoredOldBinary = $true
+      } catch {}
+    }
+    # Before the runtime is promoted its backup is the machine's only runtime,
+    # so it goes back if nothing is at $runtimeDir.
+    if (-not $promotedRuntime) {
+      if ((Test-Path -LiteralPath $backupRuntime) -and -not (Test-Path -LiteralPath $runtimeDir)) {
+        try {
+          Move-Item -LiteralPath $backupRuntime -Destination $runtimeDir -Force -ErrorAction Stop
+        } catch {}
+      }
+    }
+    # After it is promoted, the old binary having just gone back is what makes
+    # the old runtime needed again: an old ade.exe against the new native
+    # sidecar is the broken install this whole block exists to prevent.
+    if ($promotedRuntime -and $restoredOldBinary) {
+      if (Test-Path -LiteralPath $backupRuntime) {
+        try {
+          Remove-Item -LiteralPath $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
+          Move-Item -LiteralPath $backupRuntime -Destination $runtimeDir -Force -ErrorAction Stop
+        } catch {}
+      }
+    }
+    # Same rule as the pre-install repair above: a backup is only scratch once
+    # what it backs up is on disk again. The restores are best effort, so a
+    # failed one must keep its backup rather than have it deleted underneath.
+    if (Test-Path -LiteralPath $runtimeDir) {
+      Remove-Item -LiteralPath $backupRuntime -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($binaryVerified -or $restoredOldBinary) {
+      Remove-Item -LiteralPath $backupBinary -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 

@@ -124,6 +124,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // settle-tuple write that had to be reconciled through the chokepoint.
   "settle_teardown_residue",
   "settle_remote_write_reconciled",
+  // One coarse fact per "Report issue" press: whether the GitHub issue page
+  // opened. Never the surface it was pressed on, and never the report itself.
+  "issue_report",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {

@@ -1013,6 +1013,12 @@ export type ProjectTransitionError = {
   code?: string;
   detail?: string;
   rootPath?: string;
+  /**
+   * The project the failed transition was heading to, for the banner's
+   * "Try again". Separate from `rootPath`, which together with `code` selects
+   * the full-screen recovery flow.
+   */
+  retryRootPath?: string;
 };
 
 /**
@@ -1394,13 +1400,25 @@ function formatProjectTransitionError(
   const parsed = parseCodedErrorMessage(error);
   const raw = parsed.message;
   if (/timed out after 30000ms/i.test(raw)) {
+    // The main process is not cancelled when the renderer stops waiting (the
+    // call is raced against a timer), so the work really is still running.
+    // Saying so is the difference between "it failed" and "give it a moment".
     if (kind === "opening") {
-      return { message: "Opening this project took longer than 30 seconds, so ADE stopped waiting." };
+      return {
+        message:
+          "Opening this project took longer than 30 seconds, so ADE stopped waiting. It's still working on it in the background — you can try again now.",
+      };
     }
     if (kind === "switching") {
-      return { message: "Switching projects took longer than 30 seconds, so ADE kept the current project active." };
+      return {
+        message:
+          "Switching projects took longer than 30 seconds, so ADE kept the current project open. It's still working on it in the background — you can try again now.",
+      };
     }
-    return { message: "Closing the current project took longer than 30 seconds." };
+    return {
+      message:
+        "Closing the current project took longer than 30 seconds. ADE is still finishing in the background.",
+    };
   }
   const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code === "disk_full"
@@ -2672,7 +2690,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanesLoading: false,
         projectTransitionError: projectTransitionError.code
           ? { ...projectTransitionError, rootPath }
-          : projectTransitionError,
+          : { ...projectTransitionError, retryRootPath: rootPath },
       });
       throw error;
     }

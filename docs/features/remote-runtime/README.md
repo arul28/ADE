@@ -170,9 +170,22 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `serve --uninstall-service` run through one shared
   `runServiceManagerCommand` child-process boundary (spawn, output
   accumulation, single-settle latch, timeout kill, output parse) and differ only
-  in the policy applied to the result. Install is bounded at 60 s and uninstall
-  at 20 s: a wedged installer used to pin `serviceInstallPromise` forever, which
-  blocked every later install and left Repair spinning. `installServiceBestEffort`
+  in the policy applied to the result. Install is bounded at
+  `RUNTIME_SERVICE_START_WAIT_MS` (90 s) and uninstall at 20 s: a wedged
+  installer used to pin `serviceInstallPromise` forever, which blocked every
+  later install and left Repair spinning, but the budget errs long because it
+  has to cover the installer's own handover wait — a child killed at this
+  deadline reads as a failed install even when the supervisor's replacement is
+  coming up. The parsed result carries `starting` and `restarted` through to
+  `LocalRuntimeStatus.serviceInstall`, and a `starting` install is logged as
+  `local_runtime.service_install_starting` rather than as a success. The status
+  also carries `attemptStartedAt`: the start of the current *streak* of install
+  attempts, not of this attempt, because installs recur (every connect failure
+  re-runs one, isolated recovery re-runs one every 60 s) and what recovery has
+  to age is how long the brain has failed to answer since the first of them. It
+  resets on a successful connection, and it is what
+  `projectRecoveryService.diagnose` measures its `brain_starting` window
+  against. `installServiceBestEffort`
   coalesces concurrent callers onto one child, but a `forceRestart: true` call
   never coalesces onto a plain install — a background install may skip entirely
   or may have spawned before the user asked for a restart, so returning its
@@ -187,7 +200,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   database, migration, endpoint, and chat continuity failures. It also owns
   `restartBrain()`, the machine-scoped restart behind the Connections **Repair**
   button. Both it and `repair()`'s restart_service/verify_endpoint steps go
-  through one `restartServiceAndWait()` sequence — install, wait up to 20 s for
+  through one `restartServiceAndWait()` sequence — install, wait up to 90 s for
   the machine endpoint to rebind, then `ping` — which reports which stage lost
   rather than the copy, because its two callers phrase the same stage
   differently (`repair()` speaks in repair steps, `restartBrain()` throws).
@@ -201,11 +214,86 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   repair stops the service and then does exclusive database work, and
   reinstalling the brain underneath it would put a writer back on the database
   mid-check. Repair wins; the button can be pressed again afterwards.
+- **A slow brain is not a broken brain.** The brain binds `ade.sock` *before*
+  it starts the mobile sync host (`runServe` in `apps/ade-cli/src/cli.ts`
+  starts `runSyncHostStartupLoop` in the background right after the socket is
+  published), so a desktop can reach it within a second or two of spawn even
+  while a project scope is still opening or the sync port band is being
+  reclaimed. All three installers — launchd, systemd, and Windows — wait
+  `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS` (30 s; `WINDOWS_HANDOVER_TIMEOUT_MS`,
+  15 s, on Windows) for the replacement to answer and, if it is alive but still
+  quiet, return `ok: true, starting: true` instead of a
+  `replacement_responsive` failure — the supervisor owns that child and it will
+  answer. Every budget in this lifecycle is defined once, in
+  `apps/ade-cli/src/serviceManager/runtimeServiceBudgets.ts`, because the
+  numbers only mean anything relative to each other (the desktop's wait has to
+  outlast the installer's). The shared handover itself — responsiveness probe,
+  young-brain age check, crash-loop veto, the wait loop and the young-brain
+  decision — lives in `apps/ade-cli/src/serviceManager/serviceHandover.ts`
+  (`awaitServiceHandover`, `awaitYoungBrainStart`) so launchd and systemd
+  cannot drift; each installer keeps only its own message text. The young-brain
+  wait and the real handover get a full budget **each**: when they shared one
+  install-wide deadline, a young brain that died late in its wait left the
+  restart with no time and its replacement was reported as a `replacement_pid`
+  failure. `installSystemd.ts` reads unit state from a single
+  `systemctl --user show -p ActiveState -p MainPID` and treats systemd's own
+  `activating` as a live brain. The desktop then keeps
+  dialling the socket for `LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`
+  (90 s). A forced install (Repair) that finds an unchanged agent whose child
+  is younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) and not answering
+  yet waits for that child rather than killing it — restarting a booting brain
+  only resets its clock, and doing it on every Repair click was how a slow
+  machine could never finish starting one. A brain that keeps dying is always
+  young, so a recorded crash-loop streak vetoes that wait: it needs the restart
+  and the diagnosis, not more patience. `projectRecoveryService.diagnose`
+  reports the same window as `brain_starting` (no Repair offered; the recovery
+  screen re-diagnoses every 2 s and reopens the project itself once healthy),
+  and `repair()` streams each step to the window via `IPC.recoveryRepairStep`
+  so a long restart wait reads as progress, not a hang. Before this, a 10 s
+  handover budget expired against healthy-but-slow brains on cold or slower
+  machines, the update transaction reported "couldn't be set up", and the
+  recovery screen's Repair killed the brain that was seconds from ready.
+- **Linux parity.** `ade` on Linux (headless brains, `install.sh` installs,
+  remote runtimes reached over SSH) goes through `installSystemdService`, which
+  before this used to write the unit, `enable --now`, `restart`, and report
+  success the moment systemd accepted the restart — no proof the replacement
+  ever answered and no way to say "installed, still starting". A remote
+  bootstrap then dialled a socket that was not up yet and read a
+  healthy-but-slow brain as a broken one. It now runs the same handover as
+  macOS: no-op when an unchanged unit already answers, wait rather than restart
+  a child younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (vetoed by a crash-loop
+  streak), and `starting`/`restarted`/`failureStep` on the way out.
+- **Windows: "still starting" needs proof of a supervisor.** The readiness
+  probe (`serviceManager/windowsSupervisor.ts`) returns `supervised` alongside
+  `ready`, and only sets it once the recorded pid is verifiably *our*
+  supervisor — alive, and a PowerShell running this launcher. A bare
+  `process.kill(pid, 0)` would not do: the pid comes from an on-disk record, a
+  recycled pid belongs to an unrelated process, and `isPidAlive` reports EPERM
+  (someone else's pid) as alive. Calling a recycled pid "still starting" turns a
+  genuinely failed install into an `ok: true` the caller waits on and never
+  repairs. An unanswerable query is likewise never `supervised`: unknown must
+  not read as healthy.
+- **A brain that loses its socket ends itself.** `monitorBrainSocketOwnership`
+  (`apps/ade-cli/src/cli.ts`) remembers the inode it bound and polls the path.
+  Binding before the sync host removed the incidental protection the startup
+  loop's socket-liveness abort gave: two brains that both probe the same
+  *stale* socket can race across the `unlink`/`listen` await, and the loser ends
+  up listening to an inode nothing can reach without ever seeing `EADDRINUSE`.
+  Losing the inode now ends the brain, the supervisor restarts it, and the
+  restart reports `socket_owned_by_other` instead of squatting silently. The
+  shutdown that follows removes the socket file only if it still owns that
+  inode (`unlinkOwnedRuntimeSocket`) — an unconditional `unlink` here deleted
+  the *winner's* socket and left the machine with a live brain nothing could
+  reach. Windows named pipes are exempt — a pipe name has no directory entry to
+  steal.
 - `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
   one-time packaged-release reset of the old machine-connection trust files.
   It preserves account auth, machine identity, pairing PINs, projects, and SSH
   configuration, and completes only after the background service restart is
-  confirmed.
+  confirmed — specifically, only when the install reports `restarted`. A forced
+  install may legitimately decline to restart a brain that is still starting
+  (it waits for it instead), and that brain loaded the pre-reset files, so
+  leaving the marker unset is what makes the next launch restart it for real.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`
   (`codedRecoveryError`) — refuses to start an app-owned brain on a primary
   service socket and carries the recorded `AdeRecoveryErrorCode` to IPC and the
@@ -239,7 +327,11 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   share-this-machine and connection-doctor cards, saved/discovered machine
   rows, route and latency status, SSH host-key trust, structured connection
   errors, project picker, and the This-computer
-  route-publish health indicator. `remoteMachineModel.ts`
+  route-publish health indicator. A connect stopped because the host key still
+  has to be confirmed is not a failure, and `blockingHostKeyTrust` reports it as
+  its own outcome (`needs_trust` / `changed`) rather than through `onError`, so
+  callers reveal the trust prompt instead of showing a machine row an error it
+  did not have. Connection failures also carry a **Report issue** button. `remoteMachineModel.ts`
   (`describePublishHealth`) is the pure classifier for that indicator: the
   publishing `published` state reads healthy, the non-publishing states
   (`sync_disabled`, `not_host`, `account_signed_out`, `machine_key_unavailable`,
@@ -477,6 +569,51 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   of the `com.ade.watchdog` launch agent (`.beta` / `.alpha` per channel,
   `StartInterval` 60 s), done alongside the brain's own agent and best effort: a
   machine that cannot install the watchdog still gets a brain.
+- `apps/ade-cli/src/serviceManager/runtimeServiceBudgets.ts` — every timeout in
+  the brain's start/handover lifecycle, in one file, because the numbers only
+  mean anything relative to each other: `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS`
+  (30 s) is how long an installer waits before reporting `starting`,
+  `WINDOWS_HANDOVER_TIMEOUT_MS` (15 s) the supervisor's shorter equivalent,
+  `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) the "still starting, not broken"
+  window shared by the installers' young-brain wait and the desktop's
+  `brain_starting` diagnosis, `RUNTIME_SERVICE_START_WAIT_MS` (90 s) a caller's
+  wait for the endpoint, and `RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS` (60 s)
+  how long a caller keeps dialling a brain the installer called `starting`.
+  They were bare literals in seven files, where tuning one silently broke the
+  ordering the whole lifecycle depends on.
+- `apps/ade-cli/src/serviceManager/serviceHandover.ts` — the handover itself,
+  shared by launchd, systemd and Windows: `awaitServiceHandover` (responsiveness
+  probe, wait loop, `starting` verdict) and `awaitYoungBrainStart` (age check
+  plus the crash-loop veto). Each installer keeps only its own message text, so
+  the three cannot drift.
+- `apps/ade-cli/src/services/runtime/awaitRuntimeServiceEndpoint.ts` — the
+  install-then-wait policy `ade setup` uses, free of the CLI's globals so it can
+  be tested against a probe that answers on the Nth call. A failed install with
+  `starting` set is not a failure: the service is registered and supervised, so
+  it keeps dialling.
+- `apps/ade-cli/src/services/runtime/brainStartupState.ts` —
+  `readBrainStartupState`, the CLI's read of the desktop's `brain_starting`
+  verdict, for callers whose brain did not answer (a brain that answers is
+  running, never starting). The desktop reaches that verdict through its
+  connection pool; the CLI has no pool, so it asks the platform service manager
+  the same questions — is the service registered and running, how old is the
+  brain it supervises, and has that brain been restarted — and calls it
+  `starting` only when the service is installed, not stopped, its brain is
+  younger than the shared `RUNTIME_SERVICE_YOUNG_BRAIN_MS` window, and that
+  brain is not crash-looping. The crash-loop veto matters because a brain that
+  dies and relaunches every few seconds is always young, so age alone would
+  report a crash loop as "starting" forever: on macOS and Linux the veto reads
+  the brain's own `last-failure.json` streak, and on Windows it is the
+  supervisor's `restartCount`. Windows has no `ps -o etime=` either, so the age
+  comes from the same supervisor pid record (`runtimeStartedAtMs`) rather than
+  from the process table. Every probe failure fails closed to not-starting:
+  claiming a brain is starting when we cannot tell would hide a dead one.
+- `apps/ade-cli/src/services/runtime/connectWhileServiceStarts.ts` — dials the
+  endpoint of a just-installed service, allowing for a `starting` one, and
+  throws `RuntimeServiceStillStartingError` rather than a plain connect failure
+  when it runs out of time. That distinction matters: a plain failure is what
+  let a caller fall through to spawning an unmanaged rival brain on a socket the
+  supervisor already owns.
 - `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts` —
   `createMachineUpdateControls` / `runMachineUpdateAndRestart`, the host side of
   `machine.updateAndRestart`. Absent for embedded and test runtimes, which have

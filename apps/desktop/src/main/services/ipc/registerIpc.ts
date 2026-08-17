@@ -19,6 +19,8 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { resolveKnownProjectRoot } from "./knownProjectRoots";
+import type { AttemptedProjectRoots } from "./knownProjectRoots";
 import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
@@ -795,6 +797,15 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
+import {
+  collectDiagnosticReport,
+  writeDiagnosticReportFile,
+} from "../diagnostics/diagnosticReportService";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+} from "../../../shared/types/diagnostics";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 let appResourceUsageCache: {
@@ -1647,6 +1658,7 @@ export function registerIpc({
   openAttentionItem,
   getCurrentAccountOwnerId,
   accountAttentionClient,
+  attemptedProjectRoots,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
@@ -1669,6 +1681,14 @@ export function registerIpc({
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  /**
+   * Roots main has tried to open. Read-only here: main.ts is the single
+   * writer (it records a root only after resolving it to a real repository),
+   * and this module only consults `.list()` when validating a
+   * renderer-supplied root. See `knownProjectRoots.ts` for why a merely
+   * *attempted* root has to count as known.
+   */
+  attemptedProjectRoots?: AttemptedProjectRoots;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
@@ -1872,6 +1892,12 @@ export function registerIpc({
   // custom properties from thrown errors, so we re-throw with the code
   // prepended to the message. Renderer matches on the prefix.
   const surfaceCodedError = (error: unknown, meta?: { rootPath?: string }): never => {
+    // Deliberately does NOT record `meta.rootPath` into `attemptedProjectRoots`.
+    // Every caller that supplies a root got there through
+    // `switchProjectFromDialog`, which already recorded the resolved repo root
+    // after validating it, so a write here would be dead — and it would make
+    // the registry two-writer, with this one accepting a root that was never
+    // proven to exist. Reads still go through `attemptedProjectRoots.list()`.
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
       if (typeof code === "string" && code.length > 0) {
@@ -4562,21 +4588,156 @@ export function registerIpc({
     }
   });
 
+  /**
+   * The open project's root, or null when there is no project context at all.
+   * The surfaces that most need to file an issue are projectless — a renderer
+   * crash on startup, Connections on a fresh install — and `getCtx()` throws
+   * there, which turned "report this" into no report at all.
+   */
+  const openProjectRootOrNull = (): string | null => {
+    try {
+      return getCtx().project.rootPath ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * The renderer names a project root; main decides whether that is a project
+   * it knows. See `knownProjectRoots.ts` for why trimming is not enough, and
+   * why a root that only ever FAILED to open still counts as known.
+   */
+  const resolveRequestedProjectRoot = (requested: string): string | null => {
+    let recentProjectRoots: string[] = [];
+    try {
+      recentProjectRoots = (readGlobalState(globalStatePath).recentProjects ?? [])
+        // Remote entries have no local root to diagnose or repair.
+        .filter((entry) => !entry.remote)
+        .map((entry) => entry.rootPath);
+    } catch {
+      // A missing or corrupt global state leaves only the open project, which
+      // is the safe subset — never a reason to widen what is accepted.
+    }
+    return resolveKnownProjectRoot(requested, {
+      openProjectRoot: openProjectRootOrNull(),
+      recentProjectRoots,
+      attemptedProjectRoots: attemptedProjectRoots?.list(),
+    });
+  };
+
   ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
-    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!projectRoot) throw new Error("Project root path is required.");
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
     return await projectRecoveryService.diagnose(projectRoot);
   });
 
-  // Return the complete ordered step array with the final report. The current
-  // alert only needs one result, so it does not need a separate event lifecycle.
-  ipcMain.handle(IPC.recoveryRepair, async (_event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
-    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!projectRoot) throw new Error("Project root path is required.");
+  // The complete ordered step array comes back with the final report; each
+  // step is ALSO pushed to the calling window as it finishes. A repair can
+  // legitimately wait a minute or more for the background service to answer,
+  // and a spinner with no steps for that long reads as a hang.
+  ipcMain.handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
-    return await projectRecoveryService.repair(projectRoot);
+    return await projectRecoveryService.repair(projectRoot, {
+      onStep: (step) => {
+        if (event.sender.isDestroyed()) return;
+        event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
+      },
+    });
   });
+
+  /**
+   * Assembles the redacted diagnostic report for whichever error screen asked.
+   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
+   * without a recovery service must never stop someone from filing an issue,
+   * so every optional input degrades to "unknown" rather than throwing.
+   */
+  const buildDiagnosticsReport = async (
+    arg: DiagnosticReportRequestPayload | undefined,
+  ) => {
+    const surface = typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown";
+    const requestedRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    const resolvedRoot = requestedRoot ? resolveRequestedProjectRoot(requestedRoot) : null;
+    // A root the renderer named but main does not recognise is dropped rather
+    // than quietly swapped for the currently open project: substituting one
+    // would put another project's logs, volumes and recovery diagnosis under a
+    // report about this failure. Reporting stays possible either way — the
+    // report degrades to machine-level state and says so.
+    const rootWasRejected = Boolean(requestedRoot) && !resolvedRoot;
+    const projectRoot = rootWasRejected
+      ? null
+      : resolvedRoot ?? openProjectRootOrNull();
+    return await collectDiagnosticReport(
+      {
+        appVersion: app.getVersion(),
+        packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+        isPackaged: app.isPackaged,
+        userDataPath: app.getPath("userData"),
+        reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
+        installId: productAnalyticsService?.getDistinctId() ?? null,
+        accountUserId: getCurrentAccountOwnerId?.() ?? null,
+        projectLogsDir: projectRoot ? resolveAdeLayout(projectRoot).logsDir : null,
+        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
+        diagnoseProject: projectRecoveryService
+          ? (root: string) => projectRecoveryService.diagnose(root)
+          : undefined,
+      },
+      {
+        surface,
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string" ? arg.technicalDetail.slice(0, 16_000) : null,
+        projectRoot,
+        extraNotes: rootWasRejected
+          ? ["requested project root was not recognised; machine-level state only"]
+          : undefined,
+      },
+    );
+  };
+
+  ipcMain.handle(
+    IPC.diagnosticsOpenIssue,
+    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
+      const result = await buildDiagnosticsReport(arg);
+      const written = writeDiagnosticReportFile(result.filePath, result.report);
+      let copied = false;
+      try {
+        clipboard.writeText(result.report);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+      let opened = false;
+      try {
+        await openExternalUrl(result.issueUrl);
+        opened = true;
+      } catch {
+        opened = false;
+      }
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "issue_report", outcome: opened ? "opened" : "failed" },
+        projectId: null,
+        dedupeKey: `issue_report:${opened ? "opened" : "failed"}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+      return {
+        report: result.report,
+        filePath: written ? result.filePath : "",
+        issueUrl: result.issueUrl,
+        installId: result.installId,
+        copied,
+        opened,
+      };
+    },
+  );
 
   ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
     const ctx = getCtx();

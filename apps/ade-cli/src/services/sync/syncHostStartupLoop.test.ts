@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runSyncHostStartupLoop, SyncHostStartupAbortedError } from "./syncHostStartupLoop";
+import { runSyncHostStartupLoop } from "./syncHostStartupLoop";
 import {
   SyncHostSingletonConflictError,
   type SyncHostSingletonOwner,
@@ -220,27 +220,9 @@ describe("runSyncHostStartupLoop", () => {
     expect(attempts).toBe(1);
   });
 
-  // The loop retries forever on purpose so sync recovers when a rival brain
-  // exits. That is also how a brain that lost its socket became an immortal
-  // zombie — it never reached its own bind check.
-  it("aborts instead of retrying forever once another brain owns the socket", async () => {
-    let attempts = 0;
-    let socketTaken = false;
-    await expect(runSyncHostStartupLoop({
-      startSyncHost: () => {
-        attempts += 1;
-        if (attempts >= 2) socketTaken = true;
-        return Promise.reject(new Error("sync host unavailable"));
-      },
-      isDone: () => false,
-      log: () => {},
-      sleep: instantSleep,
-      abortIf: () => socketTaken,
-    })).rejects.toBeInstanceOf(SyncHostStartupAbortedError);
-    expect(attempts).toBe(2);
-  });
-
-  it("keeps retrying while the socket is still ours", async () => {
+  // The loop retries forever on purpose so mobile sync recovers when a rival
+  // brain exits.
+  it("keeps retrying until the sync host comes up", async () => {
     let attempts = 0;
     await runSyncHostStartupLoop({
       startSyncHost: () => {
@@ -251,7 +233,6 @@ describe("runSyncHostStartupLoop", () => {
       isDone: () => false,
       log: () => {},
       sleep: instantSleep,
-      abortIf: () => false,
     });
     expect(attempts).toBe(3);
   });

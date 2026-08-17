@@ -6,6 +6,7 @@ import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
+import { ReportIssueButton } from "./ReportIssueButton";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 
@@ -133,8 +134,11 @@ export function AutoUpdateBanner() {
     <>
       <UpdateTransactionNotice result={snapshot.updateTransaction ?? null} />
       {showBanner && banner ? (
-        <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800">
-          <WarningCircle size={14} weight="fill" className="shrink-0" aria-hidden="true" />
+        // Same dark-shell amber strip as UpdateTransactionNotice below: this
+        // one was still written for a light surface, so its body read as brown
+        // text on near-black while its dismiss was already converted.
+        <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-400/25 bg-amber-400/[0.08] px-3 py-1.5 text-[11px] text-amber-100/90">
+          <WarningCircle size={14} weight="fill" className="shrink-0 text-amber-300" aria-hidden="true" />
           <span className="flex-1 min-w-0">
             {banner.kind === "parked"
               ? "ADE update didn't finish — Restart to retry"
@@ -144,7 +148,7 @@ export function AutoUpdateBanner() {
             type="button"
             onClick={handleRestart}
             disabled={restarting}
-            className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 font-medium text-amber-900 transition-colors hover:bg-amber-500/25 disabled:opacity-60"
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-400/35 bg-amber-400/15 px-2 py-0.5 font-medium text-amber-100 transition-colors hover:bg-amber-400/25 disabled:opacity-60"
           >
             <ArrowsClockwise size={12} weight="bold" aria-hidden="true" />
             {restarting ? "Restarting…" : "Restart now"}
@@ -155,7 +159,7 @@ export function AutoUpdateBanner() {
               captureUpdatePromptDecision(snapshot, "dismissed");
               setDismissedSignature(signature);
             }}
-            className="shrink-0 text-amber-900/70 hover:text-amber-900"
+            className="shrink-0 text-amber-100/50 transition-colors hover:text-amber-100"
             title="Dismiss until the next update"
             aria-label="Dismiss update banner"
           >
@@ -184,14 +188,30 @@ function UpdateTransactionNotice({ result }: { result: UpdateTransactionResult |
   if (!failureMessage || dismissed) return null;
 
   return (
-    <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800">
-      <WarningCircle size={14} weight="fill" className="shrink-0" aria-hidden="true" />
-      <span className="flex-1 min-w-0">{failureMessage}</span>
-      {repair.available ? <BrainRepairButton repair={repair} height={20} /> : null}
+    // Same amber strip as every other app-shell failure banner. It used to be
+    // written for a light surface (amber-800 on amber-500/10), which on ADE's
+    // near-black shell rendered as brown text and an all-but-invisible dismiss.
+    <div className="shrink-0 mx-3 mt-1.5 flex items-start gap-2 rounded-md border border-amber-400/25 bg-amber-400/[0.08] px-3 py-1.5 text-[11.5px] leading-relaxed text-amber-100/90">
+      <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-300" aria-hidden="true" />
+      {/* The message can run long and Repair grows a failure line of its own,
+          so the row wraps rather than crushing either into an ellipsis. */}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 leading-relaxed">
+        <span className="min-w-0">{failureMessage}</span>
+        {repair.available ? <BrainRepairButton repair={repair} height={20} /> : null}
+        <ReportIssueButton
+          variant="ghost"
+          context={{
+            surface: "update_transaction",
+            headline: failureMessage,
+            code: "update_transaction_failed",
+            technicalDetail: result ? JSON.stringify(result, null, 2) : null,
+          }}
+        />
+      </div>
       <button
         type="button"
         onClick={() => setDismissed(true)}
-        className="shrink-0 text-amber-900/70 hover:text-amber-900"
+        className="shrink-0 text-amber-100/50 transition-colors hover:text-amber-100"
         title="Dismiss"
         aria-label="Dismiss update notice"
       >

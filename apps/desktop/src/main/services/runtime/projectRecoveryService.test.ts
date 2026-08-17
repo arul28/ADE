@@ -22,6 +22,8 @@ function tempRoot(): string {
   return root;
 }
 
+const NOW = Date.parse("2026-07-12T12:01:00.000Z");
+
 function logger(): Logger {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
@@ -98,7 +100,7 @@ function deps(overrides: Partial<ProjectRecoveryServiceDeps> = {}): ProjectRecov
     readFailureReports: vi.fn(async () => ({ project: null, machine: null })),
     clearFailureReports: vi.fn(async () => {}),
     socketExists: vi.fn(() => false),
-    now: () => Date.parse("2026-07-12T12:01:00.000Z"),
+    now: () => NOW,
     ...overrides,
   };
 }
@@ -163,6 +165,36 @@ describe("ProjectRecoveryService.diagnose", () => {
       overrides: { probeSocket: vi.fn(async () => true), pingEndpoint: vi.fn(async () => false) },
     },
     {
+      name: "starting brain (service running, install just began, socket not up yet)",
+      expected: "brain_starting",
+      canAutoRepair: false,
+      overrides: {
+        connectionPool: pool(status({
+          serviceInstall: {
+            state: "installed", attempted: true, path: null, message: null, exitCode: null,
+            updatedAt: new Date(NOW).toISOString(), starting: true,
+            attemptStartedAt: new Date(NOW - 15_000).toISOString(),
+          },
+          serviceHealth: { state: "running", installed: true, running: true, path: null, message: null, checkedAt: null },
+        })),
+      },
+    },
+    {
+      name: "brain still quiet long after its install began (not starting any more)",
+      expected: "brain_crash_looping",
+      canAutoRepair: true,
+      overrides: {
+        connectionPool: pool(status({
+          serviceInstall: {
+            state: "installed", attempted: true, path: null, message: null, exitCode: null,
+            updatedAt: new Date(NOW).toISOString(), starting: true,
+            attemptStartedAt: new Date(NOW - 10 * 60_000).toISOString(),
+          },
+          serviceHealth: { state: "installed", installed: true, running: false, path: null, message: null, checkedAt: null },
+        })),
+      },
+    },
+    {
       name: "unknown",
       expected: "unknown_failure",
       canAutoRepair: true,
@@ -175,6 +207,84 @@ describe("ProjectRecoveryService.diagnose", () => {
     expect(diagnosis.state).toBe(expected);
     expect(diagnosis.canAutoRepair).toBe(canAutoRepair);
     expectNoJargon(`${diagnosis.headline} ${diagnosis.body}`);
+  });
+
+  it("calls a bound-but-not-yet-answering brain starting, not another program's socket", async () => {
+    // The brain binds its RPC socket before it can answer `ade/initialize`, so
+    // reachable-but-silent is its own boot window, not a stranger's socket.
+    const service = createProjectRecoveryService(deps({
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => false),
+      connectionPool: pool(status({
+        serviceInstall: {
+          state: "installed", attempted: true, path: null, message: null, exitCode: null,
+          updatedAt: new Date(NOW).toISOString(), starting: true,
+          attemptStartedAt: new Date(NOW - 15_000).toISOString(),
+        },
+        serviceHealth: { state: "running", installed: true, running: true, path: null, message: null, checkedAt: null },
+      })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    expect(diagnosis.state).toBe("brain_starting");
+    expect(diagnosis.canAutoRepair).toBe(false);
+  });
+
+  it("does not classify a future install timestamp as brain_starting", async () => {
+    // A clock that moved backwards after the attempt was recorded leaves a
+    // stamp in the future. Only the upper bound was checked, so it read as
+    // "always starting" and suppressed repair until the clock caught up.
+    const service = createProjectRecoveryService(deps({
+      connectionPool: pool(status({
+        serviceInstall: {
+          state: "installed", attempted: true, path: null, message: null, exitCode: null,
+          updatedAt: new Date(NOW).toISOString(), starting: true,
+          attemptStartedAt: new Date(NOW + 60 * 60_000).toISOString(),
+        },
+        serviceHealth: { state: "running", installed: true, running: true, path: null, message: null, checkedAt: null },
+      })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    // The concrete state matters: "not brain_starting" would pass for any
+    // wrong answer, and the point of the fix is that the stuck project falls
+    // through to a diagnosis Repair is allowed to act on.
+    expect(diagnosis.state).toBe("unknown_failure");
+    expect(diagnosis.canAutoRepair).toBe(true);
+  });
+
+  it("does not report a healthy answering brain as broken over a fresh sync-host failure", async () => {
+    const syncHostFailure: AdeLastFailureReport = {
+      ...failure("socket_owned_by_other"),
+      component: "sync_host",
+    };
+    const service = createProjectRecoveryService(deps({
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => true),
+      readFailureReports: vi.fn(async () => ({ project: null, machine: syncHostFailure })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    expect(diagnosis.state).toBe("healthy");
+    // Still reported, just not treated as a reason to repair.
+    expect(diagnosis.lastFailure?.component).toBe("sync_host");
+  });
+
+  it("still repairs on a fresh sync-host failure when the brain does not answer", async () => {
+    const syncHostFailure: AdeLastFailureReport = {
+      ...failure("socket_owned_by_other"),
+      component: "sync_host",
+    };
+    const service = createProjectRecoveryService(deps({
+      readFailureReports: vi.fn(async () => ({ project: null, machine: syncHostFailure })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    expect(diagnosis.state).toBe("socket_owned_by_other");
   });
 });
 
@@ -330,7 +440,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
     // The ping is explicitly bounded: the RPC client's default is 10 minutes,
     // which would park this call — and any repair waiting on it — on a brain
     // that binds the socket but never answers.
-    expect(connectionPool.callSync).toHaveBeenCalledWith("ping", {}, { timeoutMs: 20_000 });
+    expect(connectionPool.callSync).toHaveBeenCalledWith("ping", {}, { timeoutMs: 90_000 });
   });
 
   const installStatusPool = (

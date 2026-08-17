@@ -47,6 +47,7 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
 import {
   createProductAnalyticsService,
@@ -507,6 +508,14 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
 // a burst of near-simultaneous opens from each passing the cap before any has
 // begun.
 // ---------------------------------------------------------------------------
+/**
+ * Every project open/switch attempt is recorded here, successful or not, so the
+ * recovery and diagnostics IPC handlers can accept the root the user just
+ * picked even when its first open failed before it could reach the
+ * recent-projects list. See `services/ipc/knownProjectRoots.ts`.
+ */
+const attemptedProjectRoots = new AttemptedProjectRoots();
+
 const RECONCILE_GLOBAL_MAX = 1;
 let reconcileActiveOrScheduled = 0;
 const pendingReconciles: Array<() => void> = [];
@@ -1694,7 +1703,12 @@ app.whenReady().then(async () => {
         const status = localRuntimePool.getStatus().serviceInstall;
         if (status.state === "installed") {
           markMachineStateMigrationComplete({ layout: machineAdeLayout });
-          if (machineTrustResetRestartRequired) {
+          // The reset is complete only once the brain has actually been
+          // replaced. A forced install may legitimately decline to restart a
+          // brain that is still starting up (it waits for it instead), and
+          // that brain loaded the pre-reset files; leaving the marker unset
+          // makes the next launch restart it for real.
+          if (machineTrustResetRestartRequired && status.restarted === true) {
             markMachineTrustResetComplete(machineAdeLayout);
           }
         }
@@ -5898,7 +5912,19 @@ app.whenReady().then(async () => {
     try {
       const resolveStartedAt = Date.now();
       repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      // INVARIANT: a root is recorded as "attempted" only once it has been
+      // proven to be a real git repository on disk — `resolveRepoRoot` throws
+      // otherwise. The registry widens what a renderer may later name in
+      // diagnostics/recovery calls, so recording an unvalidated string would
+      // let a renderer launder any path on the machine into a known root by
+      // calling `projectOpenRepo` with it first. Still recorded BEFORE the
+      // init steps below, which are exactly the ones that fail with coded
+      // errors (disk_full, db_integrity, brain_not_installed) on a first open
+      // that never reaches the recent-projects list — the recovery screen for
+      // that root is what this registry exists to keep working.
+      attemptedProjectRoots.record(repoRoot);
       if (repoRoot !== normalizeProjectRoot(selectedPath)) {
+        attemptedProjectRoots.record(selectedPath);
         pendingRepoRootCleanup = authorizePendingWindowProjectRoot(windowId, repoRoot);
       }
       // Kick off base-ref detection IN PARALLEL with the existing-context
@@ -7523,6 +7549,7 @@ app.whenReady().then(async () => {
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,
+    attemptedProjectRoots,
     closeCurrentProject,
     closeProjectByPath,
     globalStatePath,

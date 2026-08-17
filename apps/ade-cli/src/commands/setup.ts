@@ -17,6 +17,7 @@
  * step and the run continues, because a failed sign-in must not cost the user
  * the desktop app. Nothing here reports success it did not achieve.
  */
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../serviceManager/runtimeServiceBudgets";
 import {
   SetupReporter,
   detectTerminalCapabilities,
@@ -95,6 +96,27 @@ export type SetupStepResult = {
   nextAction?: string;
 };
 
+/** Outcome of waiting for the machine brain's endpoint to answer. */
+export type SetupServiceReadiness = {
+  /** The endpoint answered. */
+  ready: boolean;
+  /**
+   * The service is registered with a live brain that has simply not answered
+   * yet. Nothing downstream may call that a failed install.
+   */
+  starting: boolean;
+  detail: string;
+};
+
+/**
+ * How long a brain the service installer reported as `starting` gets to answer
+ * before setup stops waiting on it. The desktop's own post-install wait, by
+ * definition -- a cold machine opening a large project database routinely needs
+ * more than the ten seconds that used to be on offer, and reporting that as
+ * "installed but not running" sent people hunting a fault that did not exist.
+ */
+export const SETUP_SERVICE_START_BUDGET_MS = RUNTIME_SERVICE_START_WAIT_MS;
+
 export type SetupDeps = {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -106,6 +128,16 @@ export type SetupDeps = {
   ensureAgentTools: (
     onProgress: (progress: SetupProgress) => void,
   ) => Promise<SetupStepResult>;
+  /**
+   * Registers the machine brain service if needed and waits for its endpoint.
+   * Optional so callers that do not own a brain (tests, `--no-*` paths) can
+   * omit it; `onStarting` fires once, the first time the wait actually begins,
+   * so a fast install prints no line at all.
+   */
+  awaitRuntimeService?: (args: {
+    budgetMs: number;
+    onStarting: () => void;
+  }) => Promise<SetupServiceReadiness>;
   getAccountStatus: () => Promise<SetupAccountStatus>;
   runConnect: () => Promise<SetupStepResult>;
   readInstalledDesktop: () => { version: string | null; path: string | null };
@@ -298,12 +330,44 @@ export async function runSetupCommand(
   }
   reporter.completeStep(toolsStep);
 
+  // --- background service ----------------------------------------------------
+  // Everything below needs a brain that answers. A brain that is still coming
+  // up is not a broken one, so this waits it out rather than letting the
+  // account step fail against an endpoint that was never given time to open.
+  let serviceStarting = false;
+  if (deps.awaitRuntimeService) {
+    try {
+      let announced = false;
+      const readiness = await deps.awaitRuntimeService({
+        budgetMs: SETUP_SERVICE_START_BUDGET_MS,
+        onStarting: () => {
+          if (announced) return;
+          announced = true;
+          reporter.line("  Starting ADE's background service...");
+        },
+      });
+      serviceStarting = readiness.starting && !readiness.ready;
+    } catch {
+      // The wait is a courtesy, not a gate: its failure must not cost the user
+      // the account and desktop steps that follow.
+      serviceStarting = false;
+    }
+  }
+
   // --- step: account ---------------------------------------------------------
   try {
     await runAccountStep({ step: accountStep, ask, interactive, deps });
   } catch (error) {
     accountStep.state = "failed";
     accountStep.detail = describeError(error);
+    accountStep.nextAction = "ade connect";
+  }
+  // A brain that is still starting is the reason this step could not finish,
+  // and "sign-in didn't finish" is not a true account of that. Say what is
+  // actually happening and leave the same recovery command.
+  if (serviceStarting && accountStep.state === "failed") {
+    accountStep.state = "skipped";
+    accountStep.detail = "ADE's background service is still starting";
     accountStep.nextAction = "ade connect";
   }
   reporter.completeStep(accountStep);
@@ -348,13 +412,21 @@ export async function runSetupCommand(
     const nextAction = result.nextAction ?? "ade connect";
     const alreadyOffered = accountStep.state === "skipped" &&
       accountStep.nextAction === nextAction;
-    if (!result.ok && accountStep.state !== "failed" && !alreadyOffered) {
+    // `serviceStarting` is the one case where a failed check is not a failed
+    // install: the brain is alive and coming up, and the installer said so.
+    if (!result.ok && !serviceStarting && accountStep.state !== "failed" && !alreadyOffered) {
       accountStep.state = "failed";
       accountStep.detail = result.detail;
       accountStep.nextAction = nextAction;
     }
   } catch {
     verified = false;
+  }
+
+  if (serviceStarting) {
+    reporter.line(
+      "  ADE's background service is still starting. Give it a moment, then run `ade connect`.",
+    );
   }
 
   const totals: SetupTotals = {

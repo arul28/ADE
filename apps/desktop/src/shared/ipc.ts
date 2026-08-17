@@ -77,6 +77,10 @@ export const IPC = {
   projectSwitchToPath: "ade.project.switchToPath",
   recoveryDiagnose: "ade.recovery.diagnose",
   recoveryRepair: "ade.recovery.repair",
+  /** Main → renderer: one repair step as it finishes, so a long repair reads live. */
+  recoveryRepairStep: "ade.recovery.repairStep",
+  /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
+  diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   projectForgetRecent: "ade.project.forgetRecent",
   projectReorderRecent: "ade.project.reorderRecent",
   projectSetRecentPinned: "ade.project.setRecentPinned",

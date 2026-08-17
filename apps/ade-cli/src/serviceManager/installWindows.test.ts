@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { spawnSync as spawnChildSync } from "node:child_process";
+import { spawn, spawnSync, spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
@@ -40,8 +40,14 @@ import {
   windowsSchtasksCommand,
   windowsTaskkillCommand,
   WINDOWS_TASK_ACTION_FIELD_SEPARATOR,
+  buildWindowsRuntimeQueryArgs,
   renderWindowsServiceLauncher,
 } from "./installWindows";
+import {
+  BRAIN_HEARTBEAT_INTERVAL_MS,
+  BRAIN_HEARTBEAT_STALE_MS,
+} from "../services/runtime/brainHeartbeat";
+import { waitForWindowsRuntimeReadiness } from "./windowsSupervisor";
 
 const tempDirs: string[] = [];
 
@@ -473,6 +479,156 @@ describe("Windows background service helpers", () => {
     expect(calls.at(-1)).toEqual({
       command: windowsPowerShellCommand(),
       args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
+    });
+  });
+
+  it("reports a supervised brain that has not answered yet as starting, not failed", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-starting-"), "brain-service.ps1");
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      readPidRecord: immediateReadiness.readPidRecord,
+      // The probe's Win32_Process identity check confirmed the recorded pid IS
+      // our supervisor; it is the brain behind it that has not answered.
+      readinessProbe: () => ({
+        ready: false,
+        supervised: true,
+        diagnostic: "Runtime PID 5678 has not bound the pipe yet.",
+      }),
+      handoverTimeoutMs: 0,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      starting: true,
+      serviceName,
+      action: "install",
+      path: taskName,
+    });
+    expect(result.failureStep).toBeUndefined();
+    expect(result.message).toContain("still starting");
+  });
+
+  it("fails, not starting, when the recorded supervisor pid is not ours", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-dead-sup-"), "brain-service.ps1");
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      readPidRecord: immediateReadiness.readPidRecord,
+      // Recycled pid: alive, but `Win32_Process` says it is not a powershell
+      // running our launcher. `pidAlive` would call this "our brain, starting";
+      // only the identity check can tell, and it says no.
+      readinessProbe: () => ({
+        ready: false,
+        supervised: false,
+        diagnostic: "Supervisor PID 1234 is stale or belongs to another process.",
+      }),
+      handoverTimeoutMs: 0,
+      pidAlive: () => true,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({ ok: false, failureStep: "replacement_responsive" });
+    expect(result.starting).toBeUndefined();
+  });
+
+  it("waits for a young unresponsive brain instead of replacing it", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      // legacy task lookups (none)
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-young-"), "brain-service.ps1");
+    const pidPath = `${launcherPath}.pid.json`;
+    // Pre-render the launcher exactly as the install would, so it reads as unchanged.
+    const machineLayout = resolveMachineAdeLayout(
+      { ...process.env, ...(serviceCommand.env ?? {}) },
+      "win32",
+    );
+    fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
+      pidPath,
+      logPath: `${launcherPath}.log`,
+      heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
+      wedgeBreadcrumbPath: path.win32.join(machineLayout.runtimeDir, "event-loop-wedge.json"),
+    })}`, "utf8");
+    const youngRecord = { ...readyPidRecord, runtimeStartedAtMs: Date.now() - 5_000 };
+    const readinessProbe = vi.fn()
+      .mockReturnValueOnce({ ready: false, diagnostic: "not yet" })
+      .mockReturnValue({ ready: true, diagnostic: "ready" });
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      pidPath,
+      readPidRecord: () => youngRecord,
+      readinessProbe,
+      handoverTimeoutMs: 5_000,
+      handoverPollMs: 10,
+      pidAlive: () => true,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({ ok: true, action: "install" });
+    expect(result.restarted).toBeUndefined();
+    // No run-key rewrite, no supervisor start: the brain was left alone.
+    expect(calls.some((call) => call.args.some((arg) => /Add|\/Run|Start-Process/i.test(arg)))).toBe(false);
+  });
+
+  it("still fails the install when the supervisor never publishes a brain at all", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
+    ]);
+    const launcherPath = path.join(makeTempHome("ade-windows-service-no-brain-"), "brain-service.ps1");
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      readPidRecord: () => null,
+      readinessProbe: () => ({ ready: false, diagnostic: "unused" }),
+      handoverTimeoutMs: 0,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failureStep: "replacement_responsive",
     });
   });
 
@@ -1121,5 +1277,287 @@ describe("Windows background service helpers", () => {
       env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta" },
       serviceName,
     })).toMatch(/^C:\\Users\\arul\\\.ade-beta\\runtime\\brain-service-[a-f0-9]{12}\.ps1$/i);
+  });
+});
+
+describe("Windows runtime supervisor", () => {
+  it("renders bounded restart state for both child exits and launch failures", () => {
+    const script = renderWindowsServiceLauncher({
+      command: "C:\\Program Files\\ADE\\ade.exe",
+      args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
+    }, {
+      pidPath: "C:\\Users\\arul\\.ade-beta\\runtime\\brain.pid.json",
+      initialRestartDelayMs: 250,
+      maxRestartDelayMs: 5_000,
+      healthyRuntimeMs: 30_000,
+    });
+
+    expect(script).toContain("while ($true)");
+    expect(script).toContain("$initialRestartDelayMs = 250");
+    expect(script).toContain("$maxRestartDelayMs = 5000");
+    expect(script).toContain("lastLaunchError = $lastLaunchError");
+    expect(script).toContain("} catch {");
+    expect(script).toContain("Start-Sleep -Milliseconds ([int]$restartDelayMs)");
+  });
+
+  it("reads legacy and current PID records with bounded diagnostics", () => {
+    const pidPath = path.join(makeTempHome("ade-windows-supervisor-"), "brain.pid.json");
+    fs.writeFileSync(pidPath, JSON.stringify({ supervisorPid: 101, runtimePid: 202 }), "utf8");
+    expect(readWindowsServicePidRecord({ pidPath })).toEqual({
+      supervisorPid: 101,
+      runtimePid: 202,
+      runtimeStartedAtMs: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastExitAt: null,
+      nextRestartAt: null,
+      lastLaunchError: null,
+      sessionBound: null,
+    });
+
+    fs.writeFileSync(pidPath, JSON.stringify({
+      supervisorPid: 101,
+      runtimePid: null,
+      restartCount: 3,
+      lastLaunchError: "x".repeat(800),
+    }), "utf8");
+    expect(readWindowsServicePidRecord({ pidPath })).toMatchObject({
+      runtimePid: null,
+      restartCount: 3,
+      lastLaunchError: "x".repeat(512),
+    });
+  });
+
+  it("binds runtime PID inspection to the executable, entrypoint, and serve command", () => {
+    const args = buildWindowsRuntimeQueryArgs(202, {
+      command: "C:\\Program Files\\ADE\\ade.exe",
+      args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
+    });
+    const query = args.at(-1) ?? "";
+    expect(query).toContain("ProcessId = 202");
+    expect(query).toContain("C:\\Program Files\\ADE\\ade.exe");
+    expect(query).toContain("C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs");
+    expect(query).toContain("matchesServe");
+  });
+
+  it("waits asynchronously for semantic readiness without blocking the caller", async () => {
+    const sleepStarted: number[] = [];
+    const wait = waitForWindowsRuntimeReadiness({
+      command: { command: "C:\\ADE\\ade.exe", args: ["serve"] },
+      launcherPath: "C:\\ADE\\brain-service.ps1",
+      pidPath: "C:\\ADE\\brain.pid.json",
+      socketPath: "\\\\.\\pipe\\ade-test",
+      spawnSync,
+      readPidRecord: () => null,
+      // Comfortably more than one poll: the helper computes `remaining` from a
+      // deadline captured a few statements earlier, so a budget close to
+      // `pollMs` lets a stalled runner skip the first sleep and turn the
+      // synchronous `sleepStarted` assertion into a flake. Every iteration is
+      // free here (`readPidRecord` always answers null).
+      timeoutMs: 60,
+      pollMs: 10,
+      sleep: async (ms) => {
+        sleepStarted.push(ms);
+        await new Promise<void>((resolve) => setTimeout(resolve, ms));
+      },
+    });
+
+    expect(wait).toBeInstanceOf(Promise);
+    expect(sleepStarted).toEqual([10]);
+    await expect(wait).resolves.toMatchObject({
+      ready: false,
+      diagnostic: expect.stringContaining("did not publish a PID record"),
+    });
+  });
+
+  it("reports `supervised` from the probe's identity check, never from pid liveness", async () => {
+    const record = {
+      supervisorPid: 4321,
+      runtimePid: 5678,
+      runtimeStartedAtMs: Date.now(),
+      restartCount: 0,
+      lastExitCode: null,
+      lastExitAt: null,
+      nextRestartAt: null,
+      lastLaunchError: null,
+      sessionBound: null,
+    };
+    const wait = (supervised: boolean | undefined) => waitForWindowsRuntimeReadiness({
+      command: { command: "C:\\ADE\\ade.exe", args: ["serve"] },
+      launcherPath: "C:\\ADE\\brain-service.ps1",
+      pidPath: "C:\\ADE\\brain.pid.json",
+      socketPath: "\\\\.\\pipe\\ade-test",
+      spawnSync,
+      readPidRecord: () => record,
+      readinessProbe: () => ({ ready: false, supervised, diagnostic: "not yet" }),
+      timeoutMs: 0,
+      pollMs: 10,
+    });
+
+    // The recorded pids are alive as far as `process.kill(pid, 0)` is
+    // concerned in every one of these cases -- what differs is whether
+    // `Win32_Process` says the pid is a powershell running OUR launcher. Only
+    // that answer may promote a failed install to "still starting".
+    await expect(wait(true)).resolves.toMatchObject({ ready: false, supervised: true });
+    await expect(wait(false)).resolves.toMatchObject({ ready: false, supervised: false });
+    // A probe that says nothing is unknown, and unknown is not healthy.
+    await expect(wait(undefined)).resolves.toMatchObject({ ready: false, supervised: false });
+  });
+
+  (process.platform === "win32" ? it : it.skip)(
+    "keeps supervising a missing executable and publishes launch-error backoff diagnostics",
+    async () => {
+      const dir = makeTempHome("ade-windows-supervisor-");
+      const launcherPath = path.join(dir, "brain-service.ps1");
+      const pidPath = `${launcherPath}.pid.json`;
+      fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher({
+        command: path.join(dir, "missing-ade.exe"),
+        args: ["serve"],
+      }, {
+        pidPath,
+        initialRestartDelayMs: 100,
+        maxRestartDelayMs: 200,
+      })}`, "utf8");
+      const supervisor = spawn(windowsPowerShellCommand(), [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        launcherPath,
+      ], { stdio: "ignore", windowsHide: true });
+      try {
+        // The supervisor is a real detached PowerShell process, so this waits on
+        // powershell.exe cold start plus two full launch-failure backoff cycles.
+        // A 5s budget is a coin flip on a loaded Windows CI runner, where the
+        // record simply had not been written yet and the assertion below read
+        // null. Widen the patience; the assertion itself is unchanged.
+        const deadline = Date.now() + 45_000;
+        let record = readWindowsServicePidRecord({ pidPath });
+        while ((!record?.lastLaunchError || record.restartCount < 2) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          record = readWindowsServicePidRecord({ pidPath });
+        }
+        expect(record).toMatchObject({
+          supervisorPid: supervisor.pid,
+          runtimePid: null,
+          restartCount: expect.any(Number),
+          lastLaunchError: expect.any(String),
+          nextRestartAt: expect.any(String),
+        });
+        expect(record?.restartCount).toBeGreaterThanOrEqual(2);
+      } finally {
+        if (supervisor.pid) {
+          spawnSync("taskkill.exe", ["/PID", String(supervisor.pid), "/T", "/F"], {
+            encoding: "utf8",
+            windowsHide: true,
+          });
+        }
+      }
+    },
+    60_000,
+  );
+});
+
+describe("windows supervisor wedge guard", () => {
+  const command = {
+    command: "C:\\ade\\node.exe",
+    args: ["C:\\ade\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\example\\.ade" },
+  };
+
+  it("waits in slices and stops a brain that stopped beating", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+
+    // An unbounded WaitForExit is exactly what makes a wedge invisible.
+    expect(script).not.toContain("$process.WaitForExit()\r\n      $lastExitCode");
+    expect(script).toContain("while (-not $process.WaitForExit($heartbeatPollMs))");
+    expect(script).toContain("Test-BrainWedged $process.Id");
+    expect(script).toContain("Write-WedgeBreadcrumb $wedgeAgeMs");
+    // Kill($true) is .NET Core only; the supervisor must run under PS 5.1.
+    expect(script).toContain("$process.Kill()");
+    expect(script).not.toContain("$process.Kill($true)");
+  });
+
+  it("stops the wedged brain's whole process tree, through an absolute taskkill", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+
+    // Absolute System32 path, never a bare `taskkill` off PATH. On a real
+    // Windows host the resolver returns the verified filesystem form
+    // (C:\Windows\System32\taskkill.exe); elsewhere it falls back to the
+    // kernel GLOBALROOT form — both end in System32\taskkill.exe.
+    expect(script).toMatch(/\$taskkillPath = '[^']*System32\\taskkill\.exe'/i);
+    expect(script).toContain("& $taskkillPath '/PID' $process.Id '/T' '/F'");
+    // Kill() alone orphans ConPTYs and agent CLIs, so the tree kill must come
+    // first and Kill() must only mop up what taskkill could not.
+    const taskkillAt = script.indexOf("& $taskkillPath");
+    const killAt = script.indexOf("$process.Kill()");
+    expect(taskkillAt).toBeGreaterThan(-1);
+    expect(taskkillAt).toBeLessThan(killAt);
+    expect(script).toContain("if (-not $process.HasExited) { $process.Kill() }");
+    // Bounded, and never a bare WaitForExit(): if taskkill was unresolvable and
+    // Kill() threw, an unbounded wait parks the supervisor on the wedge forever.
+    expect(script).not.toContain("$process.WaitForExit()");
+    const waitAt = script.indexOf("if ($process.WaitForExit(30000)) { break }", killAt);
+    expect(waitAt).toBeGreaterThan(killAt);
+    expect(script).toContain("did not exit after the kill");
+    // Leaving the wait loop is conditional on the process being GONE. An
+    // unconditional break after a timed-out kill would start a second brain
+    // beside an unkillable one, both wanting the same ports and worktrees.
+    expect(script).not.toMatch(/WaitForExit\(30000\)[^\r\n]*[\r\n]+\s*break/);
+    const wedgeRetryAt = script.indexOf("retrying on the next heartbeat check", waitAt);
+    expect(wedgeRetryAt).toBeGreaterThan(waitAt);
+    // The bounded wait can fall through with the process still alive, and
+    // `.ExitCode` throws on a live process -- which would surface the wedge as
+    // a launch failure. Read it only once the process has actually exited.
+    expect(script).toContain(
+      "if ($process.HasExited) { $lastExitCode = $process.ExitCode } else { $lastExitCode = $null }",
+    );
+    // ...and never as an unguarded statement of its own.
+    expect(script).not.toMatch(/(?:^|[\r\n])\s*\$lastExitCode = \$process\.ExitCode/);
+  });
+
+  it("keeps the beat interval and stale threshold bound to the brain's own", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+    });
+    expect(script).toContain(`$heartbeatStaleMs = ${BRAIN_HEARTBEAT_STALE_MS}`);
+    expect(script).toContain(`$heartbeatPollMs = ${BRAIN_HEARTBEAT_INTERVAL_MS}`);
+  });
+
+  it("only judges a beat that belongs to the child it started", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+    expect(script).toContain("if ([int]$beat.pid -ne $runtimePid) { return $null }");
+    expect(script).toContain("if ($ageMs -le $heartbeatStaleMs) { return $null }");
+  });
+
+  it("keeps its old exit-only behaviour when no heartbeat path is configured", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+    });
+    expect(script).toContain("$heartbeatPath = $null");
+    expect(script).toContain("if ([string]::IsNullOrEmpty($heartbeatPath)) { return $null }");
+  });
+
+  it("refuses a stale threshold short enough to fire on an ordinary gap", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      heartbeatStaleMs: 500,
+    });
+    expect(script).toContain("$heartbeatStaleMs = 30000");
   });
 });

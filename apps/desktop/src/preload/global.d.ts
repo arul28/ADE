@@ -719,7 +719,8 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { DiagnosticReportPayload, DiagnosticReportRequestPayload } from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
 import type {
   ProductAnalyticsCapture,
@@ -892,9 +893,24 @@ declare global {
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
       };
+      /**
+       * Absent on older preloads: every call site must tolerate `undefined`
+       * and simply not offer the button.
+       */
+      diagnostics?: {
+        openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
+      };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
+        /**
+         * Live repair steps for the window that started the repair. Optional
+         * for the same reason `diagnostics` is: an older preload does not have
+         * it, and every call site already guards before calling.
+         */
+        onRepairStep?: (
+          cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
+        ) => () => void;
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;
