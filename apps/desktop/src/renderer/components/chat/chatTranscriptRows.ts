@@ -26,7 +26,9 @@ import {
 } from "../../../shared/contextCompaction";
 import {
   hostSleepNoticeMergeKey,
+  isHostResumedNoticeEvent,
   isHostSleepNoticeEvent,
+  type HostSleepNoticeShape,
 } from "../../../shared/hostSleepNotice";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
@@ -2340,6 +2342,15 @@ export function appendCollapsedChatTranscriptEvent(
     const rowKey = `host-sleep:${mergeKey}`;
     const existingIndex = rows.findIndex((candidate) => candidate.key === rowKey);
     if (existingIndex >= 0) {
+      // Resolved wins, whatever the arrival order. Last-wins alone would let a
+      // paused half delivered after its resume — a sequence inversion, or a host
+      // clock corrected across the wake — settle the row on "Paused" for a
+      // machine that is demonstrably awake, which is the exact class of lie this
+      // branch exists to remove. iOS applies the same guard.
+      const existingEvent = rows[existingIndex]!.event as HostSleepNoticeShape;
+      if (isHostResumedNoticeEvent(existingEvent) && !isHostResumedNoticeEvent(event)) {
+        return;
+      }
       rows[existingIndex] = {
         ...rows[existingIndex]!,
         timestamp: envelope.timestamp,

@@ -2884,6 +2884,36 @@ describe("machine.reportPowerTransition", () => {
     }
   });
 
+  it("carries a reporter's refusal through instead of claiming the beat landed", async () => {
+    // The publisher is built lazily with the sync scope, so a beat can arrive
+    // at a brain that records the announcement locally but has nowhere to
+    // publish it. Answering `accepted` for that is what let the desktop's hop
+    // treat an unpersisted suspend as delivered and skip its retry.
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const reportMachinePowerTransition = vi.fn(async () => ({
+        accepted: false,
+        reason: "unsupported",
+      }));
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        reportMachinePowerTransition,
+      });
+      await initialize(handler, "cto");
+      expect(await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.reportPowerTransition",
+        params: { kind: "suspend", budgetMs: 2_000 },
+      })).toEqual({ accepted: false, reason: "unsupported" });
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("answers honestly on a brain with nothing wired instead of hanging the caller", async () => {
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "cto";

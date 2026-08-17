@@ -329,6 +329,72 @@ describe("machinePowerBrainBridge", () => {
     bridge.dispose();
   });
 
+  it("retries a hop the brain answered but refused", async () => {
+    // A fulfilled RPC is not a delivery. `machine.reportPowerTransition`
+    // answers `{accepted: false}` when the brain recorded the announcement but
+    // had no account-directory publisher to carry it — which is exactly the
+    // case the retry exists for, since that publisher is built lazily when a
+    // sync scope appears. Counting the refusal as landed left the directory
+    // pinned asleep with nothing left to clear it.
+    const power = fakePowerSource();
+    let attempts = 0;
+    const report = vi.fn(async () => {
+      attempts += 1;
+      return attempts < 3
+        ? { accepted: false, reason: "unsupported" }
+        : { accepted: true };
+    });
+    const bridge = createMachinePowerBrainBridge({
+      powerSource: power.source,
+      report,
+      budgetMs: 500,
+      resumeRetryMs: 0,
+    });
+
+    power.emit({ kind: "resume", at: 2_000, gapMs: 40_000, announced: true });
+    await bridge.lastHop();
+
+    expect(report).toHaveBeenCalledTimes(3);
+    bridge.dispose();
+  });
+
+  it("counts an older brain's answerless reply as delivered", async () => {
+    // Version skew must not become a retry storm: a brain that predates the
+    // `{accepted}` answer resolves with nothing, and that still means the hop
+    // was taken.
+    const power = fakePowerSource();
+    const report = vi.fn(async () => undefined);
+    const bridge = createMachinePowerBrainBridge({
+      powerSource: power.source,
+      report,
+      budgetMs: 500,
+      resumeRetryMs: 0,
+    });
+
+    power.emit({ kind: "resume", at: 2_000, gapMs: 40_000, announced: true });
+    await bridge.lastHop();
+
+    expect(report).toHaveBeenCalledTimes(1);
+    bridge.dispose();
+  });
+
+  it("does not retry a refused suspend — nothing may delay the OS", async () => {
+    const power = fakePowerSource();
+    const report = vi.fn(async () => ({ accepted: false, reason: "unsupported" }));
+    const bridge = createMachinePowerBrainBridge({
+      powerSource: power.source,
+      report,
+      budgetMs: 500,
+      resumeRetryMs: 0,
+    });
+
+    power.emit({ kind: "suspend", at: 1_000, announced: true });
+    await bridge.lastHop();
+
+    expect(report).toHaveBeenCalledTimes(1);
+    bridge.dispose();
+  });
+
   it("never retries the suspend, which must not be delayed by a retry", async () => {
     const power = fakePowerSource();
     const report = vi.fn(async () => {

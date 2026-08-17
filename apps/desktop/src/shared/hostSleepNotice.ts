@@ -180,7 +180,7 @@ export function hostResumedNoticeMessage(gapMs: number | null | undefined): stri
   return paused ? `Resumed · paused ${paused}` : "Resumed";
 }
 
-type HostSleepNoticeShape = {
+export type HostSleepNoticeShape = {
   type: string;
   status?: string;
   detail?: unknown;

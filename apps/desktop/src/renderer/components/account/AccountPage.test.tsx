@@ -342,6 +342,45 @@ describe("AccountPage signed-in", () => {
     expect(screen.queryByText(/Last seen/)).toBeNull();
   });
 
+  it("never counts a computer online while its own row says asleep", async () => {
+    // A Mac that announced its suspend is still inside the directory's
+    // 90-second online window. The header counted that raw flag while the row
+    // below rendered resolved presence, so one card said both things at once.
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({
+          machineKey: "studio-key",
+          deviceId: "studio-dev",
+          name: "Studio",
+          online: true,
+          lastSeenAt: Date.now() - 20_000,
+          sleepState: "asleep",
+          sleepStateAt: Date.now() - 60_000,
+          power: { onExternalPower: false, battery: { percent: 82, charging: false } },
+        }),
+        machine({
+          machineKey: "this-key",
+          deviceId: "this-dev",
+          name: "MacBook Pro",
+          online: true,
+          lastSeenAt: Date.now(),
+        }),
+      ],
+    });
+
+    renderPage();
+    const name = await screen.findByText("Studio");
+    const row = name.parentElement as HTMLElement;
+
+    expect(screen.getByText("Asleep · 82% battery")).toBeTruthy();
+    expect(row.querySelector("[data-machine-presence]")?.getAttribute("data-machine-presence"))
+      .toBe("asleep");
+    expect(within(row).queryByText("Connected")).toBeNull();
+    await waitFor(() => expect(screen.getByText("1 online · 2 connected")).toBeTruthy());
+  });
+
   it("tells an offline computer's last-seen time rather than the bare word Offline", async () => {
     // `machineStatusLine` only ever returns null for a CONNECTED machine, so
     // the `?? lastSeenLabel(...)` arm this list used to rely on was dead and

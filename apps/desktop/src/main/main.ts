@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";

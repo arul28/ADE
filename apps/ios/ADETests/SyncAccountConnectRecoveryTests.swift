@@ -1141,6 +1141,33 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     ))
   }
 
+  /// The card names the sleeping machine from the failure record, but the key
+  /// "Wake it" dials is resolved against the account directory — which can be
+  /// empty, stale, or simply not list that machine. The button used to render
+  /// off the name alone, so in that case it appeared and did nothing. The
+  /// affordance is now bound to the key: no key, no button.
+  func testWakeActionNeedsAResolvedMachineOrItDoesNotRender() {
+    let asleep = SettingsConnectionOutcome.asleep(
+      machine: "MacBook Pro (97)",
+      attachedTo: "Arul's Mac Studio"
+    )
+    XCTAssertEqual(
+      settingsWakeMachineKey(outcome: asleep, wakeMachineKey: "machine-macbook"),
+      "machine-macbook"
+    )
+    // Directory could not resolve the named machine: copy still stands, action
+    // does not.
+    XCTAssertNil(settingsWakeMachineKey(outcome: asleep, wakeMachineKey: nil))
+    XCTAssertNil(settingsWakeMachineKey(outcome: asleep, wakeMachineKey: "   "))
+    // A wake already in flight has nothing to offer either — the attempt IS
+    // the action.
+    XCTAssertNil(settingsWakeMachineKey(
+      outcome: .waking(machine: "MacBook Pro (97)"),
+      wakeMachineKey: "machine-macbook"
+    ))
+    XCTAssertNil(settingsWakeMachineKey(outcome: .standard, wakeMachineKey: "machine-macbook"))
+  }
+
   /// Identity beats name, because two Macs in one account can share a name.
   func testFailureResolvesItsMachineByIdentityFirst() throws {
     let macbook = try Self.decodeMachine("""

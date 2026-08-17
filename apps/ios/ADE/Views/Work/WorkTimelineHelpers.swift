@@ -2589,7 +2589,15 @@ func workHostSleepId(from detail: String?) -> String? {
 /// notice ADE emits carries a `sleepId`, so only a foreign or pre-`sleepId`
 /// event ever reaches it.
 private func workHostSleepCardId(sessionId: String, detail: String?) -> String {
-  ["host-sleep", sessionId, workHostSleepId(from: detail) ?? "host-sleep"].joined(separator: ":")
+  [workHostSleepCardIdPrefix, sessionId, workHostSleepId(from: detail) ?? "host-sleep"]
+    .joined(separator: ":")
+}
+
+private let workHostSleepCardIdPrefix = "host-sleep"
+
+/// True for either half of a host-sleep chip, which share one card id.
+private func workIsHostSleepCardId(_ id: String) -> Bool {
+  id.hasPrefix(workHostSleepCardIdPrefix + ":")
 }
 
 private func workPlanCardId(
@@ -2769,6 +2777,20 @@ private func normalizedWorkIntegrationFailures(
 
 private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: WorkEventCardModel) -> WorkEventCardModel? {
   guard existing.kind == incoming.kind else { return nil }
+  // ── Host sleep: a resolved chip never goes back to paused ──
+  // Both halves share one card id, so this fold is the only thing between a
+  // machine that woke up and a chip that still says it is asleep. The fold is
+  // otherwise last-wins, which is right only while the halves arrive in order:
+  // this builder is the one timeline builder that does NOT sort its input, and
+  // the two comparators that produce that input disagree on precedence
+  // (`workChatEnvelopeOrderedBefore` is sequence-first, `appendWorkChatTranscripts`
+  // is timestamp-first), so neither replay nor the live stream guarantees the
+  // paused half is seen first. Ordering the two states instead of trusting
+  // arrival order costs nothing and removes "Paused — computer asleep" from a
+  // Mac that is demonstrably awake.
+  if workIsHostSleepCardId(existing.id), !existing.isInProgress, incoming.isInProgress {
+    return existing
+  }
   if existing.kind == "turnDiagnostics" {
     let normalizedFailures = normalizedWorkIntegrationFailures(
       existing.diagnosticIntegrationFailures + incoming.diagnosticIntegrationFailures
@@ -3022,7 +3044,11 @@ private func eventCard(
           timestamp: envelope.timestamp,
           body: nil,
           bullets: [],
-          metadata: []
+          metadata: [],
+          // The paused half is the live state of a lifecycle chip; the resumed
+          // half is it settled. `mergedWorkEventCard` reads this so the settled
+          // chip wins no matter which half is folded in last.
+          isInProgress: !resumed
         )
       }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }

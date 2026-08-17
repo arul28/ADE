@@ -22944,6 +22944,50 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(card.title, "Resumed · paused 40s")
   }
 
+  /// The fold is otherwise last-wins, and `buildWorkEventCards` does not sort
+  /// its input. If the paused half is folded in second — a replay whose
+  /// sequence numbering inverts the pair, or a clock corrected across the wake
+  /// — last-wins would leave "Paused — computer asleep" on a machine that is
+  /// demonstrably awake. Resumed outranks paused whatever the arrival order.
+  func testHostSleepResumedHalfWinsWhenPausedArrivesLast() throws {
+    let paused = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-08-17T00:00:01.000Z",
+      sequence: 2,
+      event: .systemNotice(
+        kind: "host_asleep",
+        message: "Paused — computer asleep",
+        detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\"}}",
+        turnId: "turn-1",
+        steerId: nil
+      )
+    )
+    let resumed = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-08-17T00:00:41.000Z",
+      sequence: 1,
+      event: .systemNotice(
+        kind: "host_awake",
+        message: "Resumed · paused 40s",
+        detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\",\"pausedMs\":40000}}",
+        turnId: "turn-1",
+        steerId: nil
+      )
+    )
+
+    let inverted = buildWorkEventCards(from: [resumed, paused])
+    XCTAssertEqual(inverted.count, 1)
+    XCTAssertEqual(inverted.first?.title, "Resumed · paused 40s")
+    XCTAssertEqual(inverted.first?.icon, "play.circle")
+    XCTAssertEqual(inverted.first?.isInProgress, false)
+
+    // And the ordered pair still resolves the same way.
+    let ordered = buildWorkEventCards(from: [paused, resumed])
+    XCTAssertEqual(ordered.count, 1)
+    XCTAssertEqual(ordered.first?.title, "Resumed · paused 40s")
+    XCTAssertEqual(ordered.first?.isInProgress, false)
+  }
+
   // MARK: - Timeline dedup + ask_user regression tests
 
   func testBuildWorkToolCardsDedupesDuplicateToolCallsByItemId() {

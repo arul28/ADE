@@ -107,6 +107,26 @@ export function createMachinePowerBrainBridge(
    */
   let generation = 0;
 
+  /**
+   * Did the brain say it actually carried the announcement?
+   *
+   * `machine.reportPowerTransition` answers `{accepted}`; a brain with no
+   * account-directory publisher answers `{accepted: false, reason}`. A reply
+   * that fulfilled but refused is NOT a delivery — treating it as one is what
+   * let an unpersisted suspend look landed. Anything else (an older brain that
+   * answered nothing, or a shape we do not recognise) counts as delivered, so a
+   * version skew cannot turn every hop into a retry storm.
+   */
+  const acceptedByBrain = (value: unknown): boolean =>
+    !(typeof value === "object" && value !== null
+      && (value as { accepted?: unknown }).accepted === false);
+
+  const refusalReason = (value: unknown): string | null =>
+    typeof value === "object" && value !== null
+      && typeof (value as { reason?: unknown }).reason === "string"
+      ? (value as { reason: string }).reason
+      : null;
+
   /** One bounded attempt. Resolves true only when the brain actually answered. */
   const attempt = (kind: "suspend" | "resume"): Promise<boolean> => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -137,7 +157,17 @@ export function createMachinePowerBrainBridge(
         finish(false);
         return;
       }
-      void call.then(() => finish(true), (error: unknown) => {
+      void call.then((value: unknown) => {
+        if (!acceptedByBrain(value)) {
+          options.logger?.debug?.("power.brain_hop_refused", {
+            kind,
+            reason: refusalReason(value),
+          });
+          finish(false);
+          return;
+        }
+        finish(true);
+      }, (error: unknown) => {
         options.logger?.debug?.("power.brain_hop_failed", {
           kind,
           error: error instanceof Error ? error.message : String(error),

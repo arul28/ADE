@@ -120,6 +120,28 @@ func settingsConnectionOutcome(
   }
 }
 
+/// The machine "Wake it" would dial, or nil when the card must not offer one.
+///
+/// The affordance and its target are ONE value. They used to be two: the card
+/// showed the button off `asleepMachineName`, which comes from the failure
+/// record, while the key was resolved separately against the account directory
+/// — so a machine the directory has not loaded yet, or no longer lists, gave a
+/// name with no key and a "Wake it" that did nothing when tapped. A dead button
+/// is the same broken state as a spinner that never ends. Binding the button to
+/// this value makes it unrepresentable: no key, no button, and the copy above
+/// still tells the truth about the machine being asleep.
+func settingsWakeMachineKey(
+  outcome: SettingsConnectionOutcome,
+  wakeMachineKey: String?
+) -> String? {
+  guard case .asleep = outcome else { return nil }
+  guard let trimmed = wakeMachineKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !trimmed.isEmpty else {
+    return nil
+  }
+  return trimmed
+}
+
 func settingsConnectionOutcomeTitle(_ outcome: SettingsConnectionOutcome) -> String? {
   switch outcome {
   case .standard: return nil
@@ -155,9 +177,11 @@ struct SettingsConnectionHeader: View {
   let onDisconnect: () -> Void
   let onReconnect: () -> Void
   var onPairWithPin: (() -> Void)?
-  /// Dials the sleeping machine again. Bounded by the same connect attempt as
-  /// every other path, so the card always lands back on a definite state.
-  var onWake: (() -> Void)?
+  /// Dials the sleeping machine again. Takes the machine to dial, so the card
+  /// can only offer the action when it has a target. Bounded by the same
+  /// connect attempt as every other path, so the card always lands back on a
+  /// definite state.
+  var onWake: ((String) -> Void)?
 
   @State private var pulsing = false
 
@@ -218,7 +242,7 @@ struct SettingsConnectionHeader: View {
         .layoutPriority(1)
       }
 
-      if showsWakeAction, let onWake {
+      if let wakeMachineKey, let onWake {
         // Its own row rather than the trailing slot: the trailing control
         // belongs to the connection we are ON, and taking it would cost the
         // user their Disconnect for as long as this card stands.
@@ -229,7 +253,7 @@ struct SettingsConnectionHeader: View {
             symbol: "power",
             tint: ADEColor.purpleAccent
           ) {
-            onWake()
+            onWake(wakeMachineKey)
           }
           .accessibilityLabel("Wake the machine")
         }
@@ -360,10 +384,10 @@ struct SettingsConnectionHeader: View {
   /// Shown only once the wake has settled. During the attempt the trailing
   /// Cancel is the right control, and a second button offering to start what is
   /// already running is how a card stops being trustworthy.
-  private var showsWakeAction: Bool {
-    guard onWake != nil else { return false }
-    if case .asleep = outcome { return true }
-    return false
+  /// The machine "Wake it" dials, and the reason the button exists at all —
+  /// see `settingsWakeMachineKey`.
+  private var wakeMachineKey: String? {
+    settingsWakeMachineKey(outcome: outcome, wakeMachineKey: snapshot.wakeMachineKey)
   }
 
   private var stateDetailLine: String? {

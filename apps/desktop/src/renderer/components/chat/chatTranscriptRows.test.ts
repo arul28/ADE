@@ -2272,6 +2272,45 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.messageId).toBe("msg-new");
   });
 
+  it("keeps the resumed half when the paused half arrives after it", () => {
+    // Last-wins alone would settle the row on "Paused" for a machine that is
+    // demonstrably awake. Reachable two ways: a sequence inversion (this product
+    // has shipped restarting eventSequence, and old transcripts replay that
+    // numbering verbatim) and a host clock corrected across the wake. iOS
+    // applies the same guard, so the two cannot disagree.
+    const resumedThenPaused: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:04:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "host_awake",
+          message: "Resumed · paused 4m",
+          detail: { hostSleep: { sleepId: "host-sleep-1", pausedMs: 240_000 } },
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: { hostSleep: { sleepId: "host-sleep-1" } },
+          turnId: "turn-1",
+        },
+      },
+    ];
+    const rows = collapseChatTranscriptEvents(resumedThenPaused);
+    const chips = rows.filter((row) => row.key.startsWith("host-sleep:"));
+    expect(chips).toHaveLength(1);
+    expect((chips[0]!.event as { status?: string }).status).toBe("host_awake");
+    expect((chips[0]!.event as { message?: string }).message).toBe("Resumed · paused 4m");
+  });
+
   it("resolves the host-sleep chip in place instead of appending a second artifact", () => {
     const pausedThenResumed: AgentChatEventEnvelope[] = [
       {

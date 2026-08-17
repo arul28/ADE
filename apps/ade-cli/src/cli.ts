@@ -17218,26 +17218,44 @@ async function runServe(
    * suspend half then publishes it to the account directory inside a hard
    * budget, because the window before the OS takes the machine down is short
    * and nothing here may delay it.
+   *
+   * The answer is only `accepted` when there was a publisher to carry the
+   * announcement to the account directory. A brain whose publisher has not been
+   * built yet (or was released with its sync scope) still records the local
+   * announcement — the chat service reads it — but nothing reached the
+   * directory, and saying "accepted" for that is what let the desktop count an
+   * unpersisted beat as landed and skip its resume retry. It reuses the same
+   * `unsupported` reason the RPC already returns for an unwired brain rather
+   * than inventing a second vocabulary for "nowhere to publish".
    */
   const reportDesktopMachinePowerTransition = async (
     input: { kind: "suspend" | "resume"; budgetMs?: number },
-  ): Promise<void> => {
+  ): Promise<{ accepted: boolean; reason?: string }> => {
     const { getSharedMachinePowerMonitor } = await import(
       "./services/power/sharedMachinePowerMonitor"
     );
     const monitor = getSharedMachinePowerMonitor();
+    // Read once: the publisher can be released between the announcement and the
+    // write, and a null-check that disagrees with the call it guards is how a
+    // "published" answer gets returned for a publish that never ran.
+    const publisher = accountMachinePublisher;
     if (input.kind === "resume") {
       // A wake has all the time in the world, so it rides the publisher's own
       // subscription (which republishes "awake" at once) rather than blocking
       // the caller on a write.
       monitor.noteAnnouncedResume();
-      return;
+      // Retrying this is worth it: the publisher is built lazily when a sync
+      // scope appears, so a wake that lands a beat too early can still be
+      // delivered by the desktop's next attempt.
+      return publisher ? { accepted: true } : { accepted: false, reason: "unsupported" };
     }
     monitor.noteAnnouncedSuspend();
+    if (!publisher) return { accepted: false, reason: "unsupported" };
     // The announcement above already asks the publisher for the pre-suspend
     // write; awaiting the same coalesced attempt is what gives the desktop
     // something real to bound its beat on instead of a fire-and-forget void.
-    await accountMachinePublisher?.publishPowerStateNow(input.budgetMs);
+    await publisher.publishPowerStateNow(input.budgetMs);
+    return { accepted: true };
   };
   // What this machine looks like when no project scope owns sync. Hosting is
   // the projectless lease AND a bound shared listener; the builder reports the

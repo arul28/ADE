@@ -21,6 +21,7 @@ import {
   accountMachinePresence,
   connectedMachineIds,
   isMachineConnected,
+  machineIsAwake,
   machineStatusLine,
   type ConnectedMachineIds,
 } from "../../../shared/machinePresence";
@@ -343,8 +344,15 @@ type ComputerDisplayRow = {
   rememberedOnly: boolean;
   /** This computer holds a live runtime channel to it right now. */
   connected: boolean;
+  /**
+   * Reachable right now. The lit dot, the status line's colour, and the card's
+   * "N online" count all read this one value, so no part of a row can call a
+   * machine awake while another part of it says "Asleep".
+   */
+  awake: boolean;
+  /** Null for a hosted web row, which has no directory presence to state. */
+  presence: MachinePresence | null;
   statusColor: string;
-  statusGlow: boolean;
   statusLine: string | null;
   accountMachine: AdeAccountMachine | null;
   environmentEnvId: string | null;
@@ -379,16 +387,16 @@ function displayRowFromAccountMachine(
   // Presence, then power, then the route. A sleeping laptop says "Asleep · 82%
   // battery" rather than a route hint that has not been dialable for an hour.
   const presence = accountMachinePresence(machine, { connected });
-  const asleep = presence === "asleep";
-  const awake = presence === "connected" || (machine.online && !asleep);
+  const awake = machineIsAwake(presence);
   return {
     key: machine.machineKey,
     name: accountMachineDisplayName(machine) ?? "Unnamed computer",
     thisMac,
     rememberedOnly: false,
     connected: presence === "connected",
+    awake,
+    presence,
     statusColor: awake ? COLORS.success : COLORS.textDim,
-    statusGlow: awake,
     statusLine: thisMac ? null : accountMachineStatusLine(machine, presence),
     accountMachine: machine,
     environmentEnvId: null,
@@ -405,8 +413,9 @@ function displayRowFromWebMachine(machine: WebMachineEntry): ComputerDisplayRow 
     // Hosted web rows keep their own vocabulary in `webMachineRowStatusLine`;
     // they do not borrow the desktop's live-channel mark.
     connected: false,
+    awake: machine.status === "live",
+    presence: null,
     statusColor: WEB_MACHINE_DOT_COLOR[machine.status],
-    statusGlow: machine.status === "live",
     statusLine: webMachineRowStatusLine(machine),
     accountMachine: machine.accountMachine,
     environmentEnvId: machine.environment?.envId ?? null,
@@ -570,7 +579,10 @@ export function YourMacsCard() {
     );
   }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
-  const onlineCount = machines.filter((m) => m.online).length;
+  // Counted off the rows' own resolved presence, never the raw directory flag:
+  // a machine that announced a suspend is still inside the 90-second online
+  // window, so counting it here would put "2 online" above a row saying Asleep.
+  const onlineCount = rows.filter((row) => row.awake).length;
 
   /**
    * Is THIS computer missing from its own account directory?
@@ -928,15 +940,19 @@ export function YourMacsCard() {
                   borderTop: `1px solid ${COLORS.borderMuted}`,
                 }}
               >
+                {/* The dot states the SAME presence as the line beside it. The
+                    attribute is how a test pins that, since a CSS variable does
+                    not survive to a style assertion. */}
                 <span
                   aria-hidden
+                  data-machine-presence={row.presence ?? undefined}
                   style={{
                     width: 7,
                     height: 7,
                     borderRadius: "50%",
                     flexShrink: 0,
                     background: row.statusColor,
-                    boxShadow: row.statusGlow
+                    boxShadow: row.awake
                       ? `0 0 0 3px color-mix(in srgb, ${row.statusColor} 20%, transparent)`
                       : undefined,
                   }}
@@ -1044,7 +1060,7 @@ export function YourMacsCard() {
                     style={{
                       fontFamily: SANS_FONT,
                       fontSize: 11,
-                      color: row.statusGlow ? COLORS.success : COLORS.textMuted,
+                      color: row.awake ? COLORS.success : COLORS.textMuted,
                       flexShrink: 0,
                       whiteSpace: "nowrap",
                     }}

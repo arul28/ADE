@@ -409,9 +409,10 @@ function monitorHarness(power: MachinePower = { onExternalPower: true }) {
   const events: MachinePowerEvent[] = [];
   const detector = fakeGapDetector();
   let clock = 5_000;
+  let reading: MachinePower | null = power;
   const monitor = createMachinePowerMonitor({
     now: () => clock,
-    readPower: async () => power,
+    readPower: async () => reading,
     createGapDetector: (onGap) => {
       detector.bind(onGap);
       return detector;
@@ -422,6 +423,10 @@ function monitorHarness(power: MachinePower = { onExternalPower: true }) {
     monitor,
     events,
     detector,
+    /** What the next `refreshPower()` reads back off the platform. */
+    setPower(next: MachinePower | null): void {
+      reading = next;
+    },
     advance(ms: number): void {
       clock += ms;
     },
@@ -560,11 +565,21 @@ describe("createMachinePowerMonitor", () => {
     expect(h.events.at(-1)).toMatchObject({ kind: "resume", gapMs: 120_000 });
   });
 
-  it("leaves sleepStateAt alone across an ordinary awake-to-awake refresh", () => {
-    const h = monitorHarness();
+  it("leaves sleepStateAt alone across an ordinary awake-to-awake refresh", async () => {
+    // The poll runs every minute and usually finds a changed battery reading.
+    // That is a power change, not a sleep transition, so the stamp must not
+    // move: anything that age-bounds the published sleep state would otherwise
+    // read every machine as freshly-known forever.
+    const h = monitorHarness({ battery: { percent: 80, charging: true }, onExternalPower: true });
+    await h.monitor.refreshPower();
     const initial = h.monitor.getSleepStateAt();
-    h.advance(60_000);
 
+    h.advance(60_000);
+    h.setPower({ battery: { percent: 61, charging: false }, onExternalPower: false });
+    await h.monitor.refreshPower();
+
+    expect(h.events.at(-1)).toMatchObject({ kind: "power-change" });
+    expect(h.monitor.getSleepState()).toBe("awake");
     expect(h.monitor.getSleepStateAt()).toBe(initial);
   });
 

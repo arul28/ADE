@@ -21,6 +21,7 @@ import type { MachinePresence } from "../../../shared/types/power";
 import {
   accountMachinePresence,
   machineActionLabel,
+  machineIsAwake,
   machineStatusLine,
 } from "../../../shared/machinePresence";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
@@ -99,7 +100,7 @@ function accountMachineStatusLabel(
   if (connectionState === "unreachable") {
     return "Can't reach this computer right now — make sure it's online and up to date.";
   }
-  if (machine.online) {
+  if (presence === "online") {
     return machineStatusLine(machine, { presence }) ?? "Ready to connect";
   }
   return `${relativeLastSeen(machine.lastSeenAt)} · Open ADE on that computer`;
@@ -136,9 +137,13 @@ export function AccountMachineRow({
   // exists to prevent.
   const presence = accountMachinePresence(machine, { connected });
   const available = connectionState === "available";
-  const trulyOffline = !machine.online;
+  const awake = machineIsAwake(presence);
+  // "Why offline?" is offered about an OFFLINE machine, not a sleeping one:
+  // the row that says "Asleep · 82% battery" and offers to explain why the
+  // machine is offline is the same one-row contradiction as the green dot.
+  const offline = presence === "offline";
   const needsSetup = connectionState === "unreachable";
-  const canExplain = trulyOffline || needsSetup;
+  const canExplain = offline || needsSetup;
 
   const saveRename = async (customName?: string | null) => {
     const api = window.ade.account;
@@ -163,18 +168,22 @@ export function AccountMachineRow({
       data-account-machine-key={machine.machineKey}
       style={{ display: "grid", gap: 8 }}
     >
-      <div style={{ ...machineRowStyle, opacity: trulyOffline && section === "unavailable" ? 0.62 : 1 }}>
+      <div style={{ ...machineRowStyle, opacity: !awake && section === "unavailable" ? 0.62 : 1 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 12, alignItems: "start" }}>
           <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              {/* The dot states the SAME presence as the line below it. The
+                  attribute is how a test pins that, since a CSS variable does
+                  not survive to a style assertion. */}
               <span
                 aria-hidden
+                data-machine-presence={presence}
                 style={{
                   width: 7,
                   height: 7,
                   borderRadius: "50%",
                   flexShrink: 0,
-                  background: machine.online ? COLORS.success : COLORS.textDim,
+                  background: awake ? COLORS.success : COLORS.textDim,
                 }}
               />
               {renaming ? (

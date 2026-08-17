@@ -107,6 +107,21 @@ export function accountMachinePresence(
 }
 
 /**
+ * Is this machine awake and reachable right now?
+ *
+ * The one predicate every surface uses for the lit dot, the dimmed row, and the
+ * "N online" count — because those used to be re-derived from the raw `online`
+ * flag while the words beside them came from `resolveMachinePresence`. A
+ * machine that announced a suspend is still inside the directory's 90-second
+ * online window, so the two disagreed INSIDE one row: a green dot next to the
+ * word "Asleep". Presence already weighed that evidence; nothing downstream
+ * gets to weigh it again.
+ */
+export function machineIsAwake(presence: MachinePresence): boolean {
+  return presence === "connected" || presence === "online";
+}
+
+/**
  * The power half of the status line, or null when the machine never reported
  * any. Battery wins over wall power: "82% battery" tells the reader how long
  * they have, "plugged in" tells them they have as long as they want.

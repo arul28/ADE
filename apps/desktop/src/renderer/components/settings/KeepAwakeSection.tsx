@@ -107,7 +107,15 @@ export function KeepAwakeControls() {
       setFixError(null);
       try {
         const next = await window.ade.keepAwakeSetLevel(level);
-        if (mounted.current) setSnapshot(next);
+        if (mounted.current) {
+          setSnapshot(next);
+          // A save that worked disproves whatever the last failure said. Left
+          // up, "ADE couldn't save that." sits beside a control that just did.
+          // This is the renderer's own transient error only — `levelError`
+          // belongs to the snapshot and reports a level that is stored but not
+          // in force, which a successful save does not disprove.
+          setLoadError(null);
+        }
       } catch {
         if (mounted.current) setLoadError("ADE couldn't save that.");
       } finally {

@@ -285,9 +285,11 @@ struct ConnectionSettingsView: View {
   /// Bounded by the connect attempt itself: it ends attached, or it ends with
   /// a named failure and this same button. There is no third outcome and no
   /// spinner that outlives the attempt.
-  private func wakeAsleepMachine() {
-    guard let key = presentationModel.connectionSnapshot.wakeMachineKey,
-          let machine = AccountService.shared.machines.first(where: { $0.machineKey == key })
+  ///
+  /// The key arrives from the card, which only renders the button when it has
+  /// one (`settingsWakeMachineKey`), so this is never asked to dial nothing.
+  private func wakeAsleepMachine(machineKey: String) {
+    guard let machine = AccountService.shared.machines.first(where: { $0.machineKey == machineKey })
     else { return }
     connectToAccountMachine(machine)
   }

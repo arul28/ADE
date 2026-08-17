@@ -37,7 +37,7 @@ function row(value: AdeAccountMachine): AccountMachineRowModel {
 }
 
 function renderRow(value: AdeAccountMachine, connected = false) {
-  render(
+  return render(
     <AccountMachineRow
       row={row(value)}
       section="available"
@@ -107,6 +107,44 @@ describe("AccountMachineRow", () => {
     );
     expect(screen.getByText("Asleep · 82% battery")).toBeTruthy();
     expect(screen.queryByLabelText("Connected")).toBeNull();
+    expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
+  });
+
+  it("lights its dot off the same presence its line states", () => {
+    // The row resolved presence once and then painted the dot from the raw
+    // `online` flag. A Mac that announced its suspend is still inside the
+    // directory's 90-second online window, so one row said both things at
+    // once: a green dot beside the word "Asleep".
+    const { container } = renderRow(
+      machine({
+        name: "MacBook Pro",
+        online: true,
+        lastSeenAt: NOW - 20_000,
+        sleepState: "asleep",
+        sleepStateAt: NOW - 60_000,
+        power: { onExternalPower: false, battery: { percent: 82, charging: false } },
+      }),
+    );
+    expect(screen.getByText("Asleep · 82% battery")).toBeTruthy();
+    expect(container.querySelector("[data-machine-presence]")?.getAttribute("data-machine-presence"))
+      .toBe("asleep");
+  });
+
+  it("does not offer to explain an offline machine it just called asleep", () => {
+    // Heartbeat aged past the directory's online window but still inside the
+    // sleep-inference window: presence says asleep, and the row used to offer
+    // "Why offline?" — and, opened, "hasn't checked in recently" — about the
+    // machine it had just called asleep two lines above.
+    renderRow(
+      machine({
+        name: "MacBook Pro",
+        online: false,
+        lastSeenAt: NOW - 3 * 60_000,
+        power: { onExternalPower: false, battery: { percent: 82, charging: false } },
+      }),
+    );
+    expect(screen.getByText("Asleep · 82% battery")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Why offline/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
   });
 

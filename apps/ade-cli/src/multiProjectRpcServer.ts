@@ -162,6 +162,20 @@ export type ProjectlessSyncControls = {
   getCloudRelayStatus: () => SyncCloudRelayStatus;
 };
 
+/**
+ * What a power-transition report actually achieved.
+ *
+ * `accepted` means the brain both recorded the announcement AND had somewhere
+ * to publish it. A brain that recorded it locally but has no account-directory
+ * publisher answers `{accepted: false, reason: "unsupported"}` — the same shape
+ * an entirely unwired brain returns — so the desktop's hop can retry rather
+ * than counting an unpersisted beat as landed.
+ */
+export type MachinePowerTransitionOutcome = {
+  accepted: boolean;
+  reason?: string;
+};
+
 export type MultiProjectRpcHandlerOptions = {
   serverVersion: string;
   projectRegistry?: ProjectRegistry;
@@ -207,7 +221,10 @@ export type MultiProjectRpcHandlerOptions = {
    */
   reportMachinePowerTransition?: (
     input: { kind: "suspend" | "resume"; budgetMs?: number },
-  ) => Promise<void> | void;
+  ) =>
+    | Promise<MachinePowerTransitionOutcome | void>
+    | MachinePowerTransitionOutcome
+    | void;
   getRuntimeStatus?: () => {
     syncPort: number | null;
     publishHealth: Pick<
@@ -1567,7 +1584,14 @@ export function createMultiProjectRpcRequestHandler(
       const budgetMs = typeof params.budgetMs === "number" && Number.isFinite(params.budgetMs)
         ? Math.max(250, Math.floor(params.budgetMs))
         : undefined;
-      await report({ kind, ...(budgetMs === undefined ? {} : { budgetMs }) });
+      const outcome = await report({ kind, ...(budgetMs === undefined ? {} : { budgetMs }) });
+      // A reporter that recorded the announcement but had nowhere to publish it
+      // says so, and that refusal is carried through verbatim: answering
+      // "accepted" for an unpersisted beat is what made the desktop's retry
+      // logic stand down on the one transition that needed it.
+      if (outcome && outcome.accepted === false) {
+        return { accepted: false, reason: outcome.reason ?? "unsupported" };
+      }
       return { accepted: true };
     }
 
