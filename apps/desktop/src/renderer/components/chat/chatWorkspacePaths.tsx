@@ -1,7 +1,10 @@
 import React, { createContext, useContext } from "react";
 import { useLocation } from "react-router-dom";
 import type { FilesWorkspace } from "../../../shared/types";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
+import { showToast } from "../app/toast/toastStore";
+import { nextFilesOpenNonce, requestFilesOpenInTools } from "../files/v2/filesOpenRequests";
 
 /**
  * Recognising the file paths an agent writes into chat, and turning them into
@@ -112,16 +115,41 @@ export function parseWorkspacePathLocation(value: string): WorkspacePathLocation
   };
 }
 
+/**
+ * Extensions that make a SINGLE-SEGMENT token look like a file but almost never
+ * are one in agent prose. Without this, "the fix shipped in v1.2.60" and "see
+ * example.com" both render as clickable file links — the trailing-dot-then-
+ * alphanumerics test cannot tell them from `preload.ts`. A path with a
+ * separator in it is exempt: `docs/example.com` really is a file.
+ *
+ * Version-like tokens are matched separately because their "extension" is
+ * digits, which no real source file uses.
+ */
+const NON_FILE_SINGLE_SEGMENT_SUFFIXES = new Set([
+  // NOT "sh": `install.sh` / `build.sh` are real files and far more likely in
+  // agent prose than a Saint Helena domain.
+  "com", "org", "net", "io", "ai", "dev", "gov", "edu",
+]);
+
+function singleSegmentLooksLikeProse(path: string): boolean {
+  const suffix = path.match(/\.([A-Za-z0-9]{1,8})$/)?.[1];
+  if (!suffix) return true;
+  if (/^\d+$/.test(suffix)) return true;
+  return NON_FILE_SINGLE_SEGMENT_SUFFIXES.has(suffix.toLowerCase());
+}
+
 export function looksLikeWorkspacePath(value: string): boolean {
   const candidate = parseWorkspacePathLocation(value);
   if (!candidate) return false;
   if (candidate.path === ".." || candidate.path.startsWith("../") || candidate.path.startsWith("~/")) {
     return false;
   }
-  if (candidate.path.startsWith("/")) {
-    return candidate.path.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
-  }
-  return candidate.path.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
+  const withoutLeadingSlash = candidate.path.startsWith("/") ? candidate.path.slice(1) : candidate.path;
+  if (withoutLeadingSlash.includes("/")) return true;
+  // Bare token: it still has to end in something file-shaped, and it must not
+  // be a version number or a domain.
+  if (!/\.[A-Za-z0-9]{1,8}$/.test(withoutLeadingSlash)) return false;
+  return !singleSegmentLooksLikeProse(withoutLeadingSlash);
 }
 
 export function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
@@ -229,36 +257,124 @@ export type ChatWorkspacePathContextValue = {
  * `force` re-reads after a resolve miss, which is how a lane created since the
  * warm-up is picked up.
  */
-let cachedFilesWorkspaces: FilesWorkspace[] | null = null;
-let inflightFilesWorkspaces: Promise<FilesWorkspace[]> | null = null;
+/**
+ * Keyed by machine, not global. A chat on another machine lists THAT machine's
+ * workspaces; folding them into one cache would let a foreign lane id resolve
+ * against the local roster (or the reverse) and open the wrong worktree.
+ */
+const BOUND_MACHINE_CACHE_KEY = "bound";
 
-export function resetFilesWorkspaceCacheForTests(): void {
-  cachedFilesWorkspaces = null;
-  inflightFilesWorkspaces = null;
+function machineCacheKey(pin: OpenProjectBinding | null | undefined): string {
+  return pin?.key ?? BOUND_MACHINE_CACHE_KEY;
 }
 
-async function loadFilesWorkspaces(force = false): Promise<FilesWorkspace[]> {
-  if (!force && cachedFilesWorkspaces) return cachedFilesWorkspaces;
+const cachedFilesWorkspaces = new Map<string, FilesWorkspace[]>();
+const inflightFilesWorkspaces = new Map<string, Promise<FilesWorkspace[]>>();
+
+export function resetFilesWorkspaceCacheForTests(): void {
+  cachedFilesWorkspaces.clear();
+  inflightFilesWorkspaces.clear();
+}
+
+async function loadFilesWorkspaces(
+  pin: OpenProjectBinding | null | undefined,
+  force = false,
+): Promise<FilesWorkspace[]> {
+  const key = machineCacheKey(pin);
+  const cached = cachedFilesWorkspaces.get(key) ?? null;
+  if (!force && cached) return cached;
   const listWorkspaces = typeof window !== "undefined" ? window.ade?.files?.listWorkspaces : undefined;
-  if (typeof listWorkspaces !== "function") return cachedFilesWorkspaces ?? [];
+  if (typeof listWorkspaces !== "function") return cached ?? [];
   // A forced read must not be answered by a request that started BEFORE the
   // caller discovered its miss — that response predates the lane it is looking
   // for, so the "re-read after a miss" recovery would never actually recover.
-  if (force && inflightFilesWorkspaces) {
-    await inflightFilesWorkspaces.catch(() => undefined);
+  const inflight = inflightFilesWorkspaces.get(key);
+  if (force && inflight) {
+    await inflight.catch(() => undefined);
   }
-  if (!inflightFilesWorkspaces) {
-    inflightFilesWorkspaces = listWorkspaces()
+  let pending = inflightFilesWorkspaces.get(key);
+  if (!pending) {
+    pending = listWorkspaces({}, pin)
       .then((next) => {
-        cachedFilesWorkspaces = next;
+        cachedFilesWorkspaces.set(key, next);
         return next;
       })
-      .catch(() => cachedFilesWorkspaces ?? [])
+      .catch(() => cachedFilesWorkspaces.get(key) ?? [])
       .finally(() => {
-        inflightFilesWorkspaces = null;
+        inflightFilesWorkspaces.delete(key);
       });
+    inflightFilesWorkspaces.set(key, pending);
   }
-  return inflightFilesWorkspaces;
+  return pending;
+}
+
+/** How many index hits to inspect when probing what a clicked path actually is. */
+const PATH_PROBE_LIMIT = 60;
+
+export type WorkspacePathProbe =
+  | { kind: "file"; path: string }
+  | { kind: "directory"; path: string }
+  | { kind: "ambiguous"; query: string }
+  | { kind: "missing" };
+
+/**
+ * Asks the workspace's file-name index what a clicked token actually is.
+ *
+ * This is the fix for the two silent failures users hit most. An agent writes a
+ * BARE filename far more often than a full path ("see FilesWorkbench.tsx"), and
+ * the old code assumed any path without a separator sat at the workspace root —
+ * so it opened `<lane>/FilesWorkbench.tsx`, which does not exist, and failed
+ * with a thin error strip. It also assumed every clickable token was a file, so
+ * a folder name was opened as one and errored the same way.
+ */
+export async function probeWorkspacePath(args: {
+  workspaceId: string;
+  path: string;
+  pin: OpenProjectBinding | null | undefined;
+}): Promise<WorkspacePathProbe> {
+  const quickOpen = typeof window !== "undefined" ? window.ade?.files?.quickOpen : undefined;
+  if (typeof quickOpen !== "function") return { kind: "file", path: args.path };
+
+  const normalized = normalizePath(args.path).replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized.length) return { kind: "missing" };
+  const hasSeparator = normalized.includes("/");
+  // A bare name is searched by name; a full path is searched by itself so an
+  // exact hit ranks at all in a repo with many same-named files.
+  const query = normalized;
+
+  let items: { path: string }[] = [];
+  try {
+    items = await quickOpen({
+      workspaceId: args.workspaceId,
+      query,
+      limit: PATH_PROBE_LIMIT,
+      includeIgnored: false,
+    }, args.pin);
+  } catch {
+    // A failed probe must not swallow the click: fall back to the old
+    // assumption and let the workbench report whatever it hits.
+    return { kind: "file", path: normalized };
+  }
+
+  const lowered = normalized.toLowerCase();
+  const exact = items.find((item) => normalizePath(item.path).toLowerCase() === lowered);
+  if (exact) return { kind: "file", path: normalizePath(exact.path) };
+
+  const directoryPrefix = `${lowered}/`;
+  if (items.some((item) => normalizePath(item.path).toLowerCase().startsWith(directoryPrefix))) {
+    return { kind: "directory", path: normalized };
+  }
+
+  if (hasSeparator) return { kind: "missing" };
+
+  // Bare name: match on the basename, since the index returns full paths.
+  const matches = items.filter((item) => {
+    const segments = normalizePath(item.path).toLowerCase().split("/");
+    return segments[segments.length - 1] === lowered;
+  });
+  if (matches.length === 1) return { kind: "file", path: normalizePath(matches[0]!.path) };
+  if (matches.length > 1) return { kind: "ambiguous", query: normalized };
+  return { kind: "missing" };
 }
 
 export function useWorkspacePathOpener(args: {
@@ -269,13 +385,28 @@ export function useWorkspacePathOpener(args: {
    */
   laneId: string | null;
   navigate: (to: string, options: { state: Record<string, unknown> }) => void;
+  /**
+   * Machine that owns this chat, from the same router the chat's own calls use.
+   * Null means the machine this project tab is already bound to. A chat on
+   * another machine reports paths on THAT machine's disk, so every lookup below
+   * has to be asked of it — otherwise the click resolves against the wrong
+   * filesystem and quietly finds nothing.
+   */
+  runtimePin?: OpenProjectBinding | null;
   onOpened?: (openFilePath: string, laneId: string | null) => void;
 }): ChatWorkspacePathContextValue {
-  const { laneId: laneIdArg, navigate, onOpened } = args;
-  const routeState = useLocation().state as { laneId?: unknown } | null;
+  const { laneId: laneIdArg, navigate, onOpened, runtimePin = null } = args;
+  const location = useLocation();
+  const routeState = location.state as { laneId?: unknown } | null;
   const laneId = laneIdArg
     ?? (typeof routeState?.laneId === "string" ? routeState.laneId : null);
-  const [workspaces, setWorkspaces] = React.useState<FilesWorkspace[]>(() => cachedFilesWorkspaces ?? []);
+  // The tools-pane Files panel only exists inside the Work tab. Anywhere else
+  // (a chat rendered under /prs, personal chats) the full Files tab is the only
+  // destination that can actually show the file.
+  const inWorkSurface = location.pathname.startsWith("/work");
+  const [workspaces, setWorkspaces] = React.useState<FilesWorkspace[]>(
+    () => cachedFilesWorkspaces.get(machineCacheKey(runtimePin)) ?? [],
+  );
 
   /**
    * Load the roots on demand. Chat surfaces deliberately do NOT fetch on mount —
@@ -290,8 +421,8 @@ export function useWorkspacePathOpener(args: {
     // the cache was warmed would otherwise stay empty for its whole lifetime
     // and keep rendering raw absolute paths. `loadFilesWorkspaces` already
     // short-circuits on a warm cache, so this costs a microtask.
-    void loadFilesWorkspaces().then((next) => setWorkspaces(next));
-  }, []);
+    void loadFilesWorkspaces(runtimePin).then((next) => setWorkspaces(next));
+  }, [runtimePin]);
 
   const openWorkspacePath = React.useCallback(async (path: string | WorkspacePathLocation) => {
     // NAVIGATION always resolves against a fresh read, never the cache.
@@ -303,24 +434,101 @@ export function useWorkspacePathOpener(args: {
     // runs and the error is silent. One IPC on an explicit click is the right
     // price for that; DISPLAY formatting keeps using the cache, where a stale
     // root only costs a longer-looking path.
-    const resolvedWorkspaces = await loadFilesWorkspaces(true);
+    const resolvedWorkspaces = await loadFilesWorkspaces(runtimePin, true);
     setWorkspaces(resolvedWorkspaces);
     const target = resolveFilesNavigationTarget({
       path,
       workspaces: resolvedWorkspaces,
       fallbackLaneId: laneId,
     });
-    if (!target) return;
+    if (!target) {
+      // An absolute path under no known root. Before this, the click was a
+      // deliberate no-op and the user got no feedback at all — which read as
+      // "the link is broken" rather than "that file is somewhere I can't see".
+      showToast({
+        title: "Can't open that file",
+        message: `${typeof path === "string" ? path : path.path} isn't inside this project.`,
+        tone: "error",
+      });
+      return;
+    }
+
+    const workspace = target.laneId
+      ? resolvedWorkspaces.find((candidate) => candidate.laneId === target.laneId) ?? null
+      : null;
+    const probe = workspace
+      ? await probeWorkspacePath({ workspaceId: workspace.id, path: target.openFilePath, pin: runtimePin })
+      : ({ kind: "file", path: target.openFilePath } as const);
+
+    if (probe.kind === "missing") {
+      // A miss is only authoritative for a BARE name, where the index is the
+      // only thing that can turn it into a path. For a path that already has a
+      // directory in it, the index is a hint and a stale one: it is built once
+      // per workspace and only refreshed from watcher events, and no watcher
+      // runs unless the Files or Git tools panel is open. It also excludes
+      // gitignored files and `dist`/`node_modules`/`coverage` outright, and
+      // stops at 25,000 files. So the file an agent just created — the single
+      // most common thing to click — would be reported as missing forever.
+      // Open it and let a real read error speak for itself, which is what
+      // clicking a path did before the probe existed.
+      if (!target.openFilePath.includes("/")) {
+        showToast({
+          title: "Can't find that file",
+          message: `Nothing named ${target.openFilePath} in ${workspace?.name ?? "this project"}.`,
+          tone: "error",
+        });
+        return;
+      }
+    }
+
+    // Key order matches what the Files route has always received; only the two
+    // new optional keys are appended.
+    const laneState = target.laneId ? { laneId: target.laneId } : {};
+    const pinState = runtimePin ? { filesPin: runtimePin } : {};
+
+    if (probe.kind === "ambiguous") {
+      // Several files share that name. Guessing one would open the wrong file
+      // silently; the search panel lets the user pick in one more click.
+      navigate("/files", { state: { ...laneState, ...pinState, searchQuery: probe.query } });
+      return;
+    }
+
+    // A fallen-through miss keeps the path the agent reported.
+    const resolvedPath = probe.kind === "missing" ? target.openFilePath : probe.path;
+    const openLine = probe.kind === "directory" ? undefined : target.startLine;
+    const openColumn = probe.kind === "directory" ? undefined : target.startColumn;
+
+    // A file on the machine this tab is already bound to, in the lane this chat
+    // belongs to, opens next to the conversation. Anything else — another lane,
+    // another machine — needs the full Files tab, which owns the workspace
+    // picker and the machine chrome the tools pane deliberately hides.
+    const belongsToThisChatsLane = target.laneId != null && target.laneId === laneId;
+    if (!runtimePin && belongsToThisChatsLane && inWorkSurface) {
+      requestFilesOpenInTools({
+        path: resolvedPath,
+        laneId: target.laneId,
+        pin: null,
+        pathType: probe.kind === "directory" ? "directory" : "file",
+        line: openLine,
+        column: openColumn,
+        nonce: nextFilesOpenNonce(),
+      });
+      onOpened?.(resolvedPath, target.laneId);
+      return;
+    }
+
     navigate("/files", {
       state: {
-        openFilePath: target.openFilePath,
-        ...(target.laneId ? { laneId: target.laneId } : {}),
-        ...(typeof target.startLine === "number" ? { startLine: target.startLine } : {}),
-        ...(typeof target.startColumn === "number" ? { startColumn: target.startColumn } : {}),
+        openFilePath: resolvedPath,
+        ...laneState,
+        ...(typeof openLine === "number" ? { startLine: openLine } : {}),
+        ...(typeof openColumn === "number" ? { startColumn: openColumn } : {}),
+        ...(probe.kind === "directory" ? { openPathType: "directory" } : {}),
+        ...pinState,
       },
     });
-    onOpened?.(target.openFilePath, target.laneId);
-  }, [laneId, navigate, onOpened, workspaces]);
+    onOpened?.(resolvedPath, target.laneId);
+  }, [inWorkSurface, laneId, navigate, onOpened, runtimePin]);
 
   const formatWorkspaceDisplayPath = React.useCallback((path: string): string => (
     resolveFilesNavigationTarget({ path, workspaces, fallbackLaneId: laneId })?.openFilePath ?? path

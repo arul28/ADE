@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { createPinnedFilesApi } from "../pinnedFilesApi";
 import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,7 @@ const tab: EditorTab = {
 
 function props(source: string): ViewerProps {
   return {
+    files: createPinnedFilesApi(null),
     workspaceId: "workspace-a",
     rootPath: "/repo",
     tab,

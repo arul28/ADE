@@ -1,3 +1,4 @@
+import { createPinnedFilesApi } from "./pinnedFilesApi";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { streamFileBytes } from "./streamBytes";
 
@@ -22,6 +23,11 @@ function installReadFileRange(bytes: Uint8Array) {
   return readFileRange;
 }
 
+/** The bound API the streamer now takes; the pin itself is irrelevant here. */
+function filesApi() {
+  return createPinnedFilesApi(null);
+}
+
 describe("streamFileBytes", () => {
   afterEach(() => {
     delete (globalThis as any).window;
@@ -35,7 +41,7 @@ describe("streamFileBytes", () => {
     const readFileRange = installReadFileRange(original);
 
     // chunkLength 5 is NOT divisible by 3 → each non-final chunk's base64 is padded.
-    const result = await streamFileBytes("ws", "x", { chunkLength: 5 });
+    const result = await streamFileBytes(filesApi(), "ws", "x", { chunkLength: 5 });
 
     expect(result.length).toBe(original.length);
     expect(Array.from(result)).toEqual(Array.from(original));
@@ -45,14 +51,14 @@ describe("streamFileBytes", () => {
 
   it("handles an empty file", async () => {
     installReadFileRange(new Uint8Array());
-    const result = await streamFileBytes("ws", "x", { chunkLength: 5 });
+    const result = await streamFileBytes(filesApi(), "ws", "x", { chunkLength: 5 });
     expect(result.length).toBe(0);
   });
 
   it("handles a single full chunk", async () => {
     const original = new Uint8Array([1, 2, 3, 4]);
     installReadFileRange(original);
-    const result = await streamFileBytes("ws", "x", { chunkLength: 1024 });
+    const result = await streamFileBytes(filesApi(), "ws", "x", { chunkLength: 1024 });
     expect(Array.from(result)).toEqual([1, 2, 3, 4]);
   });
 
@@ -70,7 +76,7 @@ describe("streamFileBytes", () => {
     }));
     (globalThis as any).window = { ade: { files: { readFileRange } } };
 
-    const result = await streamFileBytes("ws", "x", { chunkLength: 1024 });
+    const result = await streamFileBytes(filesApi(), "ws", "x", { chunkLength: 1024 });
 
     expect(Array.from(result)).toEqual(Array.from(new TextEncoder().encode(content)));
   });
@@ -78,7 +84,7 @@ describe("streamFileBytes", () => {
   it("stops early when cancelled", async () => {
     const original = new Uint8Array(100);
     installReadFileRange(original);
-    const result = await streamFileBytes("ws", "x", { chunkLength: 5, isCancelled: () => true });
+    const result = await streamFileBytes(filesApi(), "ws", "x", { chunkLength: 5, isCancelled: () => true });
     expect(result.length).toBe(0);
   });
 
@@ -86,7 +92,7 @@ describe("streamFileBytes", () => {
     const original = new Uint8Array(20);
     installReadFileRange(original);
 
-    await expect(streamFileBytes("ws", "x", { chunkLength: 8, maxBytes: 12 }))
+    await expect(streamFileBytes(filesApi(), "ws", "x", { chunkLength: 8, maxBytes: 12 }))
       .rejects
       .toThrow(/too large/i);
   });

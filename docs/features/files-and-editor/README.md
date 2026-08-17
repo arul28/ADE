@@ -12,7 +12,7 @@ back to it for "open this file", and lanes surface files by worktree.
 
 ## Where this runs
 
-File listing, atomic writes, the cross-file search index, and the
+File listing, atomic writes, the file-name index and content search, and the
 chokidar-backed file watcher all run inside the **active runtime**
 for the window's project binding — the local ADE daemon for
 local-bound windows and the SSH-attached remote runtime for
@@ -30,6 +30,11 @@ through the same preload pump that powers lane / pty / process
 events. Remote-bound desktop windows therefore browse and edit files
 on the remote machine; the file tree, search results, and watcher
 events all reflect the remote worktree.
+
+A window is not limited to the machine it is bound to. Every
+`window.ade.files.*` method takes an optional trailing **machine pin**
+(`OpenProjectBinding | null`) that addresses one machine explicitly —
+see [Which machine answers a file call](#which-machine-answers-a-file-call).
 
 ## Source file map
 
@@ -54,7 +59,7 @@ targets for the legacy IPC path.
   polling.
 - `apps/desktop/src/main/services/files/fileService.ts` — directory
   listing, paginated child loading, Git status decorations, range reads,
-  blame, atomic writes, quick open, cross-file search, path safety. Its
+  blame, atomic writes, quick open, content search, path safety. Its
   decoration response is capped (see [Git status overlay](#git-status-overlay)),
   and its read path collapses what used to be up to three opens into one: above
   the 1 MiB text cap it reads a single 256 KB prefix, in the 256 KB–1 MiB band
@@ -70,9 +75,11 @@ targets for the legacy IPC path.
   delete pipeline to tear down watchers as a discrete teardown step
   before the worktree is removed. ~290 lines.
 - `apps/desktop/src/main/services/files/fileSearchIndexService.ts` —
-  in-memory file-name index keyed per workspace and per
-  `includeIgnored` mode, incrementally updated from watcher events.
-  ~335 lines.
+  the file-**name** index (keyed per workspace and per `includeIgnored`
+  mode, incrementally updated from watcher events) plus the two-tier
+  content search that backs `searchText`. The index holds no file
+  contents; `git grep` is the first tier and a streaming JS scan the
+  second. See [Quick open and content search](#quick-open-and-content-search).
 - `apps/desktop/src/main/services/files/fileService.test.ts` and
   `fileWatcherService.test.ts` — unit coverage.
 - `apps/desktop/src/main/services/diffs/` — diff computation for diff
@@ -107,14 +114,22 @@ Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.files` and
   `window.ade.diff` (`getChanges`, `getFile`, `getFilePatch`; changes
-  list is short-cached per lane).
+  list is short-cached per lane). Every `files` method except
+  `openExternalPath` takes an optional trailing machine pin, routed by
+  `callPinnedFileActionOr`.
 
 Renderer:
 
 - `apps/desktop/src/renderer/components/files/FilesTab.tsx` — shared
   route/sidebar entry point. It always renders the workbench and forwards
   router-state chat/review file targets as workspace-relative paths, preserving
-  the lane id and source position for local and remote-bound projects.
+  the lane id and source position for local and remote-bound projects. Router
+  state is validated rather than trusted: `openPathType` selects a tree reveal
+  instead of an editor open, `searchQuery` opens the search panel instead of a
+  file, and `filesPin` is accepted only when it really is an
+  `OpenProjectBinding` (a `local` binding needs `displayName`; a `remote` one
+  needs `targetId` / `projectId` / `runtimeName`), so a malformed history entry
+  cannot aim file calls at a machine that does not exist.
 - `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx` —
   Files tab shell: workspace chrome, activity bar, explorer, editor
   groups, Monaco edit host, diff/conflict surfaces, quick open, text
@@ -123,12 +138,38 @@ Renderer:
   dirty-buffer publishing for agent reads, optional Git-decoration
   fallback, and file-type viewers. Accepts optional
   `preferredLaneId` and `embedded` props so the same component can mount inside
-  the Work right-edge sidebar.
+  the Work right-edge sidebar. It also owns the **machine pin**: the amber
+  machine chip, the "Back to this computer" control, the pinned-machine
+  liveness read, and the release of caches written under a pinned key.
+- `apps/desktop/src/renderer/components/files/v2/pinnedFilesApi.ts` —
+  `createPinnedFilesApi(pin)` returns the whole Files API with one machine
+  already bound to it, cached per binding key so its identity changes exactly
+  when the machine does. The workbench hands that object to `useFilesTree`,
+  `EditorGroups`, `useFileContent`, `streamFileBytes`, and every viewer;
+  nothing under the workbench calls `window.ade.files` directly.
+- `apps/desktop/src/renderer/components/files/v2/useFilesTree.ts` — the
+  explorer tree as a hook: listing, paging, expansion, per-path serialized
+  tree ops, and git decorations, driven by (workspace, machine) alone. The
+  file watcher deliberately stayed in `FilesWorkbench` because it refreshes
+  the tree *and* reloads open editor tabs.
+- `apps/desktop/src/renderer/components/files/v2/FilesSearchPanel.tsx` — the
+  single Files search surface, rendered in three places (explorer sidebar,
+  centred modal, Work tools pane). Also owns the "Include ignored files"
+  preference (`getFilesSearchIncludeIgnored` / `setFilesSearchIncludeIgnored`)
+  and the shared `Backdrop` / `SEARCH_PANEL_SURFACE` chrome that
+  `overlays.tsx` re-uses.
+- `apps/desktop/src/renderer/components/files/v2/filesOpenRequests.ts` —
+  one-shot module channel that carries "open this path in the Work tools-pane
+  Files panel" from a chat click to the embedded workbench. Holds one pending
+  request across the gap between the click and the panel mounting; the
+  consumer clears the hold so a later mount cannot re-open it.
 - `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
   virtualized file tree (`@tanstack/react-virtual`), inline rename/create,
-  explorer search, create/rename/delete controls,
-  and context-menu wiring; git status coloring uses helpers from
-  `filePresentation.tsx`.
+  create/rename/delete controls, and context-menu wiring; git status coloring
+  uses helpers from `filePresentation.tsx`. It renders the search field and a
+  `searchResults` slot; with a non-empty query the results replace the tree
+  entirely, so the old client-side filter over whatever slice of the tree
+  happened to be loaded is skipped.
 - `apps/desktop/src/renderer/components/files/filePresentation.tsx` —
   file-type icons and `changeStatus*` helpers shared with the explorer.
 - `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
@@ -146,7 +187,8 @@ Renderer:
 - `apps/desktop/src/renderer/components/files/v2/` — VS Code-style
   workbench shell: editor groups, preview/pinned tabs, split/move
   support, project-scoped tab-scope persistence, warm empty state,
-  search/create overlays, and
+  the search panel, the create prompt (`overlays.tsx`, which now holds
+  `CreatePromptModal` and the shared modal chrome only), and
   viewers for code, markdown, sandboxed HTML, image, audio/video playback, CSV/TSV,
   PDF, Office-document fallback, large text, binary, and diffs.
   `v2/viewerRegistry.ts` decides both which viewer renders a file and
@@ -166,14 +208,16 @@ Renderer:
   — renderer workbench state and model-lifetime tests, including
   `filesTreeCache.test.ts` (cache budgets / pinning / eviction),
   `viewerRegistry.test.ts` (viewer + editability resolution),
-  `ViewerHost.test.tsx` (payload-driven `readOnly`), and
-  `EditorGroup.test.tsx` (clean-model save guard).
+  `ViewerHost.test.tsx` (payload-driven `readOnly`),
+  `EditorGroup.test.tsx` (clean-model save guard), and
+  `FilesSearchPanel.test.tsx` (independent name/content requests, the
+  include-ignored toggle, keyboard navigation).
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
   root with workspace picker, live file tree/read, a magnifying-glass
   button that opens the search page, and live file-action gating from
   sync policy.
 - `apps/ios/ADE/Views/Files/FilesSearchScreen.swift` — full-screen
-  unified search page (desktop `SearchOverlay` parity): one query
+  unified search page (desktop `FilesSearchPanel` parity): one query
   searches file names (`quickOpen`) and contents (`searchText`)
   together, name matches first under "Files" and content hits grouped
   per file with collapsible line previews. Replaced the inline
@@ -196,8 +240,57 @@ Lane integration:
   watcher service, path safety invariants, the preload trust boundary,
   and how external-change sync reaches open tabs.
 - [editor-surfaces.md](./editor-surfaces.md) — Monaco host, tab bar,
-  diff and conflict views, quick open, cross-file search, keyboard
+  diff and conflict views, the search panel, keyboard
   shortcuts, context menu.
+
+## Which machine answers a file call
+
+A file lives on the disk of the machine that owns the lane, so a read or a
+write is a per-machine fact exactly like a chat, a terminal, or a PR record.
+Every `window.ade.files.*` method therefore takes an optional **second
+positional argument**, a machine pin (`OpenProjectBinding | null`):
+
+- **Absent or `null`** — the machine this project tab is bound to. Byte for
+  byte the pre-pin path: the remote-runtime route first, then the strict
+  local-runtime route, then the legacy in-process IPC fallback, and the
+  project-transition guard still applies.
+- **A binding** — that machine, whatever the tab is bound to. A pinned call is
+  explicitly targeted work, so it bypasses the transition guard (which only
+  protects the ambiguous *active* binding) and has no local IPC fallback.
+
+Reads and writes both honour it. A file belonging to a chat on another machine
+opens **fully editable** without rebinding the window: `writeText`,
+`writeTextAtomic`, `createFile`, `createDirectory`, `rename`, `delete`,
+`watchChanges`, and `stopWatching` all land on the machine that owns the bytes.
+
+Two deliberate exceptions:
+
+- `openExternalPath` takes **no** pin. The path comes from this machine's
+  Finder, open-file dialog, or drag/drop, so it only exists on this disk, and
+  no runtime exposes a `file` action for it.
+- `external-local:*` workspaces **drop** a supplied pin. They are registered
+  only in this process's file service and their root path is meaningful only on
+  this disk, so a caller that pins every file call uniformly still gets the
+  correct local behaviour.
+
+Coverage is the whole point, not a nicety: a Files workspace id **is** a lane
+id, and lane rows sync across machines, so the same id resolves on both. An
+unpinned write while pinned elsewhere does not fail — it silently writes to
+this machine's worktree for that lane. That is why the renderer binds the
+machine once in `pinnedFilesApi.ts` and passes the resulting object down,
+rather than threading a `pin` argument through a dozen call sites: the object's
+identity changes exactly when the machine does, so effects that hold it (the
+file watcher above all) unsubscribe from the machine they subscribed to before
+subscribing to the new one. A ref would have lied — a callback built before the
+pin arrived would read the current value, and a chokidar watcher could be left
+running on a remote host with nothing left to stop it.
+
+In the UI a pin is entered by clicking a file in a chat on another machine, not
+by choosing a machine. The workbench shows the amber machine chip
+(`LaneMachineMarker`) with "Files on this machine. Edits save there." — or, if
+that machine has gone offline, why the tree stopped answering — plus one
+obvious way out, **Back to this computer**. Picking any workspace from the
+bound machine clears the pin too.
 
 ## Workspace model
 
@@ -334,7 +427,7 @@ refreshed. A plain `modified` event no longer re-lists the tree at all, since a
 content-only change cannot alter the listing; it only queues a decoration
 refresh.
 
-## Quick open and cross-file search
+## Quick open and content search
 
 `FileSearchIndexService` maintains a flat list of file paths per
 `workspaceId::mode` key (where `mode` is `default` or `all`). The
@@ -349,12 +442,135 @@ with the watcher:
   an empty list, which is what the composer `@` menu, TUI palette, iOS, and
   web clients rely on for the pre-typing state — all four funnel into this
   one service, so no caller-side empty-query guards should be reintroduced
-- `fileService.searchText({ workspaceId, query, limit, includeIgnored })`
-  streams text matches using `ripgrep` fallback if available, otherwise
-  a node-side line scanner
+
+The index is a **name** index. Entries carry `path` / `lowerPath` / `size` /
+`mtimeMs` and nothing else: retaining decoded lines cost hundreds of megabytes
+of heap (80 MiB of raw bytes becomes millions of small JS strings) and crashed
+the app once "include ignored files" widened the pile. Content search reads,
+scans, and discards.
+
+`fileService.searchText({ workspaceId, query, limit, includeIgnored })` is
+two-tier:
+
+1. **`git grep`**, whenever the workspace root is inside a git work tree (the
+   `rev-parse --is-inside-work-tree` answer is cached per workspace root and
+   dropped on the same signals that drop the name index). It is roughly 5×
+   faster than the walk below on a mid-size repo and needs no name index at
+   all, so a query that matches nothing no longer costs a tree walk plus a read
+   of every file. The run is streamed and stopped the moment `limit` matches
+   are in hand, with a 10 s timeout. Flags: `-F` so the query is literal (users
+   type `foo.ts(`, and a regex parse error must never reach them), `-i`, `-I`,
+   `-n`, `-z`, `--untracked`, and `-m <limit>` per file. Exclusions are pushed
+   into git as pathspecs rather than filtered out of the output, so one
+   `node_modules` cannot flood the stream; the parsed results are filtered too,
+   as the correctness backstop. Records are parsed by `parseGitGrepRecord`,
+   which accepts NUL-delimited path *and* line (modern git), NUL path with a
+   colon line (older git), and the plain `path:line:text` shape.
+2. **A streaming JS scan** over the name index, for workspaces that are not git
+   work trees (a folder opened from Finder) and for any run where git was
+   missing, failed, or timed out. Each file is read, scanned, and released;
+   files over `MAX_TEXT_FILE_BYTES` (1 MB) and files with a NUL byte are
+   skipped, and the loop yields cooperatively.
+
+`GitGrepOutcome` distinguishes three results, and only one of them retires the
+fast tier:
+
+| Outcome | Meaning | Effect |
+|---|---|---|
+| `answered` | exit 0 (matches) or 1 (no matches), or the limit was reached | returned as-is; exit 1 is a complete, correct answer |
+| `unfinished` | the 10 s timeout fired, or the process was killed from outside (`code == null`) | falls through to tier 2 this once; says nothing about future runs |
+| `unusable` | spawn threw, `error` fired, or git refused the invocation (e.g. `-m` needs git ≥ 2.38 → exit 129, bad pathspec → 128) | the tier is retired for that workspace until the index is invalidated |
+
+Three divergences between the tiers are deliberate and worth knowing, because
+they mean the same query can return slightly different sets:
+
+- `git grep` also searches files **above** `MAX_TEXT_FILE_BYTES`, which the JS
+  scan skips so one enormous file cannot be read whole.
+- `git grep` also searches **tracked-but-gitignored** files.
+- `git grep` does **not** descend into submodules. `--recurse-submodules` would
+  fix that but git rejects it outright alongside `--untracked` (exit 128), and
+  untracked files matter far more here — a file an agent just wrote is the
+  common case, a submodule is not.
 
 Quick open results are `{ path, score }`. Text-search matches are
-`{ path, line, column, preview }`.
+`{ path, line, column, preview }` (preview clipped to 240 chars). Because git's
+case folding is not JavaScript's, a column that cannot be relocated in the
+matched line reports column 1 — the line is right, only the caret is
+approximate.
+
+## The search UI
+
+`v2/FilesSearchPanel.tsx` is the one search surface. It backs three mounts:
+the explorer sidebar column, the centred modal, and the Work tools pane —
+which previously had no search at all. There is no separate overlay component:
+the modal renders `FilesSearchPanel` with `variant="overlay"` off the same
+`searchQuery` state the sidebar uses, and only one of the two mounts is live at
+a time so the same workspace is never searched twice.
+
+Names and contents are **two independent debounced requests**, not one
+`Promise.all`. Names come from the in-memory index and land first
+(`quickOpen`, 120 ms debounce, limit 30); contents fill in behind them
+(`searchText`, 250 ms debounce, limit 300) and never clear what is already on
+screen. Freshness is tracked by a `searchKey` of
+`[workspaceId, includeIgnored, query]`: results whose key no longer matches stay
+visible (no flicker) but do not count as an answer, which is also how
+"Searching…" is derived.
+
+An **"Include ignored files"** toggle sits in the panel toolbar, defaults
+**off**, and persists under a single global localStorage key
+(`ade.files.search.includeIgnored`). Both the old call sites hardcoded
+`includeIgnored: true`, which is why searching a repo used to return
+`node_modules` hits nobody asked for. The key is deliberately not
+per-workspace: "do I want ignored files in my results" is a preference about
+how the user searches, not a property of a lane, and a per-workspace key wrote
+a new entry for every lane ever searched with nothing pruning archived ones.
+
+Results are one flat, keyboard-navigable list (↑/↓, Enter, Escape): name hits
+under a "Files" header first, then content hits grouped per file with
+collapsible line previews. Picking a file opens it; picking a line opens the
+file and reveals that line. The modal is a one-shot pick and closes on open;
+the sidebar keeps its results so several hits can be opened in a row. In the
+sidebar the search field lives in the explorer header, outside the panel, so
+keys are read from a ref-backed snapshot via a document listener rather than
+re-subscribing on every keystroke.
+
+## Opening a file from a chat
+
+A path an agent writes into chat is resolved by
+`renderer/components/chat/chatWorkspacePaths.tsx` and then routed to one of two
+Files surfaces:
+
+- **Same machine, and the chat's own lane** → the Work **tools-pane** Files
+  panel, through the `filesOpenRequests.ts` module channel. Clicking a filename
+  should open next to the conversation, not throw the user into the Files tab.
+  `TerminalsPage` subscribes only to reveal the Files panel; the request itself
+  waits in the channel until the embedded workbench mounts and drains it. Only
+  the embedded mount listens, and it clears the channel's hold once it owns the
+  request, so a later mount (after a lane or project switch) cannot re-open the
+  same file unprompted.
+- **Anything else** — another lane, another machine, or a chat rendered outside
+  `/work` (PRs, personal chats) → the full **Files tab**, via router state, so
+  the destination stays deep-linkable. A foreign machine rides along as
+  `filesPin`, which the workbench applies as a machine pin *before* it looks the
+  lane up, because the roster it needs is that machine's.
+
+Before routing, the clicked token is probed against the workspace's name index
+(`probeWorkspacePath`), which fixes the two silent failures users hit most:
+agents write a bare filename far more often than a full path, and the old code
+assumed any separator-less token sat at the workspace root. The probe resolves
+a bare name to its real path, opens the search panel (`searchQuery` in router
+state) when several files share that name, reveals a folder in the tree instead
+of opening it as a file, and raises a toast for a path that is not inside this
+project. A probe **miss is not fatal** for a path containing `/`: the index is
+stale by design (built once per workspace, refreshed only from watcher events,
+which run only while a Files or Git panel is open, and it excludes gitignored
+files and stops at 25,000), so the file an agent just created would otherwise be
+reported missing forever. Such a path is opened anyway and a real read error is
+allowed to speak for itself. Only a bare name, where the index is the only thing
+that can turn it into a path, gets the "can't find that file" toast.
+
+See [../chat/README.md](../chat/README.md#source-file-map) for the parsing and
+resolution contract.
 
 ## Git status overlay
 
@@ -447,7 +663,13 @@ into the desktop renderer. A remote-bound desktop window continues to route
 normal workspace reads/writes to the remote runtime, but `external-local:*`
 workspace ids are handled by the local desktop process so arbitrary local
 files can open beside remote project tabs without pretending they belong to
-the remote filesystem.
+the remote filesystem. It is also the one `files` method with no machine pin
+argument, and `external-local:*` workspace ids drop a pin even when one is
+supplied — see [Which machine answers a file call](#which-machine-answers-a-file-call).
+
+A pin that arrives as router state is untrusted input like any other:
+`FilesTab` accepts only a well-formed `OpenProjectBinding`, so a malformed
+history entry cannot aim file calls at a machine that does not exist.
 
 For deeper detail on the watcher + trust boundary, see
 [file-watcher-and-trust.md](./file-watcher-and-trust.md).
@@ -460,7 +682,18 @@ For deeper detail on the watcher + trust boundary, see
   SQLite DB are still filtered out. Pair callers that pass
   `includeIgnored: false` (search indexing, watcher default mode) with
   the corresponding start/stop pair — the watcher refcounts are
-  per-mode.
+  per-mode. Search is separate from the tree: it defaults to
+  `includeIgnored: false` and only widens when the user turns the toggle on.
+- While a machine pin is active the workbench publishes **nothing** into the
+  dirty-buffer map. That map is keyed by absolute path with no machine in the
+  key, and the main process reads it to serve agent file reads on *this*
+  machine — and one user's laptop and desktop routinely check the same repo out
+  at the same absolute path, so publishing would hand a local agent the remote
+  machine's unsaved text and let it write that back. Tabs stay editable and
+  save over the wire as normal. Clearing the pin does not resume publishing in
+  the same commit either: it waits until the roster has been re-listed for the
+  machine the tab is actually bound to, because until then `resolveTabContext`
+  still resolves the machine just left.
 - `fileService.readFile` sends inline text previews up to 1 MB, inline
   image previews up to 1 MB, and small unsupported binary payloads up
   to 256 KB. Oversized text returns a partial first chunk and streams
@@ -500,7 +733,8 @@ For deeper detail on the watcher + trust boundary, see
 - Runtime-bound file calls are strict: a timeout or connection failure
   from a bound local/remote runtime surfaces to the tab instead of
   retrying against the desktop main process, which could point at a
-  different host or workspace.
+  different host or workspace. A pinned call is stricter still: it names one
+  machine and has no local IPC fallback at all.
 - Files are freely editable. There is no "Enable editing" step and no
   per-workspace edit-protection gate: every resolved workspace — including the
   primary repo root and lanes whose `is_edit_protected = 1` — opens Monaco in

@@ -739,13 +739,75 @@ extension WorkSessionDestinationView {
         return
       }
 
-      syncService.requestedFilesNavigation = FilesNavigationRequest(
-        workspaceId: workspace.id,
-        laneId: session.laneId,
-        relativePath: relativePath
-      )
+      // Agents write a bare filename far more often than a full path, and the
+      // purely textual normalisation above assumes any such name sits at the
+      // workspace root. Ask the file index what it really is first.
+      //
+      // Only for a bare name. A reference that already carries a directory is
+      // either found (same path back) or missing (opened anyway, just below),
+      // so probing it would buy nothing and cost a sync round trip on the most
+      // common tap of all — the full paths on tool-result file chips.
+      let probe = workIndexNormalizedPath(relativePath).contains("/")
+        ? WorkFileReferenceProbe.file(relativePath)
+        : await probeWorkFileReference(workspaceId: workspace.id, path: relativePath)
+      switch probe {
+      case .file(let resolvedPath):
+        syncService.requestedFilesNavigation = FilesNavigationRequest(
+          workspaceId: workspace.id,
+          laneId: session.laneId,
+          relativePath: resolvedPath
+        )
+      case .directory(let resolvedPath):
+        syncService.requestedFilesNavigation = FilesNavigationRequest(
+          workspaceId: workspace.id,
+          laneId: session.laneId,
+          relativePath: resolvedPath,
+          pathKind: .directory
+        )
+      case .ambiguous(let name):
+        syncService.requestedFilesNavigation = FilesNavigationRequest(
+          workspaceId: workspace.id,
+          laneId: session.laneId,
+          relativePath: nil,
+          searchQuery: name
+        )
+      case .missing:
+        // The index is stale by design — it skips ignored files and is only
+        // refreshed by a watcher — so a reference that already carries a
+        // directory is still worth opening; a real read error says more than a
+        // guess. Only a bare name is a miss the index can speak to.
+        if relativePath.contains("/") {
+          syncService.requestedFilesNavigation = FilesNavigationRequest(
+            workspaceId: workspace.id,
+            laneId: session.laneId,
+            relativePath: relativePath
+          )
+        } else {
+          errorMessage = "There's no file named \(relativePath) in \(workspace.name)."
+        }
+      }
     } catch {
       errorMessage = error.localizedDescription
+    }
+  }
+
+  /// Asks the workspace file index what a chat-written reference points at.
+  /// A failed probe must not swallow the tap, so it falls back to the path the
+  /// agent reported and lets the file read report whatever it hits.
+  private func probeWorkFileReference(
+    workspaceId: String,
+    path: String
+  ) async -> WorkFileReferenceProbe {
+    do {
+      let items = try await syncService.quickOpen(
+        workspaceId: workspaceId,
+        query: path,
+        limit: 60,
+        includeIgnored: false
+      )
+      return resolveWorkFileReferenceProbe(path: path, indexedPaths: items.map(\.path))
+    } catch {
+      return .file(path)
     }
   }
 

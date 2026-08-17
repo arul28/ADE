@@ -1654,6 +1654,33 @@ async function callProjectFileRuntimeActionOr<T>(
   return localRuntime.handled ? localRuntime.result : local();
 }
 
+// A file lives on the disk of the machine that owns the lane, so a file read or
+// write is a per-machine fact exactly like a chat, a terminal, or a PR record —
+// and takes a pin for the same reason. Without one, every file call resolves
+// against whichever machine the project tab happens to be bound to, so a file
+// belonging to a session on another machine read the wrong machine's bytes (or
+// failed outright) until the tab was rebound to that machine.
+//
+// `pin: null` is not "no opinion" — it means "the machine this project tab is
+// bound to", which is exactly right for the Files tab, the window-scoped
+// surface. Every call site states which of the two it wants.
+//
+// Writes are pinned for the same reason reads are: a file on another connected
+// machine is fully editable, so writeText/createFile/rename/delete must land on
+// the machine that owns the bytes, not on whatever machine the tab is showing.
+// A pinned call is explicitly targeted work, so — exactly as
+// `callPinnedRuntimeAction` documents — it bypasses the project-transition
+// guard, which only protects the ambiguous *active* binding.
+function callPinnedFileActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  if (pin) return callPinnedRuntimeAction<T>(pin, "file", action, request);
+  return callProjectFileRuntimeActionOr<T>(action, request, local);
+}
+
 function isExternalFilesWorkspaceId(workspaceId: string | null | undefined): boolean {
   return typeof workspaceId === "string" && workspaceId.startsWith(EXTERNAL_FILES_WORKSPACE_ID_PREFIX);
 }
@@ -1663,11 +1690,19 @@ function callFilesWorkspaceActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
+  pin?: OpenProjectBinding | null,
 ): Promise<T> {
+  // An `external-local:*` workspace is a loose folder this desktop opened from
+  // its own Finder/drag-drop. It is registered only in THIS process's file
+  // service and its root path is meaningful only on this disk, so it is
+  // local-only by construction: no runtime — bound or pinned — can resolve it.
+  // The pin is therefore deliberately dropped here rather than merely never
+  // being supplied, so a caller that pins every file call uniformly still gets
+  // the correct local behaviour for these workspaces.
   if (isExternalFilesWorkspaceId(workspaceId)) {
     return local();
   }
-  return callProjectFileRuntimeActionOr<T>(action, request, local);
+  return callPinnedFileActionOr<T>(pin, action, request, local);
 }
 
 async function callRemoteProjectSyncIfBound<T>(
@@ -7836,8 +7871,17 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   files: {
-    writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+    // Every method here takes an optional trailing `pin`. See
+    // `callPinnedFileActionOr` for why files are a per-machine fact and what
+    // `pin: null` means (the machine this project tab is bound to).
+    writeTextAtomic: async (
+      args: WriteTextAtomicArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      // Lane-scoped and repo-relative, so the args are already machine-portable:
+      // the pin decides whose lane worktree the write lands in.
+      await callPinnedFileActionOr<void>(
+        pin,
         "writeTextAtomic",
         { args },
         () => ipcRenderer.invoke(IPC.filesWriteTextAtomic, args),
@@ -7845,151 +7889,203 @@ contextBridge.exposeInMainWorld("ade", {
     },
     listWorkspaces: async (
       args: FilesListWorkspacesArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesWorkspace[]> => {
-      return callProjectFileRuntimeActionOr<FilesWorkspace[]>(
+      // No workspaceId to key off yet — this is the call that discovers them —
+      // so the pin is the only way to ask another machine what it has.
+      return callPinnedFileActionOr<FilesWorkspace[]>(
+        pin,
         "listWorkspaces",
         { args },
         () => ipcRenderer.invoke(IPC.filesListWorkspaces, args),
       );
     },
-    listTree: async (args: FilesListTreeArgs): Promise<FileTreeNode[]> => {
+    listTree: async (
+      args: FilesListTreeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FileTreeNode[]> => {
       return callFilesWorkspaceActionOr<FileTreeNode[]>(
         args.workspaceId,
         "listTree",
         { args },
         () => ipcRenderer.invoke(IPC.filesListTree, args),
+        pin,
       );
     },
     listTreeChildren: async (
       args: FilesListTreeChildrenArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesListTreeChildrenResult> => {
       return callFilesWorkspaceActionOr<FilesListTreeChildrenResult>(
         args.workspaceId,
         "listTreeChildren",
         { args },
         () => ipcRenderer.invoke(IPC.filesListTreeChildren, args),
+        pin,
       );
     },
     refreshGitDecorations: async (
       args: FilesRefreshGitDecorationsArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesGitStatusEvent> => {
       return callFilesWorkspaceActionOr<FilesGitStatusEvent>(
         args.workspaceId,
         "refreshGitDecorations",
         { args },
         () => ipcRenderer.invoke(IPC.filesRefreshGitDecorations, args),
+        pin,
       );
     },
+    // Deliberately unpinned, and deliberately not routed to any runtime: the
+    // path comes from THIS machine's Finder, Electron open-file dialog, or OS
+    // drag/drop, so it only exists on this disk. There is no `file` action for
+    // it on the runtime surface either — exposing a pin here would hand callers
+    // a capability no runtime can serve.
     openExternalPath: async (args: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
       return ipcRenderer.invoke(IPC.filesOpenExternalPath, args);
     },
-    readFile: async (args: FilesReadFileArgs): Promise<FileContent> => {
+    readFile: async (
+      args: FilesReadFileArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FileContent> => {
       return callFilesWorkspaceActionOr<FileContent>(
         args.workspaceId,
         "readFile",
         { args },
         () => ipcRenderer.invoke(IPC.filesReadFile, args),
+        pin,
       );
     },
-    readFileRange: async (args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> => {
+    readFileRange: async (
+      args: FilesReadFileRangeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FilesReadFileRangeResult> => {
       return callFilesWorkspaceActionOr<FilesReadFileRangeResult>(
         args.workspaceId,
         "readFileRange",
         { args },
         () => ipcRenderer.invoke(IPC.filesReadFileRange, args),
+        pin,
       );
     },
-    gitBlame: async (args: FilesGitBlameArgs): Promise<FilesGitBlameResult> => {
+    gitBlame: async (
+      args: FilesGitBlameArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FilesGitBlameResult> => {
       return callFilesWorkspaceActionOr<FilesGitBlameResult>(
         args.workspaceId,
         "blame",
         { args },
         () => ipcRenderer.invoke(IPC.filesGitBlame, args),
+        pin,
       );
     },
-    writeText: async (args: FilesWriteTextArgs): Promise<void> => {
+    writeText: async (
+      args: FilesWriteTextArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "writeWorkspaceText",
         { args },
         () => ipcRenderer.invoke(IPC.filesWriteText, args),
+        pin,
       );
     },
-    createFile: async (args: FilesCreateFileArgs): Promise<void> => {
+    createFile: async (
+      args: FilesCreateFileArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "createFile",
         { args },
         () => ipcRenderer.invoke(IPC.filesCreateFile, args),
+        pin,
       );
     },
-    createDirectory: async (args: FilesCreateDirectoryArgs): Promise<void> => {
+    createDirectory: async (
+      args: FilesCreateDirectoryArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "createDirectory",
         { args },
         () => ipcRenderer.invoke(IPC.filesCreateDirectory, args),
+        pin,
       );
     },
-    rename: async (args: FilesRenameArgs): Promise<void> => {
+    rename: async (
+      args: FilesRenameArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "rename",
         { args },
         () => ipcRenderer.invoke(IPC.filesRename, args),
+        pin,
       );
     },
-    delete: async (args: FilesDeleteArgs): Promise<void> => {
+    delete: async (
+      args: FilesDeleteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "deletePath",
         { args },
         () => ipcRenderer.invoke(IPC.filesDelete, args),
+        pin,
       );
     },
-    watchChanges: async (args: FilesWatchArgs): Promise<void> => {
+    watchChanges: async (
+      args: FilesWatchArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "watchWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.filesWatchChanges, args),
+        pin,
       );
     },
-    stopWatching: async (args: FilesWatchArgs): Promise<void> => {
+    stopWatching: async (
+      args: FilesWatchArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "stopWatching",
         { args },
         () => ipcRenderer.invoke(IPC.filesStopWatching, args),
+        pin,
       );
     },
     quickOpen: async (
       args: FilesQuickOpenArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<FilesQuickOpenItem[]> => {
-      if (pin) {
-        return callPinnedRuntimeAction<FilesQuickOpenItem[]>(
-          pin,
-          "file",
-          "quickOpen",
-          { args },
-        );
-      }
       return callFilesWorkspaceActionOr<FilesQuickOpenItem[]>(
         args.workspaceId,
         "quickOpen",
         { args },
         () => ipcRenderer.invoke(IPC.filesQuickOpen, args),
+        pin,
       );
     },
     searchText: async (
       args: FilesSearchTextArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesSearchTextMatch[]> => {
       return callFilesWorkspaceActionOr<FilesSearchTextMatch[]>(
         args.workspaceId,
         "searchText",
         { args },
         () => ipcRenderer.invoke(IPC.filesSearchText, args),
+        pin,
       );
     },
     onChange: (cb: (ev: FileChangeEvent) => void) => {

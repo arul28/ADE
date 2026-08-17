@@ -26,7 +26,7 @@ function formatBytes(n: number): string {
 }
 
 /** Read-only, virtualized viewer for oversized text streamed via readFileRange. */
-export function LargeTextViewer({ workspaceId, tab, content }: ViewerProps) {
+export function LargeTextViewer({ files, workspaceId, tab, content }: ViewerProps) {
   const [text, setText] = useState(content.content);
   const [streaming, setStreaming] = useState(content.isPartial === true);
   const [capped, setCapped] = useState(false);
@@ -52,7 +52,7 @@ export function LargeTextViewer({ workspaceId, tab, content }: ViewerProps) {
           break;
         }
         const requestOffset = next;
-        const page = await window.ade.files.readFileRange({
+        const page = await files.readFileRange({
           workspaceId,
           path: tab.path,
           offset: requestOffset,
@@ -78,7 +78,7 @@ export function LargeTextViewer({ workspaceId, tab, content }: ViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, tab.path, content.content, content.isPartial, content.nextOffset]);
+  }, [files, workspaceId, tab.path, content.content, content.isPartial, content.nextOffset]);
 
   const lines = useMemo(() => text.split("\n"), [text]);
 

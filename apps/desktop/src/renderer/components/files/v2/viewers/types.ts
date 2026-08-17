@@ -1,6 +1,7 @@
 import type { FileContent } from "../../../../../shared/types";
 import type { MonacoModelRegistry } from "../../monacoModelRegistry";
 import type { EditorTab } from "../editorGroupsStore";
+import type { PinnedFilesApi } from "../pinnedFilesApi";
 
 export type EditorThemeMode = "light" | "dark";
 
@@ -15,10 +16,17 @@ export type EditorApi = {
  * Common contract every viewer receives. `content` is the initial `readFile`
  * result (the first chunk when `content.isPartial`). Viewers that need the whole
  * file (PDF/CSV) or more text (largeText) stream additional bytes themselves via
- * `window.ade.files.readFileRange`.
+ * `files.readFileRange`.
  */
 export type ViewerProps = {
   workspaceId: string;
+  /**
+   * Files API bound to the machine that owns this workspace. Viewers MUST use
+   * it rather than `window.ade.files` directly: a workspace id is a lane id and
+   * lane rows sync across machines, so an unpinned read or write resolves the
+   * local worktree for that lane and silently succeeds against the wrong disk.
+   */
+  files: PinnedFilesApi;
   /** Absolute workspace root path (for "open externally" actions). */
   rootPath: string;
   tab: EditorTab;

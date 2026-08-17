@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { createPinnedFilesApi } from "./pinnedFilesApi";
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -39,6 +40,7 @@ const tabId = editorTabId("workspace-1", "src/file.ts");
 const otherLaneTabId = editorTabId("workspace-2", "src/other.ts");
 
 const baseProps: EditorGroupProps = {
+  files: createPinnedFilesApi(null),
   group: {
     id: "group-1",
     activeTabId: tabId,
@@ -187,11 +189,14 @@ describe("EditorGroup", () => {
     fireEvent.keyDown(screen.getByTestId("viewer-button"), { key: "s", metaKey: true });
 
     await waitFor(() => {
+      // The trailing `null` is the machine pin: a save has to name the machine
+      // it is for, because a workspace id resolves on every machine that has
+      // the lane.
       expect(writeText).toHaveBeenCalledWith({
         workspaceId: "workspace-1",
         path: "docs/notes.md",
         text: "saved text",
-      });
+      }, null);
     });
     await waitFor(() => {
       expect(markSaved).toHaveBeenCalledWith(editorTabId("workspace-1", "docs/notes.md"));
@@ -212,7 +217,7 @@ describe("EditorGroup", () => {
         workspaceId: "workspace-1",
         path: "data/rows.csv",
         text: "saved text",
-      });
+      }, null);
     });
   });
 

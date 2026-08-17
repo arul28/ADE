@@ -1,3 +1,4 @@
+import type { PinnedFilesApi } from "./pinnedFilesApi";
 import { useEffect, useState } from "react";
 import type { FileContent } from "../../../../shared/types";
 
@@ -80,9 +81,14 @@ export type FileContentState =
 
 /**
  * Load (and cache) the initial `readFile` payload for a path. Viewers that need
- * more bytes stream them via `window.ade.files.readFileRange` themselves.
+ * more bytes stream them via `files.readFileRange` themselves.
  */
-export function useFileContent(workspaceId: string, path: string | null, reloadToken = 0): FileContentState {
+export function useFileContent(
+  files: PinnedFilesApi,
+  workspaceId: string,
+  path: string | null,
+  reloadToken = 0,
+): FileContentState {
   const [state, setState] = useState<FileContentState>({ status: "loading" });
 
   useEffect(() => {
@@ -95,7 +101,7 @@ export function useFileContent(workspaceId: string, path: string | null, reloadT
       return;
     }
     setState({ status: "loading" });
-    window.ade.files
+    files
       .readFile({ workspaceId, path })
       .then((content) => {
         if (cancelled) return;
@@ -109,7 +115,7 @@ export function useFileContent(workspaceId: string, path: string | null, reloadT
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, path, reloadToken]);
+  }, [files, workspaceId, path, reloadToken]);
 
   // Apply just-saved editor text directly to this hook's state so viewers stay
   // in sync with the write even when the cache was bypassed (forced reload) or

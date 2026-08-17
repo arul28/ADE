@@ -3356,10 +3356,6 @@ export function AgentChatPane({
     }));
   }, [crossMachineLanesByMachineId, laneCacheByProject, lanes, openProjectBindings, projectBinding]);
   const navigate = useNavigate();
-  // Provided for the WHOLE pane, not just the transcript: the proposed-plan
-  // card and question-option previews render agent markdown from the composer
-  // subtree, and without an opener their file paths fall back to inert text.
-  const chatWorkspacePaths = useWorkspacePathOpener({ laneId, navigate });
   const openAiProvidersSettings = useCallback(() => {
     navigate(settingsRouteFor("agents.providers"));
   }, [navigate]);
@@ -3964,6 +3960,13 @@ export function AgentChatPane({
   );
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  // Provided for the WHOLE pane, not just the transcript: the proposed-plan
+  // card and question-option previews render agent markdown from the composer
+  // subtree, and without an opener their file paths fall back to inert text.
+  // Declared HERE, below `chatRuntimePin`, for the same reason the PR pane is:
+  // a chat on another machine reports paths on that machine's disk, so opening
+  // one has to ask that machine — not whichever machine this tab is bound to.
+  const chatWorkspacePaths = useWorkspacePathOpener({ laneId, navigate, runtimePin: chatRuntimePin });
   // Left PR floating pane (ADE chats only). Auto-pops on webhook-driven PR
   // changes; shared with the CLI session surface via useChatPrAutoPop.
   // `persistKey` makes open/closed per chat and durable across restarts.
@@ -13687,6 +13690,7 @@ export function AgentChatPane({
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
                         sessionEnded={selectedSession?.status === "ended"}
+                        runtimePin={chatRuntimePin}
                         className="min-h-0 border-0"
                         surfaceMode={surfaceMode}
                         surfaceProfile={surfaceProfile}

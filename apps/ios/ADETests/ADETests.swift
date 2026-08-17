@@ -19973,6 +19973,111 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
   }
 
+  func testWorkFileReferenceProbeOpensExactIndexMatch() {
+    let probe = resolveWorkFileReferenceProbe(
+      path: "apps/ios/ADE/Views/Files/FilesSearchScreen.swift",
+      indexedPaths: [
+        "apps/desktop/src/renderer/FilesSearchPanel.tsx",
+        "apps/ios/ADE/Views/Files/FilesSearchScreen.swift",
+      ]
+    )
+
+    XCTAssertEqual(probe, .file("apps/ios/ADE/Views/Files/FilesSearchScreen.swift"))
+  }
+
+  func testWorkFileReferenceProbeResolvesBareNameToItsOnlyRealPath() {
+    let probe = resolveWorkFileReferenceProbe(
+      path: "FilesWorkbench.tsx",
+      indexedPaths: [
+        "apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx",
+        "apps/desktop/src/renderer/components/files/v2/FilesWorkbenchHeader.tsx",
+      ]
+    )
+
+    XCTAssertEqual(probe, .file("apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx"))
+  }
+
+  func testWorkFileReferenceProbeMatchesBasenamesCaseInsensitively() {
+    let probe = resolveWorkFileReferenceProbe(
+      path: "readme.md",
+      indexedPaths: ["docs/README.md"]
+    )
+
+    XCTAssertEqual(probe, .file("docs/README.md"))
+  }
+
+  func testWorkFileReferenceProbeRefusesToGuessBetweenSameNamedFiles() {
+    let probe = resolveWorkFileReferenceProbe(
+      path: "index.ts",
+      indexedPaths: ["apps/desktop/src/index.ts", "apps/ade-cli/src/index.ts"]
+    )
+
+    XCTAssertEqual(probe, .ambiguous("index.ts"))
+  }
+
+  func testWorkFileReferenceProbeReportsDirectoriesAndMisses() {
+    XCTAssertEqual(
+      resolveWorkFileReferenceProbe(
+        path: "apps/ios/ADE/Views",
+        indexedPaths: ["apps/ios/ADE/Views/Files/FilesRootScreen.swift"]
+      ),
+      .directory("apps/ios/ADE/Views")
+    )
+
+    // A bare name the index has never heard of is an honest miss…
+    XCTAssertEqual(
+      resolveWorkFileReferenceProbe(path: "Nope.swift", indexedPaths: ["apps/ios/ADE/Yes.swift"]),
+      .missing
+    )
+    // …and so is a full path, which the caller still opens because the index is
+    // stale by design.
+    XCTAssertEqual(
+      resolveWorkFileReferenceProbe(path: "apps/ios/New.swift", indexedPaths: ["apps/ios/Old.swift"]),
+      .missing
+    )
+  }
+
+  func testFilesPartialPreviewLimitExplainsWhatLoaded() {
+    let partial = SyncFileBlob(
+      path: "logs/huge.log",
+      size: 5_000_000,
+      encoding: "utf-8",
+      isBinary: false,
+      content: "line one\nline two\nline three",
+      isPartial: true,
+      totalSize: 5_000_000
+    )
+
+    XCTAssertEqual(
+      filesPartialPreviewLimit(blob: partial),
+      FilesPreviewLimit(
+        title: "Only the start of this file loaded",
+        message: "This file is over 1 MB, so your machine sent only the start of it. Open it in ADE on your machine to read the rest."
+      )
+    )
+    // A search hit past the loaded prefix must say so rather than scroll nowhere.
+    XCTAssertEqual(
+      filesPartialPreviewLimit(blob: partial, focusLine: 40_000)?.title,
+      "Line 40000 didn't load"
+    )
+    // focusLine 2 IS within the loaded prefix, so this is the generic
+    // partial-file message, not nil — the file is still only partly loaded.
+    XCTAssertEqual(
+      filesPartialPreviewLimit(blob: partial, focusLine: 2)?.title,
+      "Only the start of this file loaded"
+    )
+
+    let whole = SyncFileBlob(
+      path: "src/main.swift",
+      size: 40,
+      encoding: "utf-8",
+      isBinary: false,
+      content: "let x = 1\n",
+      isPartial: false
+    )
+    XCTAssertNil(filesPartialPreviewLimit(blob: whole, focusLine: 900))
+  }
+
   func testWorkFilesWorkspaceSelectionRequiresMatchingLaneWorkspace() {
     let workspaces = [
       FilesWorkspace(

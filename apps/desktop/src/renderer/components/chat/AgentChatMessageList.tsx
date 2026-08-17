@@ -53,6 +53,7 @@ import type {
   OperatorNavigationSuggestion,
   TurnDiffSummary,
 } from "../../../shared/types";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -5246,6 +5247,7 @@ function AgentChatMessageListMain({
   respondingApprovalIds,
   pendingApprovalIds,
   laneId,
+  runtimePin = null,
   sessionId,
   transcriptCollapseCacheKey,
   onInsertDraft,
@@ -5294,6 +5296,12 @@ function AgentChatMessageListMain({
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
+  /**
+   * Machine that owns this chat. Null = the machine this project tab is bound
+   * to. Threaded through so a filename clicked in a foreign chat is looked up
+   * on the machine that actually has the file.
+   */
+  runtimePin?: OpenProjectBinding | null;
   sessionId?: string | null;
   /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
   transcriptCollapseCacheKey?: string | null;
@@ -5654,6 +5662,7 @@ function AgentChatMessageListMain({
   const workspacePaths = useWorkspacePathOpener({
     laneId: currentLaneId,
     navigate,
+    runtimePin,
     onOpened: onOpenWorkspacePath,
   });
   const openWorkspacePath = workspacePaths.openWorkspacePath;

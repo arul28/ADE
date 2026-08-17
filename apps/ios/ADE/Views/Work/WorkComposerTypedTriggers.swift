@@ -538,6 +538,10 @@ final class WorkComposerSuggestionController: ObservableObject {
           }
           return
         }
+        // Attaching a file is not searching for one: a user who types `@.env`
+        // or `@build/out.log` means it, so composer suggestions keep reaching
+        // into ignored trees even though Files search now defaults to skipping
+        // them.
         let items = try await sync.quickOpen(
           workspaceId: workspaceId,
           query: query,

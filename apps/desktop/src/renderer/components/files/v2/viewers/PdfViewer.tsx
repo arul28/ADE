@@ -9,7 +9,7 @@ import type { ViewerProps } from "./types";
 const MAX_PDF_STREAM_BYTES = 25 * 1024 * 1024;
 
 /** In-app PDF viewer: pdf.js → canvas, with page navigation and zoom. */
-export function PdfViewer({ workspaceId, tab }: ViewerProps) {
+export function PdfViewer({ files, workspaceId, tab }: ViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const docRef = useRef<PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
@@ -28,7 +28,7 @@ export function PdfViewer({ workspaceId, tab }: ViewerProps) {
       try {
         const [pdfjs, bytes] = await Promise.all([
           loadPdfjs(),
-          streamFileBytes(workspaceId, tab.path, {
+          streamFileBytes(files, workspaceId, tab.path, {
             isCancelled: () => cancelled,
             maxBytes: MAX_PDF_STREAM_BYTES,
           }),
@@ -56,7 +56,7 @@ export function PdfViewer({ workspaceId, tab }: ViewerProps) {
       void docRef.current?.destroy();
       docRef.current = null;
     };
-  }, [workspaceId, tab.path]);
+  }, [files, workspaceId, tab.path]);
 
   // Render the active page at the current zoom.
   useEffect(() => {

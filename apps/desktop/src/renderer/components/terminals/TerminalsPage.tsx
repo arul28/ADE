@@ -5,6 +5,7 @@ import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
   type SessionContextMenuLaneActions,
@@ -1115,6 +1116,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       unsubscribeBrowserEvents?.();
     };
   }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, setOrchestratorEnabled]);
+
+  // A filename clicked in a chat opens in the tools-pane Files panel, which
+  // means the panel has to exist first. The request itself is held in the
+  // module channel until the workbench mounts and drains it, so this only has
+  // to reveal the panel — it never has to know the path.
+  useEffect(() => {
+    if (!active) return undefined;
+    return subscribeFilesOpenInTools(() => {
+      setWorkSidebarTab("files");
+    });
+  }, [active, setWorkSidebarTab]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);

@@ -1215,6 +1215,10 @@ function fileContentToBlob(filePath: string, content: FileContent): SyncFileBlob
     ...(content.dataUrl ? { dataUrl: content.dataUrl } : {}),
     ...(typeof content.contentOmitted === "boolean" ? { contentOmitted: content.contentOmitted } : {}),
     ...(content.omittedReason ? { omittedReason: content.omittedReason } : {}),
+    // Forwarded so a mobile client can say WHY only part of a large file
+    // arrived. Without these the phone shows a prefix with no explanation.
+    ...(typeof content.isPartial === "boolean" ? { isPartial: content.isPartial } : {}),
+    ...(typeof content.totalSize === "number" ? { totalSize: content.totalSize } : {}),
   };
 }
 

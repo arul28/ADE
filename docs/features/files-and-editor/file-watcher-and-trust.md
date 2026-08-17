@@ -24,9 +24,12 @@ go through:
    runtime first, then a strict local runtime route for local-bound
    windows. It falls through to the in-process IPC handler only when no
    runtime route is available, not when a bound runtime rejects the file
-   action. `external-local:*` workspace ids are the exception: those are
-   explicit local desktop opens and are sent to local IPC even when the
-   window is bound to a remote runtime.
+   action. Each method also accepts an optional trailing machine pin that
+   names one machine instead of the bound one; the pinned route has no
+   local IPC fallback. `external-local:*` workspace ids are the exception:
+   those are explicit local desktop opens and are sent to local IPC even
+   when the window is bound to a remote runtime — and they drop a pin if
+   one is supplied, since their root path is meaningful only on this disk.
 2. `ade.files.*` IPC channels registered in
    `apps/desktop/src/main/services/ipc/registerIpc.ts` (fallback
    path for the desktop's local in-process implementation).
@@ -189,13 +192,15 @@ with the watcher:
 - Mass invalidation resets the index and triggers a full rebuild on
   next query
 
-The name index and the content index are split: the build walk only
-stats paths (no file reads), so `quickOpen` never waits on content.
-File contents load lazily inside `searchText` (bounded per-file and in
-total, binary-sniffed, cooperative yields) and are cached on the entry
-until the watcher invalidates it. `quickOpen` results are additionally
-cached per `(query, limit)` per index; any watcher mutation clears the
-query cache. `fileService.warmQuickOpenIndex({ workspaceId })` is a
+There is no content index. Entries are `path` / `lowerPath` / `size` /
+`mtimeMs` and nothing more: the build walk only stats paths (no file
+reads), so `quickOpen` never waits on content, and retaining decoded
+lines here previously cost hundreds of megabytes of heap and crashed the
+app once "include ignored files" widened the pile. `searchText` reads,
+scans, and discards — nothing it decodes outlives the call. `quickOpen`
+results are cached per `(query, limit, mode)` per index; any watcher
+mutation clears the query cache.
+`fileService.warmQuickOpenIndex({ workspaceId })` is a
 best-effort warm hook — the chat action bridge calls it for empty
 `chat.fileSearch` queries so the composer's first `@` builds the index
 before the first real query. To turn a chat `sessionId` into the
@@ -213,10 +218,25 @@ Quick open scoring lives in `fileService.quickOpen` via a
 `fuzzy-like` match (not an external library — a local implementation
 tuned for path segments).
 
-Cross-file search (`fileService.searchText`) prefers `ripgrep` if
-available via `rg`, otherwise falls back to a node-side line scanner.
-Output is streamed; the `limit` parameter caps the number of returned
-matches.
+Content search (`fileService.searchText`) is two-tier and runs in this
+same module. Tier 1 is `git grep`, used whenever the workspace root is
+inside a git work tree (the probe answer is cached per workspace root and
+dropped with the index): streamed, stopped at the requested `limit`, 10 s
+timeout, literal (`-F`) and case-insensitive, `-z`-delimited, with
+exclusions pushed into git as pathspecs so one `node_modules` cannot
+flood the stream. Tier 2 is a streaming JS scan over the name index,
+used for non-git workspaces and for any run where git was missing,
+failed, or timed out; it reads each file, scans it, and releases it,
+skipping files over 1 MB and files containing a NUL byte.
+
+Only a `GitGrepOutcome` of `unusable` retires the fast tier for a
+workspace (spawn failure, or git refusing the invocation — `-m` needs git
+≥ 2.38 and exits 129 on older builds). Exit 1 is "no matches", a complete
+answer. A timeout or an external kill is `unfinished`: it falls through
+to tier 2 once and says nothing about future runs. The full tier
+contract, including the three deliberate divergences between the tiers
+(large files, tracked-but-gitignored files, submodules), lives in
+[README.md](./README.md#quick-open-and-content-search).
 
 ## External change sync
 
@@ -265,7 +285,15 @@ in-process IPC handler is used only when there is no runtime route
 (for example, before a project binding exists or in tests /
 diagnostic harnesses without a runtime pool). Both paths share the
 same handler shapes; the desktop fallback handlers are registered in
-`registerIpc.ts`:
+`registerIpc.ts`.
+
+Every `window.ade.files.*` method except `openExternalPath` also takes an
+optional trailing machine pin, which selects the runtime for that one call
+(`callPinnedFileActionOr`). Omitting it — or passing `null` — keeps exactly the
+routing described above. Passing a binding targets that machine, skipping both
+the project-transition guard and the local IPC fallback;
+`external-local:*` workspaces drop it and stay local. The channel list itself
+is unchanged: the pin is a preload-level routing argument, not a new channel.
 
 | Channel | Handler behavior |
 |---|---|
@@ -285,8 +313,8 @@ same handler shapes; the desktop fallback handlers are registered in
 | `ade.files.delete` | recursive rm, rejects root itself |
 | `ade.files.watchChanges` | increments watcher ref count, sends events via `ade.files.change` |
 | `ade.files.stopWatching` | decrements ref count |
-| `ade.files.quickOpen` | uses search index |
-| `ade.files.searchText` | uses ripgrep/fallback scanner |
+| `ade.files.quickOpen` | scores the workspace's file-name index |
+| `ade.files.searchText` | `git grep` in a git work tree, else a streaming JS scan over the name index |
 
 `onLaneWorktreeMutation` is an optional callback passed to
 `createFileService`. It fires when the user mutates a lane worktree

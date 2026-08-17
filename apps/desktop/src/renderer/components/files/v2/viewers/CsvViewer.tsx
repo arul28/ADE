@@ -22,7 +22,7 @@ type Mode = "table" | "source";
  * saved back and truncate the file.
  */
 export function CsvViewer(props: ViewerProps) {
-  const { workspaceId, tab, content, registry, readOnly } = props;
+  const { files, workspaceId, tab, content, registry, readOnly } = props;
   const [storedMode, setModeState] = useState<Mode>(() => readViewerMode<Mode>(tab.id, "table"));
   const setMode = (next: Mode) => {
     rememberViewerMode(tab.id, next);
@@ -61,7 +61,7 @@ export function CsvViewer(props: ViewerProps) {
       let next: number | null = live == null && content.isPartial ? content.nextOffset ?? null : null;
       let guard = 0;
       while (next != null) {
-        const page = await window.ade.files.readFileRange({ workspaceId, path: tab.path, offset: next, length: 512 * 1024 });
+        const page = await files.readFileRange({ workspaceId, path: tab.path, offset: next, length: 512 * 1024 });
         if (cancelled) return;
         text += page.content;
         next = page.nextOffset;
@@ -89,7 +89,7 @@ export function CsvViewer(props: ViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, tab.id, tab.path, content.content, content.isPartial, content.nextOffset, delimiter, liveText, mode, registry]);
+  }, [files, workspaceId, tab.id, tab.path, content.content, content.isPartial, content.nextOffset, delimiter, liveText, mode, registry]);
 
   const header = rows[0] ?? [];
   const bodyRows = useMemo(() => rows.slice(1), [rows]);

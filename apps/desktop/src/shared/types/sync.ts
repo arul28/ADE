@@ -1330,6 +1330,13 @@ export type SyncFileBlob = {
   dataUrl?: string;
   contentOmitted?: boolean;
   omittedReason?: "too_large" | "unsupported_binary";
+  /**
+   * True when the host sent only the start of the file because it exceeds the
+   * editor read cap. `size` is the full on-disk size either way, so a client
+   * that ignores this renders a prefix as if it were the whole file.
+   */
+  isPartial?: boolean;
+  totalSize?: number;
 };
 
 export type SyncFileRequest =

@@ -13,6 +13,7 @@ import type { EditorApi, ViewerProps } from "./types";
  * go-to-symbol) and owns its own Cmd+S (format-on-save + write + mark clean).
  */
 export function CodeViewer({
+  files,
   workspaceId,
   tab,
   content,
@@ -30,14 +31,14 @@ export function CodeViewer({
   const changeSubRef = useRef<Monaco.IDisposable | null>(null);
   const dirtyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest props for use inside long-lived Monaco callbacks.
-  const ctxRef = useRef({ workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly });
-  ctxRef.current = { workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly };
+  const ctxRef = useRef({ files, workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly });
+  ctxRef.current = { files, workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly };
 
   const apiRef = useRef<EditorApi | null>(null);
   const registeredTabIdRef = useRef<string | null>(null);
 
   const save = useRef(async () => {
-    const { workspaceId: ws, tab: t, registry: reg, onDirtyChange: onDirty } = ctxRef.current;
+    const { files: filesApi, workspaceId: ws, tab: t, registry: reg, onDirtyChange: onDirty } = ctxRef.current;
     const editor = editorRef.current;
     if (!editor) return;
     if (ctxRef.current.readOnly) return;
@@ -47,7 +48,7 @@ export function CodeViewer({
       // formatter may be unavailable for this language — save unformatted
     }
     const text = reg.getValue(t.id) ?? editor.getValue();
-    await window.ade.files.writeText({ workspaceId: ws, path: t.path, text });
+    await filesApi.writeText({ workspaceId: ws, path: t.path, text });
     reg.markSaved(t.id);
     // Sync the cached payload so clean-model consumers (markdown preview,
     // CSV table) show the saved text before the watcher echoes the write.
