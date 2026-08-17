@@ -29,7 +29,7 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
-import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 // The browser gets authoritative ordered history through
 // chat.getChatEventHistory. chat_subscribe snapshots still matter as bounded
@@ -364,7 +364,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         supportsReviewMode: false,
         subagent: NO_SUBAGENT_CAPABILITY,
       }),
-    saveTempAttachment: (args: unknown, pin?: unknown) => {
+    saveTempAttachment: (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("agentChat.saveTempAttachment", pin, infra);
       return call("chat.saveTempAttachment", args, { path: "" }, false);
     },

@@ -8,7 +8,7 @@ import type {
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
-import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 const READ_CACHE_TTL_MS = 3_000;
 
@@ -180,7 +180,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     linkToLane: (args: unknown) => call("prs.linkToLane", args, null, false),
     preflightCreateLaneFromPrBranch: (args: unknown) => call("prs.preflightCreateLaneFromPrBranch", args, null),
     createLaneFromPrBranch: (args: unknown) => call("prs.createLaneFromPrBranch", args, null, false),
-    getForLane: async (laneId: string, pin?: unknown) => {
+    getForLane: async (laneId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getForLane", pin, infra);
       return (await listPrs()).find((pr) => pr.laneId === laneId) ?? null;
     },
@@ -189,7 +189,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     // laneId); the sync command layer marshals a named record, exactly like the
     // `prs.getForLane` host handler that reads `{ laneId }`. It mutates, so the
     // read cache is dropped afterward like `refresh` does.
-    syncLanePr: async (laneId: string, pin?: unknown) => {
+    syncLanePr: async (laneId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.syncLanePr", pin, infra);
       const result = await call<PrSummary | null>("prs.syncLanePr", { laneId }, null, false);
       invalidatePrsReads();
@@ -201,30 +201,30 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       await call("prs.reconcileOnFocus", { force: true }, undefined, false);
       invalidatePrsReads();
     },
-    listAll: async (pin?: unknown) => {
+    listAll: async (pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.listAll", pin, infra);
       return await listPrs();
     },
     listOpenForRepo: () => read("prs.listOpenForRepo", {}, []),
-    refresh: async (args?: unknown, pin?: unknown) => {
+    refresh: async (args?: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.refresh", pin, infra);
       const result = await call<unknown>("prs.refresh", args, [], false);
       invalidatePrsReads();
       return arrayField<PrSummary>(result, "prs");
     },
-    getStatus: (prId: string, pin?: unknown) => {
+    getStatus: (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getStatus", pin, infra);
       return read("prs.getStatus", { prId }, null);
     },
-    getChecks: (prId: string, pin?: unknown) => {
+    getChecks: (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getChecks", pin, infra);
       return read("prs.getChecks", { prId }, []);
     },
-    getComments: (prId: string, pin?: unknown) => {
+    getComments: (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getComments", pin, infra);
       return read("prs.getComments", { prId }, []);
     },
-    getReviews: (prId: string, pin?: unknown) => {
+    getReviews: (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getReviews", pin, infra);
       return read("prs.getReviews", { prId }, []);
     },
@@ -292,7 +292,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return result;
     },
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
-    onEvent: (listener: (event: unknown) => void, pin?: unknown) => {
+    onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.onEvent", pin, infra);
       return events.on("prsEvent", listener as never);
     },

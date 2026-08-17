@@ -7,7 +7,7 @@ import {
   type RestoreLaneResult,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
   const { commands, events } = infra;
@@ -36,7 +36,7 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
   );
 
   const lanes: Record<string, unknown> = {
-    list: (args?: unknown, pin?: unknown) => {
+    list: (args?: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("lanes.list", pin, infra);
       return commands.call("lanes.list", asRecord(args), {
         fallback: [],

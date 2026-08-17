@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { OpenProjectBinding } from "../../../../shared/types";
 import type { AdeSyncClient } from "../../sync";
 import type { CommandCaller } from "../infra/commandCaller";
 import type { AdapterInfra } from "../types";
@@ -18,7 +19,7 @@ function scopeFixture(envId: string | null = OWN_ENV, projectId: string | null =
   return { infra, call };
 }
 
-function remotePin(targetId: string, projectId: string) {
+function remotePin(targetId: string, projectId: string): OpenProjectBinding {
   return {
     kind: "remote",
     key: `remote:${targetId}:${projectId}`,
@@ -30,7 +31,7 @@ function remotePin(targetId: string, projectId: string) {
   };
 }
 
-function localPin() {
+function localPin(): OpenProjectBinding {
   return { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "Repo" };
 }
 
@@ -77,7 +78,7 @@ describe("git namespace pin guard", () => {
     const { git } = createGitNamespaces(infra);
     await expect(git.stageFile!(
       { laneId: "lane-1", path: "a.ts" },
-      remotePin("env-2", "project-2") as never,
+      remotePin("env-2", "project-2"),
     )).rejects.toThrow(/git\.stageFile/);
     expect(call).not.toHaveBeenCalled();
   });
@@ -85,7 +86,7 @@ describe("git namespace pin guard", () => {
   it("sends no command for a local pin on a diff read", async () => {
     const { infra, call } = scopeFixture();
     const { diff } = createGitNamespaces(infra);
-    await expect(diff.getChanges!({ laneId: "lane-1" }, localPin() as never))
+    await expect(diff.getChanges!({ laneId: "lane-1" }, localPin()))
       .rejects.toThrow("This chat runs on a machine ADE Web can't reach directly.");
     expect(call).not.toHaveBeenCalled();
   });
@@ -93,8 +94,11 @@ describe("git namespace pin guard", () => {
   it("forwards a pin that restates this adapter's own binding", async () => {
     const { infra, call } = scopeFixture();
     const { git, diff } = createGitNamespaces(infra);
-    await git.commit!({ laneId: "lane-1", message: "x" }, remotePin(OWN_ENV, OWN_PROJECT) as never);
-    await diff.getFile!({ laneId: "lane-1", path: "a.ts" } as never, remotePin(OWN_ENV, OWN_PROJECT) as never);
+    await git.commit!({ laneId: "lane-1", message: "x" }, remotePin(OWN_ENV, OWN_PROJECT));
+    await diff.getFile!(
+      { laneId: "lane-1", path: "a.ts", mode: "unstaged" },
+      remotePin(OWN_ENV, OWN_PROJECT),
+    );
     expect(call.mock.calls.map((entry) => entry[0])).toEqual(["git.commit", "git.getFile"]);
   });
 });

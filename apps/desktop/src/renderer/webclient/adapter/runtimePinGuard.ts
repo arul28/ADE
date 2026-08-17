@@ -1,3 +1,4 @@
+import type { OpenProjectBinding } from "../../../shared/types";
 import type { AdeSyncClient } from "../sync";
 import type { AdapterProjectState } from "./infra/projectState";
 
@@ -20,41 +21,21 @@ import type { AdapterProjectState } from "./infra/projectState";
  * extend the adapter before relying on one.
  */
 
-type RuntimePin = {
-  kind: string | null;
-  targetId: string | null;
-  projectId: string | null;
-  key: string;
-};
-
 /**
- * The pin's identity, or null when the value is not shaped like a binding.
- *
- * The key is `remote:<targetId>:<projectId>` (federated.ts `bindingKey`), but
- * the fields are read directly rather than parsed back out of it — the key is
- * an identity string, and splitting it would break on any id containing a
- * colon. It is used only to name the binding in the error.
+ * The trailing runtime pin as the Electron contract declares it: a binding, or
+ * nothing. Every pinned adapter member takes exactly this.
  */
-function readRuntimePin(pin: unknown): RuntimePin | null {
-  if (!pin || typeof pin !== "object") return null;
-  const record = pin as Record<string, unknown>;
-  return {
-    kind: typeof record.kind === "string" ? record.kind : null,
-    targetId: typeof record.targetId === "string" ? record.targetId : null,
-    projectId: typeof record.projectId === "string" ? record.projectId : null,
-    key: typeof record.key === "string" ? record.key : "unknown binding",
-  };
-}
+export type RuntimePinArg = OpenProjectBinding | null | undefined;
 
 /**
- * Whether a pin names the machine this adapter is connected to.
+ * Whether a remote pin names the machine this adapter is connected to.
  *
  * A target id IS an environment id on the hosted client: `connectMachineEntry`
  * resolves a machine to `environment.envId` and hands that back as the target
  * the federated adapter binds, so the client's selected environment is the same
  * string the pin carries.
  */
-function pinTargetsThisMachine(pin: RuntimePin, client: AdeSyncClient): boolean {
+function pinTargetsThisMachine(pin: { targetId: string }, client: AdeSyncClient): boolean {
   const envId = client.getStatus().selectedEnvId;
   return Boolean(envId) && pin.targetId === envId;
 }
@@ -75,27 +56,26 @@ export type RuntimePinScope = {
  */
 export function assertWebRuntimePinRoutable(
   operation: string,
-  pin: unknown,
+  pin: RuntimePinArg,
   scope: RuntimePinScope,
 ): void {
   if (pin == null) return;
-  const parsed = readRuntimePin(pin);
   // A `kind: "local"` pin names a runtime on the machine running the desktop
   // app — something the browser has no path to at all, and which carries no
-  // targetId, so the remote comparison below would report it as an unknown
-  // binding. Say what actually happened instead.
-  if (parsed?.kind === "local") {
+  // targetId, so the remote comparison below could only report it as an
+  // unroutable binding. Say what actually happened instead.
+  if (pin.kind === "local") {
     throw new Error("This chat runs on a machine ADE Web can't reach directly.");
   }
-  if (
-    parsed
-    && pinTargetsThisMachine(parsed, scope.client)
-    && parsed.projectId === scope.state.getProjectId()
-  ) {
+  if (pinTargetsThisMachine(pin, scope.client) && pin.projectId === scope.state.getProjectId()) {
     return;
   }
+  // The key is `remote:<targetId>:<projectId>` (federated.ts `bindingKey`) and
+  // is used only to name the binding here — the routing decision above reads
+  // the fields directly rather than splitting the key, which would break on any
+  // id containing a colon.
   throw new Error(
-    `ADE Web cannot route ${operation} to pinned runtime ${parsed?.key ?? "unknown binding"};`
+    `ADE Web cannot route ${operation} to pinned runtime ${pin.key || "unknown binding"};`
     + " cross-machine web routing is not implemented.",
   );
 }
