@@ -2186,9 +2186,18 @@ declare global {
         rebuildIndex: () => Promise<SearchRebuildResult>;
       };
       externalSessions: {
-        list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
-        import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
-        getDetail: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
+        list: (
+          args?: ExternalSessionListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ExternalSessionSummary[]>;
+        import: (
+          args: ExternalSessionImportArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ExternalSessionImportResult>;
+        getDetail: (
+          args: ExternalSessionDetailArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ExternalSessionDetail>;
         watchDetail: (args: ExternalSessionDetailWatchArgs) => Promise<ExternalSessionDetail>;
         unwatchDetail: (args: { watchId: string }) => Promise<{ ok: true }>;
         onDetailUpdated: (cb: (ev: ExternalSessionDetailUpdatedEvent) => void) => () => void;

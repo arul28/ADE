@@ -2,11 +2,12 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExternalSessionSummary } from "./contract";
+import type { ExternalSessionSource, ExternalSessionSummary } from "./contract";
 import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
 import { DEFAULT_FORK_MODEL, ImportSessionBrowser } from "./ImportSessionBrowser";
 
 const list = vi.fn();
+const importSession = vi.fn();
 const getDetail = vi.fn();
 const watchDetail = vi.fn();
 const unwatchDetail = vi.fn();
@@ -25,6 +26,7 @@ vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
 }));
 vi.mock("../LaneCombobox", () => ({
   LaneCombobox: () => <div data-testid="lane-combobox" />,
+  computeLanePopoverPlacement: () => ({ width: 220, left: 0, top: 0, maxHeight: 320 }),
 }));
 
 function summary(overrides: Partial<ExternalSessionSummary> = {}): ExternalSessionSummary {
@@ -54,6 +56,7 @@ function summary(overrides: Partial<ExternalSessionSummary> = {}): ExternalSessi
 describe("ImportSessionBrowser", () => {
   beforeEach(() => {
     list.mockReset();
+    importSession.mockReset();
     getDetail.mockReset();
     watchDetail.mockReset();
     unwatchDetail.mockReset();
@@ -83,7 +86,7 @@ describe("ImportSessionBrowser", () => {
       value: {
         externalSessions: {
           list,
-          import: vi.fn(),
+          import: importSession,
           getDetail,
           watchDetail,
           unwatchDetail,
@@ -96,6 +99,44 @@ describe("ImportSessionBrowser", () => {
   afterEach(() => {
     cleanup();
     delete (window as { ade?: unknown }).ade;
+  });
+
+  it("shows an explicit scan status while provider discovery is pending", async () => {
+    list.mockImplementation(() => new Promise<ExternalSessionSummary[]>(() => undefined));
+    render(
+      <ImportSessionBrowser
+        open
+        onOpenChange={vi.fn()}
+        laneId="lane-1"
+        laneName="main"
+        onImported={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole("status")).textContent).toContain("Scanning external chats");
+    expect(screen.getByText(/This computer/i)).toBeTruthy();
+    expect(list).toHaveBeenCalledTimes(6);
+  });
+
+  it("explains a full scan failure and retries the provider scan", async () => {
+    list.mockRejectedValue(new Error("Project runtime unavailable."));
+    render(
+      <ImportSessionBrowser
+        open
+        onOpenChange={vi.fn()}
+        laneId="lane-1"
+        laneName="main"
+        onImported={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("External chats couldn't be loaded")).toBeTruthy());
+    expect(screen.getByText(/This computer/i)).toBeTruthy();
+    expect(screen.getByText(/ADE couldn't scan external chats on This computer/i)).toBeTruthy();
+    expect(screen.queryByText(/Project runtime unavailable/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry scan" }));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(12));
   });
 
   it("hides empty chats, drops the all-folders checkbox, and shows Live", async () => {
@@ -160,5 +201,92 @@ describe("ImportSessionBrowser", () => {
     fireEvent.click(screen.getByText("Fix login"));
     await waitFor(() => expect(screen.getByTestId("model-picker")).toBeTruthy());
     expect(screen.getByTestId("model-picker").textContent).toBe(DEFAULT_FORK_MODEL);
+  });
+
+  it("switches the scan and import route to a connected computer", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "studio-project",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/Users/dev/project",
+      displayName: "ADE",
+    };
+    const local = summary({ id: "local-session", title: "Local chat", possiblyActive: false });
+    const studio = summary({ id: "studio-session", title: "Studio chat", possiblyActive: false });
+    list.mockImplementation(async (args: { laneId?: string }) => (
+      args.laneId === "studio-lane" ? [studio] : [local]
+    ));
+    getDetail.mockResolvedValue({
+      provider: "claude",
+      id: "studio-session",
+      cwd: "/Users/dev/project",
+      title: "Studio chat",
+      messageCount: 1,
+      messages: [{ role: "user", text: "hello", at: 1 }],
+    });
+    importSession.mockResolvedValue({
+      kind: "chat",
+      chatSessionId: "ade-chat-studio",
+      laneId: "studio-lane",
+      chatSummary: null,
+    });
+    const onImported = vi.fn();
+    const sources: ExternalSessionSource[] = [
+      {
+        machineId: "this-mac",
+        machineName: "This computer",
+        lanes: [{ id: "local-lane", name: "Primary" }],
+        binding: null,
+        runtimePin: null,
+        online: true,
+      },
+      {
+        machineId: "studio",
+        machineName: "Mac Studio",
+        lanes: [{ id: "studio-lane", name: "Primary" }],
+        binding: studioBinding,
+        runtimePin: studioBinding,
+        online: true,
+      },
+    ];
+
+    render(
+      <ImportSessionBrowser
+        open
+        onOpenChange={vi.fn()}
+        laneId="local-lane"
+        laneName="Primary"
+        sources={sources}
+        onImported={onImported}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Local chat")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Choose import source/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mac Studio" }));
+
+    await waitFor(() => expect(screen.getByText("Studio chat")).toBeTruthy());
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "studio-lane" }),
+      studioBinding,
+    );
+    expect(screen.queryByText("Local chat")).toBeNull();
+
+    fireEvent.click(screen.getByText("Studio chat"));
+    await waitFor(() => expect(screen.getByText("Copy as ADE chat")).toBeTruthy());
+    expect(getDetail).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "studio-session" }),
+      studioBinding,
+    );
+    fireEvent.click(screen.getByText("Copy as ADE chat"));
+    await waitFor(() => expect(importSession).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "studio-lane" }),
+      studioBinding,
+    ));
+    expect(onImported).toHaveBeenCalledWith(studio, expect.anything(), expect.objectContaining({
+      machineId: "studio",
+    }));
   });
 });

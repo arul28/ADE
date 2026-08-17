@@ -7703,7 +7703,15 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   externalSessions: {
-    list: async (args: ExternalSessionListArgs = {}): Promise<ExternalSessionSummary[]> => {
+    list: async (
+      args: ExternalSessionListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ExternalSessionSummary[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<ExternalSessionSummary[]>(pin, "external-sessions", "list", {
+          args: { ...args },
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<ExternalSessionSummary[]>(
         "external-sessions",
         "list",
@@ -7713,7 +7721,15 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result ?? []
         : ipcRenderer.invoke(IPC.externalSessionsList, args);
     },
-    import: async (args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult> => {
+    import: async (
+      args: ExternalSessionImportArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ExternalSessionImportResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<ExternalSessionImportResult>(pin, "external-sessions", "import", {
+          args: { ...args },
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<ExternalSessionImportResult>(
         "external-sessions",
         "import",
@@ -7723,7 +7739,15 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.externalSessionsImport, args);
     },
-    getDetail: async (args: ExternalSessionDetailArgs): Promise<ExternalSessionDetail> => {
+    getDetail: async (
+      args: ExternalSessionDetailArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ExternalSessionDetail> => {
+      if (pin) {
+        return callPinnedRuntimeAction<ExternalSessionDetail>(pin, "external-sessions", "getDetail", {
+          args: { ...args },
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<ExternalSessionDetail>(
         "external-sessions",
         "getDetail",

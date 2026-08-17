@@ -6,8 +6,9 @@
  * place. This file only adds renderer glue (bridge accessor, provenance
  * reader, display helpers).
  */
-import type { TerminalToolType } from "../../../../shared/types";
+import type { OpenProjectBinding, TerminalToolType } from "../../../../shared/types";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import type { LaneComboboxLane } from "../LaneCombobox";
 import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
@@ -62,12 +63,33 @@ export type ImportedFrom = {
 };
 
 export type ExternalSessionsApi = {
-  list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
-  import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
-  getDetail?: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
+  list: (
+    args?: ExternalSessionListArgs,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<ExternalSessionSummary[]>;
+  import: (
+    args: ExternalSessionImportArgs,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<ExternalSessionImportResult>;
+  getDetail?: (
+    args: ExternalSessionDetailArgs,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<ExternalSessionDetail>;
   watchDetail?: (args: ExternalSessionDetailWatchArgs) => Promise<ExternalSessionDetail>;
   unwatchDetail?: (args: { watchId: string }) => Promise<{ ok: true }>;
   onDetailUpdated?: (cb: (ev: ExternalSessionDetailUpdatedEvent) => void) => () => void;
+};
+
+/** A connected computer that can own the external sessions being browsed. */
+export type ExternalSessionSource = {
+  machineId: string;
+  machineName: string;
+  lanes: Array<LaneComboboxLane & { laneType?: string | null }>;
+  /** Binding used for imported-session ownership and cross-machine adoption. */
+  binding: OpenProjectBinding | null;
+  /** Explicit runtime route; null means the active project-tab runtime. */
+  runtimePin: OpenProjectBinding | null;
+  online: boolean;
 };
 
 /** Typed accessor for the runtime-routed bridge; null when unavailable. */
