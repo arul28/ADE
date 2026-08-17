@@ -1671,6 +1671,86 @@ describe("prService.getGithubSnapshot", () => {
     expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
 
+  // A GitHub 5xx used to fall through to "GitHub auth is invalid or missing
+  // required access. Update it in Settings" — telling the user to replace a
+  // credential that was never broken, on the surface they act from most.
+  it("blames GitHub, not the credential, when GitHub returns a server error", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        connected: false,
+        authFailure: {
+          kind: "service_unavailable",
+          message: "No server is currently available to service your request.",
+          retryAt: null,
+        },
+      })),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const error = await service.getGithubSnapshot().then(
+      () => { throw new Error("expected getGithubSnapshot to reject"); },
+      (reason: unknown) => reason as Error,
+    );
+    expect(error.message).toContain("This isn't a problem with your GitHub connection");
+    // The pre-fix string, which sent the user to replace a working credential.
+    expect(error.message).not.toContain("Update it in Settings");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
+  // Corroboration is attached to `unknown` failures too (GitHub answered with
+  // something we could not classify). A confirmed incident is positive evidence
+  // regardless of how the response itself was classified.
+  it("reports a corroborated outage for an unknown auth failure", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        connected: false,
+        authFailure: {
+          kind: "unknown",
+          message: "GitHub returned an unexpected response.",
+          retryAt: null,
+        },
+        serviceHealth: {
+          indicator: "major",
+          affected: [{ surface: "api", name: "API Requests", status: "major_outage" }],
+          incidentUrl: "https://stspg.io/live",
+        },
+      })),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const error = await service.getGithubSnapshot().then(
+      () => { throw new Error("expected getGithubSnapshot to reject"); },
+      (reason: unknown) => reason as Error,
+    );
+    expect(error.message).toContain("GitHub is having problems");
+    expect(error.message).not.toContain("Update it in Settings");
+  });
+
+  it("names the corroborated outage when GitHub's status page confirms one", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        connected: false,
+        authFailure: {
+          kind: "service_unavailable",
+          message: "No server is currently available to service your request.",
+          retryAt: null,
+        },
+        serviceHealth: {
+          indicator: "major",
+          affected: [{ surface: "api", name: "API Requests", status: "major_outage" }],
+          incidentUrl: "https://stspg.io/live",
+        },
+      })),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await expect(service.getGithubSnapshot()).rejects.toThrow(/GitHub is having problems/);
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
   it("does not return an in-memory GitHub snapshot when token status is invalid", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn()

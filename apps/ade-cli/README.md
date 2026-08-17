@@ -664,6 +664,15 @@ stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
 reports the active read/write sources, per-credential failure/cooldown state,
 fallback details, and any background-refresh pause without exposing tokens.
 
+When GitHub itself is failing rather than rejecting the credential,
+`authFailure.kind` is `service_unavailable` (GitHub returned 5xx) — scripts must
+not treat that as a reason to re-auth or rotate a token. In that case, and for
+an unclassifiable failure, `github.getStatus` also consults githubstatus.com and
+attaches `serviceHealth` (`indicator`, `affected` components, `incidentUrl`)
+when a GitHub surface ADE depends on is confirmed down. `serviceHealth` is
+present only as positive corroboration: its absence never means the failure is
+local, so do not branch on it being missing.
+
 Pi sign-in has no typed command, the same way OpenCode's `ai.opencodeOAuth*`
 actions do not. `ai.piLoginStart` blocks until a human finishes Pi's own browser
 or device-code flow, and any prompt it raises is answered by a *second* call

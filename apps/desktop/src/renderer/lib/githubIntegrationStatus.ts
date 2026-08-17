@@ -4,6 +4,11 @@ import type {
   GitHubSetTokenResult,
   GitHubStatus,
 } from "../../shared/types";
+import {
+  GITHUB_STATUS_PAGE_URL,
+  githubServiceAffectedLabel,
+  type GitHubServiceHealth,
+} from "../../shared/githubServiceHealth";
 
 export type GithubCredentialPresentation = {
   tokenTypeLabel: string;
@@ -12,6 +17,76 @@ export type GithubCredentialPresentation = {
   hasInspectableScopes: boolean;
   repoAccessLabel: string;
 };
+
+/** Copy for any GitHub failure Settings and the banner both render. */
+export type GithubFailurePresentation = {
+  subState: string;
+  statusLabel: string;
+  title: string;
+  detail: string;
+  settingsDetail: string;
+  action: string;
+};
+
+/**
+ * The outage case, which additionally has somewhere real to send the user.
+ * Declared as an extension so the two shapes cannot silently drift apart.
+ */
+export type GithubOutagePresentation = GithubFailurePresentation & {
+  /** Where the action button goes — the live incident when GitHub named one. */
+  actionUrl: string;
+  /** Banner dismissal fingerprint; a changed incident resurfaces the banner. */
+  fingerprint: string;
+};
+
+/**
+ * The single outage notice shown in place of every GitHub credential complaint,
+ * or null when no incident is corroborated.
+ *
+ * One function rather than a family of predicates because every caller needs
+ * the same three things together (is there an outage, what do we say, where
+ * does the button go) — splitting them just duplicated the `?? statusPage`
+ * fallback and the fingerprint at each call site.
+ *
+ * Every GitHub-blaming surface gates on this: banners collapse to one outage
+ * notice, Settings drops its red "check failed" framing, and reconnect CTAs
+ * disappear (reconnecting cannot fix an outage, and re-running `gh auth login`
+ * during one risks replacing a working credential with a broken one).
+ *
+ * Deliberately one-directional. When this returns null ADE says nothing about
+ * GitHub's health and keeps its existing error copy — the status page trails
+ * real incidents by 10-20 minutes, so "no incident reported" is not evidence
+ * that the user's setup is at fault.
+ */
+export function describeGithubOutage(
+  status: GitHubStatus | null | undefined,
+): GithubOutagePresentation | null {
+  const health: GitHubServiceHealth | null = status?.serviceHealth ?? null;
+  if (!health) return null;
+  const affected = githubServiceAffectedLabel(health);
+  const severe = health.affected.some((entry) => entry.status === "major_outage");
+  return {
+    subState: `outage:${health.indicator}`,
+    statusLabel: "GitHub outage",
+    title: severe ? "GitHub is down" : "GitHub is having problems",
+    // Names the affected parts (so the user knows which of their work is
+    // blocked) and then says the only thing they need to do, which is nothing.
+    detail: `GitHub reports problems with ${affected}. This isn't your setup — ADE will reconnect on its own.`,
+    settingsDetail: `GitHub reports problems with ${affected}. Nothing here needs changing — ADE keeps retrying and reconnects when GitHub is back.`,
+    action: "GitHub status",
+    actionUrl: health.incidentUrl ?? GITHUB_STATUS_PAGE_URL,
+    // Incident identity + the affected surfaces, sorted. Severity is
+    // deliberately excluded: GitHub flips component levels several times per
+    // incident, and including them would resurface a dismissed banner on every
+    // flip, including when the incident NARROWS. The incident link IS included
+    // so a genuinely new incident on the same surfaces resurfaces the notice
+    // instead of inheriting the previous one's dismissal.
+    fingerprint: [
+      health.incidentUrl ?? "no-incident",
+      ...health.affected.map((entry) => entry.surface).sort(),
+    ].join(","),
+  };
+}
 
 export function githubCredentialPresentation(
   status: GitHubStatus | null,
@@ -283,6 +358,15 @@ export function describeGithubPatVerification(result: GitHubSetTokenResult): {
       message: `Token saved, but ADE cannot use it for write actions on ${repoLabel}. Check the token's repository access and write permissions.`,
     };
   }
+  // GitHub itself failed, so the token is unverified rather than bad. This is
+  // the highest-risk place to get the blame wrong: the user is already in the
+  // token field, so "check the token" reads as "replace it".
+  if (failure?.kind === "service_unavailable") {
+    return {
+      verified: false,
+      message: "Token saved, but GitHub returned an error instead of verifying it. Nothing to change here — ADE will verify it once GitHub recovers.",
+    };
+  }
   if (failure?.kind === "network") {
     return {
       verified: false,
@@ -309,6 +393,16 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       action: "Connect GitHub",
     };
   }
+  // Below this point every state is inferred from GitHub's answers, so an
+  // outage invalidates all of them. (The check sits AFTER `!tokenStored`: that
+  // one is a purely local fact and stays true regardless of GitHub's health.)
+  //
+  // Belt-and-braces: IntegrationBannerHost suppresses this whole banner during
+  // a corroborated outage, so in production this branch is already unreachable.
+  // It stays so that any other caller — or a future refactor of that
+  // suppression — cannot silently reintroduce the credential accusation.
+  const outage = describeGithubOutage(status);
+  if (outage) return outage;
   if (status.connected && !githubStatusHasWriteCredential(status)) {
     return {
       subState: "no-write-credential",
@@ -338,14 +432,13 @@ export function describeGithubCliBanner(status: GitHubStatus): {
   };
 }
 
-export function describeGithubAuthFailure(status: GitHubStatus): {
-  subState: string;
-  statusLabel: string;
-  title: string;
-  detail: string;
-  settingsDetail: string;
-  action: string;
-} | null {
+export function describeGithubAuthFailure(
+  status: GitHubStatus,
+): GithubFailurePresentation | null {
+  // Corroborated outage outranks every credential-shaped reading of the same
+  // failure: whatever GitHub returned, the cause is GitHub.
+  const outage = describeGithubOutage(status);
+  if (outage) return outage;
   if (status.authFailure?.kind === "rate_limited") {
     const retryAt = formatGithubRetryAt(status.authFailure.retryAt);
     return {
@@ -369,6 +462,21 @@ export function describeGithubAuthFailure(status: GitHubStatus): {
       detail: "The saved GitHub credential is no longer valid. Reconnect GitHub to replace it.",
       settingsDetail: status.authFailure.message,
       action: "Reconnect GitHub",
+    };
+  }
+  // GitHub answered with a 5xx. Even without status-page corroboration this is
+  // provably not a credential problem, so it must never suggest reconnecting.
+  if (status.authFailure?.kind === "service_unavailable") {
+    return {
+      subState: "service-unavailable",
+      statusLabel: "GitHub error",
+      title: "GitHub isn't responding",
+      detail: "This isn't your setup — ADE will keep retrying.",
+      settingsDetail: `GitHub returned an error instead of an answer, so ADE couldn't finish the check. This is not a problem with your credential, and reconnecting won't help. GitHub said: ${status.authFailure.message}`,
+      // Matches the rate-limited/network siblings: the banner wires this to
+      // ADE Settings, so it must not read as a link to githubstatus.com. Only
+      // the corroborated-outage presentation carries a real external URL.
+      action: "View GitHub status",
     };
   }
   if (status.authFailure?.kind === "network") {

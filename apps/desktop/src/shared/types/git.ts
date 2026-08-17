@@ -2,6 +2,8 @@
 // Git types
 // ---------------------------------------------------------------------------
 
+import type { GitHubServiceHealth } from "../githubServiceHealth";
+
 export type GitSyncMode = "merge" | "rebase";
 export type GitPullMode = "ff-only" | "rebase" | "merge";
 
@@ -308,7 +310,17 @@ export type GitHubRateLimitState = {
 };
 
 export type GitHubAuthFailure = {
-  kind: "rate_limited" | "invalid_token" | "permission_denied" | "network" | "unknown";
+  // `service_unavailable` means GitHub itself returned 5xx. It is NOT a
+  // credential problem, and clients must not offer reconnect/re-auth for it —
+  // reconnecting during a GitHub outage cannot help and risks the user
+  // replacing a perfectly good token.
+  kind:
+    | "rate_limited"
+    | "invalid_token"
+    | "permission_denied"
+    | "service_unavailable"
+    | "network"
+    | "unknown";
   message: string;
   retryAt: string | null;
 };
@@ -367,6 +379,11 @@ export type GitHubStatus = {
   // flattened into "missing scopes" by clients.
   authFailure?: GitHubAuthFailure | null;
   rateLimit?: GitHubRateLimitState | null;
+  // Set only when a GitHub request failed AND githubstatus.com corroborates an
+  // incident on a surface ADE depends on. Present means "this failure is
+  // GitHub's, not the user's"; absent means ADE makes no claim either way (the
+  // status page lags real incidents, so absence proves nothing).
+  serviceHealth?: GitHubServiceHealth | null;
   // Optional for compatibility with older runtimes. These fields describe the
   // operation credential chain without exposing credential material.
   writeAuthSource?: Exclude<GitHubStatus["authSource"], "app">;

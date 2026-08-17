@@ -22,6 +22,7 @@ import {
   describeGithubPatVerification,
   describeGithubAuthFailure,
   githubCredentialPresentation,
+  describeGithubOutage,
 } from "../../lib/githubIntegrationStatus";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
@@ -89,24 +90,35 @@ function shortRetryTime(value: string | null | undefined): string | null {
   return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function credentialStateLabel(state: GitHubCredentialState): string {
-  if (state.activeFor.length === 2) return "Reads & writes";
-  if (state.activeFor[0] === "read") return "Reads";
-  if (state.activeFor[0] === "write") return "Writes";
+/**
+ * One badge per credential row. Label and color are derived together because
+ * they switch on the same states — deriving them apart let the cooldown branch
+ * drift between the two.
+ */
+function credentialStateBadge(
+  state: GitHubCredentialState,
+  outage: boolean,
+): { label: string; color: string } {
+  if (state.activeFor.length === 2) return { label: "Reads & writes", color: COLORS.success };
+  if (state.activeFor[0] === "read") return { label: "Reads", color: COLORS.success };
+  if (state.activeFor[0] === "write") return { label: "Writes", color: COLORS.success };
   if (state.state === "cooldown") {
+    // During a GitHub outage a cooldown says nothing about the credential —
+    // it only records that GitHub failed to answer. "Reconnect needed" here
+    // would be an outright false accusation.
+    if (outage) return { label: "Waiting on GitHub", color: COLORS.textMuted };
     const retryAt = shortRetryTime(state.failure?.retryAt);
-    if (state.failure?.kind === "rate_limited") return retryAt ? `Paused until ${retryAt}` : "Paused";
-    if (state.failure?.kind === "invalid_token") return "Reconnect needed";
-    if (state.failure?.kind === "permission_denied") return "Access unavailable";
-    return "Temporarily unavailable";
+    if (state.failure?.kind === "rate_limited") {
+      return { label: retryAt ? `Paused until ${retryAt}` : "Paused", color: COLORS.warning };
+    }
+    if (state.failure?.kind === "invalid_token") return { label: "Reconnect needed", color: COLORS.warning };
+    if (state.failure?.kind === "permission_denied") return { label: "Access unavailable", color: COLORS.warning };
+    return { label: "Temporarily unavailable", color: COLORS.warning };
   }
-  return state.available ? "Fallback" : "Not set up";
-}
-
-function credentialStateColor(state: GitHubCredentialState): string {
-  if (state.state === "active") return COLORS.success;
-  if (state.state === "cooldown") return COLORS.warning;
-  return state.available ? COLORS.textSecondary : COLORS.textDim;
+  return {
+    label: state.available ? "Fallback" : "Not set up",
+    color: state.available ? COLORS.textSecondary : COLORS.textDim,
+  };
 }
 
 export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
@@ -215,9 +227,18 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   let readsWithLabel = authSourceLabel(githubStatus);
   if (authFailure?.kind === "rate_limited") readsWithLabel = "Paused";
   if (activeReadCredential) readsWithLabel = credentialSourceLabel(activeReadCredential.source);
+  // A corroborated GitHub outage explains every red state on this card. While
+  // one is active the card stops reading as "your setup is broken": the chip
+  // goes neutral, the ladder's failure badges are held back, and the gh-auth
+  // instructions are hidden so nobody re-runs `gh auth login` and replaces a
+  // credential that was working fine.
+  const outage = describeGithubOutage(githubStatus);
   let statusColor: string;
   let statusLabel: string;
-  if (isConnected && credentialFallback) {
+  if (outage) {
+    statusColor = COLORS.textMuted;
+    statusLabel = outage.statusLabel;
+  } else if (isConnected && credentialFallback) {
     statusColor = COLORS.warning;
     statusLabel = "Connected · fallback";
   } else if (isConnected) {
@@ -245,9 +266,11 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     && !isConnected
     && githubStatus.authSource !== "pat"
     && (
+      // A missing token is a local fact that an outage cannot explain away, so
+      // that one instruction still stands. The other two are inferred from
+      // GitHub's answers and are unreliable while GitHub is failing.
       !githubStatus.tokenStored
-      || authFailure?.kind === "invalid_token"
-      || hasMissingScopes
+      || (!outage && (authFailure?.kind === "invalid_token" || hasMissingScopes))
     );
   const classicTokenUrl = transcriptGistsEnabled ? GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL : GITHUB_CLASSIC_TOKEN_NEW_URL;
   const openExternal = (url: string) => {
@@ -391,8 +414,19 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           >
             {summaryCell("USER", githubStatus?.userLogin ?? null)}
             {summaryCell("REPOSITORY", githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null)}
-            {summaryCell("READS WITH", readsWithLabel)}
-            {summaryCell("WRITES WITH", credentialSourceLabel(effectiveWriteAuthSource))}
+            {/* While GitHub is down ADE can't resolve which credential would
+                win, so it reports the honest "Unknown" rather than the
+                false-negative "Not connected". */}
+            {summaryCell(
+              "READS WITH",
+              outage && !activeReadCredential ? "Unknown" : readsWithLabel,
+            )}
+            {summaryCell(
+              "WRITES WITH",
+              outage && effectiveWriteAuthSource === "none"
+                ? "Unknown"
+                : credentialSourceLabel(effectiveWriteAuthSource),
+            )}
           </div>
 
           {credentialFallback ? (
@@ -423,7 +457,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CONNECTION ORDER</div>
               <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
                 {credentialStates.map((credential, index) => {
-                  const stateColor = credentialStateColor(credential);
+                  const badge = credentialStateBadge(credential, outage != null);
                   return (
                     <div
                       key={credential.source}
@@ -444,7 +478,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
                           {credential.capabilities.length === 1 ? "Read-only" : "Read and write"}
                         </div>
                       </div>
-                      <span style={inlineBadge(stateColor)}>{credentialStateLabel(credential)}</span>
+                      <span style={inlineBadge(badge.color)}>{badge.label}</span>
                     </div>
                   );
                 })}
@@ -462,14 +496,30 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             {permissionMode === "auth-failure" ? (
               <div style={{
                 ...infoBoxStyle,
-                borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
-                background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+                // Neutral during an outage: a warning tint implies the user has
+                // something to fix, and they don't.
+                borderColor: outage
+                  ? COLORS.border
+                  : "color-mix(in srgb, var(--color-warning) 35%, transparent)",
+                background: outage
+                  ? COLORS.recessedBg
+                  : "color-mix(in srgb, var(--color-warning) 10%, transparent)",
                 color: COLORS.textPrimary,
               }}>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>
                   {authFailurePresentation?.title}
                 </div>
                 <div>{authFailurePresentation?.settingsDetail}</div>
+                {outage ? (
+                  <button
+                    type="button"
+                    style={outlineButton({ marginTop: 10 })}
+                    onClick={() => openExternal(outage.actionUrl)}
+                  >
+                    <ArrowSquareOut size={13} />
+                    GitHub status
+                  </button>
+                ) : null}
               </div>
             ) : permissionMode === "app" ? (
               <div style={{ display: "grid", gap: 6 }}>

@@ -18,6 +18,12 @@ import {
 
 const FALLBACK_COOLDOWN_MS = 5 * 60_000;
 const SECONDARY_RATE_LIMIT_COOLDOWN_MS = 60_000;
+// A GitHub 5xx deliberately gets NO cooldown. Cooldowns here are consulted by
+// every operation path (githubRawRequest, githubRequest, readAuthToken), not
+// just background probes, so parking a credential after one transient 502 would
+// fail the user's next merge or PR read locally, without a request, for the
+// whole window. The credential is not the problem, so it must stay usable the
+// instant GitHub recovers.
 const REPOSITORY_ACCESS_TTL_MS = 2 * 60_000;
 export const GITHUB_BACKGROUND_RATE_LIMIT_RESERVE = 500;
 

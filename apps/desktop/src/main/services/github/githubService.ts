@@ -46,6 +46,7 @@ import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
 } from "./githubRawRequest";
+import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
   classifyGitHubGraphqlCredentialFailure,
@@ -1872,7 +1873,9 @@ export function createGithubService({
       if (!opts.forceRefresh) return await statusInFlight;
       await statusInFlight.catch(() => {});
     }
-    const work = computeStatus(opts);
+    // Corroborate a failing status against githubstatus.com. Shared with the
+    // headless (brain) service so both getStatus owners behave identically.
+    const work = computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger }));
     statusInFlight = work;
     try {
       return await work;
