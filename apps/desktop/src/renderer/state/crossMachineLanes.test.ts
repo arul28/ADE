@@ -2092,7 +2092,7 @@ describe("pinned lane resolution reads the store that owns the union", () => {
     displayName: "Repo",
     runtimeName: "Mac Studio (12)",
     hostname: "studio.local",
-  } as OpenProjectBinding;
+  };
 
   function scopedWrapper() {
     // A project surface store, exactly as `App` builds one for a project tab.
@@ -2100,7 +2100,7 @@ describe("pinned lane resolution reads the store that owns the union", () => {
     // deliberately not copied here, so any pinned read that resolves against
     // this store sees an empty union forever.
     const projectStore = createProjectAppStore(
-      { rootPath: "/Users/arul/repo", displayName: "Repo", baseRef: "main" } as never,
+      { rootPath: "/Users/arul/repo", displayName: "Repo", baseRef: "main" },
     );
     expect(projectStore.getState().crossMachineLanesByMachineId).toEqual({});
     return {
@@ -2155,7 +2155,7 @@ describe("pinned lane resolution reads the store that owns the union", () => {
     projectStore.setState({
       lanes: [makeLane({ id: "lane-of-the-tabs-machine" })],
       laneCacheByProject: {
-        [pin.key]: { lanes: [makeLane({ id: "lane-cached" })], laneSnapshots: [] } as never,
+        [pin.key]: { lanes: [makeLane({ id: "lane-cached" })], laneSnapshots: [] },
       },
     });
 

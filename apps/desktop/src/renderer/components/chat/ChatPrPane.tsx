@@ -24,8 +24,7 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
-import { useRootAppStore } from "../../state/appStore";
-import { machineEntryForBinding } from "../../state/crossMachineLanes";
+import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
@@ -463,9 +462,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
   const runtimePinKey = runtimePin?.key ?? null;
-  const pinMachineName = useRootAppStore(
-    (s) => machineEntryForBinding(s, runtimePin)?.machineName ?? null,
-  );
+  const pinMachineName = useMachineEntryForBinding(runtimePin)?.machineName ?? null;
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const { copy, copied } = useCopyToClipboard();

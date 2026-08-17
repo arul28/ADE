@@ -3,8 +3,12 @@ import React, { createContext, useContext, useMemo } from "react";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import { THIS_MACHINE_NAME, machineNameForBinding } from "../../../shared/machineIdentity";
-import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
-import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
+import {
+  useForeignSessionLaneId,
+  useLanesForPin,
+  useMachineEntryForBinding,
+} from "../../state/crossMachineLanes";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 /**
  * The one answer to "which machine is THIS chat on, and what does it look like
@@ -128,28 +132,6 @@ export type ChatScopeLaneOption = {
   branchRef?: string | null;
   laneType?: string | null;
 };
-
-/**
- * A session's lane, found on some OTHER machine.
- *
- * A chat selected from another machine is absent from this tab's session list,
- * so its lane — and with it its machine — is only knowable from the
- * cross-machine union. `presentLocally` short-circuits the scan for the common
- * case: the tab already holds the session, so its lane is already known.
- */
-export function useForeignSessionLaneId(
-  sessionId: string | null,
-  presentLocally: boolean,
-): string | null {
-  return useRootAppStore((state) => {
-    if (!sessionId || presentLocally) return null;
-    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
-      const session = machine.sessions.find((candidate) => candidate.id === sessionId);
-      if (session) return session.laneId;
-    }
-    return null;
-  });
-}
 
 export type ChatScopeDerivationInput = {
   /** The chat the pane is routing for. */

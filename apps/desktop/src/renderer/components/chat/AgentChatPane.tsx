@@ -129,11 +129,8 @@ import {
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
-import {
-  ChatRuntimeScopeProvider,
-  useChatScopeDerivation,
-  useForeignSessionLaneId,
-} from "./ChatRuntimeScope";
+import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { useForeignSessionLaneId } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,

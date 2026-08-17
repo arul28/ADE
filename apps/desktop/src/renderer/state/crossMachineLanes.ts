@@ -293,6 +293,28 @@ export function useMachineEntryForBinding(
 }
 
 /**
+ * A session's lane, found on some OTHER machine.
+ *
+ * A chat selected from another machine is absent from this tab's session list,
+ * so its lane — and with it its machine — is only knowable from the
+ * cross-machine union. `presentLocally` short-circuits the scan for the common
+ * case: the tab already holds the session, so its lane is already known.
+ */
+export function useForeignSessionLaneId(
+  sessionId: string | null,
+  presentLocally: boolean,
+): string | null {
+  return useRootAppStore((state) => {
+    if (!sessionId || presentLocally) return null;
+    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
+      const session = machine.sessions.find((candidate) => candidate.id === sessionId);
+      if (session) return session.laneId;
+    }
+    return null;
+  });
+}
+
+/**
  * The ONLY lane list a pinned lane id may be resolved against: the pinned
  * machine's own, from the live union or its warm cache.
  *

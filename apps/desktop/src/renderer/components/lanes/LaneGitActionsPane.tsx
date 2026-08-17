@@ -242,12 +242,12 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
 // cross-machine lane list, it fills the prop.
 
 // Identity for the machine the renderer is running on, so the guard never
-// warns about this machine. Values match `laneMachines.ts` (THIS_MACHINE_ID /
-// THIS_MACHINE_NAME) so a caller sourcing `others` from that module lines up
-// without a translation step. Machines are named absolutely — never "remote".
-// Imported, not re-typed. The previous hardcoded literals were kept in sync
-// with laneMachines.ts by a comment; the guard compares machine ids, so a drift
-// here makes it warn that This computer diverged from itself.
+// warns about this machine. The id matches `laneMachines.ts` (THIS_MACHINE_ID)
+// so a caller sourcing `others` from that module lines up without a
+// translation step; display names come from `machineNameForBinding`. Machines
+// are named absolutely — never "remote". Imported, not re-typed: the guard
+// compares machine ids, so a drift here makes it warn that This computer
+// diverged from itself.
 import {
   THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
   machineNameForBinding,
