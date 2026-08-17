@@ -26,6 +26,7 @@ import {
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
   monitorBrainSocketOwnership,
+  unlinkOwnedRuntimeSocket,
   parseCliArgs,
   parseSnoozeDurationMs,
   readRuntimeIdleExitMs,
@@ -11510,5 +11511,67 @@ describe("monitorBrainSocketOwnership", () => {
     });
     stop();
     expect(lost).toEqual([]);
+  });
+});
+
+describe("unlinkOwnedRuntimeSocket", () => {
+  const socketPath = "/tmp/ade-ownership/ade.sock";
+
+  // Regression: the shutdown that follows a "replaced" ownership loss used to
+  // unlink unconditionally, deleting the rival brain's socket — the winner
+  // then listened on an inode nothing could reach.
+  it("refuses to remove a socket another process rebound", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 200n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("not_owned");
+    expect(unlinked).toEqual([]);
+  });
+
+  it("removes the socket while we still own the inode we bound", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("unlinked");
+    expect(unlinked).toEqual([socketPath]);
+  });
+
+  it("reports an already-gone socket without touching the filesystem", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => null,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("absent");
+    expect(unlinked).toEqual([]);
+  });
+
+  it("falls back to the unconditional unlink when no inode was recorded at bind time", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, null, {
+      readInode: () => 200n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("unlinked");
+    expect(unlinked).toEqual([socketPath]);
+  });
+
+  it("never unlinks a Windows named pipe, which has no directory entry", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(String.raw`\\.\pipe\ade-runtime-abc`, 100n, {
+      readInode: () => { throw new Error("must not stat a named pipe"); },
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("not_owned");
+    expect(unlinked).toEqual([]);
   });
 });

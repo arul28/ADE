@@ -19,6 +19,7 @@ import {
   resolveRuntimeServiceName,
   RUNTIME_SERVICE_YOUNG_BRAIN_MS,
   serviceManagerResultText,
+  WINDOWS_HANDOVER_TIMEOUT_MS,
   terminatePidGracefullyAsync,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
@@ -840,6 +841,7 @@ async function installWindowsServiceImpl(
   // ending and replacing it — every Repair used to kill exactly that brain.
   const readPidRecord = deps.readPidRecord
     ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
+  const isAlive = deps.pidAlive ?? isPidAlive;
   const youngRecord = launcherUnchanged ? readPidRecord(pidPath) : null;
   if (
     youngRecord
@@ -847,8 +849,8 @@ async function installWindowsServiceImpl(
     && youngRecord.runtimePid != null
     && youngRecord.runtimeStartedAtMs != null
     && Date.now() - youngRecord.runtimeStartedAtMs < RUNTIME_SERVICE_YOUNG_BRAIN_MS
-    && (deps.pidAlive ?? isPidAlive)(youngRecord.supervisorPid)
-    && (deps.pidAlive ?? isPidAlive)(youngRecord.runtimePid)
+    && isAlive(youngRecord.supervisorPid)
+    && isAlive(youngRecord.runtimePid)
   ) {
     const youngReadiness = await waitForWindowsRuntimeReadiness({
       command: serviceCommand,
@@ -858,7 +860,7 @@ async function installWindowsServiceImpl(
       spawnSync: run,
       readPidRecord,
       readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
-      timeoutMs: deps.handoverTimeoutMs ?? 15_000,
+      timeoutMs: deps.handoverTimeoutMs ?? WINDOWS_HANDOVER_TIMEOUT_MS,
       pollMs: deps.handoverPollMs ?? 100,
       sleep: deps.sleep,
     });
@@ -962,11 +964,11 @@ async function installWindowsServiceImpl(
     spawnSync: run,
     readPidRecord,
     readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
-    // Shorter than launchd's shared budget on purpose: the Windows install
+    // Shorter than the POSIX budget on purpose: the Windows install
     // already spends several PowerShell round-trips before this wait, and the
     // desktop bounds the whole child at 60s. A supervised brain that is not
     // ready by then is reported as `starting`, not as a failure.
-    timeoutMs: deps.handoverTimeoutMs ?? 15_000,
+    timeoutMs: deps.handoverTimeoutMs ?? WINDOWS_HANDOVER_TIMEOUT_MS,
     pollMs: deps.handoverPollMs ?? 100,
     sleep: deps.sleep,
   });

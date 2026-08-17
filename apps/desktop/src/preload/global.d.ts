@@ -897,15 +897,18 @@ declare global {
        * Absent on older preloads: every call site must tolerate `undefined`
        * and simply not offer the button.
        */
-      diagnostics: {
-        buildReport: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
+      diagnostics?: {
         openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
-        /** Live repair steps for the window that started the repair. */
-        onRepairStep: (
+        /**
+         * Live repair steps for the window that started the repair. Optional
+         * for the same reason `diagnostics` is: an older preload does not have
+         * it, and every call site already guards before calling.
+         */
+        onRepairStep?: (
           cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
         ) => () => void;
       };

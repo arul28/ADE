@@ -238,9 +238,19 @@ export function redactDiagnosticText(
   const hostname = context.hostname?.trim();
   if (hostname && hostname.length >= 3) {
     const short = hostname.split(".")[0] ?? "";
-    const names = [hostname, ...(short.length >= 3 ? [short] : [])];
-    const pattern = alternationRegExp(names.map(escapeRegExp).map((v) => `(?<![A-Za-z0-9_-])${v}(?![A-Za-z0-9_-])`), "gi");
-    if (pattern) out = out.replace(pattern, "<host>");
+    // Built here rather than through `alternationRegExp`, which escapes what it
+    // is given: escaping an already-assembled pattern turns the word-boundary
+    // lookarounds into literal text and the rule silently matches nothing.
+    const names = [...new Set([hostname, ...(short.length >= 3 ? [short] : [])])]
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    if (names.length > 0) {
+      const pattern = new RegExp(
+        names.map((name) => `(?<![A-Za-z0-9_-])${escapeRegExp(name)}(?![A-Za-z0-9_-])`).join("|"),
+        "gi",
+      );
+      out = out.replace(pattern, "<host>");
+    }
   }
   out = out
     .replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.ts\.net(?![A-Za-z0-9_-])/gi, "<tailnet-host>")
@@ -443,13 +453,21 @@ export type DiagnosticIssueUrlInput = {
   arch?: string | null;
   installId?: string | null;
   repo?: string;
+  /**
+   * Same context the report body is redacted with. The headline is caller
+   * supplied (an update failure message, a runtime error) and routinely
+   * carries absolute paths, so the title and stub body get the same treatment
+   * as the report before they are put in a URL.
+   */
+  redaction?: DiagnosticRedactionContext;
 };
 
 export function diagnosticIssueTitle(input: DiagnosticIssueUrlInput): string {
   const headline = input.headline?.trim();
   const base = headline || `Problem on the ${input.surface.replace(/_/g, " ")} screen`;
   const suffix = input.code?.trim() ? ` (${input.code.trim()})` : "";
-  return `[report] ${base}${suffix}`.slice(0, 180);
+  const title = `[report] ${base}${suffix}`;
+  return (input.redaction ? redactDiagnosticText(title, input.redaction) : title).slice(0, 180);
 }
 
 /**
@@ -457,7 +475,7 @@ export function diagnosticIssueTitle(input: DiagnosticIssueUrlInput): string {
  * GitHub issue URL stops working somewhere north of 8 KB.
  */
 export function diagnosticIssueBody(input: DiagnosticIssueUrlInput): string {
-  return [
+  const body = [
     "<!-- Paste the report from your clipboard below. -->",
     "",
     "**What I was doing:**",
@@ -474,6 +492,7 @@ export function diagnosticIssueBody(input: DiagnosticIssueUrlInput): string {
     "Paste the full diagnostic report from your clipboard here:",
     "",
   ].join("\n");
+  return input.redaction ? redactDiagnosticText(body, input.redaction) : body;
 }
 
 export function buildDiagnosticIssueUrl(input: DiagnosticIssueUrlInput): string {

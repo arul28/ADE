@@ -10,8 +10,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   REPAIR_STEPS,
+  stateForCode,
   toAdeRecoveryErrorCode,
-  type AdeRecoveryErrorCode,
   type ProjectRecoveryDiagnosis,
   type ProjectRepairReport,
   type RepairStepResult,
@@ -19,34 +19,15 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import {
-  ERROR_CARD,
   ERROR_GHOST_BUTTON,
+  ERROR_HEADLINE,
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
+  ErrorSurfaceCard,
   TechnicalDetailsFold,
   WhatToDo,
 } from "./errorSurfaceKit";
 import { ReportIssueButton } from "./ReportIssueButton";
-
-/**
- * Codes we can attempt an automatic repair for when a live diagnosis isn't
- * available (the diagnosis itself, when present, is the source of truth via
- * `canAutoRepair`).
- */
-const AUTO_REPAIR_CODES: readonly AdeRecoveryErrorCode[] = [
-  "disk_full",
-  "insufficient_headroom",
-  "db_integrity",
-  "migration_incomplete",
-  "migration_unknown_state",
-  "brain_crash_looping",
-  "brain_not_installed",
-  "socket_stale_no_owner",
-  "provider_thread_missing",
-  "provider_resume_failed",
-  "continuity_reconstruction_required",
-  "unknown",
-];
 
 /** Steps arrive as a finished array; reveal them one-by-one so it reads live. */
 const STEP_REVEAL_MS = 150;
@@ -63,96 +44,94 @@ const REOPEN_DELAY_MS = 700;
  */
 const STARTING_POLL_MS = 2_000;
 
+type DiagnosisState = ProjectRecoveryDiagnosis["state"];
+
 /**
- * Plain-language headline/body used only when a live diagnosis is unavailable
- * (no target root, or `diagnose` failed). Never surfaces codes or internals.
+ * Everything this screen needs to know about a recovery state that the live
+ * diagnosis does not carry, plus plain-language copy for when the diagnosis is
+ * unavailable (no target root, or `diagnose` failed). Never surfaces codes or
+ * internals.
+ *
+ * Keyed by state, and by state only: the codes reach it through the shared
+ * `stateForCode`, so this table cannot disagree with the main process about
+ * which failures ADE can repair the way a parallel code list did.
+ *
+ * `prerequisites` is the part the diagnosis genuinely does not carry — what the
+ * person must do before pressing anything. Only states with a real prerequisite
+ * get one; inventing a chore for every state would train people to skip the
+ * list.
  */
-const FALLBACK_COPY: Record<AdeRecoveryErrorCode, { headline: string; body: string }> = {
+const STATE_COPY: Record<
+  DiagnosisState,
+  {
+    headline: string;
+    body: string;
+    canAutoRepair: boolean;
+    prerequisites?: readonly string[];
+  }
+> = {
+  healthy: {
+    headline: "ADE is ready to open this project",
+    body: "No repair is needed.",
+    canAutoRepair: false,
+  },
   disk_full: {
     headline: "Your computer is out of storage",
     body: "ADE needs a little free space to open this project safely. Free up some space, then run the repair.",
+    canAutoRepair: true,
+    prerequisites: [
+      "Free up space on this computer — emptying the Trash is usually the quickest win.",
+      "Come back here and run the repair.",
+    ],
   },
   insufficient_headroom: {
     headline: "Your computer is very low on storage",
     body: "ADE keeps a small safety margin so your work is never lost. Free up some space, then run the repair.",
+    canAutoRepair: true,
+    prerequisites: [
+      "Free up a little space on this computer.",
+      "Come back here and run the repair.",
+    ],
   },
-  db_integrity: {
-    headline: "This project's index needs a repair",
-    body: "ADE can rebuild the project's index. Your files and chats stay exactly where they are.",
-  },
-  migration_incomplete: {
-    headline: "An update didn't finish",
-    body: "A previous update to this project was interrupted. ADE can finish it and reopen the project.",
-  },
-  migration_unknown_state: {
-    headline: "This project's data needs attention",
-    body: "ADE can bring the project's data back to a known-good state and reopen it.",
+  db_repair_needed: {
+    headline: "This project's data needs a repair",
+    body: "Something interrupted ADE while it was saving. ADE can finish the job and reopen the project — your files and chats stay exactly where they are.",
+    canAutoRepair: true,
   },
   brain_not_installed: {
     headline: "ADE needs to finish setting up",
     body: "A background component isn't ready yet. ADE can set it up and reopen the project.",
+    canAutoRepair: true,
   },
   brain_crash_looping: {
     headline: "ADE's background service keeps restarting",
     body: "ADE can reset the service and reopen the project.",
+    canAutoRepair: true,
   },
   socket_stale_no_owner: {
     headline: "A previous session didn't shut down cleanly",
     body: "ADE can clear the leftover session and reopen the project.",
+    canAutoRepair: true,
   },
   socket_owned_by_other: {
     headline: "Another window is using this project",
     body: "Close the other ADE window that has this project open, then try again.",
+    canAutoRepair: false,
+    prerequisites: [
+      "Quit the other copy of ADE that's running on this computer.",
+      "Then choose Try again.",
+    ],
   },
-  provider_thread_missing: {
-    headline: "A chat couldn't be restored",
-    body: "ADE can reconcile your chats and reopen the project.",
+  brain_starting: {
+    headline: "ADE's background service is starting",
+    body: "This can take a minute the first time or right after an update. ADE will open the project as soon as it's ready — nothing to do.",
+    canAutoRepair: false,
   },
-  provider_resume_failed: {
-    headline: "A chat couldn't be resumed",
-    body: "ADE can reconcile your chats and reopen the project.",
-  },
-  optional_mcp_failed: {
-    headline: "An optional integration didn't load",
-    body: "ADE can reopen the project without it — you can re-enable it later.",
-  },
-  continuity_reconstruction_required: {
-    headline: "A chat needs to be rebuilt",
-    body: "ADE can rebuild the affected chat and reopen the project.",
-  },
-  unknown: {
+  unknown_failure: {
     headline: "ADE couldn't open this project",
     body: "Something stopped ADE's background service from answering. Repair restarts it and checks the project's data — your files and chats are not touched.",
+    canAutoRepair: true,
   },
-};
-
-type DiagnosisState = ProjectRecoveryDiagnosis["state"];
-
-/**
- * The part the diagnosis does not carry: what the person should do before
- * pressing anything. Only states with a real prerequisite get one — inventing
- * a chore for every state would train people to skip the list.
- */
-const PREREQUISITE_STEPS: Partial<Record<DiagnosisState, readonly string[]>> = {
-  disk_full: [
-    "Free up space on this computer — emptying the Trash is usually the quickest win.",
-    "Come back here and run the repair.",
-  ],
-  insufficient_headroom: [
-    "Free up a little space on this computer.",
-    "Come back here and run the repair.",
-  ],
-  socket_owned_by_other: [
-    "Quit the other copy of ADE that's running on this computer.",
-    "Then choose Try again.",
-  ],
-};
-
-/** Same idea, keyed by code, for when no live diagnosis came back. */
-const PREREQUISITE_STEPS_BY_CODE: Partial<Record<AdeRecoveryErrorCode, readonly string[]>> = {
-  disk_full: PREREQUISITE_STEPS.disk_full,
-  insufficient_headroom: PREREQUISITE_STEPS.insufficient_headroom,
-  socket_owned_by_other: PREREQUISITE_STEPS.socket_owned_by_other,
 };
 
 /** What pressing Repair actually does, in the order it does it. */
@@ -364,17 +343,20 @@ export function ProjectRecoveryScreen() {
     });
   }, [rootPath, switchProjectToPath]);
 
-  const fallback = FALLBACK_COPY[code] ?? FALLBACK_COPY.unknown;
-  const headline = diagnosis?.headline ?? fallback.headline;
-  const body = diagnosis?.body ?? fallback.body;
+  // One verdict for the whole screen. With a live diagnosis it is the main
+  // process's; without one it is what the main process would have said about
+  // the stored code, via the shared mapping.
+  const state: DiagnosisState = diagnosis?.state ?? stateForCode(code);
+  const stateCopy = STATE_COPY[state] ?? STATE_COPY.unknown_failure;
+  const headline = diagnosis?.headline ?? stateCopy.headline;
+  const body = diagnosis?.body ?? stateCopy.body;
   const canAutoRepair = Boolean(
-    rootPath && (diagnosis ? diagnosis.canAutoRepair : AUTO_REPAIR_CODES.includes(code)),
+    rootPath && (diagnosis ? diagnosis.canAutoRepair : stateCopy.canAutoRepair),
   );
-  const starting = phase === "idle" && diagnosis?.state === "brain_starting";
+  const starting = phase === "idle" && state === "brain_starting";
   const isSuccess = phase === "success";
   const isFailure = phase === "failure";
-  const prerequisites =
-    (diagnosis ? PREREQUISITE_STEPS[diagnosis.state] : PREREQUISITE_STEPS_BY_CODE[code]) ?? null;
+  const prerequisites = stateCopy.prerequisites ?? null;
   /** Whether the amber Repair action is on screen at all. */
   const repairOffered = canAutoRepair && !starting;
   /**
@@ -382,9 +364,7 @@ export function ProjectRecoveryScreen() {
    * is a way out rather than the way out, and dressing it like the alternative
    * to Repair made three buttons of equal weight on every failure.
    */
-  const storageRelevant = diagnosis
-    ? diagnosis.state === "disk_full" || diagnosis.state === "insufficient_headroom"
-    : code === "disk_full" || code === "insufficient_headroom";
+  const storageRelevant = state === "disk_full" || state === "insufficient_headroom";
 
   const technicalText = [
     diagnosis?.technicalDetail,
@@ -451,41 +431,27 @@ export function ProjectRecoveryScreen() {
           Back
         </button>
 
-        <div className={ERROR_CARD}>
-          <div className="flex items-start gap-3.5">
-            <div
-              className={
-                "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border " +
-                (isSuccess
-                  ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-400"
-                  : starting
-                    ? "border-border/70 bg-fg/[0.04] text-fg/55"
-                    : "border-amber-400/25 bg-amber-400/10 text-amber-300")
-              }
-            >
-              {isSuccess ? (
-                <CheckCircle size={18} weight="fill" aria-hidden="true" />
-              ) : starting ? (
-                // Nothing is broken while the service boots; a warning badge
-                // here is the "broken ADE" report this state exists to avoid.
-                <CircleNotch size={17} weight="bold" aria-hidden="true" className="animate-spin" />
-              ) : (
-                <WarningCircle size={18} weight="fill" aria-hidden="true" />
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              {isSuccess ? (
-                <SuccessCard report={report} onOpenWork={() => navigate("/work")} />
-              ) : (
-                <>
-                  <h1 className="text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95">
-                    {heroHeadline}
-                  </h1>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-fg/60">{heroBody}</p>
-                </>
-              )}
-            </div>
-          </div>
+        <ErrorSurfaceCard
+          tone={isSuccess ? "success" : starting ? "neutral" : "warning"}
+          icon={
+            isSuccess ? (
+              <CheckCircle size={18} weight="fill" aria-hidden="true" />
+            ) : starting ? (
+              // Nothing is broken while the service boots; a warning badge
+              // here is the "broken ADE" report this state exists to avoid.
+              <CircleNotch size={17} weight="bold" aria-hidden="true" className="animate-spin" />
+            ) : (
+              <WarningCircle size={18} weight="fill" aria-hidden="true" />
+            )
+          }
+          headline={heroHeadline}
+          body={heroBody}
+          hero={
+            isSuccess
+              ? <SuccessCard report={report} onOpenWork={() => navigate("/work")} />
+              : undefined
+          }
+        >
 
           {/* Repair progress / failure checklist */}
           {(phase === "repairing" || isFailure) && (report || phase === "repairing") ? (
@@ -570,7 +536,7 @@ export function ProjectRecoveryScreen() {
               {storageRelevant ? null : reviewStorageButton}
             </div>
           ) : null}
-        </div>
+        </ErrorSurfaceCard>
 
         {/* Meta actions live outside the card: they are about this screen, not
             about the project. */}
@@ -615,9 +581,7 @@ function SuccessCard({
 
   return (
     <>
-      <h1 className="text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95">
-        ADE repaired the project and reopened it
-      </h1>
+      <h1 className={ERROR_HEADLINE}>ADE repaired the project and reopened it</h1>
       <ul className="mt-3 flex flex-col gap-1.5 text-[12.5px] leading-relaxed text-fg/60">
         {dbLine ? <li>{dbLine}</li> : null}
         {resumedNormally != null ? (

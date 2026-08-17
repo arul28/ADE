@@ -3971,10 +3971,6 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   diagnostics: {
-    buildReport: (
-      context: DiagnosticReportRequestPayload,
-    ): Promise<DiagnosticReportPayload> =>
-      ipcRenderer.invoke(IPC.diagnosticsBuildReport, context),
     openIssue: (
       context: DiagnosticReportRequestPayload,
     ): Promise<DiagnosticReportPayload> =>

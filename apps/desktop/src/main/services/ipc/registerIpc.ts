@@ -19,6 +19,7 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
@@ -4571,9 +4572,32 @@ export function registerIpc({
     }
   });
 
+  /**
+   * The renderer names a project root; main decides whether that is a project
+   * it knows. See `knownProjectRoots.ts` for why trimming is not enough.
+   */
+  const resolveRequestedProjectRoot = (requested: string): string | null => {
+    let recentProjectRoots: string[] = [];
+    try {
+      recentProjectRoots = (readGlobalState(globalStatePath).recentProjects ?? [])
+        // Remote entries have no local root to diagnose or repair.
+        .filter((entry) => !entry.remote)
+        .map((entry) => entry.rootPath);
+    } catch {
+      // A missing or corrupt global state leaves only the open project, which
+      // is the safe subset — never a reason to widen what is accepted.
+    }
+    return resolveKnownProjectRoot(requested, {
+      openProjectRoot: getCtx().project.rootPath,
+      recentProjectRoots,
+    });
+  };
+
   ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
-    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!projectRoot) throw new Error("Project root path is required.");
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
     return await projectRecoveryService.diagnose(projectRoot);
   });
@@ -4583,8 +4607,10 @@ export function registerIpc({
   // legitimately wait a minute or more for the background service to answer,
   // and a spinner with no steps for that long reads as a hang.
   ipcMain.handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
-    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!projectRoot) throw new Error("Project root path is required.");
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
     return await projectRecoveryService.repair(projectRoot, {
       onStep: (step) => {
@@ -4605,7 +4631,11 @@ export function registerIpc({
   ) => {
     const surface = typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown";
     const requestedRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    const projectRoot = requestedRoot || getCtx().project.rootPath || null;
+    // An unknown root falls back to the open project rather than failing: the
+    // point of this handler is that someone can always file an issue.
+    const projectRoot = (requestedRoot ? resolveRequestedProjectRoot(requestedRoot) : null)
+      ?? getCtx().project.rootPath
+      ?? null;
     return await collectDiagnosticReport(
       {
         appVersion: app.getVersion(),
@@ -4630,14 +4660,6 @@ export function registerIpc({
       },
     );
   };
-
-  ipcMain.handle(
-    IPC.diagnosticsBuildReport,
-    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
-      const result = await buildDiagnosticsReport(arg);
-      return { report: result.report, filePath: result.filePath, issueUrl: result.issueUrl, installId: result.installId };
-    },
-  );
 
   ipcMain.handle(
     IPC.diagnosticsOpenIssue,

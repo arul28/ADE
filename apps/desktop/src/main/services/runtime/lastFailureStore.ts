@@ -11,7 +11,6 @@ import { readValidJson, writeFileAtomic } from "../state/durableFile";
 const MESSAGE_MAX_BYTES = 2 * 1024;
 const DETAIL_MAX_BYTES = 8 * 1024;
 export const LAST_FAILURE_CRASH_LOOP_WINDOW_MS = 5 * 60 * 1_000;
-const CRASH_LOOP_WINDOW_MS = LAST_FAILURE_CRASH_LOOP_WINDOW_MS;
 
 export type LastFailureTarget =
   | { kind: "machine"; env?: NodeJS.ProcessEnv }
@@ -161,7 +160,7 @@ export function computeStartupBackoffMs(
   if (!report || report.count < 3) return 0;
   const nowMs = now instanceof Date ? now.getTime() : now;
   const firstAtMs = Date.parse(report.firstAt);
-  if (!Number.isFinite(firstAtMs) || nowMs - firstAtMs < 0 || nowMs - firstAtMs > CRASH_LOOP_WINDOW_MS) {
+  if (!Number.isFinite(firstAtMs) || nowMs - firstAtMs < 0 || nowMs - firstAtMs > LAST_FAILURE_CRASH_LOOP_WINDOW_MS) {
     return 0;
   }
   return Math.min((report.count - 2) * 10_000, 60_000);

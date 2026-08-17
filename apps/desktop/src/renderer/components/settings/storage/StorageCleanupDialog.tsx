@@ -265,8 +265,15 @@ export function StorageCleanupDialog({
   const initRef = React.useRef({ targets });
   initRef.current = { targets };
 
+  // Which read the dialog is currently showing. A close/reopen (or a Try again
+  // pressed twice) leaves the earlier `cleanupPreview` in flight, and those can
+  // land out of order — the stale one must not overwrite the fresh preview, nor
+  // drag a settled dialog back to "error".
+  const requestRef = React.useRef(0);
+
   const loadPreview = React.useCallback(() => {
     const { targets: openTargets } = initRef.current;
+    const requestId = ++requestRef.current;
     setResult(null);
     setReport(null);
     setError(null);
@@ -275,11 +282,13 @@ export function StorageCleanupDialog({
     return window.ade.storage
       .cleanupPreview(openTargets)
       .then((next) => {
+        if (requestRef.current !== requestId) return false;
         setPreview(next);
         setStage("review");
         return true;
       })
       .catch((err: unknown) => {
+        if (requestRef.current !== requestId) return false;
         setError(err instanceof Error ? err.message : String(err));
         setErrorPhase("checking");
         setStage("error");
@@ -289,13 +298,11 @@ export function StorageCleanupDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    let active = true;
-    void loadPreview().then(() => {
-      // A dialog closed mid-read has nothing to show; the next open re-reads.
-      if (!active) setStage("loading");
-    });
+    void loadPreview();
     return () => {
-      active = false;
+      // A dialog closed mid-read has nothing to show; retire the request so a
+      // late answer cannot paint over whatever the next open reads.
+      requestRef.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

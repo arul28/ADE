@@ -39,6 +39,11 @@ function releaseTarget() {
  */
 const FAKE_ADE = `#!/bin/sh
 if [ "\$1" = "--version" ]; then
+  # Records which file the installer actually executed for each version check,
+  # so a test can prove the staged preflight does not run out of \$TMPDIR.
+  if [ -n "\${ADE_TEST_VERSION_LOG:-}" ]; then
+    echo "\$0" >>"\$ADE_TEST_VERSION_LOG"
+  fi
   case "\$0" in
     */bin/ade)
       if [ -n "\${ADE_TEST_FAIL_INSTALLED:-}" ]; then
@@ -164,6 +169,61 @@ test("a downloaded runtime that cannot start never replaces the installed one", 
     // Nothing was promoted, so the previous native runtime is untouched too.
     assert.ok(fs.existsSync(path.join(fixture.runtimeDir, "previous-runtime.txt")));
     assert.ok(!fs.existsSync(path.join(fixture.runtimeDir, "node_modules")));
+    assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.new")));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// A `noexec` /tmp is normal on hardened Linux hosts and in containers, and it
+// cannot be simulated portably from a test. What is testable is the property
+// that makes it irrelevant: the preflight executes the copy under the install
+// directory, never the staged one in $TMPDIR.
+test("the staged preflight runs the install-directory copy, not the one in TMPDIR", () => {
+  const fixture = makeInstall();
+  const versionLog = path.join(fixture.adeHome, "version-checks.log");
+  try {
+    const result = runInstaller(fixture, { ADE_TEST_VERSION_LOG: versionLog });
+
+    assert.equal(result.status, 0, result.stderr);
+    const executed = fs
+      .readFileSync(versionLog, "utf8")
+      .split("\n")
+      .filter(Boolean);
+
+    // Staged preflight first, then the promoted binary.
+    assert.deepEqual(executed.slice(0, 2), [
+      path.join(fixture.installDir, "ade.new"),
+      path.join(fixture.installDir, "ade"),
+    ]);
+    // Nothing was ever executed out of the $TMPDIR staging directory.
+    assert.ok(!executed.some((entry) => entry.includes("ade-install.")));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a staged preflight failure says the existing install was not touched", () => {
+  const fixture = makeInstall();
+  const versionLog = path.join(fixture.adeHome, "version-checks.log");
+  try {
+    const result = runInstaller(fixture, {
+      ADE_TEST_FAIL_STAGED: "1",
+      ADE_TEST_VERSION_LOG: versionLog,
+    });
+
+    assert.notEqual(result.status, 0);
+    // Nothing was promoted, so "nothing was left installed" would be wrong and
+    // "was put back" would imply a rollback that never had to happen.
+    assert.match(result.stderr, /was not touched/);
+    assert.doesNotMatch(result.stderr, /nothing was left installed/);
+    assert.doesNotMatch(result.stderr, /put back/);
+
+    // The one thing it ran was the install-directory copy, and it is gone.
+    assert.deepEqual(
+      fs.readFileSync(versionLog, "utf8").split("\n").filter(Boolean),
+      [path.join(fixture.installDir, "ade.new")],
+    );
     assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.new")));
   } finally {
     fixture.cleanup();

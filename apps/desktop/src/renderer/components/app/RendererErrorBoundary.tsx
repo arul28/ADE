@@ -2,8 +2,8 @@ import React from "react";
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import {
-  ERROR_CARD,
   ERROR_PRIMARY_BUTTON,
+  ErrorSurfaceCard,
   TechnicalDetailsFold,
   WhatToDo,
 } from "./errorSurfaceKit";
@@ -55,22 +55,16 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
               taller than the window would otherwise be clipped at the top. */}
           <div className="flex min-h-full items-center justify-center px-6 py-10">
           <div className="w-full max-w-[520px]">
-            <div className={ERROR_CARD}>
-              <div className="flex items-start gap-3.5">
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-400/25 bg-amber-400/10 text-amber-300">
-                  <WarningCircle size={18} weight="fill" aria-hidden="true" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h1 className="text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95">
-                    ADE needs to reload this window
-                  </h1>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-fg/60">
-                    Something went wrong while drawing the app. Your project, chats and files are
-                    safe — this is only the window.
-                  </p>
-                </div>
-              </div>
-
+            <ErrorSurfaceCard
+              icon={<WarningCircle size={18} weight="fill" aria-hidden="true" />}
+              headline="ADE needs to reload this window"
+              body={
+                <>
+                  Something went wrong while drawing the app. Your project, chats and files are
+                  safe — this is only the window.
+                </>
+              }
+            >
               <WhatToDo title="What to do" steps={WHAT_TO_DO} />
 
               <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -83,7 +77,7 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
                   Reload ADE
                 </button>
               </div>
-            </div>
+            </ErrorSurfaceCard>
 
             <div className="mt-4">
               <ReportIssueButton

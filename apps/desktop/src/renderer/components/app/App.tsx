@@ -24,9 +24,9 @@ import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
 import { ReportIssueButton } from "./ReportIssueButton";
 import {
-  ERROR_CARD,
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
+  ErrorSurfaceCard,
   TechnicalDetailsFold,
   WhatToDo,
 } from "./errorSurfaceKit";
@@ -219,21 +219,11 @@ class PageErrorBoundaryInner extends React.Component<
               taller than the pane would otherwise be clipped at the top. */}
           <div className="flex min-h-full items-center justify-center p-8">
           <div className="w-full max-w-[520px]">
-            <div className={ERROR_CARD}>
-              <div className="flex items-start gap-3.5">
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-400/25 bg-amber-400/10 text-amber-300">
-                  <WarningCircle size={18} weight="fill" aria-hidden="true" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h1 className="text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95">
-                    Something went wrong on this screen
-                  </h1>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-fg/60">
-                    The rest of ADE is still running, and your project, chats and files are safe.
-                  </p>
-                </div>
-              </div>
-
+            <ErrorSurfaceCard
+              icon={<WarningCircle size={18} weight="fill" aria-hidden="true" />}
+              headline="Something went wrong on this screen"
+              body="The rest of ADE is still running, and your project, chats and files are safe."
+            >
               <WhatToDo
                 title="What to do"
                 steps={PAGE_CRASH_STEPS}
@@ -261,7 +251,7 @@ class PageErrorBoundaryInner extends React.Component<
                   Try again
                 </button>
               </div>
-            </div>
+            </ErrorSurfaceCard>
 
             <div className="mt-4">
               <ReportIssueButton

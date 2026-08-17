@@ -509,8 +509,19 @@ restore_previous_install() {
   fi
 }
 
+# "staged" until the new binary is promoted, "installed" afterwards. The two
+# stages leave the machine in different states, and a message that describes
+# the wrong one sends a user looking for damage that is not there.
+install_stage="staged"
+
 die_runtime_unusable() {
-  if [ "$have_backup_binary" -eq 1 ]; then
+  if [ "$install_stage" = "staged" ]; then
+    if [ -e "$dest_dir/ade" ]; then
+      printf 'ade install: your existing ADE at %s was not touched.\n' "$dest_dir/ade" >&2
+    else
+      printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
+    fi
+  elif [ "$have_backup_binary" -eq 1 ]; then
     printf 'ade install: the ADE you already had was put back, so nothing is broken.\n' >&2
   else
     printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
@@ -530,11 +541,22 @@ mkdir -p "$staged_runtime_dir"
 tar -xzf "$tmp_dir/native.tar.gz" -C "$staged_runtime_dir"
 [ -d "$staged_node_modules" ] || die "native dependency archive is missing node_modules"
 
-# Preflight before anything is promoted: the staged binary against the staged
-# runtime. A download that cannot even print its version never reaches
-# $dest_dir, so the previous install is still there and still working.
+# The preflight copy lands in $dest_dir, not $TMPDIR. A /tmp mounted `noexec`
+# is common on hardened Linux hosts and in containers, and running the staged
+# binary from there fails with EACCES on every install -- reported as "the
+# runtime could not start", which is a lie about a perfectly good download.
+# $dest_dir/ade.new is the scratch name the promotion below renames from, and
+# the EXIT trap already removes it, so this costs nothing but the copy.
+rm -f "$pending_binary"
+cp "$staged_binary" "$pending_binary"
+chmod 755 "$pending_binary"
+
+# Preflight before anything is promoted: the new binary against the staged
+# runtime. A download that cannot even print its version never replaces
+# $dest_dir/ade, so the previous install is still there and still working.
 set_runtime_env "$staged_runtime_dir"
-if ! version_check "$staged_binary" "staged"; then
+if ! version_check "$pending_binary" "staged"; then
+  rm -f "$pending_binary"
   die_runtime_unusable "the ADE runtime that was just downloaded could not start"
 fi
 
@@ -552,11 +574,8 @@ else
   die "failed to install ADE native runtime dependencies"
 fi
 
-# Promote the binary last, and only by rename. The copy lands on a scratch name
-# first so a truncated write can never be the thing sitting at $dest_dir/ade.
-rm -f "$pending_binary"
-cp "$staged_binary" "$pending_binary"
-chmod 755 "$pending_binary"
+# Promote the binary last, and only by rename -- of the very copy the preflight
+# above just ran, so a truncated write can never be the thing at $dest_dir/ade.
 rm -f "$backup_binary"
 if [ -e "$dest_dir/ade" ]; then
   if cp "$dest_dir/ade" "$backup_binary"; then
@@ -570,6 +589,7 @@ fi
 mv "$pending_binary" "$dest_dir/ade"
 
 set_runtime_env "$runtime_dir"
+install_stage="installed"
 
 if ! version_check "$dest_dir/ade" "installed"; then
   restore_previous_install

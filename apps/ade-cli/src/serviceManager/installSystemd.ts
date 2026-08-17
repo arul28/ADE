@@ -6,6 +6,7 @@ import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
   isPidAlive,
+  processOutputRaw,
   readPidElapsedMs,
   renderCommand,
   resolveAdeServeCommand,
@@ -16,11 +17,11 @@ import {
   type ServiceManagerStatusResult,
 } from "./common";
 import {
+  awaitServiceHandover,
+  awaitYoungBrainStart,
   defaultResponsivenessProbe,
-  isYoungBrain,
+  type HandoverWaitDeps,
   type PidElapsedMsLookup,
-  recentCrashLoopForAdeHome,
-  RESPONSIVENESS_PROBE_INTERVAL_MS,
   type ResponsivenessProbe,
   serviceHandoverSleep,
 } from "./serviceHandover";
@@ -112,10 +113,7 @@ export function getSystemdUnitState(
     { encoding: "utf8" },
   );
   if (show.status !== 0) return null;
-  const output = typeof show.stdout === "string"
-    ? show.stdout
-    : Buffer.isBuffer(show.stdout) ? show.stdout.toString("utf8") : "";
-  const properties = parseSystemdShowOutput(output);
+  const properties = parseSystemdShowOutput(processOutputRaw(show));
   const activeState = properties.get("ActiveState");
   if (activeState == null) return null;
   const rawPid = Number(properties.get("MainPID") ?? "0");
@@ -192,78 +190,50 @@ export async function installSystemdService(
     }
   }
 
-  // One budget for the whole install, so a young-brain wait that gives up and
-  // the real handover after it cannot together exceed the caller's timeout.
-  const installDeadline = Date.now() + timeoutMs;
-  const awaitHandover = async (oldPid: number | null): Promise<{
-    predecessorGone: boolean;
-    replacementPid: number | null;
-    replacementResponsive: boolean;
-  }> => {
-    let predecessorGone = oldPid == null || !isAlive(oldPid);
-    let replacementPid: number | null = null;
-    let replacementResponsive = false;
-    let lastProbeAt = 0;
-    do {
-      predecessorGone = oldPid == null || !isAlive(oldPid);
+  const handoverWait: HandoverWaitDeps = {
+    readSupervisedPid: () => {
       const replacement = getSystemdUnitState(run, unitName);
-      replacementPid = replacement?.active === true ? replacement.mainPid : null;
-      const replacementDiffers = replacementPid != null && replacementPid !== oldPid;
-      // Each probe is a full CLI child process; poll systemd cheaply and spend
-      // a probe only at the slower cadence.
-      if (
-        predecessorGone
-        && replacementDiffers
-        && Date.now() - lastProbeAt >= RESPONSIVENESS_PROBE_INTERVAL_MS
-      ) {
-        lastProbeAt = Date.now();
-        replacementResponsive = probeResponsiveness({
-          socketPath,
-          timeoutMs: Math.min(1_500, Math.max(1, installDeadline - Date.now())),
-          command,
-        });
-        if (replacementResponsive) break;
-      }
-      if (Date.now() >= installDeadline) break;
-      await sleep(Math.min(pollMs, Math.max(1, installDeadline - Date.now())));
-    } while (Date.now() <= installDeadline);
-    return { predecessorGone, replacementPid, replacementResponsive };
+      return replacement?.active === true ? replacement.mainPid : null;
+    },
+    isAlive,
+    probeResponsiveness,
+    socketPath,
+    command,
+    sleep,
+    pollMs,
   };
 
-  // A live child behind an unchanged unit that is simply not answering yet and
-  // is young is still starting — first launch, cold disk, big project
-  // database. Restarting it only resets its clock. A brain that keeps dying is
-  // always "young" (systemd just respawned it, `Restart=always`), so a
-  // recorded failure streak vetoes the wait.
-  const crashLooping = deps.recentCrashLoop
-    ? deps.recentCrashLoop()
-    : recentCrashLoopForAdeHome(adeHome);
-  if (
-    unitUnchanged
-    && state?.active === true
-    && !crashLooping
-    && isYoungBrain(state.mainPid, run, pidElapsedMs)
-  ) {
-    const young = await awaitHandover(null);
-    if (young.replacementResponsive) {
-      return {
-        ok: true,
-        serviceName: ADE_RUNTIME_SERVICE_NAME,
-        action: "install",
-        path: targetPath,
-        message: "ADE service systemd user service is already installed; its background service finished starting.",
-      };
-    }
-    if (young.replacementPid != null && isAlive(young.replacementPid)) {
-      return {
-        ok: true,
-        starting: true,
-        serviceName: ADE_RUNTIME_SERVICE_NAME,
-        action: "install",
-        path: targetPath,
-        message: `ADE service systemd user service is installed; the background service (pid ${young.replacementPid}) is still starting.`,
-      };
-    }
+  const young = await awaitYoungBrainStart({
+    definitionUnchanged: unitUnchanged,
+    supervisedPid: state?.mainPid,
+    running: state?.active === true,
+    adeHome,
+    recentCrashLoop: deps.recentCrashLoop,
+    run,
+    pidElapsedMs,
+    timeoutMs,
+    wait: handoverWait,
+  });
+  if (young.kind === "responsive") {
+    return {
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: targetPath,
+      message: "ADE service systemd user service is already installed; its background service finished starting.",
+    };
+  }
+  if (young.kind === "starting") {
+    return {
+      ok: true,
+      starting: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: targetPath,
+      message: `ADE service systemd user service is installed; the background service (pid ${young.pid}) is still starting.`,
+    };
+  }
+  if (young.kind === "died") {
     // The young child died while we waited: fall through and (re)start it.
     state = getSystemdUnitState(run, unitName);
   }
@@ -302,7 +272,14 @@ export async function installSystemdService(
     };
   }
 
-  const { predecessorGone, replacementPid, replacementResponsive } = await awaitHandover(oldPid);
+  // A fresh full budget: the young-brain wait above may have spent all of its
+  // own, and the real handover is the one whose outcome decides whether this
+  // install reports `starting` or a failure.
+  const { predecessorGone, replacementPid, replacementResponsive } = await awaitServiceHandover(
+    handoverWait,
+    oldPid,
+    timeoutMs,
+  );
   if (!predecessorGone) {
     return handoverFailure(
       targetPath,

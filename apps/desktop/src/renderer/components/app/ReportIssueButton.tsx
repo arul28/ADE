@@ -4,15 +4,19 @@ import type {
   DiagnosticReportRequestPayload,
 } from "../../../shared/types/diagnostics";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { ERROR_DISCLOSURE_CARET } from "./errorSurfaceKit";
+import {
+  ERROR_DISCLOSURE_CARET,
+  ERROR_PRIMARY_BUTTON,
+  ERROR_SECONDARY_BUTTON,
+} from "./errorSurfaceKit";
 
 export type ReportIssueVariant = "primary" | "secondary" | "ghost";
 
 const VARIANT_CLASS: Record<ReportIssueVariant, string> = {
-  primary:
-    "inline-flex h-9 items-center justify-center rounded-lg bg-amber-400/90 px-4 text-[13px] font-semibold text-[#1a1206] transition-colors hover:bg-amber-300 disabled:opacity-60",
-  secondary:
-    "inline-flex h-9 items-center justify-center rounded-lg border border-border/80 bg-fg/[0.03] px-4 text-[13px] font-medium text-fg/75 transition-colors hover:bg-fg/[0.07] disabled:opacity-60",
+  primary: ERROR_PRIMARY_BUTTON,
+  secondary: ERROR_SECONDARY_BUTTON,
+  // Not the kit's ghost: this one rides inside one-line banners, where the
+  // full-height button shape would turn a strip into a bar.
   ghost:
     "inline-flex h-[22px] items-center justify-center rounded-md px-2 text-[11px] font-medium text-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:opacity-60",
 };

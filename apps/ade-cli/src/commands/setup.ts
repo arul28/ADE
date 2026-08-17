@@ -17,6 +17,7 @@
  * step and the run continues, because a failed sign-in must not cost the user
  * the desktop app. Nothing here reports success it did not achieve.
  */
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../serviceManager/runtimeServiceBudgets";
 import {
   SetupReporter,
   detectTerminalCapabilities,
@@ -109,12 +110,12 @@ export type SetupServiceReadiness = {
 
 /**
  * How long a brain the service installer reported as `starting` gets to answer
- * before setup stops waiting on it. Matches the desktop's own post-install wait
- * -- a cold machine opening a large project database routinely needs more than
- * the ten seconds that used to be on offer, and reporting that as "installed
- * but not running" sent people hunting a fault that did not exist.
+ * before setup stops waiting on it. The desktop's own post-install wait, by
+ * definition -- a cold machine opening a large project database routinely needs
+ * more than the ten seconds that used to be on offer, and reporting that as
+ * "installed but not running" sent people hunting a fault that did not exist.
  */
-export const SETUP_SERVICE_START_BUDGET_MS = 90_000;
+export const SETUP_SERVICE_START_BUDGET_MS = RUNTIME_SERVICE_START_WAIT_MS;
 
 export type SetupDeps = {
   platform?: NodeJS.Platform;

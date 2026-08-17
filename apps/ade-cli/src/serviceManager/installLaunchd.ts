@@ -24,10 +24,10 @@ import {
   uninstallLaunchdWatchdogAgent,
 } from "./installLaunchdWatchdog";
 import {
+  awaitServiceHandover,
+  awaitYoungBrainStart,
   defaultResponsivenessProbe,
-  isYoungBrain,
-  recentCrashLoopForAdeHome,
-  RESPONSIVENESS_PROBE_INTERVAL_MS,
+  type HandoverWaitDeps,
   serviceHandoverSleep,
 } from "./serviceHandover";
 import {
@@ -315,91 +315,52 @@ export async function installLaunchdService(
   const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
   const pidElapsedMs = deps.pidElapsedMs ?? readPidElapsedMs;
 
-  /**
-   * Waits for a distinct replacement child to answer on the socket. Shared by
-   * the young-brain wait (no predecessor to outlive) and the real handover.
-   */
-  // One budget for the whole install: a young-brain wait that gives up and a
-  // real handover after it share this deadline, so the desktop's child timeout
-  // can be sized against a known worst case.
-  const installDeadline = Date.now() + timeoutMs;
-  const awaitHandover = async (oldPid: number | null): Promise<{
-    predecessorGone: boolean;
-    replacementPid: number | null;
-    replacementResponsive: boolean;
-  }> => {
-    const deadline = installDeadline;
-    let predecessorGone = oldPid == null || !isAlive(oldPid);
-    let replacementPid: number | null = null;
-    let replacementResponsive = false;
-    let lastProbeAt = 0;
-    do {
-      predecessorGone = oldPid == null || !isAlive(oldPid);
+  const handoverWait: HandoverWaitDeps = {
+    readSupervisedPid: () => {
       const replacement = getLoadedLaunchdState(run);
-      replacementPid = replacement?.running === true ? replacement.pid : null;
-      const replacementDiffers = replacementPid != null && replacementPid !== oldPid;
-      // Each probe is a full CLI child process; on the slow machines this wait
-      // exists for, running one every poll tick would compete with the very
-      // brain it is waiting on. Poll launchd cheaply, probe at a slower cadence.
-      if (
-        predecessorGone
-        && replacementDiffers
-        && Date.now() - lastProbeAt >= RESPONSIVENESS_PROBE_INTERVAL_MS
-      ) {
-        lastProbeAt = Date.now();
-        replacementResponsive = probeResponsiveness({
-          socketPath,
-          timeoutMs: Math.min(1_500, Math.max(1, deadline - Date.now())),
-          command,
-        });
-        if (replacementResponsive) break;
-      }
-      if (Date.now() >= deadline) break;
-      await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
-    } while (Date.now() <= deadline);
-    return { predecessorGone, replacementPid, replacementResponsive };
+      return replacement?.running === true ? replacement.pid : null;
+    },
+    isAlive,
+    probeResponsiveness,
+    socketPath,
+    command,
+    sleep,
+    pollMs,
   };
 
-  // The service definition is current and launchd has a live child that is
-  // simply not answering yet. If that child is young it is still starting —
-  // first launch, cold disk, big project database — and restarting it (which
-  // is what a forced install would do next) only resets its clock. Wait for it
-  // instead. This is what keeps a Repair click from killing the very brain
-  // that was seconds from being ready.
-  // A brain that keeps dying is always "young" (launchd just respawned it), so
-  // the recorded failure streak vetoes the wait: that brain needs the restart
-  // and the crash-loop diagnosis, not more patience.
-  const crashLooping = deps.recentCrashLoop
-    ? deps.recentCrashLoop()
-    : recentCrashLoopForAdeHome(adeHome);
-  if (
-    plistUnchanged
-    && loaded?.running === true
-    && !crashLooping
-    && isYoungBrain(loaded.pid, run, pidElapsedMs)
-  ) {
-    const young = await awaitHandover(null);
-    if (young.replacementResponsive) {
-      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
-      return {
-        ok: true,
-        serviceName: ADE_RUNTIME_SERVICE_NAME,
-        action: "install",
-        path: servicePath,
-        message: "ADE service launchd service is already installed; its background service finished starting.",
-      };
-    }
-    if (young.replacementPid != null && isAlive(young.replacementPid)) {
-      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
-      return {
-        ok: true,
-        starting: true,
-        serviceName: ADE_RUNTIME_SERVICE_NAME,
-        action: "install",
-        path: servicePath,
-        message: `ADE service launchd service is installed; the background service (pid ${young.replacementPid}) is still starting.`,
-      };
-    }
+  const young = await awaitYoungBrainStart({
+    definitionUnchanged: plistUnchanged,
+    supervisedPid: loaded?.pid,
+    running: loaded?.running === true,
+    adeHome,
+    recentCrashLoop: deps.recentCrashLoop,
+    run,
+    pidElapsedMs,
+    timeoutMs,
+    wait: handoverWait,
+  });
+  if (young.kind === "responsive") {
+    installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+    return {
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: "ADE service launchd service is already installed; its background service finished starting.",
+    };
+  }
+  if (young.kind === "starting") {
+    installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+    return {
+      ok: true,
+      starting: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: `ADE service launchd service is installed; the background service (pid ${young.pid}) is still starting.`,
+    };
+  }
+  if (young.kind === "died") {
     // The young child died while we waited: fall through and (re)start it.
     loaded = getLoadedLaunchdState(run);
   }
@@ -477,7 +438,14 @@ export async function installLaunchdService(
     };
   }
   const oldPid = loaded?.pid ?? null;
-  const { predecessorGone, replacementPid, replacementResponsive } = await awaitHandover(oldPid);
+  // A fresh full budget: the young-brain wait above may have spent all of its
+  // own, and the real handover is the one whose outcome decides whether this
+  // install reports `starting` or a failure.
+  const { predecessorGone, replacementPid, replacementResponsive } = await awaitServiceHandover(
+    handoverWait,
+    oldPid,
+    timeoutMs,
+  );
 
   if (!predecessorGone) {
     return handoverFailure(

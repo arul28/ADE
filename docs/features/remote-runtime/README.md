@@ -207,13 +207,22 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   published), so a desktop can reach it within a second or two of spawn even
   while a project scope is still opening or the sync port band is being
   reclaimed. All three installers — launchd, systemd, and Windows — wait
-  `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS` (30 s; Windows 15 s) for the
-  replacement to answer and, if it is alive but still quiet, return
-  `ok: true, starting: true` instead of a `replacement_responsive` failure —
-  the supervisor owns that child and it will answer. The shared primitives
-  (responsiveness probe, young-brain age check, crash-loop veto) live in
-  `apps/ade-cli/src/serviceManager/serviceHandover.ts` so the platforms cannot
-  drift; `installSystemd.ts` reads unit state from a single
+  `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS` (30 s; `WINDOWS_HANDOVER_TIMEOUT_MS`,
+  15 s, on Windows) for the replacement to answer and, if it is alive but still
+  quiet, return `ok: true, starting: true` instead of a
+  `replacement_responsive` failure — the supervisor owns that child and it will
+  answer. Every budget in this lifecycle is defined once, in
+  `apps/ade-cli/src/serviceManager/runtimeServiceBudgets.ts`, because the
+  numbers only mean anything relative to each other (the desktop's wait has to
+  outlast the installer's). The shared handover itself — responsiveness probe,
+  young-brain age check, crash-loop veto, the wait loop and the young-brain
+  decision — lives in `apps/ade-cli/src/serviceManager/serviceHandover.ts`
+  (`awaitServiceHandover`, `awaitYoungBrainStart`) so launchd and systemd
+  cannot drift; each installer keeps only its own message text. The young-brain
+  wait and the real handover get a full budget **each**: when they shared one
+  install-wide deadline, a young brain that died late in its wait left the
+  restart with no time and its replacement was reported as a `replacement_pid`
+  failure. `installSystemd.ts` reads unit state from a single
   `systemctl --user show -p ActiveState -p MainPID` and treats systemd's own
   `activating` as a live brain. The desktop then keeps
   dialling the socket for `LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`
@@ -244,12 +253,16 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 - **A brain that loses its socket ends itself.** `monitorBrainSocketOwnership`
   (`apps/ade-cli/src/cli.ts`) remembers the inode it bound and polls the path.
   Binding before the sync host removed the incidental protection the startup
-  loop's `abortIf` gave: two brains that both probe the same *stale* socket can
-  race across the `unlink`/`listen` await, and the loser ends up listening to
-  an inode nothing can reach without ever seeing `EADDRINUSE`. Losing the inode
-  now ends the brain, the supervisor restarts it, and the restart reports
-  `socket_owned_by_other` instead of squatting silently. Windows named pipes
-  are exempt — a pipe name has no directory entry to steal.
+  loop's socket-liveness abort gave: two brains that both probe the same
+  *stale* socket can race across the `unlink`/`listen` await, and the loser ends
+  up listening to an inode nothing can reach without ever seeing `EADDRINUSE`.
+  Losing the inode now ends the brain, the supervisor restarts it, and the
+  restart reports `socket_owned_by_other` instead of squatting silently. The
+  shutdown that follows removes the socket file only if it still owns that
+  inode (`unlinkOwnedRuntimeSocket`) — an unconditional `unlink` here deleted
+  the *winner's* socket and left the machine with a live brain nothing could
+  reach. Windows named pipes are exempt — a pipe name has no directory entry to
+  steal.
 - `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
   one-time packaged-release reset of the old machine-connection trust files.
   It preserves account auth, machine identity, pairing PINs, projects, and SSH

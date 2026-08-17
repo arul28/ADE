@@ -481,10 +481,16 @@ the full report rides the clipboard.
 | Piece | Where |
 | --- | --- |
 | Pure builder + redactor | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` |
-| Desktop collection (logs, disk, runtime status, recovery diagnosis) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
-| IPC | `IPC.diagnosticsBuildReport`, `IPC.diagnosticsOpenIssue` |
+| Shared collection (logs, disk, notes, redaction context) | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` (`collectMachineDiagnosticSources`) |
+| Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
+| IPC | `IPC.diagnosticsOpenIssue` |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
 | Headless equivalent | `ade report-issue [--open]` |
+
+`ade report-issue` and the desktop button read the same machine sources through
+`collectMachineDiagnosticSources`, so a log added for one appears in both; the
+CLI adds the project's `ade-cli.jsonl` and the desktop adds its own jsonl logs
+and Electron-aware volume reader on top.
 
 The report contains: app version/channel/packaging, platform, arch, OS release
 (plus `sw_vers -productVersion` on macOS), Electron/Node/Chrome versions,
@@ -510,7 +516,12 @@ addresses, credentials (JWTs, `Bearer`/`Basic`/`Token` headers, `sk-`/`gh?_`/
 of 32+ characters adjacent to a key/secret/authorization/cookie word), URL
 userinfo, non-loopback IPv4 and IPv6 addresses (`127.0.0.0/8` and `::1` are
 kept — "the brain answered on 127.0.0.1" is signal and identifies nobody), this
-machine's hostname, `*.ts.net` tailnet names, and `*.local` names. Environment
+machine's hostname (the fully-qualified name and its short form, case
+insensitive, on word boundaries), `*.ts.net` tailnet names, and `*.local`
+names. The GitHub issue **title and stub body** go through the same redaction
+before the URL is built — the headline they are made from is caller-supplied
+and routinely carries OS paths (an update failure message, for instance). What
+is redacted is the plain text, never the encoded URL. Environment
 variables, the credential store, `~/.ade/secrets/*`, keychain output and
 pairing PINs are never collected at all. The function is idempotent, so
 re-redacting a stored report is a no-op.

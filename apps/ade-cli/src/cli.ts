@@ -34,7 +34,7 @@ import {
   type DoctorRow,
 } from "./commands/doctor";
 import { buildCliDiagnosticReport } from "./commands/reportIssue";
-import { openExternalUrl } from "../../desktop/src/main/services/shared/externalLinks";
+import { openExternalUrl } from "./lib/externalLinks";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -133,8 +133,11 @@ import {
 import {
   isCurrentProcessDescendantOfPid,
   resolveAdeServeCommand,
+  RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
+import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
+import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import {
   isIndefiniteSnooze,
@@ -15303,7 +15306,6 @@ function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): b
 }
 
 class RuntimeSelfShutdownBlockedError extends Error {}
-class RuntimeServiceRecoveryOwnedError extends Error {}
 
 function isLocalRuntimeSocketPath(socketPath: string): boolean {
   return !socketPath.startsWith("tcp://");
@@ -15413,42 +15415,22 @@ async function repairMachineRuntimeServiceConnection(args: {
     );
     if (!result.ok) {
       if (serviceManagerOwnsRuntimeRecovery(result)) {
-        throw new RuntimeServiceRecoveryOwnedError(
-          `${result.message} The registered service still owns recovery for this endpoint, so ADE did not start a competing manual brain.`,
-        );
+        throw new RuntimeServiceStillStartingError({
+          kind: "recovery_owned",
+          installMessage: result.message,
+        });
       }
       return null;
     }
-    // A `starting` result means the supervisor has a live brain that had not
-    // answered inside the installer's budget. Keep dialing it — the socket
-    // appears the moment the brain finishes coming up — instead of failing on
-    // the first connect and leaving the CLI to spawn a rival brain.
-    const connectDeadline = Date.now() + (result.starting ? 60_000 : 0);
-    for (;;) {
-      try {
-        client = await SocketJsonRpcClient.connect(
-          args.socketPath,
-          args.options.timeoutMs,
-          "ADE runtime endpoint",
-        );
-        break;
-      } catch (error) {
-        if (Date.now() >= connectDeadline) {
-          // A `starting` install left a live, supervised brain behind. Even if
-          // it outlasted our wait, the supervisor still owns that endpoint, so
-          // returning null here — which lets the caller spawn an unmanaged
-          // rival on the same socket — is exactly the wrong recovery.
-          if (result.starting) {
-            throw new RuntimeServiceRecoveryOwnedError(
-              `${result.message} It had still not answered on ${args.socketPath} when ADE stopped waiting, `
-                + "so ADE did not start a competing manual brain.",
-            );
-          }
-          throw error;
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 500));
-      }
-    }
+    client = await connectWhileServiceStarts({
+      install: result,
+      socketPath: args.socketPath,
+      connect: () => SocketJsonRpcClient.connect(
+        args.socketPath,
+        args.options.timeoutMs,
+        "ADE runtime endpoint",
+      ),
+    });
     const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
       args.options,
@@ -15474,7 +15456,7 @@ async function repairMachineRuntimeServiceConnection(args: {
   } catch (error) {
     if (
       error instanceof RuntimeSelfShutdownBlockedError
-      || error instanceof RuntimeServiceRecoveryOwnedError
+      || error instanceof RuntimeServiceStillStartingError
     ) throw error;
     return null;
   } finally {
@@ -16026,44 +16008,27 @@ async function runSetupCli(
       // against a socket that was never given time to open.
       awaitRuntimeService: async ({ budgetMs, onStarting }) => {
         const socketPath = await resolveMachineRuntimeSocketPath(options.socketPath);
-        const probe = async (): Promise<boolean> => {
-          try {
-            const client = await SocketJsonRpcClient.connect(
-              socketPath,
-              options.timeoutMs,
-              "ADE runtime endpoint",
-            );
-            client.close();
-            return true;
-          } catch {
-            return false;
-          }
-        };
-        if (await probe()) {
-          return { ready: true, starting: false, detail: "background service is running" };
-        }
-        const { installRuntimeService } = await import("./serviceManager");
-        const install = await withAdeDefaultRole("cto", () => installRuntimeService());
-        if (!install.ok && !install.starting) {
-          return { ready: false, starting: false, detail: install.message };
-        }
-        // Registered and supervised from here on, whether or not the install
-        // itself waited long enough to see it answer.
-        onStarting();
-        const deadline = Date.now() + Math.max(0, budgetMs);
-        for (;;) {
-          if (await probe()) {
-            return { ready: true, starting: false, detail: "background service is running" };
-          }
-          if (Date.now() >= deadline) {
-            return {
-              ready: false,
-              starting: true,
-              detail: "background service is still starting",
-            };
-          }
-          await new Promise<void>((resolve) => setTimeout(resolve, 500));
-        }
+        return await awaitRuntimeServiceEndpoint({
+          budgetMs,
+          onStarting,
+          probe: async () => {
+            try {
+              const client = await SocketJsonRpcClient.connect(
+                socketPath,
+                options.timeoutMs,
+                "ADE runtime endpoint",
+              );
+              client.close();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          installService: async () => {
+            const { installRuntimeService } = await import("./serviceManager");
+            return await withAdeDefaultRole("cto", () => installRuntimeService());
+          },
+        });
       },
       // Delegates to the same `ade connect` implementation so the OAuth flow,
       // the service step and the machine-directory wait stay in one place.
@@ -16737,7 +16702,7 @@ async function runServe(
   const [
     { resolveMachineAdeLayout },
     { ProjectRegistry },
-    { ProjectScopeRegistry },
+    { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS },
     {
       createMultiProjectRpcRequestHandler,
       createPersonalChatScope,
@@ -17429,21 +17394,10 @@ async function runServe(
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
     if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
-      // A null here can mean "superseded": the RPC socket is already published
-      // when this loop runs, so a desktop that connected meanwhile may have
-      // requested its own sync-host switch and bumped the transition past ours.
-      // That is a project host in progress, not the absence of one — taking
-      // the projectless lease now would clobber it. Give that switch time to
-      // land and adopt its result; only if nothing lands does the loop retry.
-      const adoptDeadline = Date.now() + 30_000;
-      while (Date.now() < adoptDeadline) {
-        const activeId = scopeRegistry.getActiveSyncHostProjectId();
-        if (activeId) {
-          activeScope = await scopeRegistry.get(activeId);
-          break;
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 250));
-      }
+      // A null here can mean "superseded" rather than "no host"; adopt the
+      // switch that overtook ours instead of clobbering it with the
+      // projectless lease. See `adoptRequestedSyncHost`.
+      activeScope = await scopeRegistry.adoptRequestedSyncHost(SYNC_HOST_ADOPT_TIMEOUT_MS);
       if (!activeScope) {
         throw new Error("Sync host switch superseded by a concurrent project switch; retrying.");
       }
@@ -17602,12 +17556,13 @@ async function runServe(
         import("./services/sync/syncHostStartupLoop"),
         import("./serviceManager"),
       ]);
-      // No `abortIf`: the socket-liveness abort guarded against a rival brain
-      // taking the RPC socket while this one waited for sync (PR #949's
-      // zombies). The socket is bound before this loop runs now, so a rival
-      // that dials it finds a live owner and refuses; the bind itself is the
-      // claim. (A rival could only steal the path by unlinking a socket it
-      // proved stale, which a bound socket never is.)
+      // This loop no longer needs a socket-liveness abort. That abort guarded
+      // against a rival brain taking the RPC socket while this one waited for
+      // sync (PR #949's zombies). The socket is bound before this loop runs
+      // now, so a rival that dials it finds a live owner and refuses; the bind
+      // itself is the claim. The one remaining way to lose the path — a rival
+      // unlinking a socket it proved stale, which a bound socket never is —
+      // is caught by `monitorBrainSocketOwnership`.
       await runSyncHostStartupLoop({
         startSyncHost,
         isDone: () => done,
@@ -17887,7 +17842,15 @@ async function runServe(
     stopBrainFreshnessMonitor = () => freshnessMonitor.stop();
   }
 
+  // Remembered so the shutdown below removes only the socket file this brain
+  // bound. If a rival rebinds the path, the inode there is theirs.
+  const boundSocketInode = readRuntimeSocketInode(socketPath);
+  let ownsSocketPath = !isAdeRuntimeNamedPipePath(socketPath);
   const stopSocketOwnershipMonitor = monitorBrainSocketOwnership(socketPath, (reason) => {
+    // "replaced" means someone else's socket is at the path now; "removed"
+    // means there is nothing left to clean up. Either way this brain is no
+    // longer the owner and must not unlink on the way out.
+    ownsSocketPath = false;
     headlessProjectLogger.warn("brain.socket_ownership_lost", { socketPath, reason });
     finish();
   });
@@ -17922,10 +17885,14 @@ async function runServe(
     stopHeadlessRpcServer(state);
   }
   await disposeServeResources();
-  if (!isAdeRuntimeNamedPipePath(socketPath)) {
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {}
+  if (ownsSocketPath) {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, boundSocketInode);
+    if (outcome === "not_owned") {
+      headlessProjectLogger.warn("brain.socket_unlink_skipped", {
+        socketPath,
+        reason: "Another process rebound this path; removing it would delete their socket.",
+      });
+    }
   }
   if (syncHostStartupFailure != null) {
     // A sync-host startup failure ends the brain even though the socket was
@@ -18021,6 +17988,49 @@ const BRAIN_SOCKET_OWNERSHIP_POLL_MS = 5_000;
  * Windows named pipes are exempt: a pipe name is a kernel object with no
  * directory entry to steal, and a bound pipe can never be probed as stale.
  */
+/** Inode of a socket path, or null when it is gone or unreadable. */
+export function readRuntimeSocketInode(target: string): bigint | null {
+  try {
+    return fs.statSync(target, { bigint: true }).ino;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Removes this brain's own socket file — and only its own.
+ *
+ * The shutdown path used to unlink unconditionally. When the ownership monitor
+ * fires with "replaced" a rival has already rebound the path, so that unlink
+ * deleted the *winner's* socket and left the machine with a live brain nothing
+ * could reach. Compare the inode against the one we bound before removing it.
+ *
+ * With no inode recorded at bind time (a filesystem that reports none) the old
+ * unconditional behaviour stands: leaking a stale socket file is worse than the
+ * race it would avoid.
+ */
+export function unlinkOwnedRuntimeSocket(
+  socketPath: string,
+  ownInode: bigint | null,
+  deps: {
+    readInode?: (target: string) => bigint | null;
+    unlink?: (target: string) => void;
+  } = {},
+): "unlinked" | "not_owned" | "absent" {
+  if (isAdeRuntimeNamedPipePath(socketPath)) return "not_owned";
+  const readInode = deps.readInode ?? readRuntimeSocketInode;
+  const unlink = deps.unlink ?? ((target: string) => fs.unlinkSync(target));
+  const current = readInode(socketPath);
+  if (current == null) return "absent";
+  if (ownInode != null && current !== ownInode) return "not_owned";
+  try {
+    unlink(socketPath);
+  } catch {
+    return "absent";
+  }
+  return "unlinked";
+}
+
 export function monitorBrainSocketOwnership(
   socketPath: string,
   onLost: (reason: "removed" | "replaced") => void,
@@ -18030,13 +18040,7 @@ export function monitorBrainSocketOwnership(
   } = {},
 ): () => void {
   if (isAdeRuntimeNamedPipePath(socketPath)) return () => {};
-  const readInode = options.readInode ?? ((target: string): bigint | null => {
-    try {
-      return fs.statSync(target, { bigint: true }).ino;
-    } catch {
-      return null;
-    }
-  });
+  const readInode = options.readInode ?? readRuntimeSocketInode;
   const ownInode = readInode(socketPath);
   // No inode to compare against (a platform or filesystem that does not report
   // one) means this guard cannot run. Fail open: a brain with no watchdog is

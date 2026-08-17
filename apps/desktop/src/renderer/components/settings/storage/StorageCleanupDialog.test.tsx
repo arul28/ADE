@@ -94,4 +94,50 @@ describe("StorageCleanupDialog failures", () => {
       expect(screen.queryByText("ADE couldn't check what's safe to remove.")).toBeNull(),
     );
   });
+
+  it("shows the reopened dialog's preview when the abandoned read lands last", async () => {
+    const deferred: Array<(value: unknown) => void> = [];
+    const cleanupPreview = vi.fn(
+      () => new Promise((resolve) => { deferred.push(resolve); }),
+    );
+    (window as unknown as { ade?: unknown }).ade = {
+      storage: { cleanupPreview, cleanup: vi.fn() },
+    };
+
+    const props = {
+      title: "Free up space",
+      targets: [] as never[],
+      onClose: vi.fn(),
+      onCleaned: vi.fn(),
+    };
+    const { rerender } = render(<StorageCleanupDialog open {...props} />);
+    await waitFor(() => expect(cleanupPreview).toHaveBeenCalledTimes(1));
+
+    // Close before the first read answers, then reopen: a second read starts.
+    rerender(<StorageCleanupDialog open={false} {...props} />);
+    rerender(<StorageCleanupDialog open {...props} />);
+    await waitFor(() => expect(cleanupPreview).toHaveBeenCalledTimes(2));
+
+    // The reopened dialog's read answers first, the abandoned one answers last.
+    deferred[1]({
+      items: [{ path: "/tmp/fresh.log", label: "fresh.log", bytes: 10 }],
+      blocked: [],
+      totalBytes: 10,
+    });
+    await screen.findByText("fresh.log");
+
+    deferred[0]({
+      items: [{ path: "/tmp/stale.log", label: "stale.log", bytes: 99 }],
+      blocked: [],
+      totalBytes: 99,
+    });
+
+    // The stale answer must not repaint the dialog — it stays on the fresh
+    // review rather than falling back to a spinner or the abandoned list.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Remove 1 item/ })).toBeTruthy(),
+    );
+    expect(screen.queryByText("stale.log")).toBeNull();
+    expect(screen.getByText("fresh.log")).toBeTruthy();
+  });
 });

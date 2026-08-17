@@ -80,7 +80,6 @@ export const IPC = {
   /** Main → renderer: one repair step as it finishes, so a long repair reads live. */
   recoveryRepairStep: "ade.recovery.repairStep",
   /** Assemble the redacted diagnostic report without acting on it. */
-  diagnosticsBuildReport: "ade.diagnostics.buildReport",
   /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
   diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   projectForgetRecent: "ade.project.forgetRecent",

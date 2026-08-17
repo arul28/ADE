@@ -3,6 +3,7 @@ import net from "node:net";
 import path from "node:path";
 import {
   REPAIR_STEPS,
+  stateForCode,
   type AdeLastFailureReport,
   type AdeRecoveryErrorCode,
   type ProjectRecoveryDiagnosis,
@@ -11,6 +12,10 @@ import {
   type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import {
+  RUNTIME_SERVICE_START_WAIT_MS,
+  RUNTIME_SERVICE_YOUNG_BRAIN_MS,
+} from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import type { Logger } from "../logging/logger";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
@@ -34,10 +39,10 @@ const FRESH_FAILURE_MS = 5 * 60 * 1_000;
 // where such a brain gets the rest of its time. It used to be 20s, which on a
 // cold or slow machine expired against a healthy brain and turned into
 // "didn't restart — try again".
-const BRAIN_RESTART_TIMEOUT_MS = 90_000;
+const BRAIN_RESTART_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 // A brain whose install/restart began less than this long ago and that is not
 // answering yet is presumed to still be starting, not stuck.
-const BRAIN_STARTING_WINDOW_MS = 120_000;
+const BRAIN_STARTING_WINDOW_MS = RUNTIME_SERVICE_YOUNG_BRAIN_MS;
 
 const STEP_LABELS: Record<RepairStepId, string> = Object.fromEntries(
   REPAIR_STEPS.map((step) => [step.id, step.label]),
@@ -193,21 +198,6 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
         body: "Something stopped ADE's background service from answering. A repair restarts it and checks the project's data — your files and chats aren't touched.",
         canAutoRepair: true,
       };
-  }
-}
-
-function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnosis["state"] {
-  switch (code) {
-    case "disk_full": return "disk_full";
-    case "insufficient_headroom": return "insufficient_headroom";
-    case "db_integrity":
-    case "migration_incomplete":
-    case "migration_unknown_state": return "db_repair_needed";
-    case "brain_crash_looping": return "brain_crash_looping";
-    case "brain_not_installed": return "brain_not_installed";
-    case "socket_stale_no_owner": return "socket_stale_no_owner";
-    case "socket_owned_by_other": return "socket_owned_by_other";
-    default: return "unknown_failure";
   }
 }
 

@@ -221,6 +221,39 @@ describe("buildDiagnosticReport", () => {
   });
 });
 
+describe("redactDiagnosticText hostnames", () => {
+  // Regression: the machine-name rule used to hand an already-assembled
+  // pattern to a helper that escapes what it is given, so the word-boundary
+  // lookarounds became literal text and no hostname was ever replaced.
+  it("replaces a suffix-less hostname and its mixed-case spellings", () => {
+    const context = { hostname: "ARUL-DESKTOP" };
+    const input = [
+      "bound socket on ARUL-DESKTOP",
+      "peer arul-desktop refused the handover",
+      "Arul-Desktop:7777",
+    ].join("\n");
+
+    const out = redactDiagnosticText(input, context);
+
+    expect(out).not.toMatch(/arul-desktop/i);
+    expect(out).toBe(["bound socket on <host>", "peer <host> refused the handover", "<host>:7777"].join("\n"));
+  });
+
+  it("replaces both the fqdn and its short form, longest first", () => {
+    const out = redactDiagnosticText(
+      "adas-macbook-pro.local and adas-macbook-pro both answered",
+      { hostname: "adas-macbook-pro.local" },
+    );
+
+    expect(out).toBe("<host> and <host> both answered");
+  });
+
+  it("leaves an unrelated word that merely contains the hostname alone", () => {
+    const out = redactDiagnosticText("superhostname-extra", { hostname: "hostname" });
+    expect(out).toBe("superhostname-extra");
+  });
+});
+
 describe("buildDiagnosticIssueUrl", () => {
   it("targets the ADE repo with a title and a compact stub body", () => {
     const url = buildDiagnosticIssueUrl({
@@ -240,5 +273,36 @@ describe("buildDiagnosticIssueUrl", () => {
     expect(parsed.searchParams.get("body")).toContain("ade_0123456789abcdef0123456789abcdef");
     // Well under GitHub's URL ceiling: the full report rides the clipboard.
     expect(url.length).toBeLessThan(2_000);
+  });
+
+  // Regression: the headline is renderer-supplied (an update failure message
+  // carries OS paths) and used to reach the issue title and stub body raw.
+  it("redacts the caller-supplied headline in the title and the stub body", () => {
+    const url = buildDiagnosticIssueUrl({
+      surface: "auto_update",
+      headline: "Update failed writing /Users/ada/Library/Application Support/ADE on adas-macbook-pro.local",
+      code: "update_write_failed",
+      appVersion: "1.2.61",
+      platform: "darwin",
+      arch: "arm64",
+      installId: "ade_0123456789abcdef0123456789abcdef",
+      redaction: CONTEXT,
+    });
+    const parsed = new URL(url);
+    const title = parsed.searchParams.get("title") ?? "";
+    const body = parsed.searchParams.get("body") ?? "";
+
+    expect(title).not.toContain("/Users/ada");
+    expect(title).not.toMatch(/adas-macbook-pro/i);
+    expect(title).toContain("~/Library/Application Support/ADE");
+    expect(title).toContain("<host>");
+    expect(body).not.toContain("/Users/ada");
+    // The URL itself is still a normal encoded URL, not a redacted string.
+    expect(parsed.origin + parsed.pathname).toBe("https://github.com/arul28/ADE/issues/new");
+  });
+
+  it("leaves the title untouched when no redaction context is supplied", () => {
+    const url = buildDiagnosticIssueUrl({ surface: "cli", headline: "plain headline" });
+    expect(new URL(url).searchParams.get("title")).toBe("[report] plain headline");
   });
 });

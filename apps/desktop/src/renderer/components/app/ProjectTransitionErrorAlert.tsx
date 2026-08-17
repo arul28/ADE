@@ -1,5 +1,6 @@
 import { WarningCircle, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
+import { TechnicalDetailsFold } from "./errorSurfaceKit";
 
 /**
  * Fallback banner for project open/switch failures that do not have enough
@@ -32,14 +33,9 @@ export function ProjectTransitionErrorAlert() {
       <div className="min-w-0 flex-1">
         <div className="break-words">{projectTransitionError.message}</div>
         {projectTransitionError.detail ? (
-          <details className="mt-1">
-            <summary className="cursor-pointer select-none text-[11.5px] text-amber-100/55 transition-colors hover:text-amber-100/85">
-              Show technical details
-            </summary>
-            <div className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] text-amber-100/65">
-              {projectTransitionError.detail}
-            </div>
-          </details>
+          // The same fold as the full recovery surface, so the detail reads the
+          // same here and comes with the Copy affordance people reach for next.
+          <TechnicalDetailsFold text={projectTransitionError.detail} className="mt-1.5" />
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">

@@ -7,13 +7,14 @@ import {
   buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   diagnosticReportFilePath,
-  tailLogText,
   type DiagnosticLogTail,
   type DiagnosticReportContext,
   type DiagnosticVolumeSpace,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticReport";
-import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { resolveWindowsSupervisorLogPath } from "../../../../../ade-cli/src/serviceManager/installWindows";
+import {
+  collectMachineDiagnosticSources,
+  readLogTail,
+} from "../../../../../ade-cli/src/services/diagnostics/diagnosticSources";
 import { readVolumeSpace } from "../storage/volume";
 import { readLastFailure } from "../runtime/lastFailureStore";
 
@@ -74,34 +75,6 @@ function readMacProductVersion(): Promise<string | null> {
   });
 }
 
-function readLogTail(label: string, filePath: string): DiagnosticLogTail {
-  try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile()) return { label, path: filePath, error: "(not a file)" };
-    // Read at most the last 512 KB off disk; the tail helper trims from there.
-    const readBytes = Math.min(stat.size, 512 * 1024);
-    const handle = fs.openSync(filePath, "r");
-    try {
-      const buffer = Buffer.alloc(readBytes);
-      fs.readSync(handle, buffer, 0, readBytes, Math.max(0, stat.size - readBytes));
-      return { label, path: filePath, text: tailLogText(buffer.toString("utf8")) };
-    } finally {
-      fs.closeSync(handle);
-    }
-  } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
-    return { label, path: filePath, error: code === "ENOENT" ? "(not present)" : "(could not be read)" };
-  }
-}
-
-function readJsonFile(filePath: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
-}
-
 function volumeEntry(label: string, dirPath: string): DiagnosticVolumeSpace | null {
   const space = readVolumeSpace(dirPath);
   if (!space) return null;
@@ -119,8 +92,15 @@ export async function collectDiagnosticReport(
 ): Promise<DiagnosticReportResult> {
   const env = deps.env ?? process.env;
   const at = deps.now?.() ?? new Date();
-  const layout = resolveMachineAdeLayout(env);
   const projectRoot = request.projectRoot?.trim() || null;
+  // Logs, volumes, notes and the redaction context are the same set the
+  // headless `ade report-issue` collects; the Electron-only extras below are
+  // the only thing this report adds.
+  const sources = collectMachineDiagnosticSources({
+    env,
+    projectRoot,
+    readVolume: volumeEntry,
+  });
 
   const [osProductVersion, localRuntimeStatus, recoveryDiagnosis] = await Promise.all([
     readMacProductVersion().catch(() => null),
@@ -132,24 +112,15 @@ export async function collectDiagnosticReport(
       : Promise.resolve(null),
   ]);
 
-  const logs: DiagnosticLogTail[] = [];
-  if (process.platform === "win32") {
-    logs.push(readLogTail("Background service supervisor", resolveWindowsSupervisorLogPath({ env })));
-  } else {
-    logs.push(readLogTail("Background service (stderr)", path.join(layout.runtimeDir, "launchd.err.log")));
-  }
-  logs.push(readLogTail("Brain", path.join(layout.runtimeDir, "brain.jsonl")));
+  const logs: DiagnosticLogTail[] = [...sources.logs];
   logs.push(readLogTail("Desktop local runtime", path.join(deps.userDataPath, "local-runtime.jsonl")));
   logs.push(readLogTail("Desktop updates", path.join(deps.userDataPath, "ade-update.jsonl")));
   if (deps.projectLogsDir) {
     logs.push(readLogTail("Desktop main", path.join(deps.projectLogsDir, "main.jsonl")));
   }
 
-  const storage = [
-    volumeEntry("ADE home", layout.adeDir),
-    projectRoot ? volumeEntry("Project", projectRoot) : null,
-  ].filter((entry): entry is DiagnosticVolumeSpace => entry != null);
-
+  // The typed store rather than the raw file the CLI falls back to: main owns
+  // the writer, so it can read the record's real shape.
   const machineLastFailure = (() => {
     try {
       return readLastFailure({ kind: "machine", env });
@@ -166,9 +137,9 @@ export async function collectDiagnosticReport(
         }
       })()
     : null;
-  const lastWedge = readJsonFile(path.join(layout.runtimeDir, "last-wedge.json"));
 
   const installId = deps.installId?.trim() || "unknown";
+  const redaction = sources.redaction;
 
   const report = buildDiagnosticReport({
     generatedAt: at.toISOString(),
@@ -201,21 +172,13 @@ export async function collectDiagnosticReport(
       recoveryDiagnosis: recoveryDiagnosis ?? null,
       machineLastFailure,
       projectLastFailure,
-      lastWedge,
+      lastWedge: sources.state.lastWedge,
       updateTransaction: request.updateTransaction ?? null,
     },
-    storage,
+    storage: sources.storage,
     logs,
-    notes: ["doctor: not run (the report is collected without starting the background service)"],
-    redaction: {
-      homeDir: os.homedir(),
-      username: os.userInfo().username,
-      hostname: os.hostname(),
-      // Only the project root is collapsed to a `<project:…>` label; the ADE
-      // home is already reduced to `~/.ade` by the home-directory rule, and
-      // labelling it would hide which channel's home this machine uses.
-      projectRoots: projectRoot ? [projectRoot] : [],
-    },
+    notes: sources.notes,
+    redaction,
   });
 
   const filePath = diagnosticReportFilePath(deps.reportsDir, request.surface, at);
@@ -227,6 +190,7 @@ export async function collectDiagnosticReport(
     platform: process.platform,
     arch: process.arch,
     installId,
+    redaction,
   });
 
   return { report, filePath, issueUrl, installId };

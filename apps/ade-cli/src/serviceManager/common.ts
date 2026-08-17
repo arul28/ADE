@@ -36,23 +36,15 @@ export type ServiceManagerResult = {
   restarted?: boolean;
 };
 
-/**
- * How long a freshly (re)started brain gets to answer before the installer
- * stops waiting and reports it as `starting` instead of ready. Generous on
- * purpose: this used to be 10s, and a brain that legitimately took longer on a
- * cold machine was reported as a failed install, which the desktop turned into
- * "couldn't be set up" plus a Repair that killed the brain and started the
- * same race over.
- */
-export const RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS = 30_000;
-
-/**
- * A brain younger than this that is not answering yet is presumed to still be
- * starting. Installers leave it alone and wait for it instead of restarting it:
- * restarting a booting brain only resets its clock, and doing so on every
- * Repair click is how a slow machine could never finish starting one.
- */
-export const RUNTIME_SERVICE_YOUNG_BRAIN_MS = 120_000;
+// Re-exported so the many existing `from "./common"` importers keep working;
+// the definitions live in runtimeServiceBudgets.ts with the rest of the
+// lifecycle budgets they have to stay ordered against.
+export {
+  RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
+  RUNTIME_SERVICE_START_WAIT_MS,
+  RUNTIME_SERVICE_YOUNG_BRAIN_MS,
+  WINDOWS_HANDOVER_TIMEOUT_MS,
+} from "./runtimeServiceBudgets";
 
 /**
  * Parses `ps -o etime=` output (`[[dd-]hh:]mm:ss`) into milliseconds.
@@ -136,7 +128,7 @@ function processOutputText(result: ServiceManagerProcessResult): string {
 }
 
 /** Untrimmed stdout, for line-oriented output whose first line matters. */
-function processOutputRaw(result: ServiceManagerProcessResult): string {
+export function processOutputRaw(result: ServiceManagerProcessResult): string {
   if (typeof result.stdout === "string") return result.stdout;
   if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8");
   return "";
@@ -852,4 +844,49 @@ function streamToText(value: string | Buffer | null | undefined): string {
 
 export function serviceManagerResultText(result: ServiceManagerProcessResult): string {
   return streamToText(result.stderr) || streamToText(result.stdout);
+}
+
+/**
+ * The registered service owns a live brain that has not answered on its socket
+ * yet.
+ *
+ * Every path that could otherwise reach `spawnDaemon` has to see this and
+ * stop: an unmanaged brain on a supervised socket is a second brain, and the
+ * user's actual problem is only that the first one is still starting. The TUI
+ * client and the machine-daemon path had a class each for exactly this, which
+ * meant two places to keep the "do not spawn a rival" rule.
+ */
+export type RuntimeServiceStillStartingReason =
+  /** The socket has not answered yet; nothing has been waited out. */
+  | { kind: "not_answered"; socketPath: string; installMessage?: string | null }
+  /** The installer failed but the registered service still owns recovery. */
+  | { kind: "recovery_owned"; installMessage: string }
+  /** A `starting` install outlasted the caller's own connect budget. */
+  | { kind: "wait_exhausted"; socketPath: string; installMessage: string };
+
+export function runtimeServiceStillStartingMessage(
+  reason: RuntimeServiceStillStartingReason,
+): string {
+  if (reason.kind === "recovery_owned") {
+    return `${reason.installMessage} The registered service still owns recovery for this endpoint, `
+      + "so ADE did not start a competing manual brain.";
+  }
+  if (reason.kind === "wait_exhausted") {
+    return `${reason.installMessage} It had still not answered on ${reason.socketPath} when ADE stopped waiting, `
+      + "so ADE did not start a competing manual brain.";
+  }
+  const detail = reason.installMessage?.trim() ? ` (${reason.installMessage.trim()})` : "";
+  return "ADE's background service is still starting — try again in a moment."
+    + ` It had not answered on ${reason.socketPath} yet${detail}`
+    + ", so ADE did not start a second brain alongside it.";
+}
+
+export class RuntimeServiceStillStartingError extends Error {
+  readonly reason: RuntimeServiceStillStartingReason;
+
+  constructor(reason: RuntimeServiceStillStartingReason) {
+    super(runtimeServiceStillStartingMessage(reason));
+    this.name = "RuntimeServiceStillStartingError";
+    this.reason = reason;
+  }
 }

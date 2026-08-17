@@ -27,7 +27,7 @@ function payload(over: Partial<DiagnosticReportPayload> = {}): DiagnosticReportP
 
 function installBridge(openIssue: ReturnType<typeof vi.fn>) {
   (window as unknown as { ade?: unknown }).ade = {
-    diagnostics: { openIssue, buildReport: vi.fn() },
+    diagnostics: { openIssue },
   };
 }
 

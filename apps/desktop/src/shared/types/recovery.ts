@@ -119,3 +119,25 @@ export function mapKvDbOpenErrorCode(code: string): AdeRecoveryErrorCode {
       return "unknown";
   }
 }
+
+/**
+ * The single mapping from a stored failure code to the recovery state it
+ * describes. Both the main process (when it falls back to the last recorded
+ * failure) and the recovery screen (when a live diagnosis is unavailable) read
+ * it from here, so the screen can never offer a different verdict — or a
+ * different repair offer — than the service would have given.
+ */
+export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnosis["state"] {
+  switch (code) {
+    case "disk_full": return "disk_full";
+    case "insufficient_headroom": return "insufficient_headroom";
+    case "db_integrity":
+    case "migration_incomplete":
+    case "migration_unknown_state": return "db_repair_needed";
+    case "brain_crash_looping": return "brain_crash_looping";
+    case "brain_not_installed": return "brain_not_installed";
+    case "socket_stale_no_owner": return "socket_stale_no_owner";
+    case "socket_owned_by_other": return "socket_owned_by_other";
+    default: return "unknown_failure";
+  }
+}

@@ -43,6 +43,20 @@ function makeReport(over: Partial<ProjectRepairReport> = {}): ProjectRepairRepor
   };
 }
 
+type RecoveryBridge = {
+  diagnose?: unknown;
+  repair?: unknown;
+  onRepairStep?: unknown;
+};
+
+/**
+ * The preload bridge this screen reads. Installed per test rather than once,
+ * because most tests care about exactly which calls the screen makes.
+ */
+function installRecoveryBridge(recovery: RecoveryBridge) {
+  globalThis.window.ade = { recovery } as any;
+}
+
 function setError(over: Record<string, unknown> = {}) {
   useAppStore.setState({
     projectTransition: null,
@@ -77,7 +91,7 @@ describe("ProjectRecoveryScreen", () => {
 
   it("renders the diagnosis headline and body as the hero", async () => {
     const diagnose = vi.fn(async () => makeDiagnosis());
-    globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
+    installRecoveryBridge({ diagnose, repair: vi.fn() });
     setError();
 
     render(<ProjectRecoveryScreen />);
@@ -97,7 +111,7 @@ describe("ProjectRecoveryScreen", () => {
         canAutoRepair: false,
       }),
     );
-    globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
+    installRecoveryBridge({ diagnose, repair: vi.fn() });
     setError({ code: "socket_owned_by_other" });
 
     render(<ProjectRecoveryScreen />);
@@ -129,7 +143,7 @@ describe("ProjectRecoveryScreen", () => {
         .mockResolvedValueOnce(starting)
         .mockResolvedValue(healthy);
       const repair = vi.fn();
-      globalThis.window.ade = { recovery: { diagnose, repair, onRepairStep: () => () => {} } } as any;
+      installRecoveryBridge({ diagnose, repair, onRepairStep: () => () => {} });
       const switchProjectToPath = vi.fn(async () => {});
       useAppStore.setState({ switchProjectToPath });
       setError({ code: "unknown" });
@@ -167,9 +181,13 @@ describe("ProjectRecoveryScreen", () => {
     "provider_thread_missing",
     "provider_resume_failed",
     "continuity_reconstruction_required",
+    // The main process classifies this one as unknown_failure/repairable too.
+    // The screen used to keep its own list and left it off, so a failed
+    // diagnosis turned a repairable project into a dead end.
+    "optional_mcp_failed",
   ] as const)("offers fallback repair for %s when diagnosis is unavailable", async (code) => {
     const diagnose = vi.fn(async () => { throw new Error("diagnosis unavailable"); });
-    globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
+    installRecoveryBridge({ diagnose, repair: vi.fn() });
     setError({ code });
 
     render(<ProjectRecoveryScreen />);
@@ -180,10 +198,25 @@ describe("ProjectRecoveryScreen", () => {
     expectNoJargon(visibleText);
   });
 
+  it("falls back to the main process's verdict when the diagnosis fails", async () => {
+    const diagnose = vi.fn(async () => { throw new Error("diagnosis unavailable"); });
+    installRecoveryBridge({ diagnose, repair: vi.fn() });
+    setError({ code: "socket_owned_by_other" });
+
+    render(<ProjectRecoveryScreen />);
+
+    // socket_owned_by_other is the one code the service says it cannot repair,
+    // so no Repair offer — and the prerequisite the person owns still shows.
+    expect(await screen.findByText("Another window is using this project")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Repair ADE" })).toBeNull();
+    expect(screen.getByText("What to do")).toBeTruthy();
+    expect(screen.getByText(/Quit the other copy of ADE/)).toBeTruthy();
+  });
+
   it("runs a repair, reveals steps + success report, then re-attempts the open", async () => {
     const diagnose = vi.fn(async () => makeDiagnosis());
     const repair = vi.fn(async () => makeReport());
-    globalThis.window.ade = { recovery: { diagnose, repair } } as any;
+    installRecoveryBridge({ diagnose, repair });
     setError();
     const retry = useAppStore.getState().switchProjectToPath as ReturnType<typeof vi.fn>;
 
@@ -222,7 +255,7 @@ describe("ProjectRecoveryScreen", () => {
         nextAction: "Free up at least 2 GB of space, then try again.",
       }),
     );
-    globalThis.window.ade = { recovery: { diagnose, repair } } as any;
+    installRecoveryBridge({ diagnose, repair });
     setError();
 
     render(<ProjectRecoveryScreen />);
@@ -245,7 +278,7 @@ describe("ProjectRecoveryScreen", () => {
         chatsNeedingAttention: null,
       }),
     );
-    globalThis.window.ade = { recovery: { diagnose, repair } } as any;
+    installRecoveryBridge({ diagnose, repair });
     setError();
 
     render(<ProjectRecoveryScreen />);
@@ -260,7 +293,7 @@ describe("ProjectRecoveryScreen", () => {
 
   it("keeps raw internals inside the technical fold and off the main surface", async () => {
     const diagnose = vi.fn(async () => makeDiagnosis());
-    globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
+    installRecoveryBridge({ diagnose, repair: vi.fn() });
     setError();
 
     const { container } = render(<ProjectRecoveryScreen />);
@@ -276,7 +309,7 @@ describe("ProjectRecoveryScreen", () => {
 
   it("navigates to the storage settings tab from Review storage", async () => {
     const diagnose = vi.fn(async () => makeDiagnosis());
-    globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
+    installRecoveryBridge({ diagnose, repair: vi.fn() });
     setError();
     const clear = useAppStore.getState().clearProjectTransitionError as ReturnType<typeof vi.fn>;
 
@@ -294,7 +327,7 @@ describe("ProjectRecoveryScreen", () => {
 
   it("clears the transition error when Back is pressed", async () => {
     const diagnose = vi.fn(async () => makeDiagnosis());
-    globalThis.window.ade = { recovery: { diagnose, repair: vi.fn() } } as any;
+    installRecoveryBridge({ diagnose, repair: vi.fn() });
     setError();
     const clear = useAppStore.getState().clearProjectTransitionError as ReturnType<typeof vi.fn>;
 

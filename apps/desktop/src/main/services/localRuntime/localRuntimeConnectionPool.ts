@@ -43,6 +43,7 @@ import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
 import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../../ade-cli/src/serviceManager/common";
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
@@ -136,14 +137,14 @@ const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 // predecessor termination and the launchctl round-trips. A child killed at
 // this deadline reads as a failed install even when launchd's replacement is
 // coming up, so the budget errs long.
-const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = 90_000;
+const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 /**
  * How long a freshly (re)installed service gets to answer on the socket before
  * the desktop gives up on it. Longer than the installer's own handover wait on
  * purpose: the installer may return `starting` with a live brain that is still
  * booting, and this is where that brain gets the rest of its time.
  */
-const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = 90_000;
+const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.

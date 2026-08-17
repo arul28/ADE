@@ -17,6 +17,8 @@ import type { AdeCodeConnection, ProjectLaunchContext, RuntimeEventGapMetadata }
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
 import type { BufferedEvent } from "../eventBuffer";
 import { resolveAdeDefaultRole } from "../runtimeRoles";
+import { RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS } from "../serviceManager/runtimeServiceBudgets";
+import { RuntimeServiceStillStartingError } from "../serviceManager/common";
 
 type RpcResponseEnvelope<T> =
   | T
@@ -129,11 +131,13 @@ type CreateEmbeddedRpcRequestHandler = (args: {
 const DAEMON_CONNECT_RETRY_INITIAL_DELAY_MS = 50;
 const DAEMON_CONNECT_RETRY_MAX_DELAY_MS = 200;
 /**
- * Attempts to allow a brain the installer reported as `starting` — roughly 60s
- * at the capped 200ms retry delay, matching the machine CLI's own wait for the
- * same case.
+ * Attempts to allow a brain the installer reported as `starting`. Derived from
+ * the shared budget rather than spelled as a count, so this and the machine
+ * CLI's own wait for the same case cannot drift apart.
  */
-const STARTING_BRAIN_CONNECT_ATTEMPTS = 300;
+const STARTING_BRAIN_CONNECT_ATTEMPTS = Math.ceil(
+  RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS / DAEMON_CONNECT_RETRY_MAX_DELAY_MS,
+);
 
 const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "ade/initialize",
@@ -468,24 +472,6 @@ function resolveCliEntrypoint(): string | null {
     }
   }
   return null;
-}
-
-/**
- * The registered service has a live brain that has not answered on its socket
- * yet. Every path that could otherwise reach `spawnDaemon` has to see this and
- * stop: an unmanaged brain on a supervised socket is a second brain, and the
- * user's actual problem is only that the first one is still starting.
- */
-export class RuntimeServiceStartingError extends Error {
-  constructor(socketPath: string, installMessage?: string) {
-    super(
-      "ADE's background service is still starting — try again in a moment."
-        + ` It had not answered on ${socketPath} yet`
-        + (installMessage?.trim() ? ` (${installMessage.trim()})` : "")
-        + ", so ADE did not start a second brain alongside it.",
-    );
-    this.name = "RuntimeServiceStartingError";
-  }
 }
 
 class StaleAdeSocketError extends Error {
@@ -960,7 +946,7 @@ export async function connectToAde(args: {
         // That supervisor owns the retries; an unmanaged daemon on the same
         // socket is a rival brain, not a recovery.
         if (serviceManagerOwnsRuntimeRecovery(result)) {
-          throw new RuntimeServiceStartingError(machineSocketPath, result.message);
+          throw new RuntimeServiceStillStartingError({ kind: "not_answered", socketPath: machineSocketPath, installMessage: result.message });
         }
         return null;
       }
@@ -975,7 +961,7 @@ export async function connectToAde(args: {
         // A successful install means a service now owns this endpoint,
         // whether or not it had answered yet. Returning null here is what let
         // the caller start a competing manual brain on a supervised socket.
-        throw new RuntimeServiceStartingError(machineSocketPath, result.message);
+        throw new RuntimeServiceStillStartingError({ kind: "not_answered", socketPath: machineSocketPath, installMessage: result.message });
       }
     };
     try {
@@ -992,7 +978,7 @@ export async function connectToAde(args: {
     } catch (firstError) {
       // A supervised brain that is still coming up must not be answered with a
       // second one: the fallback below this catch spawns exactly that.
-      if (firstError instanceof RuntimeServiceStartingError) throw firstError;
+      if (firstError instanceof RuntimeServiceStillStartingError) throw firstError;
       if (firstError instanceof StaleAdeSocketError) {
         // tryDaemon ran with shutdownOnStale, so that brain was just asked to
         // exit. Its pid can outlive the request by a moment, and if it was one

@@ -43,6 +43,76 @@ export const ERROR_DISCLOSURE_CARET = (
 export const ERROR_CARD =
   "rounded-2xl border border-border/70 bg-fg/[0.02] px-6 py-5 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset]";
 
+/** The headline every failure card leads with. */
+export const ERROR_HEADLINE =
+  "text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95";
+
+/** The sentence under it. */
+export const ERROR_BODY = "mt-1.5 text-[13px] leading-relaxed text-fg/60";
+
+/**
+ * The badge tones these surfaces use. `warning` is the default (something
+ * broke), `success` closes a repair out, and `neutral` is for the states where
+ * nothing is wrong and ADE is simply working — a warning badge there is the
+ * "broken ADE" report those states exist to avoid.
+ */
+export type ErrorSurfaceTone = "warning" | "success" | "neutral";
+
+const TONE_BADGE: Record<ErrorSurfaceTone, string> = {
+  warning: "border-amber-400/25 bg-amber-400/10 text-amber-300",
+  success: "border-emerald-400/25 bg-emerald-400/10 text-emerald-400",
+  neutral: "border-border/70 bg-fg/[0.04] text-fg/55",
+};
+
+/**
+ * The card + badge + hero every full-screen failure state opens with. Three
+ * screens used to hand-assemble this identical block and drifted apart a class
+ * at a time; anything below the hero (checklists, actions, notes) goes in as
+ * children.
+ *
+ * `hero` replaces the headline/body pair for the rare state that needs a richer
+ * lede (the repair success report).
+ */
+export function ErrorSurfaceCard({
+  tone = "warning",
+  icon,
+  headline,
+  body,
+  hero,
+  children,
+}: {
+  tone?: ErrorSurfaceTone;
+  icon: ReactNode;
+  headline?: ReactNode;
+  body?: ReactNode;
+  hero?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={ERROR_CARD}>
+      <div className="flex items-start gap-3.5">
+        <div
+          className={
+            "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border "
+            + TONE_BADGE[tone]
+          }
+        >
+          {icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          {hero ?? (
+            <>
+              <h1 className={ERROR_HEADLINE}>{headline}</h1>
+              {body ? <p className={ERROR_BODY}>{body}</p> : null}
+            </>
+          )}
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /**
  * A short "what to do" list. Kept plain: no icons, no emphasis —
  * these read as instructions, and decoration makes them read as decoration.
