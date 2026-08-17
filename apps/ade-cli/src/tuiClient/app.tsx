@@ -21,8 +21,10 @@ import {
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
+  isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
+  type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
 import { isChatMentionTokenBody } from "../../../desktop/src/shared/chatMentions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
@@ -5251,7 +5253,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     }
   }, [applyDrawerChatSelection, openRemoteSession, selectActiveLaneId]);
-  const activeComposerTrigger = useMemo(() => {
+  const liveComposerTrigger = useMemo(() => {
     if (activePane !== "chat") return null;
     const trigger = detectComposerTrigger(prompt, promptCursor);
     if (!trigger) return null;
@@ -5267,6 +5269,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       isMention: confirmedMention,
     }) ? null : trigger;
   }, [activePane, prompt, promptCursor, selectedMentions]);
+  // Esc closes the @/slash palette, and it must stay closed while the user
+  // keeps typing that same token — suggestion search only narrows, so the
+  // menu the user just dismissed would otherwise reopen on the next keystroke.
+  // Backspacing out of the dismissed query, editing it into a different one,
+  // or starting a fresh trigger elsewhere all reopen normally.
+  const [dismissedComposerTrigger, setDismissedComposerTrigger] = useState<ComposerTriggerDismissal | null>(null);
+  const activeComposerTrigger = useMemo(() => (
+    liveComposerTrigger && isComposerTriggerDismissed(liveComposerTrigger, dismissedComposerTrigger)
+      ? null
+      : liveComposerTrigger
+  ), [dismissedComposerTrigger, liveComposerTrigger]);
+  useEffect(() => {
+    if (!dismissedComposerTrigger) return;
+    if (liveComposerTrigger && isComposerTriggerDismissed(liveComposerTrigger, dismissedComposerTrigger)) return;
+    setDismissedComposerTrigger(null);
+  }, [dismissedComposerTrigger, liveComposerTrigger]);
   const activeMentionRange = useMemo(() => (
     activeComposerTrigger?.type === "at"
       ? { start: activeComposerTrigger.start, query: activeComposerTrigger.query }
@@ -15513,6 +15531,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     if (key.escape) {
+      // The @/slash palette floats over the composer and advertises "Esc
+      // close", so it takes Esc before anything behind it. Recording the
+      // dismissal is what makes it stay closed as the user finishes typing the
+      // token instead of reopening on the very next keystroke.
+      if (pane === "chat" && activeComposerTrigger) {
+        setDismissedComposerTrigger({
+          type: activeComposerTrigger.type,
+          start: activeComposerTrigger.start,
+          query: activeComposerTrigger.query,
+        });
+        return;
+      }
       // First Esc unwinds a subagent transcript back to the main chat; the
       // right pane stays focused on the main agent's info, so a second Esc
       // would close the pane normally.
