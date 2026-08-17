@@ -106,14 +106,8 @@ export type PushPrNotification = {
   repoName?: string | null;
 };
 
-/**
- * A roster chat as the publisher reads it. `identityKey` is an additive label
- * rosterBuilder stamps on CTO/identity chats. It stays optional so any roster
- * provider that never sets it still satisfies this contract — the sync roster
- * keeps carrying identity rows for the mobile hub, and only this feed drops
- * them, mirroring what the desktop sidebar already does.
- */
-export type ActivityRosterChat = SyncRosterChat & { identityKey?: string | null };
+/** A roster chat as the publisher reads it; identity rows are filtered upstream. */
+export type ActivityRosterChat = SyncRosterChat;
 export type ActivityRosterProject = Omit<SyncRosterProject, "chats"> & {
   chats: ActivityRosterChat[];
 };

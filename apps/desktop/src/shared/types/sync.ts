@@ -788,6 +788,11 @@ export type SyncRosterChat = {
   laneId: string;
   /** Parent chat/session id for attached shell rows. Mirrors TerminalSessionSummary.chatSessionId. */
   chatSessionId?: string | null;
+  /**
+   * Identity-session marker used to reject stale/legacy roster rows on clients.
+   * Current hosts omit identity sessions from the normal roster entirely.
+   */
+  identityKey?: string | null;
   title?: string | null;
   provider?: string | null;
   model?: string | null;

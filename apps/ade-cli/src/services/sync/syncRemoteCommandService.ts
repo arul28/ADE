@@ -2358,6 +2358,7 @@ function parseAgentChatListArgs(value: Record<string, unknown>): AgentChatListAr
     ...(asTrimmedString(value.laneId) ? { laneId: asTrimmedString(value.laneId)! } : {}),
     includeAutomation: asOptionalBoolean(value.includeAutomation),
     includeArchived: asOptionalBoolean(value.includeArchived),
+    includeIdentity: asOptionalBoolean(value.includeIdentity),
   };
 }
 
@@ -4451,6 +4452,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return agentChatService.listSessions(parsed.laneId, {
       includeAutomation: parsed.includeAutomation,
       includeArchived: parsed.includeArchived,
+      includeIdentity: parsed.includeIdentity,
     });
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>

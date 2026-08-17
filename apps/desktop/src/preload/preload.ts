@@ -6135,7 +6135,10 @@ contextBridge.exposeInMainWorld("ade", {
       >("chat", "listSessions", {
         argsList: [
           args.laneId,
-          { includeAutomation: args.includeAutomation === true },
+          {
+            includeAutomation: args.includeAutomation === true,
+            includeIdentity: args.includeIdentity === true,
+          },
         ],
       });
       return runtime.handled

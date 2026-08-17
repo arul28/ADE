@@ -1834,6 +1834,24 @@ describe("createSyncRemoteCommandService", () => {
     ]);
   });
 
+  it("forwards identity-aware chat roster reads to the chat service", async () => {
+    const listSessions = vi.fn().mockResolvedValue([{ id: "chat-1", identityKey: "project-cto" }]);
+    const { service } = createService({ agentChatService: { listSessions } });
+
+    await expect(service.execute(makePayload("chat.listSessions", {
+      laneId: " lane-1 ",
+      includeAutomation: true,
+      includeArchived: false,
+      includeIdentity: true,
+    }))).resolves.toEqual([{ id: "chat-1", identityKey: "project-cto" }]);
+
+    expect(listSessions).toHaveBeenCalledWith("lane-1", {
+      includeAutomation: true,
+      includeArchived: false,
+      includeIdentity: true,
+    });
+  });
+
   it("routes work.getSession through session enrichment and chat state projection", async () => {
     const session = { id: "session-1", status: "running", toolType: "codex-chat", ptyId: "pty-1" };
     const enrichedSession = { ...session, runtimeState: "running" };

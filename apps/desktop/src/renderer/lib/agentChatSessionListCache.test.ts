@@ -66,6 +66,23 @@ describe("agentChatSessionListCache", () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps identity-aware reads separate from the ordinary chat cache", async () => {
+    const list = vi.mocked(window.ade.agentChat.list);
+    list
+      .mockResolvedValueOnce([session("ordinary-session")])
+      .mockResolvedValueOnce([session("cto-session")]);
+
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1", includeIdentity: false }),
+    ).resolves.toEqual([session("ordinary-session")]);
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1", includeIdentity: true }),
+    ).resolves.toEqual([session("cto-session")]);
+
+    expect(list).toHaveBeenNthCalledWith(1, { laneId: "lane-1", includeIdentity: false });
+    expect(list).toHaveBeenNthCalledWith(2, { laneId: "lane-1", includeIdentity: true });
+  });
+
   it("lets a forced refresh supersede an in-flight read without stale cache overwrite", async () => {
     let resolveFirst: (rows: AgentChatSessionSummary[]) => void = () => {};
     const firstPending = new Promise<AgentChatSessionSummary[]>((resolve) => {
