@@ -7558,15 +7558,16 @@ export function registerIpc({
       return [];
     }
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const listOptions = {
+      includeAutomation: Boolean(arg?.includeAutomation),
+      ...(arg?.includeIdentity === true ? { includeIdentity: true } : {}),
+    };
     return await (service as unknown as {
       listSessions: (
         laneId?: string,
         options?: { includeAutomation?: boolean; includeIdentity?: boolean },
       ) => Promise<AgentChatSessionSummary[]>;
-    }).listSessions(laneId || undefined, {
-      includeAutomation: Boolean(arg?.includeAutomation),
-      includeIdentity: Boolean(arg?.includeIdentity),
-    });
+    }).listSessions(laneId || undefined, listOptions);
   });
 
   ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
