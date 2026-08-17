@@ -1846,7 +1846,15 @@ app.whenReady().then(async () => {
     const activeRoot = windowProjectRoots.get(windowId) ?? null;
     if (activeRoot) roots.add(activeRoot);
     windowProjectTabRoots.set(windowId, roots);
-    for (const root of roots) rememberWindowKnownLocalProjectRoot(windowId, root);
+    // Only roots that resolve to a project this process actually opened may join
+    // the window's local runtime scope. `rootPaths` comes straight from the
+    // renderer, and `windowKnownLocalProjectRoots` is an authorization set
+    // (runtimeBridge treats membership as "this window opened it"), so an
+    // unopened path must not earn local-runtime access just by appearing in a
+    // tab-set call. This is the same gate `projectsForWindowTabs` applies.
+    for (const root of roots) {
+      if (projectForRoot(root)) rememberWindowKnownLocalProjectRoot(windowId, root);
+    }
     scheduleProjectContextRebalance();
     return projectsForWindowTabs(windowId);
   };

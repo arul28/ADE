@@ -295,6 +295,7 @@ import type {
   CtoGetLinearIssuePickerDataResult,
   CtoSearchLinearIssuesArgs,
   CtoSearchLinearIssuesResult,
+  CtoLinearIssueComment,
   CtoSetLinearOAuthClientArgs,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
@@ -1969,6 +1970,11 @@ declare global {
             pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
         };
+        readTranscript: (args: {
+          sessionId: string;
+          limit?: number;
+          since?: string;
+        }) => Promise<unknown>;
       };
       computerUse: {
         listArtifacts: (
@@ -2256,7 +2262,10 @@ declare global {
           args?: BuiltInBrowserProjectScopeArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
-        onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
+        onEvent: (
+          cb: (ev: BuiltInBrowserEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       terminal: {
         list: (
@@ -3044,6 +3053,9 @@ declare global {
         searchLinearIssues: (
           args?: CtoSearchLinearIssuesArgs,
         ) => Promise<CtoSearchLinearIssuesResult>;
+        getLinearIssueComments: (
+          args: { issueId: string },
+        ) => Promise<CtoLinearIssueComment[]>;
         setLinearOAuthClient: (
           args: CtoSetLinearOAuthClientArgs,
         ) => Promise<LinearConnectionStatus>;

@@ -1655,6 +1655,45 @@ function callPrReadRuntimeActionOr<T>(
   return callPinnedOrBoundRuntimeActionOr(pin, "pr", action, request, local);
 }
 
+// The simulator, the controlled app, and a run's captured artifacts all live on
+// the machine that owns the lane, so every one of these calls is per-lane in
+// exactly the way `callPrReadRuntimeActionOr` documents. Domain-bound wrappers
+// keep the domain string from being retyped at ~50 call sites (where a typo is
+// a silent "unknown action" at runtime) while leaving each method statically
+// greppable by name.
+function callIosSimulatorActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", action, request, local);
+}
+
+function callAppControlActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(pin, "app_control", action, request, local);
+}
+
+function callComputerUseArtifactActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(
+    pin,
+    "computer_use_artifacts",
+    action,
+    request,
+    local,
+  );
+}
+
 async function callProjectFileRuntimeActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
@@ -3389,6 +3428,34 @@ function subscribeAppControlEvents(
   };
 }
 
+function subscribeBuiltInBrowserEvents(
+  cb: (payload: BuiltInBrowserEventPayload) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  // Unlike every sibling panel, the built-in browser is hosted by THIS desktop's
+  // main process (it owns a WebContentsView); the runtime daemon only proxies
+  // calls into it over the desktop bridge socket. So a pin on another *local*
+  // checkout still drives this machine's browser and must keep reading the local
+  // IPC stream. A pin on another *machine* is the case that breaks: those calls
+  // land on that desktop's browser, so this window's local stream describes a
+  // browser the panel is not driving, and the pinned runtime stream is the only
+  // one that can describe it.
+  if (pin?.kind === "remote") {
+    const removePinned = subscribePinnedProjectRuntimeEvents(
+      pin,
+      (payload) => toWrappedEvent<BuiltInBrowserEventPayload>(
+        payload,
+        "built_in_browser_event",
+      ),
+      cb,
+      "built-in browser",
+      () => builtInBrowserStatusCache.clear(),
+    );
+    if (removePinned) return removePinned;
+  }
+  return builtInBrowserEventFanout(cb);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -3637,7 +3704,11 @@ const projectStateEventFanout = createIpcEventFanout<AdeProjectEvent>(
 const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 
-contextBridge.exposeInMainWorld("ade", {
+// The bridge object is checked against the declared `Window["ade"]` contract so
+// a preload signature that drifts from global.d.ts — a missing `pin` parameter,
+// most of all — is a compile error instead of a renderer that silently talks to
+// the wrong machine.
+const adeBridge = {
   analytics: {
     capture: async (
       input: Omit<ProductAnalyticsCapture, "surface">,
@@ -7097,9 +7168,8 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => computerUseOwnerSnapshotCache.clear(),
         () =>
-          callPinnedOrBoundRuntimeActionOr(
+          callComputerUseArtifactActionOr(
             pin,
-            "computer_use_artifacts",
             "deleteArtifacts",
             { args },
             () => ipcRenderer.invoke(IPC.computerUseDeleteArtifacts, args),
@@ -7132,9 +7202,8 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => computerUseOwnerSnapshotCache.clear(),
         () =>
-          callPinnedOrBoundRuntimeActionOr(
+          callComputerUseArtifactActionOr(
             pin,
-            "computer_use_artifacts",
             "recoverArtifact",
             { args },
             () => ipcRenderer.invoke(IPC.computerUseRecoverArtifact, args),
@@ -7157,9 +7226,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: { uri: string },
       pin?: OpenProjectBinding | null,
     ): Promise<string | null> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callComputerUseArtifactActionOr(
         pin,
-        "computer_use_artifacts",
         "readArtifactPreview",
         { args },
         () => ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
@@ -7193,9 +7261,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorListLaunchTargetsArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorLaunchTarget[]> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "listLaunchTargets",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
@@ -7206,9 +7273,8 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<IosSimulatorSession> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callPinnedOrBoundRuntimeActionOr(
+        return await callIosSimulatorActionOr(
           pin,
-          "ios_simulator",
           "launch",
           { args },
           () => ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
@@ -7223,9 +7289,8 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<IosSimulatorSession | null> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callPinnedOrBoundRuntimeActionOr(
+        return await callIosSimulatorActionOr(
           pin,
-          "ios_simulator",
           "attachToChatSession",
           { argsList: [args.chatSessionId, args.callerChatSessionId] },
           () => ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
@@ -7240,9 +7305,8 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<IosSimulatorShutdownResult> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callPinnedOrBoundRuntimeActionOr(
+        return await callIosSimulatorActionOr(
           pin,
-          "ios_simulator",
           "shutdown",
           { args },
           () => ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),
@@ -7255,16 +7319,15 @@ contextBridge.exposeInMainWorld("ade", {
       args: { deviceUdid?: string | null } = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorScreenshot> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", "screenshot", { args }, () =>
+      callIosSimulatorActionOr(pin, "screenshot", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
       ),
     getScreenSnapshot: async (
       args: IosScreenSnapshotArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosScreenSnapshot> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "getScreenSnapshot",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorGetScreenSnapshot, args),
@@ -7273,9 +7336,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: { deviceUdid?: string | null } = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosInspectorSnapshot | null> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "getInspectorSnapshot",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorGetInspectorSnapshot, args),
@@ -7284,9 +7346,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorInspectPointArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorInspectResult> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "inspectPoint",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorInspectPoint, args),
@@ -7295,9 +7356,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorListPreviewsArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorPreviewCapability> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "getPreviewCapability",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorGetPreviewCapability, args),
@@ -7306,9 +7366,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorListPreviewsArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorPreviewTarget[]> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "listPreviewTargets",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorListPreviewTargets, args),
@@ -7317,9 +7376,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorListPreviewsArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorPreviewMatch> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "resolvePreviewMatch",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorResolvePreviewMatch, args),
@@ -7328,9 +7386,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorEnsurePreviewWorkspaceArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorEnsurePreviewWorkspaceResult> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "ensurePreviewWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorEnsurePreviewWorkspace, args),
@@ -7339,9 +7396,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorRenderCurrentPreviewArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorRenderCurrentPreviewResult> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "renderCurrentPreview",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorRenderCurrentPreview, args),
@@ -7350,9 +7406,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorRenderPreviewArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorRenderPreviewResult> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "renderPreview",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorRenderPreview, args),
@@ -7361,9 +7416,8 @@ contextBridge.exposeInMainWorld("ade", {
       args: IosSimulatorOpenPreviewWorkspaceArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true; path: string }> =>
-      callPinnedOrBoundRuntimeActionOr(
+      callIosSimulatorActionOr(
         pin,
-        "ios_simulator",
         "openPreviewWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorOpenPreviewWorkspace, args),
@@ -7374,9 +7428,8 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<IosSimulatorStreamStatus> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callPinnedOrBoundRuntimeActionOr(
+        return await callIosSimulatorActionOr(
           pin,
-          "ios_simulator",
           "startStream",
           { args },
           () => ipcRenderer.invoke(IPC.iosSimulatorStartStream, args),
@@ -7390,9 +7443,8 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<IosSimulatorStreamStatus> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callPinnedOrBoundRuntimeActionOr(
+        return await callIosSimulatorActionOr(
           pin,
-          "ios_simulator",
           "stopStream",
           {},
           () => ipcRenderer.invoke(IPC.iosSimulatorStopStream),
@@ -7404,7 +7456,7 @@ contextBridge.exposeInMainWorld("ade", {
     getStreamStatus: async (
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStreamStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", "getStreamStatus", {}, () =>
+      callIosSimulatorActionOr(pin, "getStreamStatus", {}, () =>
         ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
       ),
     getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> => {
@@ -7423,35 +7475,35 @@ contextBridge.exposeInMainWorld("ade", {
       args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", "tap", { args }, () =>
+      callIosSimulatorActionOr(pin, "tap", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTap, args),
       ),
     typeText: async (
       args: { deviceUdid?: string | null; projectRoot?: string | null; text: string },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", "typeText", { args }, () =>
+      callIosSimulatorActionOr(pin, "typeText", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTypeText, args),
       ),
     drag: async (
       args: IosSimulatorDragArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", "drag", { args }, () =>
+      callIosSimulatorActionOr(pin, "drag", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorDrag, args),
       ),
     swipe: async (
       args: IosSimulatorDragArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", "swipe", { args }, () =>
+      callIosSimulatorActionOr(pin, "swipe", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
       ),
     selectPoint: async (
       args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number },
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorSelectResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", "selectPoint", { args }, () =>
+      callIosSimulatorActionOr(pin, "selectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
       ),
     onEvent: subscribeIosSimulatorEvents,
@@ -7475,7 +7527,7 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callPinnedOrBoundRuntimeActionOr(pin, "app_control", "launch", { args }, () =>
+          callAppControlActionOr(pin, "launch", { args }, () =>
             ipcRenderer.invoke(IPC.appControlLaunch, args),
           ),
       ),
@@ -7486,9 +7538,8 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callPinnedOrBoundRuntimeActionOr(
+          callAppControlActionOr(
             pin,
-            "app_control",
             "launchInTerminal",
             { args },
             () => ipcRenderer.invoke(IPC.appControlLaunchInTerminal, args),
@@ -7501,7 +7552,7 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callPinnedOrBoundRuntimeActionOr(pin, "app_control", "connect", { args }, () =>
+          callAppControlActionOr(pin, "connect", { args }, () =>
             ipcRenderer.invoke(IPC.appControlConnect, args),
           ),
       ),
@@ -7512,81 +7563,81 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callPinnedOrBoundRuntimeActionOr(pin, "app_control", "stop", { args }, () =>
+          callAppControlActionOr(pin, "stop", { args }, () =>
             ipcRenderer.invoke(IPC.appControlStop, args),
           ),
       ),
     focusWindow: async (
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "focusWindow", {}, () =>
+      callAppControlActionOr(pin, "focusWindow", {}, () =>
         ipcRenderer.invoke(IPC.appControlFocusWindow),
       ),
     minimizeWindow: async (
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "minimizeWindow", {}, () =>
+      callAppControlActionOr(pin, "minimizeWindow", {}, () =>
         ipcRenderer.invoke(IPC.appControlMinimizeWindow),
       ),
     screenshot: async (
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlScreenshot> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "screenshot", {}, () =>
+      callAppControlActionOr(pin, "screenshot", {}, () =>
         ipcRenderer.invoke(IPC.appControlScreenshot),
       ),
     getSnapshot: async (
       args: AppControlSnapshotArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlSnapshot> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "getSnapshot", { args }, () =>
+      callAppControlActionOr(pin, "getSnapshot", { args }, () =>
         ipcRenderer.invoke(IPC.appControlGetSnapshot, args),
       ),
     inspectPoint: async (
       args: AppControlInspectPointArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlInspectResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "inspectPoint", { args }, () =>
+      callAppControlActionOr(pin, "inspectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.appControlInspectPoint, args),
       ),
     selectPoint: async (
       args: AppControlInspectPointArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlSelectResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "selectPoint", { args }, () =>
+      callAppControlActionOr(pin, "selectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.appControlSelectPoint, args),
       ),
     click: async (
       args: AppControlClickArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "click", { args }, () =>
+      callAppControlActionOr(pin, "click", { args }, () =>
         ipcRenderer.invoke(IPC.appControlClick, args),
       ),
     typeText: async (
       args: AppControlTypeTextArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "typeText", { args }, () =>
+      callAppControlActionOr(pin, "typeText", { args }, () =>
         ipcRenderer.invoke(IPC.appControlTypeText, args),
       ),
     scroll: async (
       args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null; coordinateSpace?: "screenshot" | "viewport" | null },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "scroll", { args }, () =>
+      callAppControlActionOr(pin, "scroll", { args }, () =>
         ipcRenderer.invoke(IPC.appControlScroll, args),
       ),
     dispatchKey: async (
       args: { type: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key?: string | null; code?: string | null; text?: string | null; modifiers?: number | null },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "dispatchKey", { args }, () =>
+      callAppControlActionOr(pin, "dispatchKey", { args }, () =>
         ipcRenderer.invoke(IPC.appControlDispatchKey, args),
       ),
     listTargets: async (
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlTarget[]> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "app_control", "listTargets", {}, () =>
+      callAppControlActionOr(pin, "listTargets", {}, () =>
         ipcRenderer.invoke(IPC.appControlListTargets),
       ),
     attachToTarget: async (
@@ -7596,9 +7647,8 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callPinnedOrBoundRuntimeActionOr(
+          callAppControlActionOr(
             pin,
-            "app_control",
             "attachToTarget",
             { argsList: [args.targetId] },
             () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
@@ -7790,7 +7840,7 @@ contextBridge.exposeInMainWorld("ade", {
             () => builtInBrowserStatusCache.clear(),
             () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
           ),
-    onEvent: builtInBrowserEventFanout,
+    onEvent: subscribeBuiltInBrowserEvents,
   },
   terminal: {
     list: async (
@@ -10375,4 +10425,6 @@ contextBridge.exposeInMainWorld("ade", {
     }) => ipcRenderer.invoke(IPC.perfScenarioComplete, args),
     finalize: () => ipcRenderer.invoke(IPC.perfFinalize),
   },
-});
+} satisfies Window["ade"];
+
+contextBridge.exposeInMainWorld("ade", adeBridge);
