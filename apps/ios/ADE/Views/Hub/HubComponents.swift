@@ -536,8 +536,9 @@ func buildHubProjectPresentation(
     )
   }
 
-  let laneById = Dictionary(roster.lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-  let visibleChats = roster.chats.filter { chat in
+  let safeRoster = roster.excludingIdentityChats()
+  let laneById = Dictionary(safeRoster.lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+  let visibleChats = safeRoster.chats.filter { chat in
     chat.archived != true && laneById[chat.laneId] != nil
   }
   let chatToolIds = Set(visibleChats.filter(\.isChatTool).map(\.id))
@@ -561,7 +562,7 @@ func buildHubProjectPresentation(
   let topLevelChats = visibleChats.filter { !isChildRow($0) }
   let topLevelChatsByLane = Dictionary(grouping: topLevelChats, by: \.laneId)
 
-  let lanes = roster.lanes.compactMap { lane -> HubLanePresentation? in
+  let lanes = safeRoster.lanes.compactMap { lane -> HubLanePresentation? in
     let laneChats = (topLevelChatsByLane[lane.id] ?? [])
       .sorted { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     guard !laneChats.isEmpty else { return nil }
@@ -581,11 +582,11 @@ func buildHubProjectPresentation(
     isActive: isActive,
     isSwitching: isSwitching,
     isLoading: false,
-    laneCount: roster.lanes.count,
+    laneCount: safeRoster.lanes.count,
     chatCount: chatCount,
     lanes: lanes,
-    attentionCount: roster.attentionCount,
-    runningCount: roster.runningCount
+    attentionCount: safeRoster.attentionCount,
+    runningCount: safeRoster.runningCount
   )
 }
 

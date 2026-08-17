@@ -2413,6 +2413,8 @@ export type AgentChatListArgs = {
   laneId?: string;
   includeAutomation?: boolean;
   includeArchived?: boolean;
+  /** Include identity-bound sessions for dedicated surfaces such as CTO. */
+  includeIdentity?: boolean;
 };
 
 export type AgentChatSuggestLaneNameArgs = {

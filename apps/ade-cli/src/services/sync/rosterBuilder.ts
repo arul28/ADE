@@ -66,27 +66,20 @@ export type RosterLiveSession = {
    */
   activeBackgroundTaskCount?: number | null;
   /**
-   * Set on CTO/identity chats. The roster still carries these rows — the mobile
-   * hub renders them — but the Activity feed must not, because the desktop
-   * sidebar strips them and the two counts have to agree. The roster's job is
-   * only to label them; see `RosterChat.identityKey`.
+   * Set on CTO/identity chats. Identity sessions are deliberately omitted from
+   * the normal project roster, but this marker remains available as a
+   * defensive signal for older or alternate roster producers.
    */
   identityKey?: string | null;
 };
 
-/**
- * A roster chat plus the additive `identityKey` label. Deliberately NOT folded
- * into the shared `SyncRosterChat` wire type: this is a hint for one consumer
- * (the Activity publisher, which excludes identity chats from the feed), and
- * every other consumer — the mobile hub above all — keeps rendering the rows
- * exactly as before and simply ignores the extra field.
- */
-export type RosterChat = SyncRosterChat & { identityKey?: string | null };
+/** A roster chat with the optional identity marker retained for compatibility. */
+export type RosterChat = SyncRosterChat;
 
 export type RosterAgentChatService = {
   listSessions(
     laneId?: string,
-    options?: { includeArchived?: boolean },
+    options?: { includeArchived?: boolean; includeIdentity?: boolean },
   ): Promise<RosterLiveSession[]>;
 };
 
@@ -452,7 +445,7 @@ async function buildRosterProject(
     if (agentChatService) {
       booted = true;
       const liveSessions = await agentChatService
-        .listSessions(undefined, { includeArchived: false })
+        .listSessions(undefined, { includeArchived: false, includeIdentity: true })
         .catch(() => [] as RosterLiveSession[]);
       for (const live of liveSessions) {
         if (live?.sessionId) liveBySessionId.set(live.sessionId, live);
@@ -467,13 +460,39 @@ async function buildRosterProject(
     .sort(compareLanes);
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
 
+  const visibleRows = desktopVisibleRosterRows(disk.chats, visibleLaneIds);
+  const identitySessionIds = new Set<string>();
+  for (const row of visibleRows) {
+    const liveIdentityKey = liveBySessionId.get(row.id)?.identityKey?.trim() || null;
+    const diskIdentityKey = readChatSidecar(chatSessionsDir, row.id)?.identityKey?.trim() || null;
+    if (liveIdentityKey || diskIdentityKey) identitySessionIds.add(row.id);
+  }
+  let identityDescendantAdded = true;
+  while (identityDescendantAdded) {
+    identityDescendantAdded = false;
+    for (const row of visibleRows) {
+      const parentSessionId = normalizedParentSessionId(row);
+      if (parentSessionId
+        && identitySessionIds.has(parentSessionId)
+        && !identitySessionIds.has(row.id)) {
+        identitySessionIds.add(row.id);
+        identityDescendantAdded = true;
+      }
+    }
+  }
+
   const chats: RosterChat[] = [];
   let runningCount = 0;
   let attentionCount = 0;
-  for (const row of desktopVisibleRosterRows(disk.chats, visibleLaneIds)) {
+  for (const row of visibleRows) {
     const live = liveBySessionId.get(row.id);
     const sidecar = readChatSidecar(chatSessionsDir, row.id);
-    const identityKey = live?.identityKey ?? sidecar?.identityKey ?? null;
+    const identityKey = (live?.identityKey ?? sidecar?.identityKey ?? null)
+      ?.trim() || null;
+    // CTO/identity sessions have their own surface and attention path. They
+    // must never become ordinary project-roster rows or contribute to Hub
+    // counts, even when their sidecar is the only identity signal available.
+    if (identitySessionIds.has(row.id)) continue;
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;

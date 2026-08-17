@@ -7561,9 +7561,12 @@ export function registerIpc({
     return await (service as unknown as {
       listSessions: (
         laneId?: string,
-        options?: { includeAutomation?: boolean },
+        options?: { includeAutomation?: boolean; includeIdentity?: boolean },
       ) => Promise<AgentChatSessionSummary[]>;
-    }).listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
+    }).listSessions(laneId || undefined, {
+      includeAutomation: Boolean(arg?.includeAutomation),
+      includeIdentity: Boolean(arg?.includeIdentity),
+    });
   });
 
   ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {

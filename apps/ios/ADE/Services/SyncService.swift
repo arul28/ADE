@@ -8889,7 +8889,11 @@ final class SyncService: ObservableObject {
   }
 
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
-    try await sendDecodableCommand(action: "cto.ensureSession", as: AgentChatSessionSummary.self)
+    let summary = try await sendDecodableCommand(action: "cto.ensureSession", as: AgentChatSessionSummary.self)
+    // Keep the identity marker available to the local Work/activity guards in
+    // case the CRR session row arrives before the next roster snapshot.
+    cacheChatSummary(summary)
+    return summary
   }
 
   // MARK: - CTO state + memory
@@ -12215,7 +12219,15 @@ final class SyncService: ObservableObject {
   func listChatSessions(laneId: String) async throws -> [AgentChatSessionSummary] {
     try await sendDecodableCommand(
       action: "chat.listSessions",
-      args: ["laneId": laneId, "includeAutomation": true, "includeArchived": true],
+      // Work must see the identity marker even though identity rows are never
+      // rendered there. The marker lets the local projection remove a CTO row
+      // before a roster snapshot or CRR update catches up.
+      args: [
+        "laneId": laneId,
+        "includeAutomation": true,
+        "includeArchived": true,
+        "includeIdentity": true,
+      ],
       as: [AgentChatSessionSummary].self
     )
   }
@@ -20249,6 +20261,7 @@ extension SyncService {
     // running roster, but can still appear in the in-app Activity drawer via
     // `allAgents`.
     let runningRecencyCutoff = now.addingTimeInterval(-120)
+    let identitySessionIds = identitySessionIdsForSessions(sessions)
 
     for session in sessions {
       let isChat = isWorkChatToolType(session.toolType)
@@ -20256,6 +20269,10 @@ extension SyncService {
       guard session.archivedAt == nil else { continue }
 
       let summary = chatSummaryCache[session.id]
+      // The CTO has its own tab and attention path. A stale local session row
+      // may survive before the next roster refresh, so the identity marker is
+      // enforced again at the activity/widget projection boundary.
+      guard !identitySessionIds.contains(session.id) else { continue }
       let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
       let status = session.status.lowercased()
       let isFailedStatus = canonical.phase == .failed
@@ -21182,7 +21199,7 @@ extension SyncService {
   }
 
   func applyRosterSnapshot(_ snapshot: RemoteRosterSnapshotPayload) {
-    let nextProjects = sortRosterProjects(snapshot.projects)
+    let nextProjects = sortRosterProjects(snapshot.projects.map { $0.excludingIdentityChats() })
     let changedProjectIds = rosterChangedProjectIds(previous: rosterProjects, next: nextProjects)
     rosterProjects = nextProjects
     rosterSeq = snapshot.seq
@@ -21202,7 +21219,7 @@ extension SyncService {
     case .dropped:
       break // duplicate / out-of-order replay
     case let .applied(projects, seq):
-      let nextProjects = sortRosterProjects(projects)
+      let nextProjects = sortRosterProjects(projects.map { $0.excludingIdentityChats() })
       // A delta already carries its changed/removed project ids. Avoid a deep
       // all-project chat-array comparison on the MainActor every 250 ms.
       let changedProjectIds = Set((delta.changed ?? []).map(\.projectId))
@@ -21241,7 +21258,7 @@ extension SyncService {
     guard let activeProject,
           let roster = rosterProject(for: activeProject),
           let chat = roster.chats.first(where: {
-            $0.id == sessionId && $0.archived != true && $0.isChatTool
+            $0.id == sessionId && $0.archived != true && $0.isChatTool && !$0.isIdentityChat
           })
     else { return nil }
     let laneName = roster.lanes.first(where: { $0.id == chat.laneId })?.name ?? chat.laneId
@@ -21318,7 +21335,7 @@ extension SyncService {
     guard let data = ADESharedContainer.defaults.data(forKey: rosterCacheKey),
           let projects = try? JSONDecoder().decode([RemoteRosterProject].self, from: data)
     else { return [] }
-    return sortRosterProjects(projects)
+    return sortRosterProjects(projects.map { $0.excludingIdentityChats() })
   }
 
   private func reloadRosterForActiveHost() {
@@ -21361,8 +21378,12 @@ extension SyncService {
     guard let projectId = activeProjectId else { return nil }
     let lanes = database.fetchLanes(includeArchived: false)
     let visibleLaneIds = Set(lanes.map(\.id))
-    let scopedSessions = localSessions().filter { session in
-      session.archivedAt == nil && visibleLaneIds.contains(session.laneId)
+    let sessions = localSessions()
+    let identitySessionIds = identitySessionIdsForSessions(sessions)
+    let scopedSessions = sessions.filter { session in
+      session.archivedAt == nil
+        && visibleLaneIds.contains(session.laneId)
+        && !identitySessionIds.contains(session.id)
     }
     let topLevelIds = Set(scopedSessions.filter { isRosterTopLevelToolType($0.toolType) }.map(\.id))
     let visibleSessions = scopedSessions.filter { session in
@@ -21487,7 +21508,7 @@ extension SyncService {
     merged.runningCount = merged.chats.filter(\.countsTowardRunning).count
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
-    return merged
+    return merged.excludingIdentityChats()
   }
 
   private func mergedRosterChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
@@ -21514,6 +21535,7 @@ extension SyncService {
     merged.model = nonEmptyRosterString(remote.model) ?? local.model
     merged.toolType = nonEmptyRosterString(remote.toolType) ?? local.toolType
     merged.chatSessionId = nonEmptyRosterString(remote.chatSessionId) ?? local.chatSessionId
+    merged.identityKey = nonEmptyRosterString(remote.identityKey) ?? local.identityKey
     merged.applyLocalSnoozeOverlay(local)
     return merged
   }
@@ -21532,6 +21554,32 @@ extension SyncService {
       return true
     }
     return raw.hasSuffix("-chat")
+  }
+
+  private func isIdentityChatSummary(_ summary: AgentChatSessionSummary?) -> Bool {
+    guard let identityKey = summary?.identityKey?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+      return false
+    }
+    return !identityKey.isEmpty
+  }
+
+  private func identitySessionIdsForSessions(_ sessions: [TerminalSessionSummary]) -> Set<String> {
+    var identitySessionIds = Set<String>(sessions.compactMap { session in
+      isIdentityChatSummary(chatSummaryCache[session.id]) ? session.id : nil
+    })
+    var identityDescendantAdded = true
+    while identityDescendantAdded {
+      identityDescendantAdded = false
+      for session in sessions {
+        guard let parentId = session.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !parentId.isEmpty,
+              identitySessionIds.contains(parentId) else { continue }
+        if identitySessionIds.insert(session.id).inserted {
+          identityDescendantAdded = true
+        }
+      }
+    }
+    return identitySessionIds
   }
 
   private func normalizedRosterParentSessionId(_ session: TerminalSessionSummary) -> String? {
