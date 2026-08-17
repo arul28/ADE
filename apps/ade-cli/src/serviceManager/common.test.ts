@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import net from "node:net";
+import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
@@ -56,7 +58,15 @@ import {
   renderLaunchdPlist,
   uninstallLaunchdService,
 } from "./installLaunchd";
-import { resolveWatchdogServiceName } from "./installLaunchdWatchdog";
+import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
+import {
+  installLaunchdWatchdogAgent,
+  renderWatchdogLaunchdPlist,
+  resolveWatchdogServiceName,
+  uninstallLaunchdWatchdogAgent,
+  watchdogCommand,
+  watchdogLaunchAgentPath,
+} from "./installLaunchdWatchdog";
 import { isWindowsTaskStateRunning } from "./installWindows";
 
 const originalArgv = [...process.argv];
@@ -1492,3 +1502,245 @@ function spawnSequence(
     return next ?? { status: 0, stdout: "", stderr: "" };
   };
 }
+
+const watchdogServiceCommand: AdeServiceCommand = {
+  command: "/usr/local/bin/node",
+  args: ["/opt/ade/cli.cjs", "serve"],
+  env: { ADE_HOME: "/Users/example/.ade" },
+};
+
+function watchdogTempHome(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "ade-watchdog-home-"));
+}
+
+function watchdogRecordingSpawn(calls: Array<{ command: string; args: string[] }>) {
+  return (command: string, args: string[]) => {
+    calls.push({ command, args });
+    return { status: 0, stdout: "", stderr: "" };
+  };
+}
+
+describe("resolveWatchdogServiceName", () => {
+  it("keeps each channel on its own watchdog", () => {
+    expect(resolveWatchdogServiceName("com.ade.runtime")).toBe("com.ade.watchdog");
+    expect(resolveWatchdogServiceName("com.ade.runtime.beta")).toBe("com.ade.watchdog.beta");
+    expect(resolveWatchdogServiceName("com.example.custom")).toBe("com.example.custom.watchdog");
+  });
+});
+
+describe("watchdogCommand", () => {
+  it("runs the same binary the brain was installed from", () => {
+    expect(watchdogCommand(watchdogServiceCommand)).toEqual({
+      command: "/usr/local/bin/node",
+      args: ["/opt/ade/cli.cjs", "runtime", "watchdog-check"],
+      env: {
+        ADE_HOME: "/Users/example/.ade",
+        ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+      },
+    });
+  });
+
+  it("appends the check when the command has no serve argument", () => {
+    expect(watchdogCommand({ command: "/opt/ade/ade", args: [] }).args)
+      .toEqual(["runtime", "watchdog-check"]);
+  });
+});
+
+describe("renderWatchdogLaunchdPlist", () => {
+  it("runs on an interval and never keeps itself alive", () => {
+    const plist = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir: "/Users/example",
+    });
+    expect(plist).toContain("<string>com.ade.watchdog</string>");
+    expect(plist).toContain("<key>StartInterval</key>");
+    expect(plist).toContain("<integer>60</integer>");
+    expect(plist).toContain("<string>watchdog-check</string>");
+    // KeepAlive would make launchd respawn a one-shot check in a tight loop.
+    expect(plist).not.toContain("<key>KeepAlive</key>");
+  });
+
+  it("refuses an interval short enough to thrash", () => {
+    const plist = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir: "/Users/example",
+      startIntervalSeconds: 1,
+    });
+    expect(plist).toContain("<integer>15</integer>");
+  });
+});
+
+describe("installLaunchdWatchdogAgent", () => {
+  it("writes and loads the agent", () => {
+    const homeDir = watchdogTempHome();
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const result = installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: watchdogRecordingSpawn(calls),
+    });
+
+    const servicePath = watchdogLaunchAgentPath(homeDir);
+    expect(result.installed).toBe(true);
+    expect(fs.existsSync(servicePath)).toBe(true);
+    expect(calls.map((call) => call.args[0])).toEqual(["unload", "load"]);
+  });
+
+  it("reports a load failure instead of claiming the agent is armed", () => {
+    const homeDir = watchdogTempHome();
+    const result = installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: (command, args) =>
+        args[0] === "load"
+          ? { status: 1, stdout: "", stderr: "Load failed" }
+          : { status: 0, stdout: "", stderr: "" },
+    });
+    expect(result.installed).toBe(false);
+  });
+
+  it("removes the agent with the brain it guards", () => {
+    const homeDir = watchdogTempHome();
+    installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: watchdogRecordingSpawn([]),
+    });
+    const servicePath = watchdogLaunchAgentPath(homeDir);
+    expect(fs.existsSync(servicePath)).toBe(true);
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    uninstallLaunchdWatchdogAgent({ homeDir, spawnSync: watchdogRecordingSpawn(calls) });
+
+    expect(fs.existsSync(servicePath)).toBe(false);
+    expect(calls.map((call) => call.args[0])).toEqual(["bootout", "unload"]);
+  });
+});
+
+/**
+ * A stand-in for the brain's JSON-RPC endpoint. `replies` maps a method to the
+ * result it answers with; anything absent is simply not answered, which is how
+ * a wedged brain behaves. `closeOnShutdown` models the brain whose orderly exit
+ * drops the socket before its own response gets out.
+ */
+function fakeEndpoint(
+  replies: Record<string, unknown>,
+  options: { closeOnShutdown?: boolean } = {},
+): {
+  socket: net.Socket;
+  written: string[];
+} {
+  const written: string[] = [];
+  const socket = new EventEmitter() as unknown as net.Socket & { destroy: () => void };
+  let buffer = "";
+  (socket as unknown as { write: unknown }).write = (payload: string) => {
+    written.push(payload);
+    buffer += payload;
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      const message = JSON.parse(line) as { id: number; method: string };
+      if (options.closeOnShutdown && message.method === "shutdown") {
+        queueMicrotask(() => socket.emit("close"));
+        continue;
+      }
+      if (!(message.method in replies)) continue;
+      queueMicrotask(() => {
+        socket.emit(
+          "data",
+          Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: replies[message.method] })}\n`),
+        );
+      });
+    }
+    return true;
+  };
+  (socket as unknown as { destroy: () => void }).destroy = () => {};
+  queueMicrotask(() => socket.emit("connect"));
+  return { socket, written };
+}
+
+describe("requestAdeRuntimeShutdown", () => {
+  const socketPath = String.raw`\\.\pipe\ade-runtime-stable-0123456789abcdef`;
+
+  it("identifies the endpoint before asking it to leave", async () => {
+    const endpoint = fakeEndpoint({ "runtime/info": { pid: 4242 }, shutdown: {} });
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({ requested: true });
+    const methods = endpoint.written.map((line) => (JSON.parse(line) as { method: string }).method);
+    expect(methods).toEqual(["runtime/info", "shutdown"]);
+  });
+
+  it("refuses to shut down a pid the endpoint does not belong to", async () => {
+    // A pid scraped from a port diagnosis or a supervisor record can have been
+    // recycled; shutting down whoever happens to answer would be a stranger.
+    const endpoint = fakeEndpoint({ "runtime/info": { pid: 999 }, shutdown: {} });
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result.requested).toBe(false);
+    const methods = endpoint.written.map((line) => (JSON.parse(line) as { method: string }).method);
+    expect(methods).toEqual(["runtime/info"]);
+  });
+
+  /**
+   * The orderly exit this path asks for tears down the brain's listening
+   * socket, which races the JSON-RPC response back to us. Reading the close as
+   * a refusal would send the caller to `taskkill /F` and cut the flush short.
+   */
+  it("treats a close after the request as the shutdown taking effect", async () => {
+    const endpoint = fakeEndpoint({ "runtime/info": { pid: 4242 } }, { closeOnShutdown: true });
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({ requested: true });
+  });
+
+  it("reports a close before the request as the endpoint hanging up", async () => {
+    const endpoint = fakeEndpoint({});
+    queueMicrotask(() => endpoint.socket.emit("close"));
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({
+      requested: false,
+      reason: "the runtime endpoint closed before it could be asked to stop",
+    });
+  });
+
+  it("gives up on a wedged endpoint instead of hanging the caller", async () => {
+    const endpoint = fakeEndpoint({});
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      timeoutMs: 250,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({
+      requested: false,
+      reason: "the runtime endpoint did not answer within 250ms",
+    });
+  });
+
+  it("never dials a tcp runtime endpoint", async () => {
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath: "tcp://127.0.0.1:9999?token=secret",
+      connect: () => {
+        throw new Error("must not connect");
+      },
+    });
+    expect(result.requested).toBe(false);
+  });
+});

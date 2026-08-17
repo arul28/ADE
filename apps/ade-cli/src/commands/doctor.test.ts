@@ -192,6 +192,32 @@ describe("doctor row evaluation", () => {
     ]);
   });
 
+  it("reports a young registered brain as starting, and a dead one as failing", () => {
+    const starting = healthyInput();
+    starting.brain = {
+      ...starting.brain,
+      running: false,
+      error: "connect ENOENT /tmp/ade.sock",
+      starting: true,
+      startingAgeMs: 12_000,
+    };
+    const startingRow = evaluateDoctorRows(starting).find((row) => row.key === "brain");
+    expect(startingRow?.status).toBe("warn");
+    expect(startingRow?.detail).toContain("starting");
+    expect(startingRow?.detail).not.toContain("connect ENOENT");
+
+    const dead = healthyInput();
+    dead.brain = {
+      ...dead.brain,
+      running: false,
+      error: "connect ENOENT /tmp/ade.sock",
+      starting: false,
+    };
+    const deadRow = evaluateDoctorRows(dead).find((row) => row.key === "brain");
+    expect(deadRow?.status).toBe("fail");
+    expect(deadRow?.detail).toContain("not responding");
+  });
+
   it("names the credential store's two bad states with the right next step", () => {
     const lockedOut = healthyInput();
     lockedOut.credentials = {

@@ -83,13 +83,17 @@ describe("resolveKnownProjectRoot", () => {
     ).toBeNull();
   });
 
-  it("resolves a symlink to a known project", () => {
+  it("resolves a symlink to a known project", (ctx) => {
     const link = path.join(tempRoot, "link-to-open");
     try {
       fs.symlinkSync(openProject, link, "dir");
     } catch {
-      return; // No symlink privilege (Windows without developer mode).
+      // Windows without developer mode has no symlink privilege. Skip loudly
+      // rather than `return`, which reads as a pass and hides the gap.
+      ctx.skip();
+      return;
     }
+    expect(fs.lstatSync(link).isSymbolicLink(), "symlink setup").toBe(true);
     expect(resolveKnownProjectRoot(link, sources)).toBe(openProject);
   });
 });

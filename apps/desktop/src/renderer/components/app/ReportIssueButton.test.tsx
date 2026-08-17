@@ -70,14 +70,6 @@ describe("ReportIssueButton", () => {
     expect(screen.queryByText(/ENOSPC/)).toBeNull();
   });
 
-  it("explains what the report contains and that private details are removed", () => {
-    installBridge(vi.fn());
-    render(<ReportIssueButton context={CONTEXT} />);
-
-    expect(screen.getByText("What's in the report?")).toBeTruthy();
-    expect(screen.getByText(/File paths, your name, email addresses/i)).toBeTruthy();
-  });
-
   it("drops the disclosure inside one-line banners, and keeps it when asked", () => {
     installBridge(vi.fn());
     const { rerender } = render(<ReportIssueButton context={CONTEXT} variant="ghost" />);

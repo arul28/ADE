@@ -243,7 +243,11 @@ mutually exclusive.
 The typed result rides the existing `AutoUpdateSnapshot` over
 `IPC.updateEvent` / `updateGetState` as `updateTransaction`; no new channel. A
 failure names the step in plain words and `AutoUpdateBanner` renders that one
-line beside the shared **Repair** control:
+line beside the shared **Repair** control and a **Report issue** button (the
+notice wraps rather than truncating, since the message can run long and Repair
+grows a failure line of its own). Its colours are the app shell's amber strip:
+the notice used to be written for a light surface, which on ADE's near-black
+shell rendered as brown text with an all-but-invisible dismiss.
 
 | Step | Line |
 | --- | --- |

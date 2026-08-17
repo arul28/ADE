@@ -137,6 +137,7 @@ import {
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
+import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import {
@@ -15747,11 +15748,21 @@ async function runRuntimeCommand(
         client.close();
       }
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      // Not answering is not the same as broken. When the service is
+      // registered and the brain behind it is alive and young, it is still
+      // coming up — the same verdict the desktop calls `brain_starting`.
+      // Callers keep waiting for the endpoint instead of restarting it.
+      const startup = await readBrainStartupState();
       return {
         ok: false,
         running: false,
+        starting: startup.starting,
         socketPath,
-        message: error instanceof Error ? error.message : String(error),
+        message: startup.starting
+          ? `ADE brain is still starting; it has not answered on ${socketPath} yet. Keep waiting — there is nothing to repair.`
+          : detail,
+        ...(startup.starting ? { detail } : {}),
       };
     }
   }
@@ -16283,8 +16294,13 @@ async function runBrainCommand(
     // serve path clears it on a successful listen. Surface it as a plain
     // one-liner so `ade brain status --text` matches the Desktop recovery screen.
     const lastFailure = readLastFailure({ kind: "machine" });
+    // Mirrors `ade runtime status`: a registered service whose young brain has
+    // not bound the socket yet is starting, not broken, so `ade brain status`
+    // does not read as a failure that wants repairing.
+    const starting = isRecord(runtime) && runtime.starting === true;
     return {
       ok: service.ok && (!isRecord(runtime) || runtime.ok !== false),
+      starting,
       service,
       runtime,
       sync,
@@ -20517,7 +20533,7 @@ function formatTextOutput(
         ? value.rows.filter(isRecord)
         : [];
       if (doctorRows.length > 0) {
-        return renderTable(
+        const table = renderTable(
           ["check", "status", "detail"],
           doctorRows.map((row) => [
             asString(row.label) ?? asString(row.key) ?? "Unknown",
@@ -20530,6 +20546,11 @@ function formatTextOutput(
           ]),
           "No health checks were returned.",
         );
+        // A failing row that these checks cannot explain is the case
+        // `ade report-issue` exists for: it reads local files only, so it still
+        // works on the machine where the brain will not come up.
+        if (!doctorRows.some((row) => row.status === "fail")) return table;
+        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue\` and file the printed report.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};

@@ -207,6 +207,13 @@ ade brain pin set 123456
 ade brain pin clear
 ```
 
+`ade brain status` and `ade runtime status` report `starting: true` when the
+brain is not answering yet but its registered service and brain process say it
+is coming up. Treat that as "wait", not "restart": `ade brain restart` on a
+booting brain only starts its startup clock over. `ade brain restart` likewise
+reports the installer's own `starting` message instead of claiming "restarted."
+when the replacement is alive but has not bound the socket yet.
+
 `ade brain repair-credentials` runs entirely locally and never contacts the
 brain — the state it repairs is the one that keeps the brain from starting, so a
 repair that needed a running brain would be unavailable exactly when it matters.
@@ -460,6 +467,8 @@ ade machines connect <machine-key> --project ADE
 ade machines hop <device-id> --session chat-1
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
+ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
+ade report-issue --open                           # also open that issue URL in the browser
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
@@ -742,13 +751,27 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 `fail`. The rows are:
 
 - **App** — the installed ADE desktop version (read from the `.app` bundle on disk) against the latest known version. Latest-known comes from the on-disk `update-status.json` by default; pass `--online` to also fetch the latest release from GitHub (short timeout, best-effort). `warn` when the install is behind or missing.
-- **Brain** — whether the machine brain responds on its socket, plus its version, pid, and uptime. `fail` when it is not responding or when its build identity does not match the expected runtime for this CLI/role.
+- **Brain** — whether the machine brain responds on its socket, plus its version, pid, and uptime. `fail` when it is not responding or when its build identity does not match the expected runtime for this CLI/role. A brain that is not answering *yet* is reported as `warn` (`starting`) rather than `fail`: when the login service is registered and the brain process behind it is alive and younger than the young-brain window (`RUNTIME_SERVICE_YOUNG_BRAIN_MS`, 2 min), it is still coming up — first launch, cold disk, large project database — and restarting it would only reset its clock. This is the CLI's read of the same `brain_starting` state the desktop recovery screen shows; `ade runtime status` and `ade brain status` report it as a `starting: true` field with the same wording. Nothing to repair: keep waiting for the endpoint.
 - **Wedge history** — the last wedge that was recovered, read from the runtime dir or the brain's reported `lastWedge`. `warn` when the most recent wedge is within the last 24h. Two things write that record: the in-process loop watchdog (reported as the blocking command and how long it blocked) and the external watchdog (`ade runtime watchdog-check`), which stops a brain whose heartbeat has gone stale and is reported as how long the brain went without a beat. A brain that is wedged right now shows up as a failing **Brain** row; the heartbeat itself has no separate row because a stale heartbeat plus a live brain is exactly what the watchdog converts into a restart within a minute.
 - **Sync port** — the sync host port the brain bound. `ok` on the default port, `warn` when bound elsewhere (with the base-port holders it found), `fail` when the brain is up but reported no port.
 - **Publish health** — account-directory publish state from the brain's sync route health. `ok` when a publish succeeded recently, `fail` when it has been failing for ≥2 min, otherwise `warn`, with the slowest publish leg annotated.
 - **Relay** — relay route health as already computed by the brain. `ok` when the relay control is connected, the bridge is validated, and the end-to-end round-trip is verified; `fail` when the route is not fully validated; `warn` when relay is disabled or route health is unavailable. When another ADE process on this machine has claimed the relay slot, the brain deliberately stops redialing and this row reports that suppression ahead of any lower-level close error, so the detail names the fix (quit the rival process) instead of the symptom. `ade sync status --text` shows the same reason on its `relay` line, plus a `relay failing since` row for how long the current outage has run.
 - **Account** — whether this machine's brain is signed in to an ADE account (and the credential source), read via the brain's `account.call status`. `warn` when signed out or unavailable.
 - **Credentials** — whether the shared credential store (`$ADE_HOME/secrets/credentials.json.enc`) can be read, and whether an unreadable one was set aside earlier. `fail` when it cannot be read, naming the next step: a store sealed with a key this process cannot obtain is unlocked by opening the ADE app on this computer, while anything else needs a fresh sign-in. `warn` when a quarantined file is still waiting to be restored. Unlike every other row, this one is read **straight from disk** rather than through the brain — the failure it exists for is a brain that cannot start, so a check that needed a running brain would be silent exactly when it matters. It is non-creating: it never mints a machine key or OS key material, so running the diagnostic cannot change the state it reports. `ade brain repair-credentials` acts on the same reading.
+
+When a row fails and the checks above do not explain it, `ade doctor --text`
+points at `ade report-issue`. That command is the headless counterpart to the
+desktop "Report issue" button: it reads only local files — it never starts or
+contacts the brain — so it still works on the machine where ADE itself will not
+come up, and on Windows where there is no desktop error screen to press. It
+prints a redacted diagnostic report plus a prefilled GitHub issue URL (`--open`
+also opens that URL, `--json` returns `{ installId, issueUrl, report }`).
+
+There is no `ade recovery diagnose` / `ade recovery repair`: those are
+Electron-main IPC (`ade.recovery.diagnose` / `ade.recovery.repair`) backed by
+the desktop's local-runtime connection pool, which does not exist in a headless
+CLI. The CLI equivalents are `ade doctor` for the diagnosis, `ade brain restart`
+for the repair, and `ade brain repair-credentials` for the credential half.
 
 Default doctor does not call provider, GitHub, or Linear networks. Every row but
 **Credentials** comes from the local brain over its socket; **Credentials** is a

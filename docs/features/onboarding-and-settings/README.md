@@ -1104,6 +1104,19 @@ install end to end (brain running, machine linked) and prints a summary
 recapping all five steps. A step that fails names the command that fixes
 it, inline and again under "What's left"; a clean run prints neither.
 
+Between the tools step and the account step, setup waits for the brain's
+endpoint. Everything after it needs a brain that answers, and a brain that is
+still coming up is not a broken one: `awaitRuntimeService` probes the socket,
+installs the service only if nothing answers, and then keeps dialling for
+`SETUP_SERVICE_START_BUDGET_MS` (`RUNTIME_SERVICE_START_WAIT_MS`, 90 s),
+printing "Starting ADE's background service..." only if it actually has to
+wait. The wait is a courtesy, not a gate — its own failure never costs the user
+the account and desktop steps. If the brain is still starting when the account
+step fails, that step is reported as *skipped* with "ADE's background service
+is still starting" rather than as a failed sign-in, and the summary ends with
+"Give it a moment, then run `ade connect`." Reporting a slow start as a broken
+install is what used to send people hunting a fault that did not exist.
+
 The account step checks first: an already-linked machine is offered
 keep / switch / skip rather than being asked to sign in blind. The
 desktop step skips its ~1 GB download when that exact version is already

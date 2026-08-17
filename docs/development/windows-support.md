@@ -113,12 +113,33 @@ ade doctor --json
 ade runtime service-status --text
 ```
 
-Before sharing output, remove user paths, repository names, machine/device ids,
-account details, IPs, URLs with query strings, and any credential-shaped value.
-Prefer reporting the status/error code and ADE version. Do not attach the whole
-ADE home or a raw database.
+`ade report-issue` produces the same redacted Markdown report the desktop's
+**Report issue** button does, and it reads local files only — it never starts or
+contacts the brain, so it works on a machine where ADE will not come up and on a
+headless host with no error screen to press. `--open` opens a prefilled GitHub
+issue. Prefer it over hand-assembled output: paths, the account name, hostnames,
+tailnet and `.local` names, addresses and credential-shaped values are stripped
+by `redactDiagnosticText` over the whole document, and secrets, environment
+blocks and pairing PINs are never collected at all. See
+[storage and recovery](../features/storage-and-recovery/README.md#diagnostic-reports-report-issue).
+
+Before sharing anything you assembled by hand, remove user paths, repository
+names, machine/device ids, account details, IPs, URLs with query strings, and
+any credential-shaped value. Prefer reporting the status/error code and ADE
+version. Do not attach the whole ADE home or a raw database.
 
 ## Brain is installed but not running
+
+First rule out a brain that is simply still starting. An install that reports
+`starting` has registered the service and left a live child that had not
+answered on the pipe inside `WINDOWS_HANDOVER_TIMEOUT_MS` (15 s — shorter than
+the POSIX budget because the supervisor is a process the installer starts and
+watches directly). That is not a failed install: the supervisor owns that child,
+and restarting it only resets its clock. `ade connect` says "installed — the
+background service is still starting", and the desktop shows `brain_starting`
+with no Repair offered and reopens the project itself once the pipe answers.
+Give it up to `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) before treating it as
+stuck. If it is genuinely not coming up:
 
 1. Confirm the channel-qualified value exists under the current user's Run key.
    Do not paste its command because it contains local installation paths.
@@ -209,6 +230,19 @@ the named pipe is healthy.
   `install.ps1`, and `SHA256SUMS` from the immutable proof run. Missing or
   mismatched evidence is a public-release blocker; do not relabel it as a pass
   or substitute a manual binary copy.
+- `install.ps1` stages everything under the ADE home, never `%TEMP%`:
+  `<runtime dir>.new` / `.previous` beside the runtime, `ade.new.exe` /
+  `ade.bak.exe` beside `ade.exe`. `%TEMP%` holds the downloads and nothing else,
+  because it is routinely on a different volume from the user profile
+  (redirected TEMP, a RAM disk, a roaming profile) where `Move-Item` degrades to
+  copy-then-delete, and because AppLocker and most EDR agents block execution
+  out of `%TEMP%` outright — which would fail the preflight on every managed
+  corporate machine. Every promotion is a same-directory rename, and the
+  preflight runs the new binary against the staged runtime it will actually
+  load. A failed install prints a stage-aware note: before promotion, the
+  existing install was not touched; after a rollback, the previous one was put
+  back. If the rollback itself failed, the recovery copies are named in the
+  error and are the machine's only copy — do not delete them.
 - Repair a partial launcher/runtime installation with the product's bounded
   repair path before testing reinstall or uninstall. Repair must preserve
   projects and user state; reinstall and uninstall remain separate scenarios

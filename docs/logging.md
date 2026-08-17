@@ -232,6 +232,48 @@ day, inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits
 and the shared 200-event ceiling; no ceiling was raised. The dashboard spec is
 deliberately untouched: no card asks this question yet.
 
+Pressing **Report issue** on any error surface records one `ade_feature_used` at
+the IPC owner boundary with `feature: "connections"`, `action: "issue_report"`,
+and a coarse `outcome` (`opened` / `failed`) — whether the GitHub issue page
+opened, and nothing else. Never the surface it was pressed on, never the
+recovery code, and never the report itself: the report is a redacted document
+the user chooses to paste, not telemetry. A per-outcome one-hour deduplication
+key bounds a click-loop the same way the controls above are bounded, inside the
+existing `ade_feature_used` and shared ceilings. The report's own `Install id`
+line is `productAnalyticsService.getDistinctId()` — the exact value PostHog sees
+as `distinct_id` for this installation (the identified account hash when signed
+in, otherwise the random anonymous install token), surfaced so a report a user
+files by hand can be matched to the events this machine already sent.
+
+Pressing "Report issue" on any of ADE's error surfaces — the project recovery
+screen, the renderer error boundary, the project transition alert, the update
+banner — records the existing `ade_feature_used` event at the IPC owner boundary
+(the `diagnostics.openIssue` handler, where the outcome is known) with
+`feature: "connections"`, `action: "issue_report"`, and a coarse `outcome`:
+`opened` when the prefilled GitHub issue page was launched, `failed` when it
+could not be. That is the whole product question — whether the one control on a
+broken screen reaches GitHub — so nothing else crosses the boundary: not the
+surface it was pressed on, not the failure code or headline that put the screen
+there, not the report, the clipboard result, the report file path, or the
+install id the report carries. Those live in the local report file under
+`<userData>/diagnostic-reports/` and on the clipboard, which the person reads
+and pastes deliberately. A per-outcome one-hour deduplication key bounds a
+click-loop to at most 24 accepted events per outcome — 48 across both — per
+installation per UTC day, inside the existing `ade_feature_used` 140-per-day /
+30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
+The dashboard spec is deliberately untouched: no card asks this question yet.
+
+The diagnostic report itself is a **local** artifact and is not analytics. It
+deliberately includes the PostHog `distinct_id` for this installation
+(`productAnalyticsService.getDistinctId()`, a random per-install token — never a
+device, machine, or account identifier) so a report someone files by hand can be
+matched to the anonymous events the installation already sent. Nothing flows the
+other way: the report is written to disk and copied to the clipboard, and only
+the person filing it decides where it goes. Its body is redacted before it is
+written (home directory, project paths, usernames, hostnames and tailnet names,
+emails, credentials and routable IP addresses), and the GitHub issue title and
+stub body are redacted with the same context.
+
 Clicking "Reconnect this computer" on the Account pane's removed-machine banner
 records the existing `ade_feature_used` event at the IPC owner boundary (the
 `accountRepairMachinePairing` handler, where the repair outcome is known) with

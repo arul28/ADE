@@ -166,6 +166,10 @@ import type { SnoozeDurationKey } from "../../../desktop/src/renderer/lib/sessio
 import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde, INTERACTIVE_PROJECT_REGISTRATION } from "./connection";
+// Imported from the service manager rather than re-exported through
+// ./connection: several suites mock ./connection with a partial factory, and a
+// startup screen must not depend on an export those mocks have to remember.
+import { RuntimeServiceStillStartingError } from "../serviceManager/common";
 import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "./productAnalytics";
 import { WorkSessionsPane } from "./components/WorkSessionsPane";
 import {
@@ -3500,6 +3504,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [promptCursor, setPromptCursor] = useState(0);
   const [backgroundLaunchStatus, setBackgroundLaunchStatus] = useState<BackgroundLaunchStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The last connect failed only because a supervised brain had not answered
+   * yet. Nothing is broken and nothing needs repairing, so the startup screen
+   * says so and keeps waiting instead of showing a red failure.
+   */
+  const [startupServiceStarting, setStartupServiceStarting] = useState(false);
   const [contextPercent, setContextPercent] = useState<number | null>(null);
   const [tokenSummary, setTokenSummary] = useState<string | null>(null);
   const [statusLineStats, setStatusLineStats] = useState<TokenStats | null>(null);
@@ -8303,6 +8313,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       connectionRetryTimerRef.current = null;
     }
     setError(null);
+    setStartupServiceStarting(false);
     setMode("connecting");
     setConnectionRetrySeq((seq) => seq + 1);
   }, []);
@@ -8315,6 +8326,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     setMode("connecting");
     setError(null);
+    setStartupServiceStarting(false);
     void (async () => {
       try {
         const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote: remoteLaunch, projectRegistration: INTERACTIVE_PROJECT_REGISTRATION });
@@ -8382,6 +8394,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         heartbeatRef.current = null;
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
+        setStartupServiceStarting(err instanceof RuntimeServiceStillStartingError);
         setMode("connecting");
         connectionRetryTimerRef.current = setTimeout(() => {
           connectionRetryTimerRef.current = null;
@@ -10426,6 +10439,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       openLaneDetailsPane(lane);
+      return;
+    }
+
+    if (name === "/report-issue") {
+      // Deliberately above the `!conn` gate: the report reads local files only,
+      // so it still answers while the runtime is unreachable — the state a bug
+      // report is most worth filing from.
+      try {
+        const { buildTuiDiagnosticReport } = await import("./reportIssue");
+        const built = buildTuiDiagnosticReport({ projectRoot: project.projectRoot });
+        setRightPane({ kind: "details", title: "Report issue", body: built.body });
+      } catch (error) {
+        setRightPane({
+          kind: "details",
+          title: "Report issue",
+          body: [
+            "The report could not be built.",
+            "",
+            error instanceof Error ? error.message : String(error),
+            "",
+            "Run `ade report-issue --open` in any terminal instead.",
+          ].join("\n"),
+        });
+      }
       return;
     }
 
@@ -17245,6 +17282,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   if (error && !connection) {
     const remoteLabel = project.remoteLabel?.trim() || "the remote computer";
+    // A supervised brain that has not answered yet is not a failure. Mirror the
+    // desktop's `brain_starting` recovery copy: say what is happening, promise
+    // it opens on its own, and offer nothing to repair.
+    if (startupServiceStarting) {
+      return (
+        <Box flexDirection="column">
+          <Text color={theme.color.warning}>ADE's background service is starting</Text>
+          <Text>
+            This can take a minute the first time or right after an update.
+            ADE Code opens as soon as it is ready — there is nothing to do.
+          </Text>
+          <Text color={theme.color.mutedFg} dimColor>{error}</Text>
+          <Text color={theme.color.mutedFg} dimColor>
+            Waiting automatically · r retry now · Ctrl+C quit
+          </Text>
+        </Box>
+      );
+    }
     return (
       <Box flexDirection="column">
         <Text color="red">
@@ -17260,6 +17315,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ) : null}
         <Text color={theme.color.mutedFg} dimColor>
           Retrying automatically · r retry now · Ctrl+C quit
+        </Text>
+        <Text color={theme.color.mutedFg} dimColor>
+          Run `ade report-issue --open` in another terminal to file this with a redacted diagnostic report.
         </Text>
       </Box>
     );

@@ -544,7 +544,11 @@ Reused desktop renderer (web-mode adaptation):
   the directory read failed or the session lapsed - and telling the second user
   their account is empty is a lie they cannot act on. Its `kind`
   (`loading` / `no_machines` / `signed_out` / `unconfigured` / `unavailable`)
-  is the stable hook for tests.
+  is the stable hook for tests. The two failure kinds also carry a
+  `reassurance` line — that the machines and their projects are untouched and
+  only the list failed to load — set only where it is both true and not
+  obvious: a failure that costs nothing should say so, and one that costs
+  something must not be dressed up as harmless.
 - `apps/desktop/src/renderer/components/settings/WebScopeBanner.tsx` - the
   per-section scope line in Settings. On the desktop "where does this setting
   go" has one answer; in the browser it has three - the connected machine, the
