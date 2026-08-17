@@ -3965,6 +3965,35 @@ export function AgentChatPane({
   );
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  /**
+   * The binding this chat actually runs on. Handoff is a fact about the chat's
+   * machine, not about whichever project this tab happens to be bound to: a
+   * local chat viewed from a remote-bound tab can still hand off, and a chat
+   * pinned to a remote machine cannot — regardless of the tab.
+   */
+  const chatEffectiveBinding = chatRuntimePin ?? projectBinding ?? null;
+  const isRemoteChat = chatEffectiveBinding?.kind === "remote";
+  const chatMachineName = chatEffectiveBinding?.kind === "remote"
+    ? (chatEffectiveBinding.runtimeName || chatEffectiveBinding.displayName)
+    : null;
+  /**
+   * A brief handoff lands in a lane on the CHAT's machine, so both the picker
+   * and the auto-created lane have to target that machine. `availableLanes`/
+   * `lanes` describe the tab's bound machine, which is the right answer only
+   * for an unpinned chat.
+   */
+  const handoffLaneSourceLanes = useMemo<
+    Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>
+  >(() => {
+    if (!chatRuntimePin) return availableLanes ?? lanes;
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      if (machine.binding?.key === chatRuntimePin.key) return machine.lanes;
+    }
+    const cached = laneCacheByProject[
+      chatRuntimePin.kind === "remote" ? chatRuntimePin.key : chatRuntimePin.rootPath
+    ];
+    return cached?.lanes ?? [];
+  }, [availableLanes, chatRuntimePin, crossMachineLanesByMachineId, laneCacheByProject, lanes]);
   // Provided for the WHOLE pane, not just the transcript: the proposed-plan
   // card and question-option previews render agent markdown from the composer
   // subtree, and without an opener their file paths fall back to inert text.
@@ -9920,6 +9949,10 @@ export function AgentChatPane({
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked || handoffBusy) return;
     const sourceLaneId = selectedSession?.laneId ?? laneId;
     if (!sourceLaneId) return;
+    // Freeze routing for the whole operation. Lane creation and the handoff
+    // itself must land on the same machine, and a mid-flight lane-index change
+    // must not move the second call somewhere the first one's lane is unknown.
+    const handoffPin = chatRuntimePinRef.current;
     const jobId = createHandoffLaunchJobId();
     const patchHandoffJob = (patch: Partial<HandoffLaunchJob>) => {
       setHandoffLaunchJobs((current) => current.map((job) => (
@@ -9960,17 +9993,23 @@ export function AgentChatPane({
         if (isAutoCreateLaneOptionId(handoffTargetLaneId)) {
           const seed = trimmedHandoffNote || (selectedSession ? chatSessionTitle(selectedSession) : "") || "handoff";
           const laneName = createDeterministicAutoLaneName(seed, { genericSuffix: autoLaneGenericSuffix() });
-          const createdLane = await window.ade.lanes.create({ name: laneName });
+          // The handoff itself is pinned to this chat's machine, so the lane it
+          // targets has to be created there too — a lane made on the tab's
+          // machine is simply unknown to the runtime that runs the handoff.
+          const createdLane = await window.ade.lanes.create({ name: laneName }, ...chatPinArgsForBinding(handoffPin));
           resolvedTargetLaneId = createdLane.id;
           patchHandoffJob({ laneId: createdLane.id, laneName });
-          await refreshLanesStore().catch(() => {});
+          // Only the bound project's lane store is the one this refresh writes.
+          if (canRefreshPinnedProject(handoffPin)) {
+            await refreshLanesStore().catch(() => {});
+          }
         } else if (handoffTargetLaneId && handoffTargetLaneId !== sourceLaneId) {
           resolvedTargetLaneId = handoffTargetLaneId;
           // Re-home the sidebar placeholder to the lane the new chat will
           // actually appear in.
           patchHandoffJob({
             laneId: handoffTargetLaneId,
-            laneName: availableLanes?.find((lane) => lane.id === handoffTargetLaneId)?.name ?? handoffTargetLaneId,
+            laneName: handoffLaneSourceLanes.find((lane) => lane.id === handoffTargetLaneId)?.name ?? handoffTargetLaneId,
           });
         }
       }
@@ -9993,7 +10032,7 @@ export function AgentChatPane({
         ...(resolvedHandoffPermissionMode != null ? { permissionMode: resolvedHandoffPermissionMode } : {}),
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
-      }, ...chatPinArgsFor(chatRuntimePinRef));
+      }, ...chatPinArgsForBinding(handoffPin));
       setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
@@ -10034,10 +10073,11 @@ export function AgentChatPane({
       setHandoffBusy(false);
     }
   }, [
-    availableLanes,
+    canRefreshPinnedProject,
     canShowHandoff,
     handoffBlocked,
     handoffBusy,
+    handoffLaneSourceLanes,
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,
@@ -11810,7 +11850,6 @@ export function AgentChatPane({
       />
     </div>
   );
-  const handoffLaneSourceLanes = availableLanes ?? lanes;
   const handoffLaneOptions = handoffLaneSourceLanes.length
     ? [AUTO_CREATE_LANE_OPTION, ...handoffLaneSourceLanes]
     : [AUTO_CREATE_LANE_OPTION];
@@ -11955,8 +11994,10 @@ export function AgentChatPane({
             icon={Desktop}
             title="Continue on another machine"
             description="Move this chat to another computer running ADE."
-            disabled={isRemoteProject || handoffTurnGate}
-            footnote={isRemoteProject ? "Start this from the machine that owns the project." : null}
+            disabled={isRemoteChat || handoffTurnGate}
+            footnote={isRemoteChat
+              ? `This chat runs on ${chatMachineName ?? "another machine"}. Open that machine's project to start a cross-machine handoff.`
+              : null}
             onClick={() => setCrossMachineHandoffOpen(true)}
           />
           <HandoffMenuCard
@@ -14127,6 +14168,7 @@ export function AgentChatPane({
           open={crossMachineHandoffOpen}
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
+          runtimePin={chatRuntimePin}
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}

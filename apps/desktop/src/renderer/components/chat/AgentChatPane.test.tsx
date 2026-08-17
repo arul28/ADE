@@ -5295,6 +5295,183 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  /**
+   * Handoff is a fact about the machine the CHAT runs on, not about whichever
+   * project this tab happens to be bound to. A Work tab unions chats from every
+   * machine, so a local chat is routinely viewed from a remote-bound tab — and
+   * the cross-machine card used to be disabled purely because of that tab.
+   */
+  it("offers cross-machine handoff for a local chat viewed from a remote-bound tab", async () => {
+    const session = buildSession("session-local", { status: "idle", laneId: "lane-local" });
+    installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/Volumes/work/project-under-test", displayName: "project-under-test" } as any,
+      // The TAB is bound to a remote machine…
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-studio:project-studio",
+        targetId: "target-studio",
+        projectId: "project-studio",
+        runtimeName: "Mac Studio",
+        displayName: "project-under-test",
+        rootPath: "/Volumes/work/project-under-test",
+      } as any,
+      // …while this chat's lane lives on this Mac.
+      crossMachineLanesByMachineId: {
+        local: {
+          machineId: "local",
+          machineName: "This Mac",
+          targetId: null,
+          projectId: null,
+          binding: LOCAL_PROJECT_BINDING,
+          online: true,
+          lanes: [{
+            id: "lane-local",
+            name: "local lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/local-lane",
+            worktreePath: "/tmp/project-under-test/.ade/worktrees/local-lane",
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+
+    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
+    expect((card as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/cross-machine handoff/i)).toBeNull();
+  });
+
+  /**
+   * The reverse: the chat itself lives on another machine. Only that machine can
+   * package its history, so the card stays off — and says which machine to open.
+   */
+  it("blocks cross-machine handoff for a chat pinned to another machine and names it", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test", displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+
+    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
+    expect((card as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
+  });
+
+  /**
+   * The auto-created lane has to be made on the chat's machine: the pinned
+   * handoff that follows rejects a lane the runtime it targets has never heard
+   * of ("Unknown or unavailable lane").
+   */
+  it("auto-creates the brief handoff's lane on the chat's machine", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    const { handoff, createLane } = installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test", displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
+    fireEvent.click(await screen.findByText("Auto-create lane"));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(createLane).toHaveBeenCalledWith(
+        expect.objectContaining({ name: expect.any(String) }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
+      expect(handoff).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "brief", targetLaneId: "lane-created" }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
+    });
+  });
+
   it("routes a brief handoff into another selected lane", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { handoff } = installAdeMocks({ sessions: [session] });
