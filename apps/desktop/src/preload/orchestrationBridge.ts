@@ -39,33 +39,52 @@ export type OrchestrationBridgeDeps = {
   ipcRenderer: IpcRendererLike;
 };
 
-export function createOrchestrationBridge(deps: OrchestrationBridgeDeps) {
+/**
+ * The declared renderer contract for this namespace. Annotating the factory with
+ * it makes every method's name, arity and result type checked against
+ * `global.d.ts` here, at the one place that knows the wire shape — `callAction`
+ * can only promise `unknown`, so without this the whole namespace type-checked
+ * as `unknown` and any drift (a renamed action, a dropped `pin`) reached the
+ * renderer as a runtime failure.
+ */
+type OrchestrationBridge = Window["ade"]["orchestration"];
+
+export function createOrchestrationBridge(
+  deps: OrchestrationBridgeDeps,
+): OrchestrationBridge {
   const { callAction, subscribeRuntimeOrchestrationEvents, parseLegacyEvent, ipcRenderer } = deps;
+  // The declared return type supplies `T` at each call site below.
+  const call = <T>(
+    action: string,
+    args: unknown,
+    ipcChannel: string,
+    pin?: OpenProjectBinding | null,
+  ): Promise<T> => callAction(action, args, ipcChannel, pin) as Promise<T>;
   return {
     runCreate: (args: unknown, pin?: OpenProjectBinding | null) =>
-      callAction("runCreate", args, IPC.orchestrationRunCreate, pin),
+      call("runCreate", args, IPC.orchestrationRunCreate, pin),
     bundleRead: (args: unknown) =>
-      callAction("bundleRead", args, IPC.orchestrationBundleRead),
+      call("bundleRead", args, IPC.orchestrationBundleRead),
     manifestReadSection: (args: unknown) =>
-      callAction("manifestReadSection", args, IPC.orchestrationManifestReadSection),
+      call("manifestReadSection", args, IPC.orchestrationManifestReadSection),
     manifestPatch: (args: unknown) =>
-      callAction("manifestPatch", args, IPC.orchestrationManifestPatch),
+      call("manifestPatch", args, IPC.orchestrationManifestPatch),
     planAppend: (args: unknown) =>
-      callAction("planAppend", args, IPC.orchestrationPlanAppend),
+      call("planAppend", args, IPC.orchestrationPlanAppend),
     planWrite: (args: unknown) =>
-      callAction("planWrite", args, IPC.orchestrationPlanWrite),
+      call("planWrite", args, IPC.orchestrationPlanWrite),
     spawnAgent: (args: unknown) =>
-      callAction("spawnAgent", args, IPC.orchestrationSpawnAgent),
+      call("spawnAgent", args, IPC.orchestrationSpawnAgent),
     agentInject: (args: unknown) =>
-      callAction("agentInject", args, IPC.orchestrationAgentInject),
+      call("agentInject", args, IPC.orchestrationAgentInject),
     assetRegister: (args: unknown) =>
-      callAction("assetRegister", args, IPC.orchestrationAssetRegister),
+      call("assetRegister", args, IPC.orchestrationAssetRegister),
     claimTask: (args: unknown) =>
-      callAction("claimTask", args, IPC.orchestrationClaimTask),
+      call("claimTask", args, IPC.orchestrationClaimTask),
     releaseTask: (args: unknown) =>
-      callAction("releaseTask", args, IPC.orchestrationReleaseTask),
+      call("releaseTask", args, IPC.orchestrationReleaseTask),
     runList: (args: unknown = {}) =>
-      callAction("runList", args, IPC.orchestrationRunList),
+      call("runList", args, IPC.orchestrationRunList),
     subscribe: (
       args: { runId: string; laneId?: string },
       callback: (payload: OrchestrationEventPayload) => void,

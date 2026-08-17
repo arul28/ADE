@@ -15,6 +15,7 @@ import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export type MiscNamespaces = {
   sync: AdeNamespace<"sync">;
@@ -417,7 +418,13 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   infra.addDispose(stopOAuthDrain);
 
   const ai: Record<string, unknown> = {
-    getStatus: (args?: unknown) => call("ai.getStatus", args, aiStatus()),
+    // Pinned in the Electron contract: the AI status describes the machine that
+    // answered it, so a pin naming another machine cannot be served from this
+    // adapter's single connection.
+    getStatus: async (args?: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.getStatus", pin, infra);
+      return await call("ai.getStatus", args, aiStatus());
+    },
     getOpenCodeRuntimeDiagnostics: async () => ({ installed: false, available: false, diagnostics: [] }),
     isOpenCodeInstalled: async () => ({ installed: false, source: "missing" }),
     // The pinned-tools cache is a property of the machine running the desktop
@@ -569,7 +576,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   };
 
   const projectConfig: Record<string, unknown> = {
-    get: () => call("projectConfig.get", {}, projectConfigSnapshot(state.getProject()?.rootPath ?? "")),
+    get: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("projectConfig.get", pin, infra);
+      return await call("projectConfig.get", {}, projectConfigSnapshot(state.getProject()?.rootPath ?? ""));
+    },
     validate: async () => projectConfigSnapshot(state.getProject()?.rootPath ?? "").validation,
     // A snapshot fallback here would echo the settings back as if they were
     // stored: Settings renders "Saved" and the write is gone. Fail loudly
@@ -623,7 +633,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
     cto: createCtoNamespace(call, localState),
-    orchestration: createOrchestrationNamespace(call),
+    orchestration: createOrchestrationNamespace(call, infra),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
@@ -786,9 +796,15 @@ function createCtoNamespace(
   } as unknown as NonNullable<Window["ade"]["cto"]>;
 }
 
-function createOrchestrationNamespace(call: MiscCall): Partial<Window["ade"]["orchestration"]> {
+function createOrchestrationNamespace(
+  call: MiscCall,
+  infra: AdapterInfra,
+): Partial<Window["ade"]["orchestration"]> {
   return {
-    runCreate: (args: unknown) => call("orchestration.runCreate", args, { ok: false, error: "unsupported" }, false),
+    runCreate: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("orchestration.runCreate", pin, infra);
+      return await call("orchestration.runCreate", args, { ok: false, error: "unsupported" }, false);
+    },
   } as unknown as Partial<Window["ade"]["orchestration"]>;
 }
 

@@ -6,7 +6,7 @@ import {
   selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
-import { selectOtherMachineBranchStates } from "../../state/crossMachineLanes";
+import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
@@ -36,7 +36,8 @@ import type {
   GitSyncMode,
   GitUpstreamSyncStatus,
   AutoRebaseLaneStatus,
-  LaneSummary
+  LaneSummary,
+  OpenProjectBinding
 } from "../../../shared/types";
 
 type LaneTextPromptState = {
@@ -68,6 +69,12 @@ type PendingGuardedPush =
   | { kind: "rebase-push"; confirmPublish: boolean; warning: NonNullable<DivergenceWarning> };
 
 const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
+/**
+ * Lane orchestration IPC (`lanes.rebaseStart`, `lanes.createFromUnstaged`) has
+ * no machine-pin parameter, so these actions cannot run against a chat on
+ * another machine. Fail loudly rather than silently acting on the wrong one.
+ */
+const LOCAL_ONLY_ACTION_MESSAGE = "This action only works on the machine this project tab is connected to.";
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
 type LaneGitActionRuntimeState = {
   version: number;
@@ -235,15 +242,15 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
 // cross-machine lane list, it fills the prop.
 
 // Identity for the machine the renderer is running on, so the guard never
-// warns about this machine. Values match `laneMachines.ts` (THIS_MACHINE_ID /
-// THIS_MACHINE_NAME) so a caller sourcing `others` from that module lines up
-// without a translation step. Machines are named absolutely — never "remote".
-// Imported, not re-typed. The previous hardcoded literals were kept in sync
-// with laneMachines.ts by a comment; the guard compares machine ids, so a drift
-// here makes it warn that This computer diverged from itself.
+// warns about this machine. The id matches `laneMachines.ts` (THIS_MACHINE_ID)
+// so a caller sourcing `others` from that module lines up without a
+// translation step; display names come from `machineNameForBinding`. Machines
+// are named absolutely — never "remote". Imported, not re-typed: the guard
+// compares machine ids, so a drift here makes it warn that This computer
+// diverged from itself.
 import {
   THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
-  THIS_MACHINE_NAME as THIS_MACHINE_GUARD_NAME,
+  machineNameForBinding,
 } from "../../../shared/machineIdentity";
 
 export {
@@ -623,7 +630,8 @@ export function LaneGitActionsPane({
   otherMachineBranchStates = EMPTY_MACHINE_BRANCH_STATES,
   currentMachineName,
   currentMachineId,
-  currentMachineHeadSha = null
+  currentMachineHeadSha = null,
+  runtimePin = null
 }: {
   laneId: string | null;
   active?: boolean;
@@ -660,6 +668,14 @@ export function LaneGitActionsPane({
   currentMachineId?: string;
   /** This machine's head commit, when a caller knows it. Unknown is fine. */
   currentMachineHeadSha?: string | null;
+  /**
+   * Machine this lane actually lives on. `null` (the default, and every
+   * pre-existing call site) means the tab's bound machine. When set, every
+   * git/diff read and write is routed there instead, and the panel's cached
+   * state is keyed on the pin so a tab switch never shows another machine's
+   * changes.
+   */
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -670,13 +686,26 @@ export function LaneGitActionsPane({
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  const pin = runtimePin ?? null;
+  // Lane ids are only unique per machine, so a pinned panel gets its own cache
+  // namespace. Without this, two machines' same-named lanes share one entry and
+  // a tab switch paints the wrong machine's changes.
+  const projectStateKey = pin ? `pin:${pin.kind}:${pin.key}` : activeProjectStateKey;
 
-  const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
+  // A foreign lane is absent from the local `lanes` array; resolve it against
+  // the pinned machine's own slice of the cross-machine union. Never against
+  // `lanes` — that is the TAB's machine, and lane ids are unique only per
+  // machine, so falling back there can match a different machine's lane and
+  // drive git on the wrong checkout.
+  const pinnedMachineLanes = useLanesForPin(pin);
+  const pinnedLanes: LaneSummary[] = pinnedMachineLanes ?? lanes;
+
+  const lane = useMemo(() => pinnedLanes.find((entry) => entry.id === laneId) ?? null, [pinnedLanes, laneId]);
   const parentLane = useMemo(() => {
     if (!lane?.parentLaneId) return null;
-    return lanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
-  }, [lanes, lane]);
+    return pinnedLanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
+  }, [pinnedLanes, lane]);
 
   const originLabel = useMemo(() => {
     if (!lane || lane.laneType === "primary") return null;
@@ -809,7 +838,7 @@ export function LaneGitActionsPane({
     const hasCachedState = Boolean(readLaneGitActionsCachedState(projectStateKey, targetLaneId));
     if (isViewingLane(targetLaneId) && !hasCachedState) setLoading(true);
     try {
-      const next = await window.ade.diff.getChanges({ laneId: targetLaneId });
+      const next = await window.ade.diff.getChanges({ laneId: targetLaneId }, pin);
       patchLaneGitActionsCachedState(projectStateKey, targetLaneId, { changes: next });
       if (isViewingLane(targetLaneId)) {
         setChanges(next);
@@ -824,9 +853,9 @@ export function LaneGitActionsPane({
   const refreshGitMeta = async (targetLaneId: string | null = laneId) => {
     if (!targetLaneId) return;
     const [stashesResult, syncStatusResult, conflictResult] = await Promise.allSettled([
-      window.ade.git.stashList({ laneId: targetLaneId }),
-      window.ade.git.getSyncStatus({ laneId: targetLaneId }),
-      window.ade.git.getConflictState(targetLaneId)
+      window.ade.git.stashList({ laneId: targetLaneId }, pin),
+      window.ade.git.getSyncStatus({ laneId: targetLaneId }, pin),
+      window.ade.git.getConflictState(targetLaneId, pin)
     ]);
 
     const stashes = stashesResult.status === "fulfilled" ? stashesResult.value : undefined;
@@ -851,15 +880,17 @@ export function LaneGitActionsPane({
   const refreshLaneGitState = useCallback(async (targetLaneId: string | null) => {
     await Promise.all([
       refreshChanges(targetLaneId),
-      refreshLanes({ includeStatus: true, includeSnapshots: false }),
+      // The global lane store belongs to the tab's bound machine. Refreshing it
+      // after a foreign lane's git action would be work for the wrong machine.
+      pin ? Promise.resolve() : refreshLanes({ includeStatus: true, includeSnapshots: false }),
       refreshGitMeta(targetLaneId),
     ]);
-  }, [refreshChanges, refreshGitMeta, refreshLanes]);
+  }, [pin, refreshChanges, refreshGitMeta, refreshLanes]);
 
   const refreshAll = async (options?: { fetchRemote?: boolean }, targetLaneId: string | null = laneId) => {
     if (targetLaneId && options?.fetchRemote) {
       try {
-        await window.ade.git.fetch({ laneId: targetLaneId });
+        await window.ade.git.fetch({ laneId: targetLaneId }, pin);
       } catch {
         // best effort
       }
@@ -892,6 +923,12 @@ export function LaneGitActionsPane({
       }
       return;
     }
+    if (pin) {
+      // `lanes.listAutoRebaseStatuses` has no pin parameter; reading the local
+      // machine's statuses for a foreign lane would be wrong, not merely stale.
+      if (isViewingLane(targetLaneId)) setAutoRebaseStatus(null);
+      return;
+    }
     try {
       const statuses = await window.ade.lanes.listAutoRebaseStatuses();
       const nextStatus = statuses.find((entry) => entry.laneId === targetLaneId) ?? null;
@@ -904,7 +941,7 @@ export function LaneGitActionsPane({
         setAutoRebaseStatus(null);
       }
     }
-  }, [isViewingLane, laneId, projectStateKey]);
+  }, [isViewingLane, laneId, pin, projectStateKey]);
 
   const refreshCommitMessageAiState = useCallback(async () => {
     try {
@@ -990,7 +1027,7 @@ export function LaneGitActionsPane({
         // A pull that stops on merge/rebase conflicts still resolves (the git
         // service treats detected conflicts as a completed operation), so check
         // conflict state before claiming success.
-        const postPullConflicts = await window.ade.git.getConflictState(actionLaneId).catch(() => null);
+        const postPullConflicts = await window.ade.git.getConflictState(actionLaneId, pin).catch(() => null);
         if (postPullConflicts?.inProgress) {
           showToast({
             title: laneLabel,
@@ -1045,7 +1082,7 @@ export function LaneGitActionsPane({
     const message = commitMessage.trim();
     if (message.length > 0) {
       void runAction(amendCommit ? "amend commit" : "commit", async () => {
-        await window.ade.git.commit({ laneId, message, amend: amendCommit });
+        await window.ade.git.commit({ laneId, message, amend: amendCommit }, pin);
         await completeCommitRefresh(laneId);
       });
       return;
@@ -1059,11 +1096,11 @@ export function LaneGitActionsPane({
       error: null,
     });
     try {
-      const generated = await window.ade.git.generateCommitMessage({ laneId: actionLaneId, amend: amendCommit });
+      const generated = await window.ade.git.generateCommitMessage({ laneId: actionLaneId, amend: amendCommit }, pin);
       if (isViewingLane(actionLaneId)) {
         setCommitMessage(generated.message);
       }
-      await window.ade.git.commit({ laneId: actionLaneId, message: generated.message, amend: amendCommit });
+      await window.ade.git.commit({ laneId: actionLaneId, message: generated.message, amend: amendCommit }, pin);
       await completeCommitRefresh(actionLaneId);
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
@@ -1132,7 +1169,7 @@ export function LaneGitActionsPane({
     const effectLaneId = laneId;
     const refreshSyncStatus = () => {
       void window.ade.git
-        .getSyncStatus({ laneId: effectLaneId })
+        .getSyncStatus({ laneId: effectLaneId }, pin)
         .then((nextStatus) => {
           patchLaneGitActionsCachedState(projectStateKey, effectLaneId, { syncStatus: nextStatus });
           if (isViewingLane(effectLaneId)) {
@@ -1169,10 +1206,10 @@ export function LaneGitActionsPane({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [active, isViewingLane, laneId, projectStateKey]);
+  }, [active, isViewingLane, laneId, pin, projectStateKey]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || pin) return;
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
       if (!laneId) {
@@ -1184,7 +1221,7 @@ export function LaneGitActionsPane({
       setAutoRebaseStatus(nextStatus);
     });
     return unsubscribe;
-  }, [active, laneId, projectStateKey]);
+  }, [active, laneId, pin, projectStateKey]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
@@ -1215,9 +1252,9 @@ export function LaneGitActionsPane({
   const toggleStageFile = async (path: string, isStaged: boolean) => {
     if (!laneId) return;
     if (isStaged) {
-      await window.ade.git.unstageFile({ laneId, path });
+      await window.ade.git.unstageFile({ laneId, path }, pin);
     } else {
-      await window.ade.git.stageFile({ laneId, path });
+      await window.ade.git.stageFile({ laneId, path }, pin);
     }
     await refreshChanges();
   };
@@ -1228,7 +1265,7 @@ export function LaneGitActionsPane({
     const ok = window.confirm(`Discard all changes to ${path}? This cannot be undone.`);
     if (!ok) return;
     void runAction("discard file", async () => {
-      await window.ade.git.discardFile({ laneId, path });
+      await window.ade.git.discardFile({ laneId, path }, pin);
     });
   };
 
@@ -1238,7 +1275,7 @@ export function LaneGitActionsPane({
     const ok = window.confirm(`Discard staged and unstaged changes to ${path}? This cannot be undone.`);
     if (!ok) return;
     void runAction("discard staged file", async () => {
-      await window.ade.git.restoreStagedFile({ laneId, path });
+      await window.ade.git.restoreStagedFile({ laneId, path }, pin);
     });
   };
 
@@ -1249,7 +1286,7 @@ export function LaneGitActionsPane({
     if (!ok) return;
     void runAction("discard all", async () => {
       for (const file of changes.unstaged) {
-        await window.ade.git.discardFile({ laneId, path: file.path });
+        await window.ade.git.discardFile({ laneId, path: file.path }, pin);
       }
     });
   };
@@ -1261,7 +1298,7 @@ export function LaneGitActionsPane({
     if (!ok) return;
     void runAction("discard staged files", async () => {
       for (const file of changes.staged) {
-        await window.ade.git.restoreStagedFile({ laneId, path: file.path });
+        await window.ade.git.restoreStagedFile({ laneId, path: file.path }, pin);
       }
     });
   };
@@ -1269,7 +1306,7 @@ export function LaneGitActionsPane({
   const stageAll = () => {
     if (!laneId) return;
     void runAction("stage all", async () => {
-      await window.ade.git.stageAll({ laneId, paths: changes.unstaged.map((file) => file.path) });
+      await window.ade.git.stageAll({ laneId, paths: changes.unstaged.map((file) => file.path) }, pin);
     });
   };
 
@@ -1315,6 +1352,7 @@ export function LaneGitActionsPane({
       error: null,
     });
     try {
+      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
       const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name });
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
@@ -1339,6 +1377,7 @@ export function LaneGitActionsPane({
     laneGitActionScopeKey,
     laneId,
     navigate,
+    pin,
     projectStateKey,
     refreshLanes,
     requestTextInput,
@@ -1348,7 +1387,7 @@ export function LaneGitActionsPane({
   const unstageAll = () => {
     if (!laneId) return;
     void runAction("unstage all", async () => {
-      await window.ade.git.unstageAll({ laneId, paths: changes.staged.map((file) => file.path) });
+      await window.ade.git.unstageAll({ laneId, paths: changes.staged.map((file) => file.path) }, pin);
     });
   };
 
@@ -1358,10 +1397,12 @@ export function LaneGitActionsPane({
   // memo) so a single-machine project pays nothing.
   const resolvePushDivergence = useCallback((): NonNullable<DivergenceWarning> | null => {
     if (!lane) return null;
+    // When pinned, "current" is the chat's machine, not the tab's binding —
+    // otherwise the guard warns that a machine diverged from itself.
+    const guardBinding = pin ?? projectBinding;
     const activeMachineId = currentMachineId
-      ?? (projectBinding?.kind === "remote" ? projectBinding.targetId : THIS_MACHINE_GUARD_ID);
-    const activeMachineName = currentMachineName
-      ?? (projectBinding?.kind === "remote" ? projectBinding.runtimeName : THIS_MACHINE_GUARD_NAME);
+      ?? (guardBinding?.kind === "remote" ? guardBinding.targetId : THIS_MACHINE_GUARD_ID);
+    const activeMachineName = currentMachineName ?? machineNameForBinding(guardBinding);
     // The union slice keeps a stable reference while unchanged, so subscribing
     // costs one identity check per store tick and re-renders nothing. The
     // selector itself is memoized and only runs here, at click time. An
@@ -1393,6 +1434,7 @@ export function LaneGitActionsPane({
     lane,
     lanes,
     otherMachineBranchStates,
+    pin,
     projectBinding,
     syncStatus,
   ]);
@@ -1400,7 +1442,7 @@ export function LaneGitActionsPane({
   const executePush = (forceWithLease: boolean) => {
     if (!laneId) return;
     void runAction(forceWithLease ? "force push" : "push", async () => {
-      await window.ade.git.push({ laneId, forceWithLease });
+      await window.ade.git.push({ laneId, forceWithLease }, pin);
     });
   };
 
@@ -1417,26 +1459,26 @@ export function LaneGitActionsPane({
   const runPull = (mode: GitSyncMode) => {
     if (!laneId) return;
     void runAction("pull", async () => {
-      const latestConflictState = await window.ade.git.getConflictState(laneId).catch(() => null);
+      const latestConflictState = await window.ade.git.getConflictState(laneId, pin).catch(() => null);
       if (latestConflictState?.inProgress) {
         setConflictState(latestConflictState);
         setStuckRebase(latestConflictState.kind === "rebase" ? latestConflictState : null);
         const kindLabel = latestConflictState.kind === "merge" ? "merge" : "rebase";
         throw new Error(`Finish the current ${kindLabel} before pulling remote changes.`);
       }
-      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId }).catch(() => null);
+      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId }, pin).catch(() => null);
       if (latestSyncStatus) setSyncStatus(latestSyncStatus);
       const targetBaseRef = latestSyncStatus?.hasUpstream && latestSyncStatus.upstreamRef
         ? latestSyncStatus.upstreamRef
         : (lane?.baseRef ?? undefined);
-      await window.ade.git.sync({ laneId, mode, baseRef: targetBaseRef });
+      await window.ade.git.sync({ laneId, mode, baseRef: targetBaseRef }, pin);
     });
   };
 
   const runFetchOnly = () => {
     if (!laneId) return;
     void runAction("fetch", async () => {
-      await window.ade.git.fetch({ laneId });
+      await window.ade.git.fetch({ laneId }, pin);
     });
   };
 
@@ -1448,6 +1490,7 @@ export function LaneGitActionsPane({
         return;
       }
 
+      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
       const start = await window.ade.lanes.rebaseStart({
         laneId,
         scope: "lane_only",
@@ -1458,8 +1501,8 @@ export function LaneGitActionsPane({
         throw new Error(start.run.error ?? "Rebase failed.");
       }
 
-      await window.ade.git.fetch({ laneId }).catch(() => {});
-      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId });
+      await window.ade.git.fetch({ laneId }, pin).catch(() => {});
+      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId }, pin);
       setSyncStatus(latestSyncStatus);
 
       if (!latestSyncStatus.hasUpstream) {
@@ -1472,7 +1515,7 @@ export function LaneGitActionsPane({
           );
           if (!ok) throw new Error("__ade_cancelled__");
         }
-        await window.ade.git.push({ laneId });
+        await window.ade.git.push({ laneId }, pin);
         return;
       }
 
@@ -1483,7 +1526,7 @@ export function LaneGitActionsPane({
           );
           if (!ok) throw new Error("__ade_cancelled__");
         }
-        await window.ade.git.push({ laneId, forceWithLease: true });
+        await window.ade.git.push({ laneId, forceWithLease: true }, pin);
         return;
       }
 
@@ -1494,7 +1537,7 @@ export function LaneGitActionsPane({
           );
           if (!ok) throw new Error("__ade_cancelled__");
         }
-        await window.ade.git.push({ laneId });
+        await window.ade.git.push({ laneId }, pin);
       }
     });
   };
@@ -1993,7 +2036,7 @@ export function LaneGitActionsPane({
                     onClick={() => {
                       if (!laneId) return;
                       void runAction("abort rebase", async () => {
-                        await window.ade.git.rebaseAbort(laneId);
+                        await window.ade.git.rebaseAbort(laneId, pin);
                       });
                     }}
                   >
@@ -2015,7 +2058,7 @@ export function LaneGitActionsPane({
                     onClick={() => {
                       if (!laneId) return;
                       void runAction("continue rebase", async () => {
-                        await window.ade.git.rebaseContinue(laneId);
+                        await window.ade.git.rebaseContinue(laneId, pin);
                       });
                     }}
                   >
@@ -2065,7 +2108,7 @@ export function LaneGitActionsPane({
                     onClick={() => {
                       if (!laneId) return;
                       void runAction("abort merge", async () => {
-                        await window.ade.git.mergeAbort(laneId);
+                        await window.ade.git.mergeAbort(laneId, pin);
                       });
                     }}
                   >
@@ -2087,7 +2130,7 @@ export function LaneGitActionsPane({
                     onClick={() => {
                       if (!laneId) return;
                       void runAction("continue merge", async () => {
-                        await window.ade.git.mergeContinue(laneId);
+                        await window.ade.git.mergeContinue(laneId, pin);
                       });
                     }}
                   >
@@ -2534,6 +2577,7 @@ export function LaneGitActionsPane({
                       return;
                     }
                     void runAction("rebase", async () => {
+                      if (pin) throw new Error(LOCAL_ONLY_ACTION_MESSAGE);
                       const start = await window.ade.lanes.rebaseStart({
                         laneId,
                         scope: "lane_only",
@@ -2578,14 +2622,14 @@ export function LaneGitActionsPane({
                 onClick={() => {
                   if (!laneId) return;
                   void runAction("revert commit", async () => {
-                    const commits = await window.ade.git.listRecentCommits({ laneId, limit: 20 });
+                    const commits = await window.ade.git.listRecentCommits({ laneId, limit: 20 }, pin);
                     const sha = await requestTextInput({
                       title: "Commit SHA to revert",
                       defaultValue: commits[0]?.sha ?? "",
                       validate: (value) => (value ? null : "Commit SHA is required")
                     });
                     if (!sha) throw new Error("__ade_cancelled__");
-                    await window.ade.git.revertCommit({ laneId, commitSha: sha });
+                    await window.ade.git.revertCommit({ laneId, commitSha: sha }, pin);
                   });
                 }}
                 smartTooltip={{
@@ -2607,7 +2651,7 @@ export function LaneGitActionsPane({
                       validate: (value) => (value ? null : "Commit SHA is required")
                     });
                     if (!sha) throw new Error("__ade_cancelled__");
-                    await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
+                    await window.ade.git.cherryPickCommit({ laneId, commitSha: sha }, pin);
                   });
                 }}
                 smartTooltip={{
@@ -2798,6 +2842,7 @@ export function LaneGitActionsPane({
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <LaneDiffPane
                   laneId={laneId}
+                  runtimePin={pin}
                   selectedPath={selectedPath}
                   selectedFileMode={selectedMode}
                   selectedCommit={selectedCommit}
@@ -2846,7 +2891,7 @@ export function LaneGitActionsPane({
                               validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
                             });
                             if (confirmation == null) throw new Error("__ade_cancelled__");
-                            await window.ade.git.stashClear({ laneId });
+                            await window.ade.git.stashClear({ laneId }, pin);
                             await refreshGitMeta(laneId);
                           });
                         }}
@@ -2876,7 +2921,7 @@ export function LaneGitActionsPane({
                             confirmLabel: "Save stash",
                           });
                           if (msg == null) throw new Error("__ade_cancelled__");
-                          await window.ade.git.stashPush({ laneId, message: msg || undefined, includeUntracked: hasUntrackedChanges });
+                          await window.ade.git.stashPush({ laneId, message: msg || undefined, includeUntracked: hasUntrackedChanges }, pin);
                         });
                       }}
                     >
@@ -2926,7 +2971,7 @@ export function LaneGitActionsPane({
                             onClick={() => {
                               if (!laneId) return;
                               void runAction("stash pop", async () => {
-                                await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
+                                await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
                                 await refreshGitMeta(laneId);
                               });
                             }}
@@ -2947,7 +2992,7 @@ export function LaneGitActionsPane({
                             onClick={() => {
                               if (!laneId) return;
                               void runAction("stash apply", async () => {
-                                await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid });
+                                await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
                               });
                             }}
                           >
@@ -2976,7 +3021,7 @@ export function LaneGitActionsPane({
                                   validate: (v) => v.trim().toLowerCase() === "delete" ? null : "Type delete to confirm",
                                 });
                                 if (confirmation == null) throw new Error("__ade_cancelled__");
-                                await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
+                                await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
                                 await refreshGitMeta(laneId);
                               });
                             }}
@@ -3056,6 +3101,7 @@ export function LaneGitActionsPane({
             <div style={{ flex: 1, minHeight: 0 }}>
               <CommitTimeline
                 laneId={laneId ?? null}
+                runtimePin={pin}
                 active={active}
                 selectedSha={selectedCommitSha}
                 refreshTrigger={commitTimelineKey}

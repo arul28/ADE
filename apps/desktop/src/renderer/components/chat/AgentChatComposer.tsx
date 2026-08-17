@@ -47,8 +47,10 @@ import {
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
+  isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTrigger,
+  type ComposerTriggerDismissal,
 } from "../../../shared/composerTriggers";
 import {
   formatChatMentionToken,
@@ -1865,6 +1867,43 @@ export function AgentChatComposer({
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
+  // The last trigger the user dismissed (Escape) or that died on a no-match
+  // query. Held in a ref because it only gates the next open, never a render.
+  const dismissedTriggerRef = useRef<ComposerTriggerDismissal | null>(null);
+  /** Close the menu and forget any dismissal — the trigger is resolved. */
+  const closeCommandMenu = useCallback(() => {
+    dismissedTriggerRef.current = null;
+    setCommandMenuTrigger(null);
+  }, []);
+  /**
+   * Close the menu and leave any existing dismissal untouched.
+   *
+   * The third close semantic, and the one that is easy to write by accident:
+   * this trigger cannot open a menu right now (it is already a confirmed
+   * token, or it is still covered by a dismissal the user made earlier), but
+   * nothing about it is *resolved* and nothing new was *dismissed*. Clearing
+   * the dismissal here would re-open the menu the user just escaped; recording
+   * one would suppress the menu for a trigger the user never dismissed.
+   */
+  const closeCommandMenuKeepingDismissal = useCallback(() => {
+    setCommandMenuTrigger(null);
+  }, []);
+  /** Close the menu and keep it closed while the user extends this query. */
+  const dismissCommandMenu = useCallback((trigger: ComposerTrigger | null) => {
+    dismissedTriggerRef.current = trigger
+      ? { type: trigger.type, start: trigger.start, query: trigger.query }
+      : null;
+    setCommandMenuTrigger(null);
+  }, []);
+  /**
+   * True when this trigger may open the menu. A trigger that is no longer
+   * covered by the dismissal clears it, so the next dead query starts fresh.
+   */
+  const allowCommandMenuTrigger = useCallback((trigger: ComposerTrigger): boolean => {
+    if (isComposerTriggerDismissed(trigger, dismissedTriggerRef.current)) return false;
+    dismissedTriggerRef.current = null;
+    return true;
+  }, []);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -2084,7 +2123,7 @@ export function AgentChatComposer({
     setAttachmentPickerOpen(false);
     setIssueContextMenuOpen(false);
     setLinearIssuePickerOpen(false);
-    setCommandMenuTrigger(null);
+    closeCommandMenu();
     setDragActive(false);
     if (clipboardImagePasteFallbackTimerRef.current != null) {
       window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
@@ -2098,7 +2137,7 @@ export function AgentChatComposer({
       if (!current.length) return current;
       return [];
     });
-  }, [composerInputLocked, pendingImageAttachments]);
+  }, [closeCommandMenu, composerInputLocked, pendingImageAttachments]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -2815,14 +2854,18 @@ export function AgentChatComposer({
   const evaluatePlainTrigger = useCallback((node: HTMLTextAreaElement, caret: number, openIfNew: boolean) => {
     const trigger = detectComposerTrigger(node.value, caret);
     if (!trigger) {
-      setCommandMenuTrigger(null);
+      closeCommandMenu();
       return;
     }
     if (composerTriggerHasConfirmedPrefix(node.value, trigger, {
       isFile: (body) => attachedPaths.has(body),
       isMention: isChatMentionTokenBody,
     })) {
-      setCommandMenuTrigger(null);
+      closeCommandMenuKeepingDismissal();
+      return;
+    }
+    if (!allowCommandMenuTrigger(trigger)) {
+      closeCommandMenuKeepingDismissal();
       return;
     }
     if (!openIfNew) {
@@ -2837,7 +2880,7 @@ export function AgentChatComposer({
     setCommandMenuTrigger(trigger);
     const anchor = getCommandMenuAnchor(node);
     if (anchor) setCommandMenuAnchor(anchor);
-  }, [attachedPaths]);
+  }, [allowCommandMenuTrigger, attachedPaths, closeCommandMenu, closeCommandMenuKeepingDismissal]);
 
   const restoreTextareaCaret = useCallback((caret: number) => {
     lastPlainSelectionRef.current = caret;
@@ -4091,14 +4134,16 @@ export function AgentChatComposer({
     /* Command menu keyboard navigation */
     if (commandMenuTrigger) {
       if (event.key === "ArrowUp" || event.key === "ArrowDown") cancelPromptHistorySequence();
-      if (event.key === "Escape") { event.preventDefault(); setCommandMenuTrigger(null); return; }
+      // Escape is an explicit dismissal: typing the rest of this token must not
+      // bring the menu back.
+      if (event.key === "Escape") { event.preventDefault(); dismissCommandMenu(commandMenuTrigger); return; }
       if (event.key === "ArrowDown") { event.preventDefault(); commandMenuRef.current?.moveDown(); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); commandMenuRef.current?.moveUp(); return; }
       if (event.key === "Enter" || event.key === "Tab") {
         if (commandMenuRef.current?.selectCurrent()) { event.preventDefault(); return; }
         // No matching row (e.g. "check /tmp"): close the menu and let
         // Enter/Tab fall through to their normal send/suggestion behavior.
-        setCommandMenuTrigger(null);
+        dismissCommandMenu(commandMenuTrigger);
       }
     }
 
@@ -4250,13 +4295,13 @@ export function AgentChatComposer({
 
   const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
     if (composerInputLocked) {
-      setCommandMenuTrigger(null);
+      closeCommandMenu();
       return;
     }
     if (item.type === "file" && commandMenuTrigger) {
       if (!canAttach) {
         setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
-        setCommandMenuTrigger(null);
+        closeCommandMenu();
         return;
       }
       // Replace exactly the @query trigger span with the confirmed token.
@@ -4317,8 +4362,8 @@ export function AgentChatComposer({
         restoreTextareaCaret(next.caret);
       }
     }
-    setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+    closeCommandMenu();
+  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
@@ -4335,15 +4380,22 @@ export function AgentChatComposer({
       return;
     }
     const context = getRichTriggerContext();
-    if (context) {
-      setCommandMenuTrigger(context.trigger);
-      const anchor = getCommandMenuAnchor(editor);
-      if (anchor) setCommandMenuAnchor(anchor);
-    } else {
-      setCommandMenuTrigger(null);
+    if (!context) {
+      // No trigger under the caret at all — the trigger is gone, not dismissed.
+      closeCommandMenu();
+      captureRichSelection();
+      return;
     }
+    if (!allowCommandMenuTrigger(context.trigger)) {
+      closeCommandMenuKeepingDismissal();
+      captureRichSelection();
+      return;
+    }
+    setCommandMenuTrigger(context.trigger);
+    const anchor = getCommandMenuAnchor(editor);
+    if (anchor) setCommandMenuAnchor(anchor);
     captureRichSelection();
-  }, [captureRichSelection, clearPromptHistory, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
+  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
@@ -5676,7 +5728,8 @@ export function AgentChatComposer({
             onMentionSearch={onSearchMentions}
             anchor={commandMenuAnchor}
             onSelect={handleCommandMenuSelect}
-            onClose={() => setCommandMenuTrigger(null)}
+            onClose={closeCommandMenu}
+            onNoMatches={dismissCommandMenu}
           />
           {useRichComposer ? (
             <div className="relative">

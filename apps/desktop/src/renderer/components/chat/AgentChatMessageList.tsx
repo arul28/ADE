@@ -82,6 +82,7 @@ import {
   CHAT_WORK_LOG_CARD_CLASS,
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { transcriptRowGapPx, useChatChromeTint } from "./chatAppearance";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
@@ -5331,7 +5332,11 @@ function AgentChatMessageListMain({
   onOpenProofDrawer?: () => void;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
-  const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
+  // The machine label belongs to the CHAT, not to the tab. A Work tab unions
+  // chats from every machine, so reading the tab's binding labelled a foreign
+  // chat's rows with whichever machine the tab happened to be pointed at.
+  const chatScope = useChatRuntimeScope();
+  const runtimeName = chatScope.isRemote ? chatScope.machineName : null;
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);

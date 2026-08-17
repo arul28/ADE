@@ -92,7 +92,7 @@ describe("proof rendering", () => {
       .toBe("data:image/png;base64,AAAA");
     expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledWith({
       uri: ".ade/artifacts/proof-1.png",
-    });
+    }, null);
     expect(screen.queryByText(/accept proof/i)).toBeNull();
     expect(screen.queryByText(/reveal in finder/i)).toBeNull();
   });
@@ -173,7 +173,7 @@ describe("proof rendering", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Delete Proof 1" }));
 
-    await waitFor(() => expect(deleteArtifacts).toHaveBeenCalledWith({ artifactId: "artifact-1" }));
+    await waitFor(() => expect(deleteArtifacts).toHaveBeenCalledWith({ artifactId: "artifact-1" }, null));
     await waitFor(() => expect(onRefresh).toHaveBeenCalled());
   });
 
@@ -201,7 +201,7 @@ describe("proof rendering", () => {
     expect(readPreview).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Locate Lost proof in its lane" }));
-    await waitFor(() => expect(recoverArtifact).toHaveBeenCalledWith({ artifactId: "artifact-4" }));
+    await waitFor(() => expect(recoverArtifact).toHaveBeenCalledWith({ artifactId: "artifact-4" }, null));
   });
 
   it("offers recovery for a local source URI but not an HTTP source URI", async () => {
@@ -229,7 +229,7 @@ describe("proof rendering", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Locate URI proof in its lane" }));
-    await waitFor(() => expect(recoverArtifact).toHaveBeenCalledWith({ artifactId: "artifact-8" }));
+    await waitFor(() => expect(recoverArtifact).toHaveBeenCalledWith({ artifactId: "artifact-8" }, null));
     expect(screen.queryByRole("button", { name: "Locate Remote proof in its lane" })).toBeNull();
   });
 

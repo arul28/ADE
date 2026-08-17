@@ -7,6 +7,12 @@ export type FilesTabProps = {
   preferredLaneId?: string | null;
   embedded?: boolean;
   active?: boolean;
+  /**
+   * Machine the files live on, when the host already knows it is not this
+   * tab's machine (the Work tools pane, following its chat). Null keeps the
+   * historical behavior: the tab's bound machine.
+   */
+  pin?: OpenProjectBinding | null;
 };
 
 type FilesNavigationState = {

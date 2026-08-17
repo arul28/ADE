@@ -4,6 +4,7 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { stableCacheKey } from "./infra/cacheKey";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { fileContentFromBlob, requestFileBlob } from "./infra/fileBlob";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files"> {
   const { client, events, state } = infra;
@@ -129,11 +130,20 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     })
   );
 
+  // Every pinned member of the Electron `files.*` contract routes through this:
+  // the web adapter speaks to one machine, so a pin naming another must fail
+  // loudly instead of reading or writing the wrong machine's files.
+  function guardPin(operation: string, pin: RuntimePinArg): void {
+    assertWebRuntimePinRoutable(`files.${operation}`, pin, infra);
+  }
+
   const files: Record<string, unknown> = {
-    writeTextAtomic: async (args: unknown) => {
+    writeTextAtomic: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("writeTextAtomic", pin);
       await requestVoid("writeText", args, changeEvent(args, "modified"));
     },
-    listWorkspaces: async (args?: unknown) => {
+    listWorkspaces: async (args?: unknown, pin?: RuntimePinArg) => {
+      guardPin("listWorkspaces", pin);
       const workspaces = await requestResult<FilesWorkspace[]>(
         "listWorkspaces",
         args,
@@ -143,13 +153,15 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
       for (const workspace of workspaces) rememberWorkspaceId(workspace.id);
       return workspaces;
     },
-    listTree: (args: unknown) => {
+    listTree: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listTree", pin);
       rememberWorkspaceId(stringField(asRecord(args), "workspaceId"));
-      return requestResult("listTree", args, [], { cache: true, surfaceErrors: true });
+      return await requestResult("listTree", args, [], { cache: true, surfaceErrors: true });
     },
-    listTreeChildren: (args: unknown) => {
+    listTreeChildren: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listTreeChildren", pin);
       rememberWorkspaceId(stringField(asRecord(args), "workspaceId"));
-      return requestResult("listTreeChildren", args, {
+      return await requestResult("listTreeChildren", args, {
         parentPath: stringField(asRecord(args), "parentPath"),
         children: [],
         offset: numberField(asRecord(args), "offset") ?? 0,
@@ -158,7 +170,8 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
         nextOffset: null,
       }, { cache: true, surfaceErrors: true });
     },
-    refreshGitDecorations: async (args: unknown) => {
+    refreshGitDecorations: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("refreshGitDecorations", pin);
       const result = await requestResult("refreshGitDecorations", args, {
         workspaceId: stringField(asRecord(args), "workspaceId"),
         files: [],
@@ -178,11 +191,14 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     // does. Answering a dropped relay call with empty content made a failure
     // indistinguishable from a genuinely empty file: callers cached the "" and
     // rendered a blank editor over a file that was fine on disk.
-    readFile: async (args: unknown): Promise<FileContent> =>
-      fileContentFromBlob(await requestFileBlob(client, state, "readFile", asRecord(args))),
-    readFileRange: (args: unknown): Promise<FilesReadFileRangeResult> => {
+    readFile: async (args: unknown, pin?: RuntimePinArg): Promise<FileContent> => {
+      guardPin("readFile", pin);
+      return fileContentFromBlob(await requestFileBlob(client, state, "readFile", asRecord(args)));
+    },
+    readFileRange: async (args: unknown, pin?: RuntimePinArg): Promise<FilesReadFileRangeResult> => {
+      guardPin("readFileRange", pin);
       const record = asRecord(args);
-      return requestResult("readFileRange", args, {
+      return await requestResult("readFileRange", args, {
         path: stringField(record, "path"),
         encoding: "utf-8",
         content: "",
@@ -193,17 +209,24 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
         eof: true,
       });
     },
-    gitBlame: (args: unknown) => requestResult("gitBlame", args, { path: stringField(asRecord(args), "path"), lines: [] }),
-    writeText: async (args: unknown) => {
+    gitBlame: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("gitBlame", pin);
+      return await requestResult("gitBlame", args, { path: stringField(asRecord(args), "path"), lines: [] });
+    },
+    writeText: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("writeText", pin);
       await requestVoid("writeText", args, changeEvent(args, "modified"));
     },
-    createFile: async (args: unknown) => {
+    createFile: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("createFile", pin);
       await requestVoid("createFile", args, changeEvent(args, "created"));
     },
-    createDirectory: async (args: unknown) => {
+    createDirectory: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("createDirectory", pin);
       await requestVoid("createDirectory", args, changeEvent(args, "created"));
     },
-    rename: async (args: unknown) => {
+    rename: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("rename", pin);
       const record = asRecord(args);
       await requestVoid("rename", args, {
         workspaceId: stringField(record, "workspaceId"),
@@ -214,13 +237,26 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
         origin: "self",
       });
     },
-    delete: async (args: unknown) => {
+    delete: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("delete", pin);
       await requestVoid("deletePath", args, changeEvent(args, "deleted"));
     },
-    watchChanges: async () => undefined,
-    stopWatching: async () => undefined,
-    quickOpen: (args: unknown) => requestResult("quickOpen", args, []),
-    searchText: (args: unknown) => requestResult("searchText", args, []),
+    watchChanges: async (_args?: unknown, pin?: RuntimePinArg) => {
+      guardPin("watchChanges", pin);
+      return undefined;
+    },
+    stopWatching: async (_args?: unknown, pin?: RuntimePinArg) => {
+      guardPin("stopWatching", pin);
+      return undefined;
+    },
+    quickOpen: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("quickOpen", pin);
+      return await requestResult("quickOpen", args, []);
+    },
+    searchText: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("searchText", pin);
+      return await requestResult("searchText", args, []);
+    },
     onChange: (listener: (event: unknown) => void) => events.on("filesChanged", listener as never),
   };
   return files as AdeNamespace<"files">;

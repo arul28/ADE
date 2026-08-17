@@ -215,6 +215,39 @@ Browser `window.ade` adapter:
   matched `lane_worktree_locks`, so a lock heartbeat wiped the Files read cache
   every few seconds. An unrecognized table still falls back to the
   `UNCLASSIFIED_TABLE_DOMAINS` set rather than going silently stale.
+- `apps/desktop/src/renderer/webclient/adapter/runtimePinGuard.ts` - the
+  adapter-wide boundary guard for the desktop's per-session runtime pins. A web
+  adapter instance speaks to exactly one machine and one bound project, and
+  `CommandCaller` stamps that project onto every project-scoped command, so a
+  pin naming anything else cannot be routed and serving it anyway would be a
+  wrong-machine or wrong-project read or write.
+  `assertWebRuntimePinRoutable(operation, pin, scope)` is applied at **every**
+  pinned leaf of the federated adapter - `agentChat.ts`, `files.ts`, `git.ts`,
+  `lanes.ts`, `prs.ts`, and `sessionsPty.ts` - rather than a couple of shims,
+  and `RuntimePinArg = OpenProjectBinding | null | undefined` is the shared type
+  every pinned adapter member takes, so the trailing parameter cannot drift from
+  the Electron contract. A pin naming this adapter's own machine **and** project
+  is not a routing problem - it restates where the call was already going - and
+  proceeds unpinned. That is the common case behind the Chats surface, which
+  keeps the window's project binding while showing a projectless page, so its
+  pinned `pty.create` names the machine already on the other end of the socket.
+  Requiring the project to match too is the conservative half: dropping a pin
+  means "use whatever project this adapter is bound to", which is the same
+  request only when the pin agrees, and a same-machine pin naming a different
+  project would otherwise be silently answered for the wrong one. A
+  `kind: "local"` pin gets its own message - "This chat runs on a machine ADE
+  Web can't reach directly." - because the browser has no path to a
+  desktop-local runtime at all, and a local binding carries no `targetId`, so
+  the remote comparison could only report it as an unroutable binding. Machine
+  matching compares `pin.targetId` against `client.getStatus().selectedEnvId`: a
+  target id *is* an environment id on the hosted client, because
+  `connectMachineEntry` resolves a machine to `environment.envId` and hands that
+  back as the target the federated adapter binds. The binding key
+  (`remote:<targetId>:<projectId>`) is used only to *name* the binding in the
+  error; the routing decision reads the fields directly rather than splitting
+  the key, which would break on any id containing a colon. Genuinely foreign
+  pins fail loudly - a cross-machine web union must extend the adapter before
+  relying on one.
 - `apps/desktop/src/renderer/webclient/adapter/files.ts` - browser file API
   over sync `file_request`; no local file watcher. List reads
   (`listWorkspaces` / `listTree` / `listTreeChildren`) are coalesced through a
@@ -269,17 +302,9 @@ Browser `window.ade` adapter:
   are legitimate no-ops for a row that is not in the expected state (waking a
   row that was never snoozed), and reporting a no-op as applied would strand a
   stale overlay, so the helper checks whether the host actually changed that
-  row. It also exports `assertWebRuntimePinRoutable`, the boundary guard for
-  the desktop's per-session runtime pins. These namespaces target one web host
-  and one bound project, so a pin is routable only when it names that same pair
-  — in which case it restates where the call was already going and proceeds
-  unpinned. This is the Chats surface's case: it keeps the window's project
-  binding while showing a projectless page, so its pinned `pty.create` names
-  the machine already on the other end of the socket. A pin naming any other
-  machine, or the same machine's other project, still throws — dropping it
-  would mean answering a different request. Every pty/terminal shim,
-  `sessions.list` / `get` / `readTranscriptTail`, `lanes.list`, the `prs` reads,
-  and the draft attachment shim in `agentChat.ts` route through it.
+  row. Every pty/terminal shim and `sessions.list` / `get` /
+  `readTranscriptTail` passes its trailing runtime pin through
+  `assertWebRuntimePinRoutable` (see `adapter/runtimePinGuard.ts`).
   `project.ts` deliberately omits
   `gitOriginUrl` from `listRecent` for the same reason: cross-machine lane
   discovery keys off it, and supplying it would start pinned reads this adapter
@@ -339,7 +364,14 @@ Browser `window.ade` adapter:
   does not advertise the action. The adapter also implements the shared
   `agentChat.promptStashes` object through
   `chat.listPromptStashes` / `chat.createPromptStash` /
-  `chat.deletePromptStash`. List responses are normalized to an array and
+  `chat.deletePromptStash`. The cross-machine handoff trio is genuinely
+  implemented rather than left to the fallback proxy:
+  `prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
+  `markCrossMachineHandoff` call the registered sync remote commands
+  `chat.prepareCrossMachineHandoff` / `chat.validateCrossMachineSource` /
+  `chat.markCrossMachineHandoff`. A proxy answering `undefined` there made the
+  handoff modal look like it had succeeded; a host that registers none of those
+  commands still fails loudly through `callRequired`. List responses are normalized to an array and
   mutations fail honestly when the host lacks the required descriptor; the
   shared composer can therefore index its stash list without receiving the
   `null` value that previously crashed the hosted page. It also routes
@@ -667,6 +699,10 @@ Tests:
 - `apps/desktop/src/renderer/webclient/sync/envStore.test.ts`.
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts` -
   sync-backed namespaces, including the non-null prompt-stash contract.
+- `apps/desktop/src/renderer/webclient/adapter/__tests__/runtimePinGuard.test.ts` -
+  the pin boundary: same-machine/same-project pins proceeding unpinned,
+  same-machine/other-project and foreign-machine pins throwing, and the
+  `kind: "local"` message.
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/federated.test.ts` -
   persisted welcome/Chats/project restoration, cross-machine and same-machine
   binding pinning, active-adapter transitions, and host-driven project changes.
@@ -756,6 +792,12 @@ Tests:
   agreed to. For the same reason, a lifecycle command that the host treats as a
   legitimate no-op (waking a row that was never snoozed) must not be reported as
   applied.
+- **A runtime pin the adapter cannot route must throw, not be dropped.** One
+  adapter instance is one machine and one project, so silently ignoring a
+  foreign pin turns a precise request into a read or write against the wrong
+  runtime. Only a pin restating this adapter's own machine *and* project may
+  proceed unpinned. Any new pinned adapter member takes `RuntimePinArg` and
+  calls `assertWebRuntimePinRoutable` first.
 - **Native-only surfaces must stay unavailable in the web adapter.** OS
   notifications, external editor open, reveal in Finder, local directory
   picking, native shells, app control, computer use, built-in browser, iOS

@@ -45,6 +45,28 @@ export function detectComposerTrigger(text: string, cursorPos: number): Composer
 }
 
 /**
+ * A trigger the user dismissed (Escape) or whose query settled with no matches
+ * at all. Recorded so continued typing does not immediately reopen the menu.
+ */
+export type ComposerTriggerDismissal = Pick<ComposerTrigger, "type" | "start" | "query">;
+
+/**
+ * True when `trigger` is still covered by an earlier dismissal. Suggestion
+ * search only narrows as the query grows — once nothing matched `@cursor`,
+ * `@cursor agent` cannot match either — so any extension of a dismissed query
+ * stays dismissed. Backspacing out of it, editing it into a different query, or
+ * typing a new `@` elsewhere all produce a genuinely new search and reopen.
+ */
+export function isComposerTriggerDismissed(
+  trigger: Pick<ComposerTrigger, "type" | "start" | "query">,
+  dismissal: ComposerTriggerDismissal | null | undefined,
+): boolean {
+  if (!dismissal) return false;
+  if (trigger.type !== dismissal.type || trigger.start !== dismissal.start) return false;
+  return trigger.query.startsWith(dismissal.query);
+}
+
+/**
  * Remove trailing prose from an @ file query when a filename extension gives
  * us an unambiguous boundary. Leave extensionless paths and chat-name queries
  * intact; file quick-open handles a path prefix followed by prose.

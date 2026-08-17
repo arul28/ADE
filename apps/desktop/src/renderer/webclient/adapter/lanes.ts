@@ -7,13 +7,24 @@ import {
   type RestoreLaneResult,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
   const { commands, events } = infra;
 
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+  }
+
+  /**
+   * Every lane member that takes a trailing pin in the Electron contract must
+   * declare it here, or JS drops the argument and the lane mutation lands on
+   * whichever machine this adapter is bound to. `guardPin` is the refusal; the
+   * members below stay `async` so an unroutable pin rejects the returned
+   * promise instead of throwing synchronously out of the caller's expression.
+   */
+  function guardPin(operation: string, pin: RuntimePinArg): void {
+    assertWebRuntimePinRoutable(`lanes.${operation}`, pin, infra);
   }
 
   function emitLifecycle(event: LaneLifecycleEvent): void {
@@ -36,9 +47,9 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
   );
 
   const lanes: Record<string, unknown> = {
-    list: (args?: unknown, pin?: unknown) => {
-      assertWebRuntimePinRoutable("lanes.list", pin, infra);
-      return commands.call("lanes.list", asRecord(args), {
+    list: async (args?: unknown, pin?: RuntimePinArg) => {
+      guardPin("list", pin);
+      return await commands.call("lanes.list", asRecord(args), {
         fallback: [],
         idempotent: true,
         cacheTtlMs: 3_000,
@@ -48,12 +59,14 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       const result = await call<unknown>("lanes.refreshSnapshots", args, []);
       return arrayField<LaneListSnapshot>(result, "snapshots");
     },
-    create: async (args: unknown) => {
+    create: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("create", pin);
       const result = await call("lanes.create", args, null, false);
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
     },
-    createChild: async (args: unknown) => {
+    createChild: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("createChild", pin);
       const result = await call("lanes.createChild", args, null, false);
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
@@ -80,14 +93,20 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         },
         idempotent: false,
       }),
-    rename: async (args: unknown) => {
+    rename: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("rename", pin);
       await call("lanes.rename", args, undefined, false);
     },
-    reparent: (args: unknown) => call("lanes.reparent", args, { ok: false, error: "unsupported" }, false),
-    updateAppearance: async (args: unknown) => {
+    reparent: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("reparent", pin);
+      return await call("lanes.reparent", args, { ok: false, error: "unsupported" }, false);
+    },
+    updateAppearance: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("updateAppearance", pin);
       await call("lanes.updateAppearance", args, undefined, false);
     },
-    archive: async (args: unknown) => {
+    archive: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("archive", pin);
       await call("lanes.archive", args, undefined, false);
       const record = asRecord(args);
       emitLifecycle({
@@ -96,13 +115,15 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         laneName: stringField(record, "laneName") || stringField(record, "name") || "Lane",
       });
     },
-    archiveAndReclaim: (args: unknown) =>
-      commands.call<ArchiveAndReclaimLaneResult>("lanes.archiveAndReclaim", asRecord(args), {
+    archiveAndReclaim: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("archiveAndReclaim", pin);
+      return await commands.call<ArchiveAndReclaimLaneResult>("lanes.archiveAndReclaim", asRecord(args), {
         fallback: () => {
           throw new Error("Archive & Reclaim is unavailable on the connected ADE host.");
         },
         idempotent: false,
-      }),
+      });
+    },
     unarchive: async (args: unknown) => {
       const result = await commands.call<RestoreLaneResult>("lanes.unarchive", asRecord(args), {
         fallback: () => {
@@ -116,7 +137,8 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       ));
       return result;
     },
-    delete: async (args: unknown) => {
+    delete: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("delete", pin);
       await call("lanes.delete", args, undefined, false);
       const record = asRecord(args);
       emitLifecycle({
@@ -126,8 +148,9 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       });
     },
     listDeleteProgress: () => call("lanes.listDeleteProgress", {}, []),
-    getDeleteRisk: (args: unknown) =>
-      call("lanes.getDeleteRisk", args, {
+    getDeleteRisk: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getDeleteRisk", pin);
+      return await call("lanes.getDeleteRisk", args, {
         laneId: stringField(asRecord(args), "laneId"),
         branchRef: null,
         dirty: false,
@@ -138,9 +161,11 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         activePtyCount: 0,
         activeWatcherCount: 0,
         envInitialized: false,
-      }),
-    getReclaimRisk: (args: unknown) =>
-      call("lanes.getReclaimRisk", args, {
+      });
+    },
+    getReclaimRisk: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getReclaimRisk", pin);
+      return await call("lanes.getReclaimRisk", args, {
         laneId: stringField(asRecord(args), "laneId"),
         laneName: "Lane",
         branchRef: null,
@@ -160,7 +185,8 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         blockedReasons: [],
         lastFailure: null,
         retryCount: 0,
-      }),
+      });
+    },
     getStackChain: (laneId: string) => call("lanes.getStackChain", { laneId }, []),
     getChildren: (laneId: string) => call("lanes.getChildren", { laneId }, []),
     rebaseStart: (args: unknown) => call("lanes.rebaseStart", args, { ok: false, error: "unsupported" }, false),
@@ -193,7 +219,14 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     deleteTemplate: async (args: unknown) => {
       await call("lanes.deleteTemplate", args, undefined, false);
     },
-    onDeleteEvent: (listener: (event: unknown) => void) => events.on("lanesDelete", listener as never),
+    // A listener registration cannot reject, so this one refusal is synchronous
+    // by necessity: a caller subscribing with a foreign pin is asking for
+    // another machine's delete stream, and answering with this machine's stream
+    // would be worse than the throw.
+    onDeleteEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
+      guardPin("onDeleteEvent", pin);
+      return events.on("lanesDelete", listener as never);
+    },
     onLifecycleEvent: (listener: (event: unknown) => void) => events.on("lanesLifecycle", listener as never),
     rebaseSubscribe: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
     onRebaseSuggestionsEvent: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),

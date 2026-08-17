@@ -749,6 +749,63 @@ describe("AgentChatComposer", () => {
     expect(onSearchAttachments).not.toHaveBeenCalled();
   });
 
+  it("closes the at menu when the query stops matching and keeps typing from reopening it", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox");
+
+    fireEvent.change(textbox, { target: { value: "@cursor", selectionStart: 7 } });
+    view.rerender(<AgentChatComposer {...props} draft="@cursor" />);
+
+    await waitFor(() => expect(onSearchAttachments).toHaveBeenCalledWith("cursor"));
+    await waitFor(() => expect(document.body.querySelector(".ade-chat-drawer-glass")).toBeNull());
+
+    // The rest of the sentence extends a query that already matched nothing, so
+    // the menu must stay gone instead of parking over the composer.
+    const draft = "@cursor was the runtime we used";
+    fireEvent.change(textbox, { target: { value: draft, selectionStart: draft.length } });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+    expect(document.body.querySelector(".ade-chat-drawer-glass")).toBeNull();
+  });
+
+  it("keeps the at menu closed after Escape until a new trigger is typed", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/App.tsx", type: "file" }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+      onSearchAttachments,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    const textbox = screen.getByRole("textbox");
+
+    fireEvent.change(textbox, { target: { value: "@src", selectionStart: 4 } });
+    view.rerender(<AgentChatComposer {...props} draft="@src" />);
+    expect(await screen.findByText("App.tsx")).toBeTruthy();
+
+    fireEvent.keyDown(textbox, { key: "Escape" });
+    await waitFor(() => expect(document.body.querySelector(".ade-chat-drawer-glass")).toBeNull());
+
+    fireEvent.change(textbox, { target: { value: "@src/A", selectionStart: 6 } });
+    view.rerender(<AgentChatComposer {...props} draft="@src/A" />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+    expect(document.body.querySelector(".ade-chat-drawer-glass")).toBeNull();
+
+    // A brand new @ elsewhere in the draft is a new search, so it opens again.
+    const draft = "@src/A and @src";
+    fireEvent.change(textbox, { target: { value: draft, selectionStart: draft.length } });
+    view.rerender(<AgentChatComposer {...props} draft={draft} />);
+    expect(await screen.findByText("App.tsx")).toBeTruthy();
+  });
+
   it("keeps trailing prose when selecting a shorthand file match", async () => {
     const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/foo.ts", type: "file" }]);
     const props = buildComposerProps({

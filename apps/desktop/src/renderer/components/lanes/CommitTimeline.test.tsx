@@ -80,7 +80,7 @@ describe("CommitTimeline", () => {
     );
 
     await waitFor(() => {
-      expect(listRecentCommits).toHaveBeenCalledWith({ laneId: "lane-1", limit: 40 });
+      expect(listRecentCommits).toHaveBeenCalledWith({ laneId: "lane-1", limit: 40 }, null);
     });
   });
 });

@@ -377,7 +377,7 @@ describe("ChatIosSimulatorPanel", () => {
 
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
 
-    expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
+    expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 }, null);
     expect(api.listSimulatorWindowSources).toHaveBeenCalled();
   });
 
@@ -455,14 +455,14 @@ describe("ChatIosSimulatorPanel", () => {
       sourceFile: null,
       sourceLine: null,
       openIfNeeded: true,
-    });
+    }, null);
     expect(api.resolvePreviewMatch).toHaveBeenCalledWith({
       projectRoot: "/tmp/project",
       sourceFile: null,
       sourceLine: null,
       elementLabel: null,
       componentId: null,
-    });
+    }, null);
 
     const previewTargetSelect = screen.getAllByRole("combobox").find((select) =>
       Array.from((select as HTMLSelectElement).options).some((option) => option.value === secondPreviewTarget.id)
@@ -500,7 +500,7 @@ describe("ChatIosSimulatorPanel", () => {
       expect(api.listLaunchTargets).toHaveBeenLastCalledWith({
         deviceUdid: device.udid,
         projectRoot: "/tmp/project",
-      });
+      }, null);
       expect(screen.queryByText(/Project root \/missing does not exist/)).toBeNull();
     });
   });
@@ -814,7 +814,7 @@ describe("ChatIosSimulatorPanel", () => {
         projectRoot: "/tmp/project",
         x: 150,
         y: 120,
-      });
+      }, null);
     });
     expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
       label: "Continue",
@@ -833,7 +833,7 @@ describe("ChatIosSimulatorPanel", () => {
       componentId: inspectElement.componentId,
       tabIdentifier: null,
       timeoutSec: 120,
-    });
+    }, null);
     expect(api.renderPreview).not.toHaveBeenCalled();
   });
 
@@ -922,7 +922,7 @@ describe("ChatIosSimulatorPanel", () => {
         projectRoot: "/tmp/project",
         x: 660,
         y: 630,
-      });
+      }, null);
       expect(onAddContext).toHaveBeenLastCalledWith(expect.objectContaining({ label: "Settings" }));
     });
   });
@@ -1090,7 +1090,7 @@ describe("ChatIosSimulatorPanel", () => {
         componentId: inspectElement.componentId,
         tabIdentifier: null,
         timeoutSec: 120,
-      });
+      }, null);
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ContentView.swift:12"));
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Continue Preview"));
       expect(onInsertDraft).not.toHaveBeenCalledWith(expect.stringContaining("SettingsView.swift:24"));
@@ -1189,7 +1189,7 @@ describe("ChatIosSimulatorPanel", () => {
 
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
 
-    expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
+    expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 }, null);
     expect(api.listSimulatorWindowSources).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /show ios window/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /use ade stream/i })).toBeNull();

@@ -160,6 +160,7 @@ import {
   type RecentProjectInspection,
 } from "./services/projects/recentProjectSummary";
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
+import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
@@ -1601,6 +1602,30 @@ app.whenReady().then(async () => {
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
   const windowProjectTabRoots = new Map<number, Set<string>>();
+  /**
+   * Every local project root this window has actually opened during this
+   * session, kept as the window's local runtime scope.
+   *
+   * `windowProjectTabRoots` is replaced wholesale by the renderer on every tab
+   * change and `windowProjectRoots` is nulled the moment the tab binds to a
+   * remote machine, so neither can answer "was this window ever working in this
+   * local checkout?". A chat pinned to "This computer" is exactly that question:
+   * its lane lives on this machine no matter which machine the project tab is
+   * currently bound to, and rejecting it left cross-machine Work views unable to
+   * act on their own local sessions. Membership is only ever granted by the
+   * window opening the project itself, never by a renderer-supplied path.
+   */
+  const windowKnownLocalProjectRoots = new Map<number, Set<string>>();
+
+  const rememberWindowKnownLocalProjectRoot = (
+    windowId: number | null,
+    rootPath: string | null | undefined,
+  ): void => {
+    if (windowId == null || !rootPath) return;
+    const roots = windowKnownLocalProjectRoots.get(windowId) ?? new Set<string>();
+    roots.add(rootPath);
+    windowKnownLocalProjectRoots.set(windowId, roots);
+  };
   const windowPendingProjectRoots = new Map<number, Map<string, number>>();
   const windowProjectBindings = new Map<number, RemoteOpenProjectBinding>();
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
@@ -1814,14 +1839,19 @@ app.whenReady().then(async () => {
     rootPaths: string[],
   ): ProjectInfo[] => {
     if (windowId == null) return [];
-    const roots = new Set<string>();
-    for (const rootPath of rootPaths) {
-      const normalized = rootPath.trim() ? normalizeProjectRoot(rootPath) : "";
-      if (normalized) roots.add(normalized);
+    // The gate on what may join the window's local runtime scope lives in
+    // `resolveWindowTabRoots` (see it for why a renderer-named path is not
+    // enough), so it can be tested without standing up a window.
+    const { tabRoots, authorizedLocalRoots } = resolveWindowTabRoots({
+      rootPaths,
+      activeRoot: windowProjectRoots.get(windowId) ?? null,
+      normalizeRoot: normalizeProjectRoot,
+      isOpenedProjectRoot: (root) => projectForRoot(root) != null,
+    });
+    windowProjectTabRoots.set(windowId, tabRoots);
+    for (const root of authorizedLocalRoots) {
+      rememberWindowKnownLocalProjectRoot(windowId, root);
     }
-    const activeRoot = windowProjectRoots.get(windowId) ?? null;
-    if (activeRoot) roots.add(activeRoot);
-    windowProjectTabRoots.set(windowId, roots);
     scheduleProjectContextRebalance();
     return projectsForWindowTabs(windowId);
   };
@@ -1995,6 +2025,7 @@ app.whenReady().then(async () => {
         const tabRoots = windowProjectTabRoots.get(windowId) ?? new Set<string>();
         tabRoots.add(normalizedRoot);
         windowProjectTabRoots.set(windowId, tabRoots);
+        rememberWindowKnownLocalProjectRoot(windowId, normalizedRoot);
       }
       const win = BrowserWindow.fromId(windowId);
       if (win && !win.isDestroyed()) {
@@ -6699,6 +6730,7 @@ app.whenReady().then(async () => {
     }
     windowProjectRoots.set(win.id, normalizedRoot);
     windowProjectTabRoots.set(win.id, normalizedRoot ? new Set([normalizedRoot]) : new Set());
+    rememberWindowKnownLocalProjectRoot(win.id, normalizedRoot);
     if (remoteBinding) {
       windowProjectBindings.set(win.id, remoteBinding);
     } else {
@@ -6731,6 +6763,7 @@ app.whenReady().then(async () => {
       const previousRoot = windowProjectRoots.get(win.id) ?? null;
       windowProjectRoots.delete(win.id);
       windowProjectTabRoots.delete(win.id);
+      windowKnownLocalProjectRoots.delete(win.id);
       windowPendingProjectRoots.delete(win.id);
       windowProjectBindings.delete(win.id);
       if (activeProjectRoot === previousRoot) {
@@ -6740,7 +6773,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -6749,8 +6782,12 @@ app.whenReady().then(async () => {
         binding: bindingForLocalProject(project),
         openProjectTabs: project ? [project] : [],
         pendingLocalProjectRoots: [],
+        knownLocalProjectRoots: project ? [project.rootPath] : [],
       };
     }
+    const knownLocalProjectRoots = Array.from(
+      windowKnownLocalProjectRoots.get(windowId) ?? [],
+    );
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {
       windowId,
@@ -6758,6 +6795,7 @@ app.whenReady().then(async () => {
       binding: remoteBinding,
       openProjectTabs: projectsForWindowTabs(windowId),
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
+      knownLocalProjectRoots,
     };
     const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
     return {
@@ -6766,6 +6804,7 @@ app.whenReady().then(async () => {
       binding: bindingForLocalProject(project),
       openProjectTabs: projectsForWindowTabs(windowId),
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
+      knownLocalProjectRoots,
     };
   };
 

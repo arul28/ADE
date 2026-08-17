@@ -24,6 +24,7 @@ import type {
   AgentChatProvider,
   GitUpstreamSyncStatus,
   LaneSummary,
+  OpenProjectBinding,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeHandoffStoragePreflightResult,
   RemoteRuntimeProjectRecord,
@@ -92,11 +93,11 @@ import {
 } from "./crossMachineHandoffPresentation";
 import { cn } from "../ui/cn";
 
-
 export function CrossMachineHandoffModal({
   open,
   sourceSessionId,
   sourceLaneId,
+  runtimePin = null,
   sourceProvider,
   target,
   modelId,
@@ -119,6 +120,13 @@ export function CrossMachineHandoffModal({
   open: boolean;
   sourceSessionId: string;
   sourceLaneId: string;
+  /**
+   * The machine the SOURCE chat runs on, or null when it runs on the machine
+   * this tab is bound to. Every source-side call (lane/git inspection, capsule
+   * preparation, validation, the source marker) is pinned to it; destination
+   * dispatch already routes by target id and is unaffected.
+   */
+  runtimePin?: OpenProjectBinding | null;
   /** Source chat provider; drives whether forking history is offered. */
   sourceProvider?: AgentChatProvider | null;
   target: AgentChatCrossMachineTargetConfig;
@@ -185,6 +193,14 @@ export function CrossMachineHandoffModal({
    * has, and prepare would otherwise ask the same question again a moment later.
    */
   const machineProjectsRef = useRef<Record<string, RemoteRuntimeProjectRecord[]>>({});
+  /**
+   * The source machine's binding, held in a ref so each operation can freeze it
+   * once and keep every one of its awaits on the same machine. Reading it fresh
+   * after an await could cross a lane-index change and split one handoff across
+   * two runtimes.
+   */
+  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  runtimePinRef.current = runtimePin;
   /**
    * `inspectSource` builds the blocker list, and the "behind" blocker needs to
    * offer the pull that clears it — but `updateBranch` is defined below and
@@ -303,11 +319,14 @@ export function CrossMachineHandoffModal({
     && connection.capabilities?.machineProjects.handoffStoragePreflight !== true,
   ).length;
 
-  const inspectSource = useCallback(async (): Promise<SourceCheck> => {
+  const inspectSource = useCallback(async (
+    pinOverride?: OpenProjectBinding | null,
+  ): Promise<SourceCheck> => {
+    const pin = pinOverride !== undefined ? pinOverride : runtimePinRef.current;
     const [lanes, sync, origin] = await Promise.all([
-      window.ade.lanes.list({ includeArchived: false, includeStatus: true }),
-      window.ade.git.getSyncStatus({ laneId: sourceLaneId }),
-      window.ade.git.getOriginRemote({ laneId: sourceLaneId }),
+      window.ade.lanes.list({ includeArchived: false, includeStatus: true }, pin),
+      window.ade.git.getSyncStatus({ laneId: sourceLaneId }, pin),
+      window.ade.git.getOriginRemote({ laneId: sourceLaneId }, pin),
     ]);
     const lane = lanes.find((candidate) => candidate.id === sourceLaneId) ?? null;
     const blockingErrors: BlockedActionReason[] = [];
@@ -529,7 +548,7 @@ export function CrossMachineHandoffModal({
         continuationPrompt,
         mode: requestedMode,
         ...target,
-      });
+      }, runtimePinRef.current);
       setPrepared(handoff);
       // Prefer what the readiness pass already fetched; only ask again when the
       // picker never got an answer for this machine.
@@ -615,8 +634,9 @@ export function CrossMachineHandoffModal({
     setBusyLabel("Publishing source branch…");
     setError(null);
     try {
-      await window.ade.git.push({ laneId: sourceLaneId });
-      await inspectSource();
+      const pin = runtimePinRef.current;
+      await window.ade.git.push({ laneId: sourceLaneId }, pin);
+      await inspectSource(pin);
     } catch (pushError) {
       setError(pushError instanceof Error ? pushError.message : String(pushError));
     } finally {
@@ -634,8 +654,9 @@ export function CrossMachineHandoffModal({
     setBusyLabel("Updating source branch…");
     setError(null);
     try {
-      await window.ade.git.pull({ laneId: sourceLaneId });
-      await inspectSource();
+      const pin = runtimePinRef.current;
+      await window.ade.git.pull({ laneId: sourceLaneId }, pin);
+      await inspectSource(pin);
     } catch (pullError) {
       setError(pullError instanceof Error ? pullError.message : String(pullError));
     } finally {
@@ -709,6 +730,7 @@ export function CrossMachineHandoffModal({
   const markSource = useCallback(async (
     accepted: AgentChatAcceptCrossMachineHandoffResult,
     connection: RemoteRuntimeConnectionStatus,
+    pin: OpenProjectBinding | null,
   ) => {
     await window.ade.agentChat.markCrossMachineHandoff({
       sourceSessionId,
@@ -716,7 +738,7 @@ export function CrossMachineHandoffModal({
       targetMachineName: connection.target.name,
       targetLaneId: accepted.laneId,
       targetSessionId: accepted.session.id,
-    });
+    }, pin);
   }, [sourceSessionId]);
 
   const sendHandoff = useCallback(async () => {
@@ -728,12 +750,15 @@ export function CrossMachineHandoffModal({
     setBusyLabel("Rechecking source branch and chat…");
     setError(null);
     let destinationAcceptanceStarted = false;
+    // Freeze the source machine for the whole send: validation and the source
+    // marker have to reach the same runtime the capsule was prepared on.
+    const sourcePin = runtimePinRef.current;
     try {
       await window.ade.agentChat.validateCrossMachineSource({
         sourceSessionId,
         capsule: prepared.capsule,
         capsuleFingerprint: prepared.capsuleFingerprint,
-      });
+      }, sourcePin);
       setSendProgress(["validate"]);
       setBusyLabel("Creating destination lane and chat…");
       const requiredRouteKind = requireRemoteRuntimeRouteKind(selectedConnection.route?.kind);
@@ -755,7 +780,7 @@ export function CrossMachineHandoffModal({
       setSendProgress(["validate", "accept"]);
       setResult(accepted);
       try {
-        await markSource(accepted, selectedConnection);
+        await markSource(accepted, selectedConnection, sourcePin);
       } catch (markerError) {
         setSourceMarkerWarning(markerError instanceof Error ? markerError.message : String(markerError));
       } finally {
@@ -920,7 +945,7 @@ export function CrossMachineHandoffModal({
                     type="button"
                     className="ml-2 font-semibold text-amber-100 underline decoration-amber-200/35 underline-offset-2"
                     onClick={() => {
-                      void markSource(result, selectedConnection)
+                      void markSource(result, selectedConnection, runtimePinRef.current)
                         .then(() => {
                           setSourceMarkerWarning(null);
                           onFinished();

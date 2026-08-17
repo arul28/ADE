@@ -16,6 +16,20 @@ build, launch, mirror, and control the local Simulator.app. Non-macOS runtimes
 report `supported: false`; the renderer hides simulator controls and CLI calls
 reject with the macOS-only error.
 
+`ChatIosSimulatorPanel` takes a `runtimePin` naming the machine it drives, so
+the panel follows the chat rather than the project tab: mounted in the Work
+tools pane it receives that pane's pin (the machine the active Work session
+runs on) and its `projectRoot` is the pinned machine's worktree for the active
+lane, not the tab-local checkout. Status reads, device and launch-target lists,
+launch / shutdown / screenshot / snapshot / stream / input / Preview Lab calls,
+and the `iosSimulator.onEvent` subscription all carry the pin. The event half
+matters as much as the reads: without a pinned subscription a pinned panel got
+status reads and no live updates, and the bound machine's stream described a
+different simulator entirely. The one part that does not follow the pin is the
+live view — it captures the Simulator window through this window's own screen
+capture — so a chat on another machine gets an explicit message saying the live
+view shows the Simulator on this computer while the chat runs elsewhere.
+
 Each launched simulator session has one owner chat/lane. A second chat trying
 to launch against an active session receives
 `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` until the current owner releases it or a
@@ -28,7 +42,8 @@ force shutdown is requested.
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | Tool readiness, device/target discovery, build/install/launch, screenshots, ADEInspector/accessibility snapshots, Simulator.app live-view status, idb-backed input, Preview Lab, and single-owner session locking. |
 | `apps/desktop/src/shared/types/iosSimulator.ts` | Cross-process iOS simulator types. `IosSimulatorStreamBackend` is `simulator-window-capture`. |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | IPC handlers plus macOS Simulator.app window state and parking. The owning ADE `BrowserWindow` keeps Simulator.app unminimized and parked behind itself. |
-| `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.tsx` | Work drawer UI: setup checklist, device/target pickers, launch progress, live Simulator.app window video, interact/inspect modes, Preview Lab, and context attachment. |
+| `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.tsx` | Work drawer UI: setup checklist, device/target pickers, launch progress, live Simulator.app window video, interact/inspect modes, Preview Lab, and context attachment. Takes `runtimePin` and drives the simulator on that machine — every status read, list, launch/shutdown/capture call, and the `onEvent` subscription carry it. |
+| `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` | Mounts the panel under the Work tools pane's `ios` tab, keyed `work-ios:<pinKey>` so a machine switch remounts it. Runs its own pinned `iosSimulator.getStatus` / `onEvent` pair to detect lane mismatches, resolving lane names against the pinned machine's lanes; skips the probe entirely when that machine is known offline. |
 | `apps/ade-cli/src/cli.ts` | `ade ios-sim` typed commands. `window-start` and `live-start` both start the same Simulator.app window stream. |
 | `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | DEBUG-only Swift helpers that publish element frames into the app container for accurate inspect/select context. |
 

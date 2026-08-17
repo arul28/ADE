@@ -1214,7 +1214,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(sidebarProps.latest?.contextDisabledReason).toBeNull();
   });
 
-  it("resolves a foreign active session from the union and disables sidebar context insertion", async () => {
+  it("resolves a foreign active session from the union and routes the tools pane at its machine", async () => {
     const studioBinding: OpenProjectBinding = {
       kind: "remote",
       key: "remote:target-studio:project-a",
@@ -1255,9 +1255,17 @@ describe("TerminalsPage chat session activation", () => {
 
     expect(await screen.findByTestId("work-sidebar")).toBeTruthy();
     expect(sidebarProps.latest?.activeSession).toBe(foreignSession);
+    // A CLI session's PTY is addressable by pin, so context insertion stays
+    // available and every tool in the pane is routed at the studio.
     expect(sidebarProps.latest).toEqual(expect.objectContaining({
-      contextTarget: null,
-      contextDisabledReason: "Tool context insertion is not available for sessions on another machine.",
+      runtimePin: studioBinding,
+      contextDisabledReason: null,
+      contextTarget: {
+        kind: "pty",
+        sessionId: foreignSession.id,
+        ptyId: foreignSession.ptyId,
+        toolType: "codex",
+      },
     }));
   });
 
