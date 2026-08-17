@@ -11565,6 +11565,19 @@ describe("unlinkOwnedRuntimeSocket", () => {
     expect(outcome).toBe("failed");
   });
 
+  // ENOENT between the stat and the unlink is the one failure that is not a
+  // failure: the path is gone, which is exactly what we were trying to do.
+  it("reports an unlink that lost the race to ENOENT as absent", () => {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: () => {
+        throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+      },
+    });
+
+    expect(outcome).toBe("absent");
+  });
+
   it("falls back to the unconditional unlink when no inode was recorded at bind time", () => {
     const unlinked: string[] = [];
     const outcome = unlinkOwnedRuntimeSocket(socketPath, null, {

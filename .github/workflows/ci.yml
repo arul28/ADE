@@ -518,6 +518,17 @@ jobs:
           src/lib/trustedWindowsTools.test.ts
           src/services/credentials/credentialStore.test.ts
 
+      # The standalone PowerShell installer (apps/ade-cli/scripts/install-runtime.ps1)
+      # has no runnable harness off a Windows host: its POSIX twin is covered by
+      # `node --test apps/ade-cli/scripts/install-runtime-rollback.test.mjs` on
+      # the ubuntu job, but nothing there can parse or execute PowerShell. This
+      # suite does both on a real runner -- it parses the installer through
+      # `[Parser]::ParseFile` and exercises the path normalizer it shares with
+      # the uninstall cleanup -- so a syntax error or a broken staging path in
+      # the installer fails CI instead of a user's machine.
+      - name: Test Windows standalone installer and uninstall cleanup scripts
+        run: cd apps/desktop && node --test ./scripts/windows-uninstall-cleanup.test.mjs
+
       - name: Test Windows desktop, SQLite, and capability contracts
         run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts
 

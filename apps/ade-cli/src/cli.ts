@@ -18010,7 +18010,12 @@ export function unlinkOwnedRuntimeSocket(
   if (ownInode != null && current !== ownInode) return "not_owned";
   try {
     unlink(socketPath);
-  } catch {
+  } catch (error) {
+    // ENOENT means someone else removed it between our stat and our unlink:
+    // the path is gone, which is the outcome "absent" describes and the
+    // outcome we wanted. Reporting it as "failed" would send the caller
+    // looking for a stale socket that does not exist.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return "absent";
     // Distinct from "absent": the socket file is still there and still ours,
     // so the next brain to start will probe a stale path we failed to clean up.
     return "failed";

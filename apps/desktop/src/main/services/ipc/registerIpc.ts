@@ -1682,8 +1682,10 @@ export function registerIpc({
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
   /**
-   * Roots main has tried to open. Owned by main.ts so every open path records
-   * into the same registry; see `knownProjectRoots.ts` for why a merely
+   * Roots main has tried to open. Read-only here: main.ts is the single
+   * writer (it records a root only after resolving it to a real repository),
+   * and this module only consults `.list()` when validating a
+   * renderer-supplied root. See `knownProjectRoots.ts` for why a merely
    * *attempted* root has to count as known.
    */
   attemptedProjectRoots?: AttemptedProjectRoots;
@@ -1890,10 +1892,12 @@ export function registerIpc({
   // custom properties from thrown errors, so we re-throw with the code
   // prepended to the message. Renderer matches on the prefix.
   const surfaceCodedError = (error: unknown, meta?: { rootPath?: string }): never => {
-    // A coded failure carrying a root is exactly what puts the recovery screen
-    // on screen for that root, so remember it even if this path never reached
-    // `switchProjectFromDialog`.
-    if (meta?.rootPath) attemptedProjectRoots?.record(meta.rootPath);
+    // Deliberately does NOT record `meta.rootPath` into `attemptedProjectRoots`.
+    // Every caller that supplies a root got there through
+    // `switchProjectFromDialog`, which already recorded the resolved repo root
+    // after validating it, so a write here would be dead — and it would make
+    // the registry two-writer, with this one accepting a root that was never
+    // proven to exist. Reads still go through `attemptedProjectRoots.list()`.
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
       if (typeof code === "string" && code.length > 0) {

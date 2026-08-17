@@ -386,6 +386,82 @@ test("standalone Windows runtime signing uses only canonical credentials and val
   assert.doesNotMatch(windowsRuntimeSigner, /Write-Output.*(?:AZURE_CLIENT_SECRET|expectedSubject)/);
 });
 
+// The PowerShell installer used to stage the binary, the extracted runtime and
+// both rollback backups under %TEMP%, run its preflight from there, and promote
+// with a cross-volume `Move-Item` (a copy plus a delete, so an interrupted
+// promotion leaves a half-written ade.exe). %TEMP% is also where AppLocker and
+// most EDR agents block execution outright, so the preflight failed on managed
+// machines before it could test anything. The POSIX installer was fixed first
+// (apps/ade-cli/scripts/install-runtime.sh, and its
+// install-runtime-rollback.test.mjs); these assertions pin the same model on
+// the Windows side, which has no runnable test harness off a Windows host.
+// Behaviour on a real machine is covered by the CI Windows job, which parses
+// the script and runs the standalone-installer gate in
+// windows-uninstall-cleanup.test.mjs.
+test("the Windows installer stages, preflights and promotes under the ADE home, not %TEMP%", () => {
+  const installer = fs.readFileSync(
+    path.join(repoRoot, "apps", "ade-cli", "scripts", "install-runtime.ps1"),
+    "utf8",
+  );
+
+  // Scratch paths sit next to what they replace, so every promotion and every
+  // restore is a same-directory rename.
+  assert.match(installer, /\$stagedRuntime = "\$runtimeDir\.new"/);
+  assert.match(installer, /\$backupRuntime = "\$runtimeDir\.previous"/);
+  assert.match(installer, /\$pendingBinary = Join-Path \$InstallDir "ade\.new\.exe"/);
+  assert.match(installer, /\$backupBinary = Join-Path \$InstallDir "ade\.bak\.exe"/);
+  // %TEMP% holds downloads only: no staged runtime, no backup, no exec target.
+  assert.doesNotMatch(installer, /Join-Path \$tempRoot "runtime/);
+  assert.doesNotMatch(installer, /Join-Path \$tempRoot "ade\.(?:previous|bak)\.exe"/);
+
+  // The preflight runs the install-directory copy against the staged runtime,
+  // so it exercises exactly the files the promoted install will load.
+  assert.match(installer, /Copy-Item -LiteralPath \$downloadedBinary -Destination \$pendingBinary -Force/);
+  assert.match(
+    installer,
+    /Set-ProcessRuntimeEnvironment \$AdeHome \$stagedRuntime\s*\n\s*& \$pendingBinary --version/,
+  );
+  // The downloaded copy in %TEMP% is never executed.
+  assert.doesNotMatch(installer, /& \$downloadedBinary/);
+
+  // Promotion order: runtime first, binary last, each by rename.
+  assert.match(
+    installer,
+    /Move-Item -LiteralPath \$stagedRuntime -Destination \$runtimeDir\s*\n\s*\$promotedRuntime = \$true/,
+  );
+  assert.match(
+    installer,
+    /Move-Item -LiteralPath \$pendingBinary -Destination \$destinationBinary\s*\n\s*\$promotedBinary = \$true/,
+  );
+
+  // The finally clears all four scratch paths, and puts a backup back first
+  // when an abort landed between the two renames -- deleting it there is what
+  // would leave the machine with nothing installed.
+  const cleanup = installer.slice(installer.indexOf("if (-not $preserveTempForRecovery) {"));
+  for (const scratch of ["$tempRoot", "$pendingBinary", "$stagedRuntime", "$backupRuntime", "$backupBinary"]) {
+    assert.ok(
+      cleanup.includes(`Remove-Item -LiteralPath ${scratch}`),
+      `installer cleanup must remove ${scratch}`,
+    );
+  }
+  assert.match(
+    cleanup,
+    /-not \$promotedRuntime[\s\S]{0,200}Move-Item -LiteralPath \$backupRuntime -Destination \$runtimeDir/,
+  );
+  assert.match(
+    cleanup,
+    /-not \$promotedBinary[\s\S]{0,200}Move-Item -LiteralPath \$backupBinary -Destination \$destinationBinary/,
+  );
+
+  // Stage-aware failure messages, matching `die_runtime_unusable` in the sh
+  // script: a preflight failure must not claim a rollback that never happened.
+  assert.match(installer, /\$installStage = "staged"/);
+  assert.match(installer, /\$installStage = "installed"/);
+  assert.match(installer, /was not touched\./);
+  assert.match(installer, /the ADE you already had was put back, so nothing is broken\./);
+  assert.match(installer, /nothing was left installed at \$BinaryPath\./);
+});
+
 test("standalone Windows release assets remain behind the publication gate", () => {
   const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
   const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "build-results");

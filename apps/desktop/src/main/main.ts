@@ -5856,10 +5856,6 @@ app.whenReady().then(async () => {
   const switchProjectFromDialog = async (
     selectedPath: string,
   ): Promise<ProjectInfo> => {
-    // Recorded before anything can fail: a first open that fails never reaches
-    // the recent-projects list, and the recovery screen it puts on screen asks
-    // main to diagnose/repair this exact root.
-    attemptedProjectRoots.record(selectedPath);
     const startedAt = Date.now();
     const windowId = currentIpcWindowId();
     let repoRoot: string | null = null;
@@ -5916,7 +5912,19 @@ app.whenReady().then(async () => {
     try {
       const resolveStartedAt = Date.now();
       repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      // INVARIANT: a root is recorded as "attempted" only once it has been
+      // proven to be a real git repository on disk — `resolveRepoRoot` throws
+      // otherwise. The registry widens what a renderer may later name in
+      // diagnostics/recovery calls, so recording an unvalidated string would
+      // let a renderer launder any path on the machine into a known root by
+      // calling `projectOpenRepo` with it first. Still recorded BEFORE the
+      // init steps below, which are exactly the ones that fail with coded
+      // errors (disk_full, db_integrity, brain_not_installed) on a first open
+      // that never reaches the recent-projects list — the recovery screen for
+      // that root is what this registry exists to keep working.
+      attemptedProjectRoots.record(repoRoot);
       if (repoRoot !== normalizeProjectRoot(selectedPath)) {
+        attemptedProjectRoots.record(selectedPath);
         pendingRepoRootCleanup = authorizePendingWindowProjectRoot(windowId, repoRoot);
       }
       // Kick off base-ref detection IN PARALLEL with the existing-context
