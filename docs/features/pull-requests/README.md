@@ -759,14 +759,13 @@ branch switch does not rewrite or detach the PR history. `detached_at` is
 reserved for deleting the lane (or an explicit destructive cleanup path).
 
 `prService.listAll({ laneId })` returns the lane's complete live set for the
-renderer. `getForLane(laneId)` remains a single-value compatibility bridge: it
-prefers the current-branch PR and otherwise returns the newest previous-branch
-row. New lane, Work, and chat surfaces should use the plural read so they can
-show a primary badge plus a `+N` counter and a short list on hover/focus. The
-primary state is the worst attention state across the set (conflicts,
-changes-requested, or failing CI outrank pending, open, merged, and closed),
-while the list keeps each PR's own state, CI, review, and active/previous
-signals.
+PR workspace and history views. `getForLane(laneId)` remains a single-value
+compatibility bridge: it prefers the current-branch PR and otherwise returns
+the newest previous-branch row, so renderer badge consumers must still apply
+the current-branch selector before displaying it. Lane, Work, and chat badges
+use only rows whose head branch matches the lane's current branch; a primary
+lane on its base branch has no PR badge. The PR workspace retains the complete
+set so branch switching does not erase merged/closed history.
 
 Chat ownership is a separate optional edge in
 `pull_request_chat_sessions`. Creating or linking a PR from a chat records the

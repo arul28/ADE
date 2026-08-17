@@ -504,7 +504,8 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           scopedPrs,
         );
       } else {
-        cached = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
       }
       if (!requestIsCurrent()) return;
       setCurrentPr(cached);

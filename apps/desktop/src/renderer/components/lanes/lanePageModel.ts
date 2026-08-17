@@ -36,7 +36,7 @@ export type LaneTabPrTag = {
   repoName: string;
   title: string;
   state: PrSummary["state"];
-  /** A live PR follows the lane's current branch; previous PRs remain history on the lane. */
+  /** Visible lane tags always follow the lane's current branch. Older rows stay in PR history. */
   laneRole?: "active" | "previous";
   // Optional richer fields used to render the hover popover card. Populated when
   // available from the mapped PrSummary and/or the GitHub list item; merged in
@@ -223,8 +223,17 @@ export function resolveLaneIdsDeepLinkSelection(args: {
   return { laneIds, signature };
 }
 
-function normalizeLanePrBranch(ref: string | null | undefined): string {
+export function normalizeLanePrBranch(ref: string | null | undefined): string {
   return branchNameFromLaneRef(ref).trim();
+}
+
+export function laneIsOnBaseBranch(
+  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
+): boolean {
+  if (lane.laneType !== "primary") return false;
+  const laneBranch = normalizeLanePrBranch(lane.branchRef);
+  const baseBranch = normalizeLanePrBranch(lane.baseRef);
+  return Boolean(laneBranch && baseBranch && laneBranch === baseBranch);
 }
 
 function prStateRank(state: PrSummary["state"]): number {
@@ -258,11 +267,7 @@ export function lanePrMatchesCurrentBranch(
   const laneBranch = normalizeLanePrBranch(lane.branchRef);
   const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
   if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
-  if (lane.laneType === "primary") {
-    const baseBranch = normalizeLanePrBranch(lane.baseRef);
-    if (laneBranch && baseBranch && laneBranch === baseBranch) return false;
-  }
-  return true;
+  return !laneIsOnBaseBranch(lane);
 }
 
 export function lanePrRole(
@@ -278,13 +283,12 @@ export function selectLanePrs(
   lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
   prs: PrSummary[],
 ): PrSummary[] {
+  // This is the renderer-facing selector used by lane tags, counters, hover
+  // lists, Work cards, and chat badges. Historical rows remain in the source
+  // list and PR workspace, but never leak into those visible lane surfaces.
   return prs
-    .filter((pr) => !pr.detached && lanePrRole(lane, pr) != null)
-    .sort((a, b) => {
-      const aRole = lanePrRole(lane, a) === "active" ? 0 : 1;
-      const bRole = lanePrRole(lane, b) === "active" ? 0 : 1;
-      return aRole - bRole || comparePrTags(a, b);
-    });
+    .filter((pr) => !pr.detached && lanePrMatchesCurrentBranch(lane, pr))
+    .sort(comparePrTags);
 }
 
 export function selectLanePrTag(
@@ -307,11 +311,7 @@ export function githubPrMatchesCurrentBranch(
     { prNumber: null, repoOwner: headRepoOwner ?? null, repoName: headRepoName ?? null },
     { prNumber: null, repoOwner: pr.repoOwner, repoName: pr.repoName },
   )) return false;
-  if (lane.laneType === "primary") {
-    const baseBranch = normalizeLanePrBranch(lane.baseRef);
-    if (laneBranch && baseBranch && laneBranch === baseBranch) return false;
-  }
-  return true;
+  return !laneIsOnBaseBranch(lane);
 }
 
 export function selectGithubLanePrTag(

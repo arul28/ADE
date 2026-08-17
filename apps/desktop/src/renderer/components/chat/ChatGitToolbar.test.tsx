@@ -179,6 +179,23 @@ describe("ChatGitToolbar", () => {
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
 
+  it("hides a previous-branch PR from the legacy chat badge", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-old-branch",
+      laneId: "lane-1",
+      githubPrNumber: 91,
+      githubUrl: "https://github.com/acme/ade/pull/91",
+      title: "Merged old branch",
+      state: "merged",
+      headBranch: "old-branch",
+    } as any);
+
+    renderToolbar();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "PR" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /#91/ })).toBeNull();
+  });
+
   // The bug: every PR read routed to the machine the project TAB is bound to, so
   // a chat whose lane lives on another machine found no PR and showed the bare
   // "PR" create button for a session that already had one.

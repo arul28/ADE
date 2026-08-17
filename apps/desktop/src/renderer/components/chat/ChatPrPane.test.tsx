@@ -52,7 +52,7 @@ function makePr(over: Partial<PrSummary> = {}): PrSummary {
     title: "Add webhook relay for PR sync",
     state: "open",
     baseBranch: "main",
-    headBranch: "feat",
+    headBranch: "feature/pr-pane",
     checksStatus: "none",
     reviewStatus: "none",
     additions: 420,
@@ -339,6 +339,7 @@ describe("ChatPrPane", () => {
       laneId: "lane-2",
       githubPrNumber: 222,
       title: "Lane two PR",
+      headBranch: "feature/pr-pane-2",
     });
     const laneOneLive = deferred<PrSummary[]>();
     const laneTwoLive = deferred<PrSummary[]>();
