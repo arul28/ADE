@@ -9,6 +9,8 @@ import {
   collectMachineDiagnosticSources,
   readDiagnosticJsonFile,
 } from "../services/diagnostics/diagnosticSources";
+import { copyToClipboard } from "../lib/clipboard";
+import { openExternalUrl } from "../lib/externalLinks";
 
 /**
  * Headless counterpart to the desktop "Report issue" button. Reads only local
@@ -107,5 +109,65 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
       installId,
       redaction: sources.redaction,
     }),
+  };
+}
+
+/**
+ * The side effects of `ade report-issue --open`, in the order the desktop
+ * "Report issue" button does them: the report goes on the clipboard, *then*
+ * the prefilled GitHub issue opens.
+ *
+ * The order is the whole point. The template the URL carries says "paste the
+ * report from your clipboard" — the URL itself only holds a stub, because a
+ * full report does not fit in a query string. A flow that opens that form
+ * without copying anything sends the user to a page asking for something that
+ * is not there (and whatever unrelated text they had copied is what they would
+ * paste). Both steps are best effort: a box with no clipboard binary and no
+ * browser still gets the whole report on stdout.
+ */
+export async function openDiagnosticIssue(
+  built: Pick<ReportIssueResult, "report" | "issueUrl">,
+  deps: {
+    copy?: (text: string) => boolean;
+    open?: (url: string) => Promise<void>;
+  } = {},
+): Promise<{ copied: boolean; opened: boolean }> {
+  const copy = deps.copy ?? copyToClipboard;
+  const open = deps.open ?? openExternalUrl;
+  let copied = false;
+  try {
+    copied = copy(built.report);
+  } catch {
+    copied = false;
+  }
+  let opened = false;
+  try {
+    await open(built.issueUrl);
+    opened = true;
+  } catch {
+    // Headless boxes have no browser; the caller still prints the URL.
+    opened = false;
+  }
+  return { copied, opened };
+}
+
+/**
+ * The `--json` shape of `ade report-issue`. `copied` is here because `--open`
+ * has two side effects, and a script that asked for machine-readable output
+ * could not tell whether the second one happened: on a box with no clipboard
+ * binary the report is only on stdout, and a caller that assumed otherwise
+ * would tell its user to paste something that is not there. Without `--open`
+ * nothing is copied, so it is simply false.
+ */
+export function buildReportIssuePayload(
+  built: Pick<ReportIssueResult, "report" | "issueUrl" | "installId">,
+  side: { copied: boolean } | null,
+): { ok: true; installId: string; issueUrl: string; copied: boolean; report: string } {
+  return {
+    ok: true,
+    installId: built.installId,
+    issueUrl: built.issueUrl,
+    copied: side?.copied ?? false,
+    report: built.report,
   };
 }

@@ -1349,7 +1349,12 @@ describe("Windows runtime supervisor", () => {
       socketPath: "\\\\.\\pipe\\ade-test",
       spawnSync,
       readPidRecord: () => null,
-      timeoutMs: 12,
+      // Comfortably more than one poll: the helper computes `remaining` from a
+      // deadline captured a few statements earlier, so a budget close to
+      // `pollMs` lets a stalled runner skip the first sleep and turn the
+      // synchronous `sleepStarted` assertion into a flake. Every iteration is
+      // free here (`readPidRecord` always answers null).
+      timeoutMs: 60,
       pollMs: 10,
       sleep: async (ms) => {
         sleepStarted.push(ms);

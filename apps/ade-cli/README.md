@@ -468,7 +468,7 @@ ade machines hop <device-id> --session chat-1
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
 ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
-ade report-issue --open                           # also open that issue URL in the browser
+ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set

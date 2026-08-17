@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StorageCleanupDialog, StorageDialogFrame } from "./StorageCleanupDialog";
 
 afterEach(() => {
@@ -183,7 +183,14 @@ describe("StorageCleanupDialog failures", () => {
     // dialog to "done", and must not report a result for a job nobody is
     // looking at any more.
     cleanups[0]({ removed: ["/tmp/first.log"], failed: [], freedBytes: 10 });
-    await waitFor(() => expect(cleanupCall).toHaveBeenCalledTimes(1));
+    // Flush the abandoned resolution's own continuation. Polling the cleanup
+    // call count would pass on the first tick -- that call happened before the
+    // reopen -- so the assertions below could run before the stale completion
+    // was even delivered, and would hold with or without the guard.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(onCleaned).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /Remove 1 item/ })).toBeTruthy();

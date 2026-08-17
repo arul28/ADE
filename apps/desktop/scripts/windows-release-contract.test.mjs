@@ -448,10 +448,14 @@ test("the Windows installer stages, preflights and promotes under the ADE home, 
     cleanup,
     /-not \$promotedRuntime[\s\S]{0,200}Move-Item -LiteralPath \$backupRuntime -Destination \$runtimeDir/,
   );
+  // `$binaryVerified`, not `$promotedBinary`: between the rename and the
+  // version check what sits at ade.exe is an unverified binary, so an abort in
+  // that window must still put the backup back over it.
   assert.match(
     cleanup,
-    /-not \$promotedBinary[\s\S]{0,200}Move-Item -LiteralPath \$backupBinary -Destination \$destinationBinary/,
+    /-not \$binaryVerified[\s\S]{0,200}Move-Item -LiteralPath \$backupBinary -Destination \$destinationBinary/,
   );
+  assert.match(installer, /\$binaryVerified = \$true/);
 
   // Stage-aware failure messages, matching `die_runtime_unusable` in the sh
   // script: a preflight failure must not claim a rollback that never happened.

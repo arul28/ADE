@@ -140,9 +140,13 @@ const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 /**
  * How long a freshly (re)installed service gets to answer on the socket before
- * the desktop gives up on it. Longer than the installer's own handover wait on
- * purpose: the installer may return `starting` with a live brain that is still
- * booting, and this is where that brain gets the rest of its time.
+ * the desktop gives up on it.
+ *
+ * The same size as the install budget, and spent *after* it rather than
+ * instead of it: `tryRepairServiceConnection` runs the install first and then
+ * this connect loop, so a brain the installer returned as `starting` gets a
+ * second full window to come up (and one `createConnection` can therefore stay
+ * pending for up to about twice RUNTIME_SERVICE_START_WAIT_MS).
  */
 const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
@@ -2326,7 +2330,7 @@ export class LocalRuntimeConnectionPool {
 
   private async tryConnect(socketPath: string): Promise<LocalRuntimeConnection | null> {
     try {
-      const client = await this.connectClient(socketPath);
+      const client = await this.connectClient(socketPath, { isMachineService: true });
       this.ownedRuntimeChild = null;
       return { client, child: null, socketPath };
     } catch (error) {
@@ -2404,7 +2408,7 @@ export class LocalRuntimeConnectionPool {
     for (;;) {
       try {
         await waitForSocket(socketPath, 2_000);
-        const client = await this.connectClient(socketPath);
+        const client = await this.connectClient(socketPath, { isMachineService: true });
         this.ownedRuntimeChild = null;
         return { client, child: null, socketPath };
       } catch (error) {
@@ -2600,10 +2604,30 @@ export class LocalRuntimeConnectionPool {
     return localReleaseBuildOutputRuntimeBlock(resolveCliScriptPath());
   }
 
+  /**
+   * Clears the service-install streak marker, but only when the connection
+   * that just succeeded is the machine background service.
+   *
+   * The streak answers "how long has the machine service been failing to
+   * answer", and recovery ages a `brain_starting` verdict off it. Connecting
+   * to an app-owned runtime — the isolated one, or a spawned primary — proves
+   * nothing about the service: it is what the desktop falls back to *because*
+   * the service did not answer. Clearing the marker there made the next
+   * isolated-recovery install (every 60s) restart the streak from now, so a
+   * service broken for an hour kept reporting a brand-new attempt and kept
+   * reading as a brain that is merely starting.
+   */
+  private noteConnectedRuntime(isMachineService: boolean): void {
+    if (!isMachineService) return;
+    this.serviceStartupStreakStartedAt = null;
+  }
+
   private async connectClient(
     socketPath: string,
     options: {
       preserveVersionSkew?: boolean;
+      /** True only for the machine service endpoint; gates the streak reset. */
+      isMachineService?: boolean;
       expectedPid?: number | null;
       connectTimeoutMs?: number;
       initializeTimeoutMs?: number;
@@ -2638,7 +2662,7 @@ export class LocalRuntimeConnectionPool {
       this.clearVersionSkewStatus();
     }
     this.activeClient = client;
-    this.serviceStartupStreakStartedAt = null;
+    this.noteConnectedRuntime(options.isMachineService === true);
     this.activeRuntimePid = runtimeInfo.pid;
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;

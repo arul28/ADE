@@ -212,7 +212,16 @@ export function redactDiagnosticText(
     .replace(/[A-Za-z]:\\{1,2}Users\\{1,2}[^\\/\s"'`,;:)\]}]+/gi, "~")
     .replace(/[A-Za-z]%3A(?:%5C)+Users(?:%5C)+[^%\s"'`,;:)\]}]+/gi, "~");
 
-  // 4. The OS account name wherever it appears on its own.
+  // 4. Emails, before both the account-name rule and the token blobs. Before
+  //    the names because an account name is very often the local part of its
+  //    owner's address (`ada` / `ada@company.com`): rewriting that first would
+  //    leave `<user>@company.com`, which the email pattern can no longer match
+  //    (`>` is not a local-part character) — so the employer's domain would
+  //    ship in the report. Before the tokens so an address is not eaten as a
+  //    secret.
+  out = out.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email>");
+
+  // 5. The OS account name wherever it appears on its own.
   const username = context.username?.trim();
   if (username && username.length >= 3) {
     out = out.replace(
@@ -224,16 +233,33 @@ export function redactDiagnosticText(
     );
   }
 
-  // 5. Emails before token blobs: an address must not be eaten as a secret.
-  out = out.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email>");
-
   // 6. Credentials. Prefixed forms first, then key-adjacent blobs.
   out = out
     .replace(/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+)?/g, "<jwt>")
     .replace(/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 <redacted>")
     .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{10,}/g, "<token>")
     .replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "<token>")
+    // Fine-grained GitHub PATs are their own format, not a fifth member of the
+    // `gh?_` family: the prefix is a whole word and the body carries
+    // underscores, so neither the rule above nor the key/value rule below sees
+    // one that appears on its own in a log line. ADE accepts these everywhere
+    // it accepts a classic PAT, so an unredacted one is a live credential in a
+    // report the user is being told to paste into a public issue.
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, "<token>")
     .replace(/\bph[cx]_[A-Za-z0-9_-]{16,}/g, "<token>")
+    // The remaining real prefixes ADE stores keys for (Google AI, xAI, Groq).
+    // Anthropic/OpenAI/DeepSeek/OpenRouter/Moonshot are all `sk-`, already
+    // covered above. Together (`tgp_v1_...`) and Mistral (an unprefixed
+    // 32-char blob) have no prefix worth matching on: `tg_`/`mistral-` are not
+    // key shapes at all, and as patterns they ate ordinary log text
+    // (`tg_message_delivery_attempt_count`, the model id
+    // `mistral-small-2503-instruct-v1`) -- the real keys are long enough for
+    // the key-adjacent `{32,}` rule below. Groq keys are `gsk_` plus a run of
+    // base62, so the body deliberately excludes `_`: without that, any long
+    // enough `gsk_`-prefixed snake_case identifier disappeared too.
+    .replace(/\bAIza[A-Za-z0-9_-]{20,}/g, "<token>")
+    .replace(/\bxai-[A-Za-z0-9]{20,}/g, "<token>")
+    .replace(/\bgsk_[A-Za-z0-9]{32,}/g, "<token>")
     .replace(/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, "<token>")
     .replace(
       /([?&](?:token|key|api[_-]?key|access[_-]?token|secret|password|pin|sig|signature|code|auth)=)[^&\s"'`<>]+/gi,

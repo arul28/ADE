@@ -93,6 +93,16 @@ describe("readBrainStartupState", () => {
     });
   });
 
+  it("fails closed when the service running state is unknown", async () => {
+    // A status probe that could not tell answers null. Treating that as
+    // "supervised" pairs an unknown service with a young pid and reports a
+    // broken brain as a starting one, which suppresses the repair the user
+    // needs.
+    const state = await readBrainStartupState(deps({ running: null }));
+    expect(state.starting).toBe(false);
+    expect(state.serviceRunning).toBe(null);
+  });
+
   it("fails closed when the age cannot be read or a probe throws", async () => {
     await expect(readBrainStartupState(deps({ ageMs: null }))).resolves.toMatchObject({
       starting: false,

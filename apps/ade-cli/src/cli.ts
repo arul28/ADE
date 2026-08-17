@@ -33,8 +33,11 @@ import {
   runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
-import { buildCliDiagnosticReport } from "./commands/reportIssue";
-import { openExternalUrl } from "./lib/externalLinks";
+import {
+  buildCliDiagnosticReport,
+  buildReportIssuePayload,
+  openDiagnosticIssue,
+} from "./commands/reportIssue";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -22263,22 +22266,21 @@ async function runCli(
         projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
         cliVersion: VERSION,
       });
-      if (plan.open) {
-        try {
-          await openExternalUrl(built.issueUrl);
-        } catch {
-          // Headless boxes have no browser; the URL below is still printed.
-        }
-      }
+      // Copy-then-open, the same order the desktop button uses: the issue
+      // template asks the user to paste the report from their clipboard, so
+      // opening it without copying first sends them to a form with nothing to
+      // paste. Both steps are best effort and the report is printed regardless.
+      const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
       if (parsed.options.text) {
+        const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}\n`,
+          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          { ok: true, installId: built.installId, issueUrl: built.issueUrl, report: built.report },
+          buildReportIssuePayload(built, openedIssue),
           parsed.options,
           undefined,
         ),

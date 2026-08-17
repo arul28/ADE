@@ -51,6 +51,8 @@ export type DiagnosticReportDeps = {
   projectLogsDir?: string | null;
   getLocalRuntimeStatus?: () => Promise<unknown> | unknown;
   diagnoseProject?: (projectRoot: string) => Promise<unknown>;
+  /** Deadline for each optional step above. Test seam; defaults to 8s. */
+  stepTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 };
@@ -88,6 +90,36 @@ function volumeEntry(label: string, dirPath: string): DiagnosticVolumeSpace | nu
   return { label, path: dirPath, freeBytes: space.freeBytes, totalBytes: space.totalBytes };
 }
 
+/** Deadline for one optional collection step. */
+const DIAGNOSTIC_STEP_TIMEOUT_MS = 8_000;
+
+/**
+ * Runs one optional step and always settles: a rejection, a synchronous throw
+ * and a promise that never answers all collapse to null. Whatever the step
+ * would have contributed is simply absent from the report -- far better than a
+ * report the user can never get.
+ */
+function bestEffortStep<T>(
+  run: () => Promise<T> | T,
+  timeoutMs = DIAGNOSTIC_STEP_TIMEOUT_MS,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return Promise.race([
+    Promise.resolve()
+      .then(run)
+      .catch(() => null),
+    new Promise<null>((resolve) => {
+      // Unref'd so an outstanding step can never hold the process open.
+      timer = setTimeout(() => resolve(null), timeoutMs);
+      if (typeof timer.unref === "function") timer.unref();
+    }),
+    // Losing the race does not cancel the timer, so a step that answers first
+    // would otherwise leave a handle per report alive for the full deadline.
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 /**
  * Gathers everything the report needs from this machine and renders it. Every
  * step is best-effort: a missing log or a runtime that will not answer must
@@ -109,13 +141,17 @@ export async function collectDiagnosticReport(
     readVolume: volumeEntry,
   });
 
+  // Both optional steps ask the very subsystem the user is reporting as broken
+  // -- the local runtime, and a recovery diagnosis that probes the brain's
+  // socket. A step that never settles would hold `Promise.all` forever and
+  // leave the "Report issue" button spinning, which is exactly the outcome
+  // this collector promises can never happen. A synchronous throw out of
+  // either one is caught here for the same reason.
   const [osProductVersion, localRuntimeStatus, recoveryDiagnosis] = await Promise.all([
     readMacProductVersion().catch(() => null),
-    Promise.resolve()
-      .then(() => deps.getLocalRuntimeStatus?.())
-      .catch(() => null),
+    bestEffortStep(() => deps.getLocalRuntimeStatus?.() ?? null, deps.stepTimeoutMs),
     projectRoot && deps.diagnoseProject
-      ? deps.diagnoseProject(projectRoot).catch(() => null)
+      ? bestEffortStep(() => deps.diagnoseProject?.(projectRoot) ?? null, deps.stepTimeoutMs)
       : Promise.resolve(null),
   ]);
 

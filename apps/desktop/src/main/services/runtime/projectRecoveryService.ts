@@ -500,10 +500,16 @@ export class ProjectRecoveryService {
     // where the socket accepts connections and the ping still fails. Requiring
     // an unreachable socket made that window impossible to classify as
     // starting, and it fell through to "another program owns this" instead.
+    // A negative age means the recorded attempt is in the future -- a clock
+    // that moved backwards after it was written. Only the upper bound was
+    // checked, so such a stamp read as "always inside the window" and
+    // suppressed repair until the clock caught up with it.
+    const startupAgeMs = this.now() - installStartedAt;
     const brainStarting =
       serviceStatus.serviceHealth.running === true
       && Number.isFinite(installStartedAt)
-      && this.now() - installStartedAt < BRAIN_STARTING_WINDOW_MS;
+      && startupAgeMs >= 0
+      && startupAgeMs < BRAIN_STARTING_WINDOW_MS;
     const dbCheck = endpointHealthy
       ? { healthy: null, detail: "Project data check skipped because the background service is using it." }
       : await this.quickCheck(dbPath);

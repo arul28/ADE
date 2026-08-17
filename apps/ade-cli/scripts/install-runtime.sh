@@ -475,32 +475,66 @@ have_backup_binary=0
 install_log="$ade_home/install-failure.log"
 
 # Scratch state only: the download, the staged runtime, and the staged binary
-# copy. The runtime backup is deleted too, but only after the window in which
-# it is the machine's only runtime -- an abort (Ctrl-C, SIGTERM) between moving
-# the old runtime aside and moving the new one in would otherwise leave the
-# machine with no runtime at all.
+# copy. The two backups go too, but only once neither is still the machine's
+# only copy of what it replaced -- an abort (Ctrl-C, SIGTERM) part-way through
+# the promotion would otherwise leave the machine with no runtime at all, or
+# with a restore that silently failed and its backup deleted anyway.
 cleanup_install_scratch() {
   rm -rf "$tmp_dir"
   rm -f "$pending_binary"
   rm -rf "$staged_runtime_dir"
-  if [ "$promoted_runtime" -eq 0 ] && [ -e "$backup_runtime_dir" ] && [ ! -e "$runtime_dir" ]; then
-    mv "$backup_runtime_dir" "$runtime_dir" 2>/dev/null || true
-  fi
-  rm -rf "$backup_runtime_dir"
-  # Same protective order for the binary backup, for a different reason. This
-  # script *copies* the old `ade` aside, so $dest_dir/ade is never absent; the
-  # window that matters is the one between the new binary being renamed into
-  # place and its `--version` check passing. Abort in there (the obvious Ctrl-C
-  # when a bad build hangs) and what is installed is an unverified binary, so
-  # the backup goes back over it before it is deleted. Only after the check
-  # passes is the backup just disk. (install-runtime.ps1 uses Move-Item, so
-  # there the backup really is the only copy for a moment -- hence its own
-  # restore-if-missing branch.) Deleting it unconditionally at the end also
-  # keeps an abandoned `ade.bak` from sitting in the install dir forever.
+  # The binary first, because whether the old binary goes back decides whether
+  # the old runtime has to go back with it. This script *copies* the old `ade`
+  # aside, so $dest_dir/ade is never absent; the window that matters is the one
+  # between the new binary being renamed into place and its `--version` check
+  # passing. Abort in there (the obvious Ctrl-C when a bad build hangs) and what
+  # is installed is an unverified binary, so the backup goes back over it. Only
+  # after the check passes is the backup just disk. (install-runtime.ps1 uses
+  # Move-Item, so there the backup really is the only copy for a moment --
+  # hence its own restore-if-missing branch.)
+  restored_old_binary=0
   if [ "$promoted_binary" -eq 0 ] && [ -e "$backup_binary" ]; then
-    mv "$backup_binary" "$dest_dir/ade" 2>/dev/null || true
+    if mv "$backup_binary" "$dest_dir/ade" 2>/dev/null; then
+      restored_old_binary=1
+    fi
   fi
-  rm -f "$backup_binary"
+  # Deleting the backup once it is no longer needed keeps an abandoned
+  # `ade.bak` from sitting in the install dir forever -- but a restore that
+  # failed leaves it as the last copy of the working binary, so it stays.
+  if [ "$promoted_binary" -eq 1 ] || [ "$restored_old_binary" -eq 1 ]; then
+    rm -f "$backup_binary"
+  fi
+
+  # The runtime backup has two ways of still being needed. Before the runtime
+  # is promoted it is the machine's only runtime, so it goes back if the
+  # directory it came from is empty. After the runtime is promoted but before
+  # the new binary passes its check, the old binary is what the restore above
+  # just put back -- and an old binary paired with the new native sidecar is
+  # the broken install this whole block exists to prevent, so the old runtime
+  # goes back with it.
+  restore_old_runtime=0
+  if [ "$promoted_runtime" -eq 0 ]; then
+    if [ -e "$backup_runtime_dir" ] && [ ! -e "$runtime_dir" ]; then
+      restore_old_runtime=1
+    fi
+  elif [ "$restored_old_binary" -eq 1 ] && [ -e "$backup_runtime_dir" ]; then
+    restore_old_runtime=1
+    rm -rf "$runtime_dir" 2>/dev/null || true
+  fi
+  runtime_restore_failed=0
+  if [ "$restore_old_runtime" -eq 1 ]; then
+    mv "$backup_runtime_dir" "$runtime_dir" 2>/dev/null || runtime_restore_failed=1
+  fi
+  # A restore that failed is not the only way the backup can still be the
+  # machine's only runtime. `restore_previous_install` removes $runtime_dir
+  # before its own best-effort `mv`, so if that `mv` failed there is nothing at
+  # $runtime_dir at all -- and none of the flags above record it, because the
+  # runtime was promoted and the old binary was put back by that function
+  # rather than by this one. Believe the disk: the backup only goes when a
+  # runtime is actually installed.
+  if [ "$runtime_restore_failed" -eq 0 ] && [ -e "$runtime_dir" ]; then
+    rm -rf "$backup_runtime_dir"
+  fi
 }
 
 # The EXIT trap alone is not enough: a handler for HUP/INT/TERM that does not

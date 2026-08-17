@@ -81,6 +81,51 @@ describe("redactDiagnosticText", () => {
     expect(out).toContain("mode=relay");
   });
 
+  it("redacts every token prefix ADE itself accepts, not just the classic PAT", () => {
+    // Split so a secret scanner cannot read these synthetic keys as real ones.
+    const finePat = `github_pat_${"11ABCDEFG0abcdefghij"}_${"KLMNOPQRSTUVWXYZ0123456789abcdef"}`;
+    const input = [
+      `fine-grained ${finePat}`,
+      `google ${"AIza"}SyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456`,
+      `xai ${"xai-"}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`,
+      `groq ${"gsk_"}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`,
+    ].join("\n");
+
+    const out = redactDiagnosticText(input, CONTEXT);
+
+    expect(out).not.toContain(finePat);
+    expect(out).not.toMatch(/AIzaSy|xai-ABCDEF|gsk_ABCDEF/);
+    expect(out).toContain("fine-grained <token>");
+    // Still idempotent with the added prefixes.
+    expect(redactDiagnosticText(out, CONTEXT)).toBe(out);
+  });
+
+  it("keeps model ids and snake_case identifiers that only look like keys", () => {
+    // Redaction that eats ordinary log text costs the maintainer the exact
+    // lines they were sent the report to read. None of these are key shapes:
+    // Together keys are `tgp_v1_...`, Mistral keys carry no prefix at all, and
+    // a Groq key is `gsk_` plus a run of base62 with no underscores in it.
+    const input = [
+      "model mistral-small-2503-instruct-v1 selected",
+      "counter tg_message_delivery_attempt_count=4",
+      "error gsk_missing_runtime_module_error_here",
+    ].join("\n");
+
+    const out = redactDiagnosticText(input, CONTEXT);
+
+    expect(out).toBe(input);
+  });
+
+  it("hides the domain when the account name is the email local part", () => {
+    // `ada` is both the OS account and the local part of the address. If the
+    // account rule ran first it would leave `<user>@company.example`, which the
+    // email rule can no longer match — shipping the employer's domain.
+    const out = redactDiagnosticText("signed in as ada@company.example", CONTEXT);
+
+    expect(out).not.toContain("company.example");
+    expect(out).toBe("signed in as <email>");
+  });
+
   it("keeps loopback addresses and drops routable ones", () => {
     const input = [
       "brain answering on 127.0.0.1:8787",

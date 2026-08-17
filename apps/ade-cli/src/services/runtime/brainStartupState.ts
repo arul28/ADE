@@ -169,7 +169,11 @@ export async function readBrainStartupState(
       running = status.running;
       // No registered service, or a registered one the supervisor is not
       // running: nothing is coming up, so this is a real failure and stays one.
-      supervised = installed === true && running !== false;
+      // `running === true`, not `!== false`: an indeterminate probe answers
+      // null, and pairing "we could not tell" with a young pid is exactly how a
+      // broken brain gets reported as a starting one. Same fail-closed rule the
+      // catch below applies to a probe that threw.
+      supervised = installed === true && running === true;
       if (supervised) {
         const pid = await (deps.getServiceMainPid ?? defaultGetServiceMainPid)();
         ageMs = await (deps.readBrainAgeMs ?? defaultReadBrainAgeMs)(pid);

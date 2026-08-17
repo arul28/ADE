@@ -1084,6 +1084,13 @@ describe("launchd service install", () => {
       handoverTimeoutMs: 300,
       handoverPollMs: 10,
       terminateDeps: { kill: vi.fn(), pidAlive: () => false },
+      // This test's spawn stub answers only `launchctl`, so the ancestry probe
+      // would read an empty parent list and, on a host whose backend reports
+      // "unknown" for that, fail safe into the self-mutation block. Inject the
+      // chain like every other install test here: this case is about handover
+      // windows, not about who our parent is.
+      currentPid: 9999,
+      parentPid: () => null,
     });
 
     expect(result).toMatchObject({ ok: true, starting: true, restarted: true });

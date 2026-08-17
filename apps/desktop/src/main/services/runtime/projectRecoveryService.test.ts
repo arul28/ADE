@@ -231,6 +231,30 @@ describe("ProjectRecoveryService.diagnose", () => {
     expect(diagnosis.canAutoRepair).toBe(false);
   });
 
+  it("does not classify a future install timestamp as brain_starting", async () => {
+    // A clock that moved backwards after the attempt was recorded leaves a
+    // stamp in the future. Only the upper bound was checked, so it read as
+    // "always starting" and suppressed repair until the clock caught up.
+    const service = createProjectRecoveryService(deps({
+      connectionPool: pool(status({
+        serviceInstall: {
+          state: "installed", attempted: true, path: null, message: null, exitCode: null,
+          updatedAt: new Date(NOW).toISOString(), starting: true,
+          attemptStartedAt: new Date(NOW + 60 * 60_000).toISOString(),
+        },
+        serviceHealth: { state: "running", installed: true, running: true, path: null, message: null, checkedAt: null },
+      })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    // The concrete state matters: "not brain_starting" would pass for any
+    // wrong answer, and the point of the fix is that the stuck project falls
+    // through to a diagnosis Repair is allowed to act on.
+    expect(diagnosis.state).toBe("unknown_failure");
+    expect(diagnosis.canAutoRepair).toBe(true);
+  });
+
   it("does not report a healthy answering brain as broken over a fresh sync-host failure", async () => {
     const syncHostFailure: AdeLastFailureReport = {
       ...failure("socket_owned_by_other"),

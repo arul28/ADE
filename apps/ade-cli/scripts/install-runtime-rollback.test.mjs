@@ -76,6 +76,24 @@ fi
 exit 0
 `;
 
+// A rename can fail for reasons the installer cannot control (a full disk, a
+// permission change under it). What must not happen when the rollback's own
+// `mv` fails is the cleanup then deleting the backup it just failed to put
+// back. This shim fails exactly that one rename -- the previous runtime going
+// back -- and is the real `mv` for everything else.
+const FAKE_MV = `#!/bin/sh
+case "\$1" in
+  *.previous)
+    if [ -n "\${ADE_TEST_FAIL_RUNTIME_RESTORE:-}" ]; then
+      echo "fake mv: cannot restore \$1" >&2
+      exit 1
+    fi
+    ;;
+esac
+if [ -x /bin/mv ]; then exec /bin/mv "\$@"; fi
+exec /usr/bin/mv "\$@"
+`;
+
 const FAKE_CURL = `#!/bin/sh
 # Serves \$ADE_TEST_ASSET_DIR/<basename of URL> instead of hitting the network.
 url=""
@@ -142,6 +160,7 @@ function makeInstall({ previousBinary = "#!/bin/sh\necho previous\n" } = {}) {
   );
 
   writeExecutable(path.join(fakeBin, "curl"), FAKE_CURL);
+  writeExecutable(path.join(fakeBin, "mv"), FAKE_MV);
 
   return { root, assets, fakeBin, adeHome, installDir, runtimeDir, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
@@ -342,6 +361,43 @@ test("Ctrl-C while the promoted binary is being checked puts the old one back", 
     );
     assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.bak")));
     assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.new")));
+    // The runtime was already promoted when the interrupt landed, so putting
+    // the old binary back is only half a rollback: an old `ade` against the new
+    // native sidecar is an install that cannot start. The runtime has to go
+    // back with it.
+    assert.ok(fs.existsSync(path.join(fixture.runtimeDir, "previous-runtime.txt")));
+    assert.ok(!fs.existsSync(path.join(fixture.runtimeDir, "node_modules")));
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.previous`));
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.new`));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// `restore_previous_install` removes the promoted runtime before moving the
+// backup back, so a failure in that move leaves the machine with no runtime at
+// all. The scratch cleanup that runs next must not then delete the backup --
+// that backup is the only copy of the runtime left on the machine.
+test("a failed runtime restore keeps the backup instead of deleting the last runtime", () => {
+  const fixture = makeInstall();
+  try {
+    const result = runInstaller(fixture, {
+      ADE_TEST_FAIL_INSTALLED: "1",
+      ADE_TEST_FAIL_RUNTIME_RESTORE: "1",
+    });
+
+    assert.notEqual(result.status, 0);
+    // The binary rolled back normally; only the runtime restore failed.
+    assert.equal(
+      fs.readFileSync(path.join(fixture.installDir, "ade"), "utf8"),
+      "#!/bin/sh\necho previous\n",
+    );
+    // The runtime the machine had is still on disk, under the backup name a
+    // re-run (or a human) can recover it from.
+    assert.ok(
+      fs.existsSync(path.join(`${fixture.runtimeDir}.previous`, "previous-runtime.txt")),
+      "the only remaining runtime was deleted by the scratch cleanup",
+    );
   } finally {
     fixture.cleanup();
   }
