@@ -24,7 +24,7 @@ import type {
   ComputerUseOwnerSnapshot,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { chatScopePinArgs, useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
@@ -180,7 +180,7 @@ function useVisibleArtifactPreview(
     }
     let cancelled = false;
     setLoading(true);
-    void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, ...chatScopePinArgs(scope.pin))
+    void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin)
       .then((dataUrl) => {
         if (cancelled) return;
         setPreview(dataUrl);
@@ -644,7 +644,7 @@ export function ChatComputerUsePanel({
   const handleDelete = useCallback(
     (artifact: ComputerUseArtifactView) => {
       void withBusy([artifact.id], async () => {
-        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }, ...chatScopePinArgs(scope.pin));
+        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }, scope.pin);
         assertArtifactDeletionSucceeded(result);
       });
     },
@@ -654,7 +654,7 @@ export function ChatComputerUsePanel({
   const handleRecover = useCallback(
     (artifact: ComputerUseArtifactView) => {
       void withBusy([artifact.id], () =>
-        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }, ...chatScopePinArgs(scope.pin)),
+        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }, scope.pin),
       );
     },
     [scope.pin, withBusy],
@@ -664,7 +664,7 @@ export function ChatComputerUsePanel({
     const ids = artifacts.filter((artifact) => isBrokenArtifact(artifact)).map((artifact) => artifact.id);
     if (!ids.length) return;
     void withBusy(ids, async () => {
-      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids }, ...chatScopePinArgs(scope.pin));
+      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids }, scope.pin);
       assertArtifactDeletionSucceeded(result);
     });
   }, [artifacts, scope.pin, withBusy]);

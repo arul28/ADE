@@ -2125,7 +2125,7 @@ describe("AgentChatPane companion drawers", () => {
     fireEvent.change(restoreSelect, { target: { value: "archived-session" } });
 
     await waitFor(() => {
-      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" });
+      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" }, null);
     });
   });
 
@@ -2189,7 +2189,7 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         steerId: "steer-unprocessed",
         action: "run_next",
-      });
+      }, null);
     });
   });
 
@@ -2220,7 +2220,7 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         steerId: "steer-unprocessed",
         action: "dismiss",
-      });
+      }, null);
     });
   });
 
@@ -2258,12 +2258,12 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         turnId: "turn-1",
         action: "restart_resume",
-      });
+      }, null);
       expect(recoverCodexTurn).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         turnId: "turn-1",
         action: "restart_resume_thread",
-      });
+      }, null);
     });
   });
 
@@ -2416,7 +2416,7 @@ describe("AgentChatPane submit recovery", () => {
           },
         }],
         metadata: { source: "auth-retry-test" },
-      });
+      }, null);
     });
   });
 
@@ -3142,7 +3142,7 @@ describe("AgentChatPane submit recovery", () => {
         itemId: "approval-1",
         decision: "decline",
         responseText: "Add the rollback risks before implementation.",
-      });
+      }, null);
     });
     expect(send).not.toHaveBeenCalled();
     expect(steer).not.toHaveBeenCalled();
@@ -3241,7 +3241,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Ship the transcript cleanup.",
         displayText: "Ship the transcript cleanup.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -3263,7 +3263,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
-      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
     });
   });
@@ -3321,7 +3321,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Ship the optimistic bubble.",
-      }));
+      }), null);
     });
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
 
@@ -3344,7 +3344,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Open the simulator screen in preview.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
 
@@ -3465,7 +3465,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Stop checking docs and just drive the browser.",
         displayText: "Stop checking docs and just drive the browser.",
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -3497,6 +3497,7 @@ describe("AgentChatPane submit recovery", () => {
           displayText: "Fold this into the live turn.",
           dispatchMode: "inline",
         }),
+        null,
       );
     });
     expect(dispatchSteer).not.toHaveBeenCalled();
@@ -3565,7 +3566,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         steerId: "steer-edit",
         requireQueued: true,
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
       expect(screen.queryByText("queued.md")).toBeNull();
     });
@@ -3608,6 +3609,7 @@ describe("AgentChatPane submit recovery", () => {
           displayText: "Actually, do this instead.",
           dispatchMode: "interrupt",
         }),
+        null,
       );
     });
     expect(dispatchSteer).not.toHaveBeenCalled();
@@ -3815,7 +3817,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Keep shipping the fix.",
-      }));
+      }), null);
     });
     send.mockClear();
 
@@ -3839,7 +3841,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Continue in a new turn.",
-      }));
+      }), null);
     });
   });
 
@@ -3898,7 +3900,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Retry the original prompt.",
-      }));
+      }), null);
     });
     expect((await screen.findByRole("alert")).textContent).toContain(
       "A turn is already active in this thread. Wait for it to finish before retrying.",
@@ -4070,11 +4072,11 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
         displayText: "Recover by starting a new turn.",
-      });
+      }, null);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -4099,7 +4101,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Please keep going.",
         displayText: "Please keep going.",
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -4157,7 +4159,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         interactionMode: "plan",
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -4169,7 +4171,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Just plan the implementation.",
         interactionMode: "plan",
-      }));
+      }), null);
     });
   });
 
@@ -4212,7 +4214,7 @@ describe("AgentChatPane submit recovery", () => {
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
         codexConfigSource: "flags",
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -4230,7 +4232,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Make the change now.",
-      }));
+      }), null);
     });
   });
 
@@ -4270,7 +4272,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         fastMode: true,
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -4285,7 +4287,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Use the faster tier.",
-      }));
+      }), null);
     });
   });
 
@@ -4314,7 +4316,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         reasoningEffort: "high",
-      });
+      }, null);
     });
   });
 
@@ -4740,7 +4742,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }));
+      }), null);
     });
     expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
     expect(warmupModel).not.toHaveBeenCalled();
@@ -4765,7 +4767,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(warmupModel).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      });
+      }, null);
     });
   });
 
@@ -4798,7 +4800,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }));
+      }), null);
     });
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
@@ -5025,7 +5027,7 @@ describe("AgentChatPane submit recovery", () => {
         codexConfigSource: "flags",
         cursorModeId: "agent",
         cursorConfigValues: {},
-      }));
+      }), null);
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
     });
   });
@@ -5116,7 +5118,7 @@ describe("AgentChatPane submit recovery", () => {
         mode: "brief",
         claudePermissionMode: "plan",
         permissionMode: "plan",
-      }));
+      }), null);
     });
   });
 
@@ -5159,7 +5161,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         targetModelId: "anthropic/claude-sonnet-5",
         mode: "fork",
-      }));
+      }), null);
     });
   });
 
@@ -5235,7 +5237,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         targetModelId: "anthropic/claude-sonnet-5",
         mode: "fork",
-      }));
+      }), null);
     });
   });
 
@@ -5290,12 +5292,12 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }));
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }), null);
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
         mode: "brief",
         targetLaneId: "lane-created",
-      }));
+      }), null);
     });
   });
 
@@ -5510,7 +5512,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         mode: "brief",
         targetLaneId: "lane-2",
-      }));
+      }), null);
     });
   });
 
@@ -5565,7 +5567,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "Ship the instant route fix.",
         displayText: "Ship the instant route fix.",
-      }));
+      }), null);
       expect(writeClipboardText).toHaveBeenCalledWith("Ship the instant route fix.");
     });
   });
@@ -5629,7 +5631,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }));
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }), null);
       expect(writeClipboardText).toHaveBeenCalledWith("Copy quietly.");
     });
   });
@@ -5662,7 +5664,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         text: "Do not copy this prompt.",
-      }));
+      }), null);
     });
     expect(writeClipboardText).not.toHaveBeenCalled();
   });
@@ -5703,7 +5705,7 @@ describe("AgentChatPane submit recovery", () => {
         expect(send).toHaveBeenCalledWith(expect.objectContaining({
           sessionId: "created-session",
           text: "Keep sending despite callback failure.",
-        }));
+        }), null);
       });
       await waitFor(() => {
         expect(consoleError).toHaveBeenCalledWith("notifySessionCreated failed:", expect.any(Error));
@@ -8137,7 +8139,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "Ship it.",
-      }));
+      }), null);
     });
 
     expect(await screen.findByText("Fresh session reply")).toBeTruthy();
@@ -8306,8 +8308,8 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-      }));
-      expect(window.ade.agentChat.getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      }), null);
+      expect(window.ade.agentChat.getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
     });
   });
@@ -8356,7 +8358,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-      }));
+      }), null);
       expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
     });
   });
@@ -8479,7 +8481,7 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(backgroundTab);
     await waitFor(() => {
-      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }), null);
     });
 
     fireEvent.click(primaryTab);
@@ -8499,7 +8501,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(backgroundTab);
 
     expect(await screen.findByText("Recovered from transcript on revisit")).toBeTruthy();
-    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }), null);
   });
 
   it("subscribes to live chat events before reading the authoritative history snapshot", async () => {
@@ -8560,7 +8562,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     expect(await screen.findByText("Visible inactive grid tile loaded")).toBeTruthy();
-    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }), null);
   });
 
   it("keeps the Claude login prompt pinned in compact grid tiles", async () => {
@@ -8710,7 +8712,7 @@ describe("AgentChatPane submit recovery", () => {
       });
 
       expect(screen.getByText("Recovered grid tile output")).toBeTruthy();
-      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }), null);
     } finally {
       vi.useRealTimers();
     }
@@ -10471,9 +10473,11 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
-    // No pin argument at all — byte-for-byte the pre-routing call.
+    // A null pin — the unpinned path. Preload branches on `if (pin)`, so this
+    // routes exactly as the pre-routing call did.
     expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-a" }),
+      null,
     );
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
@@ -10569,6 +10573,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
+      null,
     ));
     expect(getEventHistory).not.toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
@@ -10588,6 +10593,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
     expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-b" }),
+      null,
     );
   });
 

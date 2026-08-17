@@ -236,10 +236,10 @@ describe("ChatBuiltInBrowserPanel", () => {
     render(<ChatBuiltInBrowserPanel sessionId="personal-chat-1" projectRootOverride={null} />);
 
     await waitFor(() => {
-      expect(api.getStatus).toHaveBeenCalledWith({ tabCollection: "personal" });
+      expect(api.getStatus).toHaveBeenCalledWith({ tabCollection: "personal" }, null);
       expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
         tabCollection: "personal",
-      }));
+      }), null);
     });
   });
 
@@ -253,7 +253,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT));
@@ -263,7 +263,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: false,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT));
@@ -273,7 +273,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
   });
 
@@ -287,7 +287,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
@@ -297,7 +297,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: false,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
@@ -307,7 +307,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       width: 640,
       height: 360,
       visible: false,
-    }));
+    }), null);
 
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
 
@@ -316,7 +316,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
   });
 
@@ -330,7 +330,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     const overlay = document.createElement("div");
@@ -346,7 +346,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: false,
-      }));
+      }), null);
     });
 
     overlay.remove();
@@ -356,7 +356,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
   });
 
@@ -370,7 +370,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     const overlay = document.createElement("div");
@@ -386,7 +386,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: false,
-        }));
+        }), null);
       });
     } finally {
       overlay.remove();
@@ -406,7 +406,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
 
       overlay = document.createElement("div");
@@ -422,7 +422,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
 
       expect(api.setBounds).not.toHaveBeenCalledWith(expect.objectContaining({
@@ -456,7 +456,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
 
       overlay = document.createElement("div");
@@ -471,7 +471,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
       expect(api.setBounds).not.toHaveBeenLastCalledWith(expect.objectContaining({ visible: false }));
 
@@ -483,7 +483,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: false,
-        }));
+        }), null);
       });
     } finally {
       overlay?.remove();

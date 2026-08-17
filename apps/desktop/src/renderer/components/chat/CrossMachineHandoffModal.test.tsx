@@ -201,7 +201,7 @@ describe("CrossMachineHandoffModal", () => {
     expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({
       sourceSessionId: "session-1",
       targetModelId: "openai/gpt-5.5",
-    }));
+    }), null);
     expect(callAction).toHaveBeenNthCalledWith(
       2,
       "machine-1",
@@ -214,7 +214,7 @@ describe("CrossMachineHandoffModal", () => {
     expect(validateCrossMachineSource).toHaveBeenCalledWith(expect.objectContaining({
       sourceSessionId: "session-1",
       capsuleFingerprint: "a".repeat(64),
-    }));
+    }), null);
     await waitFor(() => expect(markCrossMachineHandoff).toHaveBeenCalled());
     expect(onFinished).toHaveBeenCalledTimes(1);
   });
@@ -511,7 +511,7 @@ describe("CrossMachineHandoffModal", () => {
       "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded.",
     );
 
-    expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "fork" }));
+    expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "fork" }), null);
     expect(callAction).toHaveBeenNthCalledWith(
       1,
       "machine-1",
@@ -578,7 +578,7 @@ describe("CrossMachineHandoffModal", () => {
     expect(continueButton.getAttribute("title")).toMatch(/behind origin/i);
 
     fireEvent.click(screen.getByRole("button", { name: /update branch/i }));
-    await waitFor(() => expect((window as any).ade.git.pull).toHaveBeenCalledWith({ laneId: "lane-1" }));
+    await waitFor(() => expect((window as any).ade.git.pull).toHaveBeenCalledWith({ laneId: "lane-1" }, null));
   });
 
   /**
@@ -714,7 +714,7 @@ describe("CrossMachineHandoffModal", () => {
     expect(screen.getByRole("button", { name: /^fork$/i })).toHaveProperty("disabled", true);
     expect(screen.getByText(/can't fork chat history/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
-    await waitFor(() => expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "brief" })));
+    await waitFor(() => expect(prepareCrossMachineHandoff).toHaveBeenCalledWith(expect.objectContaining({ mode: "brief" }), null));
   });
 
   it("offers a one-click brief when the destination is too old to fork", async () => {
@@ -752,7 +752,7 @@ describe("CrossMachineHandoffModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /send as brief instead/i }));
     await waitFor(() =>
-      expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" })),
+      expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" }), null),
     );
     expect(await screen.findByText(/Sent: a short summary of this chat/i)).toBeTruthy();
     // The second preflight ran in brief mode.
@@ -827,7 +827,7 @@ describe("CrossMachineHandoffModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /send as brief instead/i }));
     expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
-    expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" }));
+    expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" }), null);
   });
 
   it("falls back to a brief when the provider session file can't be forked", async () => {
@@ -891,7 +891,7 @@ describe("CrossMachineHandoffModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /send as brief instead/i }));
     expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
-    expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" }));
+    expect(prepareCrossMachineHandoff).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "brief" }), null);
   });
 
   it("finishes the accepted handoff when marking the source chat fails", async () => {

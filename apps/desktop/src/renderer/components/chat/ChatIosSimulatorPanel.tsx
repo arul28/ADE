@@ -22,7 +22,7 @@ import type {
 } from "../../../shared/types";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE, inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { chatScopePinArgs, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 
 const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode";
 
@@ -1047,9 +1047,9 @@ export function ChatIosSimulatorPanel({
 
   const refreshStatus = useCallback(async () => {
     const [nextStatus, nextDevices, nextStreamStatus] = await Promise.all([
-      window.ade.iosSimulator.getStatus(...chatScopePinArgs(runtimePinRef.current)),
-      window.ade.iosSimulator.listDevices(...chatScopePinArgs(runtimePinRef.current)),
-      window.ade.iosSimulator.getStreamStatus(...chatScopePinArgs(runtimePinRef.current)).catch(() => null),
+      window.ade.iosSimulator.getStatus(runtimePinRef.current),
+      window.ade.iosSimulator.listDevices(runtimePinRef.current),
+      window.ade.iosSimulator.getStreamStatus(runtimePinRef.current).catch(() => null),
     ]);
     setStatus(nextStatus);
     setDevices(nextDevices);
@@ -1064,7 +1064,7 @@ export function ChatIosSimulatorPanel({
       return false;
     }
     try {
-      await window.ade.iosSimulator.shutdown({ force }, ...chatScopePinArgs(runtimePinRef.current));
+      await window.ade.iosSimulator.shutdown({ force }, runtimePinRef.current);
       await refreshStatus();
       setSnapshot(null);
       setSelectedElement(null);
@@ -1093,7 +1093,7 @@ export function ChatIosSimulatorPanel({
   }, []);
 
   const refreshLaunchTargets = useCallback(async (deviceUdid?: string | null) => {
-    const nextTargets = await window.ade.iosSimulator.listLaunchTargets({ deviceUdid, projectRoot }, ...chatScopePinArgs(runtimePinRef.current));
+    const nextTargets = await window.ade.iosSimulator.listLaunchTargets({ deviceUdid, projectRoot }, runtimePinRef.current);
     setLaunchTargets(nextTargets);
     setSelectedTargetId((current) => (
       current && nextTargets.some((target) => target.id === current)
@@ -1113,15 +1113,15 @@ export function ChatIosSimulatorPanel({
       const selectedLabel = selectedElement ? elementLabel(selectedElement) : null;
       const selectedComponentId = selectedElement?.componentId ?? null;
       const [workspace, targets, match] = await Promise.all([
-        window.ade.iosSimulator.ensurePreviewWorkspace({ projectRoot, sourceFile, sourceLine, openIfNeeded: true }, ...chatScopePinArgs(runtimePinRef.current)),
-        window.ade.iosSimulator.listPreviewTargets({ projectRoot, sourceFile, sourceLine }, ...chatScopePinArgs(runtimePinRef.current)),
+        window.ade.iosSimulator.ensurePreviewWorkspace({ projectRoot, sourceFile, sourceLine, openIfNeeded: true }, runtimePinRef.current),
+        window.ade.iosSimulator.listPreviewTargets({ projectRoot, sourceFile, sourceLine }, runtimePinRef.current),
         window.ade.iosSimulator.resolvePreviewMatch({
           projectRoot,
           sourceFile,
           sourceLine,
           elementLabel: selectedLabel,
           componentId: selectedComponentId,
-        }, ...chatScopePinArgs(runtimePinRef.current)),
+        }, runtimePinRef.current),
       ]);
       const capability = workspace.capability;
       setPreviewCapability(capability);
@@ -1159,7 +1159,7 @@ export function ChatIosSimulatorPanel({
       sourceLine: selectedElement.sourceLine ?? null,
       elementLabel: elementLabel(selectedElement),
       componentId: selectedElement.componentId ?? null,
-    }, ...chatScopePinArgs(runtimePinRef.current)).then((match) => {
+    }, runtimePinRef.current).then((match) => {
       if (cancelled) return;
       setPreviewMatch(match);
       const matchedTarget = match.target;
@@ -1242,7 +1242,7 @@ export function ChatIosSimulatorPanel({
   }, []);
 
   const startWindowCaptureVisual = useCallback(async (device: IosSimulatorDevice) => {
-    const status = await window.ade.iosSimulator.startStream({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 }, ...chatScopePinArgs(runtimePinRef.current));
+    const status = await window.ade.iosSimulator.startStream({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 }, runtimePinRef.current);
     setStreamStatus(status);
     setLiveVisual({
       kind: "window",
@@ -1309,7 +1309,7 @@ export function ChatIosSimulatorPanel({
     if (!options.silent) setBusy(true);
     setSnapshotRefreshing(true);
     try {
-      const next = await window.ade.iosSimulator.getScreenSnapshot({ deviceUdid, projectRoot }, ...chatScopePinArgs(runtimePinRef.current));
+      const next = await window.ade.iosSimulator.getScreenSnapshot({ deviceUdid, projectRoot }, runtimePinRef.current);
       if (sequence !== snapshotRefreshSequenceRef.current) return;
       setSnapshot(next);
       setHoveredElement(null);
@@ -1348,7 +1348,7 @@ export function ChatIosSimulatorPanel({
       void (async () => {
         try {
           stopRendererLiveVisual();
-          await window.ade.iosSimulator.stopStream(...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
+          await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
           await startWindowCaptureVisual(activeDevice);
           void refreshSnapshot({ silent: true, priority: true });
         } catch (windowError) {
@@ -1451,7 +1451,7 @@ export function ChatIosSimulatorPanel({
         void refreshStatus().catch(() => {});
         return;
       }
-    }, ...chatScopePinArgs(runtimePinRef.current));
+    }, runtimePinRef.current);
     return () => {
       unsubscribe();
     };
@@ -1490,18 +1490,18 @@ export function ChatIosSimulatorPanel({
   useEffect(() => {
     if (mode !== "interact") {
       stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream(...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
+      void window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
       return;
     }
     if (!status) return;
     if (!activeDevice || !status.supported) {
       stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream(...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
+      void window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
       return;
     }
     if (!activeSession || activeSession.deviceUdid !== activeDevice.udid) {
       stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream(...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
+      void window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
       return;
     }
     // Everything else here routes to the chat's machine, but the live view does
@@ -1525,7 +1525,7 @@ export function ChatIosSimulatorPanel({
     void (async () => {
       try {
         stopRendererLiveVisual();
-        await window.ade.iosSimulator.stopStream(...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
+        await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});
         await startWindowCaptureVisual(device);
         if (cancelled) {
           stopRendererLiveVisual();
@@ -1634,7 +1634,7 @@ export function ChatIosSimulatorPanel({
         mode: "live",
         keepSimulatorInBackground: false,
         environment: previewTarget ? previewLaunchEnvironment(previewTarget) : null,
-      }, ...chatScopePinArgs(runtimePinRef.current));
+      }, runtimePinRef.current);
       setSelectedDeviceUdid(session.deviceUdid);
       await refreshStatus();
       setMode("interact");
@@ -1675,7 +1675,7 @@ export function ChatIosSimulatorPanel({
         previewDefinitionIndexInFile: target.previewDefinitionIndexInFile,
         tabIdentifier: previewCapability?.selectedWindow?.tabIdentifier ?? null,
         timeoutSec: 120,
-      }, ...chatScopePinArgs(runtimePinRef.current));
+      }, runtimePinRef.current);
       setPreviewResult(result);
       setPreviewCapability(result.capability);
       setMessage(result.ok
@@ -1690,7 +1690,7 @@ export function ChatIosSimulatorPanel({
 
   const openPreviewWorkspace = useCallback(async () => {
     try {
-      await window.ade.iosSimulator.openPreviewWorkspace({ projectRoot }, ...chatScopePinArgs(runtimePinRef.current));
+      await window.ade.iosSimulator.openPreviewWorkspace({ projectRoot }, runtimePinRef.current);
       setMessage("Opened apps/ios/ADE.xcodeproj in Xcode. If Xcode asks to allow ADE Preview Lab access, click Allow, then press Retry.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -1713,7 +1713,7 @@ export function ChatIosSimulatorPanel({
         componentId: element?.componentId ?? null,
         tabIdentifier: previewCapability?.selectedWindow?.tabIdentifier ?? null,
         timeoutSec: 120,
-      }, ...chatScopePinArgs(runtimePinRef.current));
+      }, runtimePinRef.current);
       const match = current.match;
       setPreviewMatch(match);
       const matchingTarget = current.target;
@@ -1767,7 +1767,7 @@ export function ChatIosSimulatorPanel({
     setTypedText("");
     armWindowCaptureRecoveryAfterInput();
     try {
-      await window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text }, ...chatScopePinArgs(runtimePinRef.current));
+      await window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text }, runtimePinRef.current);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -1821,7 +1821,7 @@ export function ChatIosSimulatorPanel({
     setBusy(true);
     try {
       suppressNextSelectionEventRef.current = true;
-      const result = await window.ade.iosSimulator.selectPoint({ deviceUdid: selectedDeviceUdid, projectRoot, x, y }, ...chatScopePinArgs(runtimePinRef.current));
+      const result = await window.ade.iosSimulator.selectPoint({ deviceUdid: selectedDeviceUdid, projectRoot, x, y }, runtimePinRef.current);
       if (element) {
         setSelectedElement(element);
         const crop = await attachCrop(element);
@@ -1881,7 +1881,7 @@ export function ChatIosSimulatorPanel({
         const next = await window.ade.iosSimulator.getScreenSnapshot({
           deviceUdid: selectedDeviceUdid ?? activeDevice?.udid ?? undefined,
           projectRoot,
-        }, ...chatScopePinArgs(runtimePinRef.current));
+        }, runtimePinRef.current);
         sourceSnapshot = next;
         setSnapshot(next);
         setHoveredElement(null);
@@ -2335,7 +2335,7 @@ export function ChatIosSimulatorPanel({
           : 1;
         armWindowCaptureRecoveryAfterInput();
         if (moved < 8) {
-          await window.ade.iosSimulator.tap({ deviceUdid: selectedDeviceUdid, projectRoot, x: point.x / controlScale, y: point.y / controlScale }, ...chatScopePinArgs(runtimePinRef.current));
+          await window.ade.iosSimulator.tap({ deviceUdid: selectedDeviceUdid, projectRoot, x: point.x / controlScale, y: point.y / controlScale }, runtimePinRef.current);
         } else {
           await window.ade.iosSimulator.drag({
             deviceUdid: selectedDeviceUdid,
@@ -2345,7 +2345,7 @@ export function ChatIosSimulatorPanel({
             endX: point.x / controlScale,
             endY: point.y / controlScale,
             durationMs: 180,
-          }, ...chatScopePinArgs(runtimePinRef.current));
+          }, runtimePinRef.current);
         }
       } catch (error) {
         setMessage(error instanceof Error ? error.message : String(error));
@@ -2362,7 +2362,7 @@ export function ChatIosSimulatorPanel({
     if (event.key === "Enter") {
       event.preventDefault();
       armWindowCaptureRecoveryAfterInput();
-      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: "\n" }, ...chatScopePinArgs(runtimePinRef.current)).catch((error) => {
+      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: "\n" }, runtimePinRef.current).catch((error) => {
         setMessage(error instanceof Error ? error.message : String(error));
       });
       return;
@@ -2370,7 +2370,7 @@ export function ChatIosSimulatorPanel({
     if (event.key.length === 1) {
       event.preventDefault();
       armWindowCaptureRecoveryAfterInput();
-      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: event.key }, ...chatScopePinArgs(runtimePinRef.current)).catch((error) => {
+      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: event.key }, runtimePinRef.current).catch((error) => {
         setMessage(error instanceof Error ? error.message : String(error));
       });
     }

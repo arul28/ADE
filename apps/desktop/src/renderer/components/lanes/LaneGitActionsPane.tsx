@@ -6,7 +6,7 @@ import {
   selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
-import { selectOtherMachineBranchStates } from "../../state/crossMachineLanes";
+import { lanesForPin, selectOtherMachineBranchStates } from "../../state/crossMachineLanes";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
@@ -693,15 +693,13 @@ export function LaneGitActionsPane({
   // a tab switch paints the wrong machine's changes.
   const projectStateKey = pin ? `pin:${pin.kind}:${pin.key}` : activeProjectStateKey;
 
-  // A foreign lane is absent from the local `lanes` array; fall back to the
-  // cross-machine union so branch names and the header still resolve.
-  const pinnedLanes = useMemo<LaneSummary[]>(() => {
-    if (!pin) return lanes;
-    for (const entry of Object.values(crossMachineLanesByMachineId)) {
-      if (entry.binding?.key === pin.key) return entry.lanes;
-    }
-    return lanes;
-  }, [crossMachineLanesByMachineId, lanes, pin]);
+  // A foreign lane is absent from the local `lanes` array; resolve it against
+  // the pinned machine's own slice of the cross-machine union. Never against
+  // `lanes` — that is the TAB's machine, and lane ids are unique only per
+  // machine, so falling back there can match a different machine's lane and
+  // drive git on the wrong checkout.
+  const pinnedMachineLanes = useAppStore((s) => lanesForPin(s, pin));
+  const pinnedLanes: LaneSummary[] = pinnedMachineLanes ?? lanes;
 
   const lane = useMemo(() => pinnedLanes.find((entry) => entry.id === laneId) ?? null, [pinnedLanes, laneId]);
   const parentLane = useMemo(() => {

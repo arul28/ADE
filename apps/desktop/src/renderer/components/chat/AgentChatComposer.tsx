@@ -1875,6 +1875,19 @@ export function AgentChatComposer({
     dismissedTriggerRef.current = null;
     setCommandMenuTrigger(null);
   }, []);
+  /**
+   * Close the menu and leave any existing dismissal untouched.
+   *
+   * The third close semantic, and the one that is easy to write by accident:
+   * this trigger cannot open a menu right now (it is already a confirmed
+   * token, or it is still covered by a dismissal the user made earlier), but
+   * nothing about it is *resolved* and nothing new was *dismissed*. Clearing
+   * the dismissal here would re-open the menu the user just escaped; recording
+   * one would suppress the menu for a trigger the user never dismissed.
+   */
+  const closeCommandMenuKeepingDismissal = useCallback(() => {
+    setCommandMenuTrigger(null);
+  }, []);
   /** Close the menu and keep it closed while the user extends this query. */
   const dismissCommandMenu = useCallback((trigger: ComposerTrigger | null) => {
     dismissedTriggerRef.current = trigger
@@ -2848,11 +2861,11 @@ export function AgentChatComposer({
       isFile: (body) => attachedPaths.has(body),
       isMention: isChatMentionTokenBody,
     })) {
-      setCommandMenuTrigger(null);
+      closeCommandMenuKeepingDismissal();
       return;
     }
     if (!allowCommandMenuTrigger(trigger)) {
-      setCommandMenuTrigger(null);
+      closeCommandMenuKeepingDismissal();
       return;
     }
     if (!openIfNew) {
@@ -2867,7 +2880,7 @@ export function AgentChatComposer({
     setCommandMenuTrigger(trigger);
     const anchor = getCommandMenuAnchor(node);
     if (anchor) setCommandMenuAnchor(anchor);
-  }, [allowCommandMenuTrigger, attachedPaths, closeCommandMenu]);
+  }, [allowCommandMenuTrigger, attachedPaths, closeCommandMenu, closeCommandMenuKeepingDismissal]);
 
   const restoreTextareaCaret = useCallback((caret: number) => {
     lastPlainSelectionRef.current = caret;
@@ -4367,17 +4380,22 @@ export function AgentChatComposer({
       return;
     }
     const context = getRichTriggerContext();
-    if (context && allowCommandMenuTrigger(context.trigger)) {
-      setCommandMenuTrigger(context.trigger);
-      const anchor = getCommandMenuAnchor(editor);
-      if (anchor) setCommandMenuAnchor(anchor);
-    } else if (context) {
-      setCommandMenuTrigger(null);
-    } else {
+    if (!context) {
+      // No trigger under the caret at all — the trigger is gone, not dismissed.
       closeCommandMenu();
+      captureRichSelection();
+      return;
     }
+    if (!allowCommandMenuTrigger(context.trigger)) {
+      closeCommandMenuKeepingDismissal();
+      captureRichSelection();
+      return;
+    }
+    setCommandMenuTrigger(context.trigger);
+    const anchor = getCommandMenuAnchor(editor);
+    if (anchor) setCommandMenuAnchor(anchor);
     captureRichSelection();
-  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
+  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;

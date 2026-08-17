@@ -16,7 +16,7 @@ import type {
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
 import { cn } from "../ui/cn";
 import { BottomDrawerSection } from "./BottomDrawerSection";
-import { chatScopePinArgs, useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
   CHAT_CARD_WIDTH_CLASS,
   ChatCardDiffStat,
@@ -237,7 +237,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       setActiveDiffLoadState("loading");
 
       try {
-        const diff = await window.ade.agentChat.getTurnFileDiff(args, ...chatScopePinArgs(scope.pin));
+        const diff = await window.ade.agentChat.getTurnFileDiff(args, scope.pin);
         if (latestDiffRequestKey.current !== cacheKey) return;
         if (!diff) {
           setActiveDiff(null);

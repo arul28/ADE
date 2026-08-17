@@ -34,6 +34,8 @@ import {
   dispatchWorkPtyContextInserted,
   type WorkPtyContextInsertKind,
 } from "../../lib/workPtyContextEvents";
+import { lanesForPin, machineEntryForBinding } from "../../state/crossMachineLanes";
+import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { formatToolTypeLabel, isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { isMacPlatform } from "../../lib/platform";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
@@ -276,14 +278,9 @@ export function WorkSidebar({
   // A foreign chat's lane is absent from the tab-bound `lanes` array, so the
   // worktree path (and therefore iOS / App Control) resolved to null. Fall
   // back to the machine's slice of the cross-machine union.
-  const pinnedMachineLanes = useAppStore((state) => {
-    if (!runtimePin) return null;
-    for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
-      if (entry.binding?.key === runtimePin.key) return entry;
-    }
-    return null;
-  });
-  const scopedLanes = pinnedMachineLanes?.lanes ?? lanes;
+  const pinnedMachine = useAppStore((state) => machineEntryForBinding(state, runtimePin));
+  const pinnedLanes = useAppStore((state) => lanesForPin(state, runtimePin));
+  const scopedLanes = pinnedLanes ?? lanes;
   const activeLane = useMemo(
     () => (laneId ? scopedLanes.find((lane) => lane.id === laneId) ?? null : null),
     [laneId, scopedLanes],
@@ -291,10 +288,8 @@ export function WorkSidebar({
   const laneRoot = activeLane?.worktreePath ?? null;
   // Pinned calls have no local fallback, so a machine that is not answering
   // gets one plain line instead of a wall of rejected IPC.
-  const pinnedMachineOffline = Boolean(runtimePin) && pinnedMachineLanes?.online === false;
-  const pinnedMachineName = runtimePin
-    ? (runtimePin.kind === "remote" ? runtimePin.runtimeName : runtimePin.displayName)
-    : null;
+  const pinnedMachineOffline = Boolean(runtimePin) && pinnedMachine?.online === false;
+  const pinnedMachineName = runtimePin ? machineNameForBinding(runtimePin) : null;
 
   useEffect(() => {
     setSelectedPath(null);
@@ -599,6 +594,7 @@ export function WorkSidebar({
           {warningReason ? <WarningBanner message={warningReason} /> : null}
           <div className="min-h-0 flex-1 overflow-hidden">
             <ChatBuiltInBrowserPanel
+              key={`work-browser:${runtimePin?.key ?? "bound"}`}
               sessionId={panelSessionId}
               runtimePin={runtimePin}
               onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
@@ -684,6 +680,7 @@ export function WorkSidebar({
 
     const panel = effectiveTab === "ios" ? (
       <ChatIosSimulatorPanel
+        key={`work-ios:${runtimePin?.key ?? "bound"}`}
         sessionId={panelSessionId}
         laneId={laneId}
         runtimePin={runtimePin}
@@ -696,6 +693,7 @@ export function WorkSidebar({
       />
     ) : (
       <ChatAppControlPanel
+        key={`work-appcontrol:${runtimePin?.key ?? "bound"}`}
         sessionId={panelSessionId}
         laneId={laneId}
         runtimePin={runtimePin}

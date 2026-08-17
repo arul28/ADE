@@ -25,7 +25,6 @@ import type {
 } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { chatScopePinArgs } from "./ChatRuntimeScope";
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
@@ -468,7 +467,7 @@ export function ChatAppControlPanel({
           const next = scrollPendingRef.current;
           scrollPendingRef.current = null;
           if (!next || controlsDisabled) return;
-          void window.ade.appControl.scroll(next, ...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
+          void window.ade.appControl.scroll(next, runtimePinRef.current).catch(() => {});
         });
       }
     };
@@ -520,14 +519,14 @@ export function ChatAppControlPanel({
   }, [mode]);
 
   const refreshStatus = useCallback(async () => {
-    const nextStatus = await window.ade.appControl.getStatus(...chatScopePinArgs(runtimePinRef.current));
+    const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
     setStatus(nextStatus);
     return nextStatus;
   }, []);
 
   const refreshTargets = useCallback(async () => {
     try {
-      const list = await window.ade.appControl.listTargets(...chatScopePinArgs(runtimePinRef.current));
+      const list = await window.ade.appControl.listTargets(runtimePinRef.current);
       setTargets(list);
       // Clear the optimistic pick once the backend confirms it's active —
       // OR if the picked target disappeared entirely (window closed mid-attach),
@@ -544,7 +543,7 @@ export function ChatAppControlPanel({
   }, []);
 
   const refreshSnapshot = useCallback(async () => {
-    const nextSnapshot = await window.ade.appControl.getSnapshot({ projectRoot }, ...chatScopePinArgs(runtimePinRef.current));
+    const nextSnapshot = await window.ade.appControl.getSnapshot({ projectRoot }, runtimePinRef.current);
     setSnapshot(nextSnapshot);
     setSelectedElement(nextSnapshot.hitElement);
     return nextSnapshot;
@@ -646,7 +645,7 @@ export function ChatAppControlPanel({
           return true;
         });
       }
-    }, ...chatScopePinArgs(runtimePinRef.current));
+    }, runtimePinRef.current);
     return () => {
       cancelled = true;
       unsubscribe();
@@ -713,8 +712,8 @@ export function ChatAppControlPanel({
           cwd: cwd.length ? cwd : null,
           chatSessionId: sessionId,
           force: true,
-        }, ...chatScopePinArgs(runtimePinRef.current));
-        const nextStatus = await window.ade.appControl.getStatus(...chatScopePinArgs(runtimePinRef.current));
+        }, runtimePinRef.current);
+        const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
         setStatus({ ...nextStatus, activeSession: launched });
         setMode("control");
         if (launched.terminalSessionId && launched.terminalPtyId) {
@@ -748,7 +747,7 @@ export function ChatAppControlPanel({
       setPendingTargetId(targetId);
       return runBusy("attach", async () => {
         try {
-          const session = await window.ade.appControl.attachToTarget({ targetId }, ...chatScopePinArgs(runtimePinRef.current));
+          const session = await window.ade.appControl.attachToTarget({ targetId }, runtimePinRef.current);
           setStatus((current) => (current ? { ...current, activeSession: session } : current));
           await refreshTargets();
         } finally {
@@ -771,8 +770,8 @@ export function ChatAppControlPanel({
           cdpPort: port,
           chatSessionId: sessionId,
           force: true,
-        }, ...chatScopePinArgs(runtimePinRef.current));
-        const nextStatus = await window.ade.appControl.getStatus(...chatScopePinArgs(runtimePinRef.current));
+        }, runtimePinRef.current);
+        const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
         setStatus({ ...nextStatus, activeSession: connected });
         setMode("control");
         await refreshSnapshot();
@@ -785,8 +784,8 @@ export function ChatAppControlPanel({
     () =>
       runBusy("stop", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.stop(undefined, ...chatScopePinArgs(runtimePinRef.current));
-        const nextStatus = await window.ade.appControl.getStatus(...chatScopePinArgs(runtimePinRef.current));
+        await window.ade.appControl.stop(undefined, runtimePinRef.current);
+        const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
         setStatus(nextStatus);
         setSnapshot(null);
         setSelectedElement(null);
@@ -801,7 +800,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("focus-window", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.focusWindow(...chatScopePinArgs(runtimePinRef.current));
+        await window.ade.appControl.focusWindow(runtimePinRef.current);
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
@@ -810,7 +809,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("minimize-window", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.minimizeWindow(...chatScopePinArgs(runtimePinRef.current));
+        await window.ade.appControl.minimizeWindow(runtimePinRef.current);
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
@@ -835,7 +834,7 @@ export function ChatAppControlPanel({
         y,
         coordinateSpace: "viewport",
         includeScreenshot: false,
-      }, ...chatScopePinArgs(runtimePinRef.current));
+      }, runtimePinRef.current);
       const element = result.snapshot?.hitElement ?? null;
       let attachmentPath: string | null = null;
       let screenshotDataUrl = result.item.screenshotDataUrl ?? null;
@@ -920,7 +919,7 @@ export function ChatAppControlPanel({
       // updates on its own; gating busy/disabled state through every click
       // makes the dropdown and Stop button flash and feel locked.
       window.ade.appControl
-        .click({ x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, ...chatScopePinArgs(runtimePinRef.current))
+        .click({ x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, runtimePinRef.current)
         .catch((error) => {
           setMessage({ tone: "error", text: `Click failed: ${errorMessage(error)}` });
         });
@@ -947,7 +946,7 @@ export function ChatAppControlPanel({
             y: point.viewportY,
             coordinateSpace: "viewport",
             includeScreenshot: false,
-          }, ...chatScopePinArgs(runtimePinRef.current))
+          }, runtimePinRef.current)
           .then((result) => {
             if (hoverInspectSeqRef.current !== requestSeq || modeRef.current !== "inspect") return;
             setHoverElement(result.snapshot.hitElement);
@@ -966,7 +965,7 @@ export function ChatAppControlPanel({
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
         if (modeRef.current !== "control") throw new Error("Switch to Control mode to type into the app.");
         if (!typeText.trim()) return;
-        await window.ade.appControl.typeText({ text: typeText }, ...chatScopePinArgs(runtimePinRef.current));
+        await window.ade.appControl.typeText({ text: typeText }, runtimePinRef.current);
         setTypeText("");
         try {
           await refreshSnapshot();

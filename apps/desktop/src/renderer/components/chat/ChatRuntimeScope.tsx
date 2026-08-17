@@ -2,7 +2,8 @@ import React, { createContext, useContext, useMemo } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import type { LaneSummary } from "../../../shared/types/lanes";
-import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { THIS_MACHINE_NAME, machineNameForBinding } from "../../../shared/machineIdentity";
+import { lanesForPin, machineEntryForBinding } from "../../state/crossMachineLanes";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 
 /**
@@ -84,23 +85,15 @@ export function useChatRuntimeScopeForPin(
   // The pinned machine's own slice of the cross-machine union. A foreign lane
   // is absent from the tab-bound `lanes` array, so its worktree path — and
   // therefore the iOS / App Control project root — is only knowable from here.
-  const pinnedMachine = useRootAppStore((state) => {
-    if (!pin) return null;
-    for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
-      if (entry.binding?.key === pin.key) return entry;
-    }
-    return null;
-  });
-  const pinnedLaneCache = useAppStore((state) => (
-    pin ? state.laneCacheByProject[pin.kind === "remote" ? pin.key : pin.rootPath] ?? null : null
-  ));
+  const pinnedMachine = useRootAppStore((state) => machineEntryForBinding(state, pin));
+  const pinnedLanes = useAppStore((state) => lanesForPin(state, pin));
   const boundLanes = useAppStore((state) => state.lanes);
   const boundProjectRoot = useAppStore(selectActiveProjectRoot);
   const boundBinding = useAppStore((state) => state.projectBinding);
 
   return useMemo<ChatRuntimeScope>(() => {
     const binding = bindingOverride !== undefined ? bindingOverride : (pin ?? boundBinding ?? null);
-    const lanes = pin ? (pinnedMachine?.lanes ?? pinnedLaneCache?.lanes ?? []) : boundLanes;
+    const lanes = pinnedLanes ?? boundLanes;
     const lane = laneId ? lanes.find((entry) => entry.id === laneId) ?? null : null;
     return {
       pin,
@@ -110,9 +103,7 @@ export function useChatRuntimeScopeForPin(
       laneWorktreePath: lane?.worktreePath ?? null,
       rootPath: pin ? pin.rootPath : boundProjectRoot,
       isRemote: binding?.kind === "remote",
-      machineName: binding?.kind === "remote"
-        ? (binding.runtimeName || binding.displayName)
-        : THIS_MACHINE_NAME,
+      machineName: machineNameForBinding(binding),
       // Only a pinned machine can be known-offline. The bound machine's own
       // liveness is the window's problem, not this chat's.
       online: !pin || pinnedMachine?.online !== false,
@@ -124,21 +115,130 @@ export function useChatRuntimeScopeForPin(
     boundProjectRoot,
     laneId,
     pin,
-    pinnedLaneCache,
+    pinnedLanes,
     pinnedMachine,
   ]);
 }
 
+/** A lane as the handoff lane picker needs it — LaneSummary is assignable. */
+export type ChatScopeLaneOption = {
+  id: string;
+  name: string;
+  color?: string | null;
+  branchRef?: string | null;
+  laneType?: string | null;
+};
+
+export type ChatScopeDerivationInput = {
+  /** The chat the pane is routing for. */
+  selectedSessionId: string | null;
+  /** That session's lane, when the session is in this tab's own list. */
+  selectedSessionLaneId: string | null;
+  /** True when the selected session IS in this tab's list (so no union scan). */
+  selectedSessionIsLocal: boolean;
+  /** The pane's lane, used when no chat is selected (drafts, new chats). */
+  laneId: string | null;
+  chatMachineRouter: { pinForLane: (laneId: string | null) => OpenProjectBinding | null };
+  /** The tab's binding — the machine an unpinned chat runs on. */
+  projectBinding: OpenProjectBinding | null;
+  /** The tab machine's lanes, and the pane's preferred picker list. */
+  lanes: LaneSummary[];
+  availableLanes?: ChatScopeLaneOption[];
+};
+
+export type ChatScopeDerivation = {
+  /** The lane this chat lives in, on its own machine. */
+  chatScopeLaneId: string | null;
+  /** Pin for every chat-scoped call. Null = the tab's own binding. */
+  chatRuntimePin: OpenProjectBinding | null;
+  /** `chatRuntimePin ?? projectBinding`. */
+  chatEffectiveBinding: OpenProjectBinding | null;
+  isRemoteChat: boolean;
+  /** Absolute machine name for the chat's machine. Never "remote". */
+  chatMachineName: string;
+  /** Lane picker options on the CHAT's machine. */
+  handoffLaneSourceLanes: ChatScopeLaneOption[];
+  /** The chat lane's checkout, on the chat's machine. */
+  chatLaneWorktreePath: string | null;
+};
+
 /**
- * Spread helper for the trailing `pin?` parameter.
+ * The chat's machine, resolved once for the whole pane.
  *
- * An unpinned chat must pass no extra argument at all, so its calls stay
- * byte-for-byte the ones the surface made before per-chat routing existed.
+ * This is the same question {@link useChatRuntimeScopeForPin} answers for a
+ * panel, asked one level higher: a pane starts from a *session*, not a pin, and
+ * has to find the lane (possibly a foreign one, absent from this tab's session
+ * list) before it can find the machine. `AgentChatPane` feeds the result
+ * straight into {@link ChatRuntimeScopeProvider}, so the pane and its subtree
+ * cannot disagree about which machine the chat is on.
  */
-export function chatScopePinArgs(
-  pin: OpenProjectBinding | null | undefined,
-): readonly [OpenProjectBinding] | readonly [] {
-  return pin ? ([pin] as const) : ([] as const);
+export function useChatScopeDerivation({
+  selectedSessionId,
+  selectedSessionLaneId,
+  selectedSessionIsLocal,
+  laneId,
+  chatMachineRouter,
+  projectBinding,
+  lanes,
+  availableLanes,
+}: ChatScopeDerivationInput): ChatScopeDerivation {
+  // A chat selected from another machine is absent from this tab's session
+  // list, so its lane — and with it its machine — is only knowable from the
+  // cross-machine union.
+  const foreignSelectedLaneId = useRootAppStore((state) => {
+    if (!selectedSessionId || selectedSessionIsLocal) return null;
+    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
+      const session = machine.sessions.find((candidate) => candidate.id === selectedSessionId);
+      if (session) return session.laneId;
+    }
+    return null;
+  });
+  const chatScopeLaneId = selectedSessionLaneId ?? foreignSelectedLaneId ?? laneId ?? null;
+  const chatRuntimePin = useMemo(
+    () => chatMachineRouter.pinForLane(chatScopeLaneId),
+    [chatMachineRouter, chatScopeLaneId],
+  );
+  /**
+   * The binding this chat actually runs on. Handoff is a fact about the chat's
+   * machine, not about whichever project this tab happens to be bound to: a
+   * local chat viewed from a remote-bound tab can still hand off, and a chat
+   * pinned to a remote machine cannot — regardless of the tab.
+   */
+  const chatEffectiveBinding = chatRuntimePin ?? projectBinding ?? null;
+  // The chat machine's own lane list, or null for an unpinned chat — which
+  // keeps its existing tab-bound source (`availableLanes ?? lanes`) explicitly.
+  const pinnedLanes = useAppStore((state) => lanesForPin(state, chatRuntimePin));
+  /**
+   * A brief handoff lands in a lane on the CHAT's machine, so both the picker
+   * and the auto-created lane have to target that machine. `availableLanes`/
+   * `lanes` describe the tab's bound machine, which is the right answer only
+   * for an unpinned chat.
+   */
+  const handoffLaneSourceLanes = useMemo<ChatScopeLaneOption[]>(
+    () => pinnedLanes ?? availableLanes ?? lanes,
+    [availableLanes, lanes, pinnedLanes],
+  );
+  /**
+   * The chat's lane checkout, on the chat's own machine. `lanes` is the tab's
+   * bound machine, so for a foreign chat it does not contain this lane at all —
+   * and the old global fallback silently handed the local project root to a
+   * tool that was about to drive another machine.
+   */
+  const chatLaneWorktreePath = useMemo(() => {
+    if (!chatScopeLaneId) return null;
+    const source = pinnedLanes ?? lanes;
+    return source.find((lane) => lane.id === chatScopeLaneId)?.worktreePath ?? null;
+  }, [chatScopeLaneId, lanes, pinnedLanes]);
+
+  return {
+    chatScopeLaneId,
+    chatRuntimePin,
+    chatEffectiveBinding,
+    isRemoteChat: chatEffectiveBinding?.kind === "remote",
+    chatMachineName: machineNameForBinding(chatEffectiveBinding),
+    handoffLaneSourceLanes,
+    chatLaneWorktreePath,
+  };
 }
 
 export type ChatRuntimeScopeProviderProps = {

@@ -93,19 +93,6 @@ import {
 } from "./crossMachineHandoffPresentation";
 import { cn } from "../ui/cn";
 
-/**
- * Spread form for the optional source-machine pin. A source chat on this tab's
- * own binding passes NO extra argument, so the common path stays byte-for-byte
- * the call it was before per-chat routing.
- */
-const EMPTY_PIN_ARGS: readonly [] = [];
-function pinArgs(
-  pin: OpenProjectBinding | null,
-): readonly [] | readonly [OpenProjectBinding] {
-  return pin ? [pin] : EMPTY_PIN_ARGS;
-}
-
-
 export function CrossMachineHandoffModal({
   open,
   sourceSessionId,
@@ -337,9 +324,9 @@ export function CrossMachineHandoffModal({
   ): Promise<SourceCheck> => {
     const pin = pinOverride !== undefined ? pinOverride : runtimePinRef.current;
     const [lanes, sync, origin] = await Promise.all([
-      window.ade.lanes.list({ includeArchived: false, includeStatus: true }, ...pinArgs(pin)),
-      window.ade.git.getSyncStatus({ laneId: sourceLaneId }, ...pinArgs(pin)),
-      window.ade.git.getOriginRemote({ laneId: sourceLaneId }, ...pinArgs(pin)),
+      window.ade.lanes.list({ includeArchived: false, includeStatus: true }, pin),
+      window.ade.git.getSyncStatus({ laneId: sourceLaneId }, pin),
+      window.ade.git.getOriginRemote({ laneId: sourceLaneId }, pin),
     ]);
     const lane = lanes.find((candidate) => candidate.id === sourceLaneId) ?? null;
     const blockingErrors: BlockedActionReason[] = [];
@@ -561,7 +548,7 @@ export function CrossMachineHandoffModal({
         continuationPrompt,
         mode: requestedMode,
         ...target,
-      }, ...pinArgs(runtimePinRef.current));
+      }, runtimePinRef.current);
       setPrepared(handoff);
       // Prefer what the readiness pass already fetched; only ask again when the
       // picker never got an answer for this machine.
@@ -648,7 +635,7 @@ export function CrossMachineHandoffModal({
     setError(null);
     try {
       const pin = runtimePinRef.current;
-      await window.ade.git.push({ laneId: sourceLaneId }, ...pinArgs(pin));
+      await window.ade.git.push({ laneId: sourceLaneId }, pin);
       await inspectSource(pin);
     } catch (pushError) {
       setError(pushError instanceof Error ? pushError.message : String(pushError));
@@ -668,7 +655,7 @@ export function CrossMachineHandoffModal({
     setError(null);
     try {
       const pin = runtimePinRef.current;
-      await window.ade.git.pull({ laneId: sourceLaneId }, ...pinArgs(pin));
+      await window.ade.git.pull({ laneId: sourceLaneId }, pin);
       await inspectSource(pin);
     } catch (pullError) {
       setError(pullError instanceof Error ? pullError.message : String(pullError));
@@ -751,7 +738,7 @@ export function CrossMachineHandoffModal({
       targetMachineName: connection.target.name,
       targetLaneId: accepted.laneId,
       targetSessionId: accepted.session.id,
-    }, ...pinArgs(pin));
+    }, pin);
   }, [sourceSessionId]);
 
   const sendHandoff = useCallback(async () => {
@@ -771,7 +758,7 @@ export function CrossMachineHandoffModal({
         sourceSessionId,
         capsule: prepared.capsule,
         capsuleFingerprint: prepared.capsuleFingerprint,
-      }, ...pinArgs(sourcePin));
+      }, sourcePin);
       setSendProgress(["validate"]);
       setBusyLabel("Creating destination lane and chat…");
       const requiredRouteKind = requireRemoteRuntimeRouteKind(selectedConnection.route?.kind);

@@ -247,6 +247,51 @@ export const EMPTY_CROSS_MACHINE_UNION: CrossMachineUnion = {
   foreignRows: EMPTY_ROWS,
   markersByLaneId: EMPTY_MARKERS,
 };
+const EMPTY_LANES: LaneSummary[] = [];
+
+/**
+ * The union slice owned by a pinned machine, or null when the pin is absent
+ * (the chat lives on the tab's own binding) or that machine has not been read
+ * into the union yet.
+ *
+ * A binding key — not a machine id — is the join: `machineId` is only known
+ * once a machine has answered, while a pin carries its routing target from the
+ * moment a chat is selected.
+ */
+export function machineEntryForBinding(
+  state: Pick<AppState, "crossMachineLanesByMachineId">,
+  pin: OpenProjectBinding | null | undefined,
+): CrossMachineMachineLanes | null {
+  if (!pin) return null;
+  for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
+    if (entry.binding?.key === pin.key) return entry;
+  }
+  return null;
+}
+
+/**
+ * The ONLY lane list a pinned lane id may be resolved against: the pinned
+ * machine's own, from the live union or its warm cache.
+ *
+ * Never `state.lanes`. Lane ids are unique per machine, not globally, so
+ * falling back to the tab-bound machine's list can match a *different* lane
+ * that happens to share the id — and then hand its worktree path to a tool
+ * about to drive the other machine. An unread machine yields an empty list,
+ * which surfaces as "not found" rather than as the wrong lane.
+ *
+ * Returns null for an absent pin so callers keep their own unpinned source
+ * (`state.lanes`, `availableLanes`, …) explicitly rather than by accident.
+ */
+export function lanesForPin(
+  state: Pick<AppState, "crossMachineLanesByMachineId" | "laneCacheByProject">,
+  pin: OpenProjectBinding | null | undefined,
+): LaneSummary[] | null {
+  if (!pin) return null;
+  const entry = machineEntryForBinding(state, pin);
+  if (entry) return entry.lanes;
+  const cached = state.laneCacheByProject[pin.kind === "remote" ? pin.key : pin.rootPath];
+  return cached?.lanes ?? EMPTY_LANES;
+}
 
 /**
  * Immediately projects a foreign launch into its owning machine slice. The
@@ -264,9 +309,7 @@ export function seedCrossMachineOptimisticSession(
   binding: OpenProjectBinding,
 ): void {
   const store = rootAppStoreApi.getState();
-  const existing = Object.values(store.crossMachineLanesByMachineId).find(
-    (entry) => entry.binding?.key === binding.key,
-  ) ?? null;
+  const existing = machineEntryForBinding(store, binding);
   const machineId = existing?.machineId ?? (
     binding.kind === "remote" ? binding.targetId : THIS_MACHINE_ID
   );
@@ -327,9 +370,7 @@ export function cancelCrossMachineOptimisticChatSession(
     pendingForeignOptimisticSessionsByBinding.delete(binding.key);
   }
   const store = rootAppStoreApi.getState();
-  const existing = Object.values(store.crossMachineLanesByMachineId).find(
-    (entry) => entry.binding?.key === binding.key,
-  );
+  const existing = machineEntryForBinding(store, binding);
   if (existing?.sessions.some((session) => session.id === sessionId)) {
     store.mergeCrossMachineLanes({
       machineId: existing.machineId,
