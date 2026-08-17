@@ -838,7 +838,7 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
-  it("cancels another process's queued client when the shared opt-out marker appears", async () => {
+  it("cancels another process's queued client on the next status read after the shared opt-out marker appears", async () => {
     const first = makeHarness();
     expect(first.service.capture({ event: "ade_app_opened", surface: "desktop" }).accepted).toBe(true);
 
@@ -856,7 +856,7 @@ describe("productAnalyticsService", () => {
     fs.rmSync(first.root, { recursive: true, force: true });
   });
 
-  it("honors another process's explicit opt-in after a shared opt-out", async () => {
+  it("honors another process's explicit opt-in after a shared opt-out on the next status read", async () => {
     const first = makeHarness();
     expect(first.service.capture({ event: "ade_app_opened", surface: "desktop" }).accepted).toBe(true);
 

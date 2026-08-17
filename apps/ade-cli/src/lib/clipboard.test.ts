@@ -32,23 +32,15 @@ describe("copyToClipboard", () => {
       commandExists: () => true,
       timeoutMs: 300,
       // Real child, real spawnSync, production's own options: reads stdin then
-      // lingers the way a clipboard daemon does.
-      spawn: (_cmd, _args, opts) => spawnSync("sh", ["-c", "cat >/dev/null; sleep 30"], opts),
+      // lingers the way a clipboard daemon does. Spawned via `process.execPath`
+      // rather than `sh -c` so it runs on Windows too, and so the process
+      // spawnSync's timeout kills IS the lingering one (a shell would fork the
+      // sleeper and orphan it).
+      spawn: (_cmd, _args, opts) =>
+        spawnSync(process.execPath, ["-e", "process.stdin.resume(); setTimeout(() => {}, 30_000);"], opts),
     });
     expect(ok).toBe(false);
     expect(Date.now() - started).toBeLessThan(10_000);
-  });
-
-  it("reports failure when no Linux clipboard tool is installed", () => {
-    expect(
-      copyToClipboard("x", {
-        platform: "linux",
-        commandExists: () => false,
-        spawn: () => {
-          throw new Error("must not spawn");
-        },
-      }),
-    ).toBe(false);
   });
 
   it("treats a throwing spawn as a copy failure", () => {

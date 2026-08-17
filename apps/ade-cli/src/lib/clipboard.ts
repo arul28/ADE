@@ -12,13 +12,13 @@
 // selection lives — `ade report-issue --open` and the TUI `/report-issue`
 // keybinds would hang forever. Discarding stdout/stderr (so the daemon holds
 // no pipe of ours) plus a bounded timeout keeps the call finite on every
-// platform. `xclip`/`xsel` daemonize the same way, so they share the shape.
+// platform. `xclip`, the one X11 fallback we try, daemonizes the same way.
 // ---------------------------------------------------------------------------
 
 import { spawnSync } from "node:child_process";
 
 /** Upper bound on how long a clipboard helper may run before we give up. */
-export const CLIPBOARD_TIMEOUT_MS = 3_000;
+const CLIPBOARD_TIMEOUT_MS = 3_000;
 
 export type CopyToClipboardSpawnOptions = {
   input: string;
