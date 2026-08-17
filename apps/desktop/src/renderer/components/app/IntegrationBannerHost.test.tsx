@@ -468,4 +468,38 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     expect(screen.getByText("GitHub isn't responding")).toBeTruthy();
     expect(screen.queryByText("GitHub is down")).toBeNull();
   });
+
+  // Fingerprint carries incident identity, so a NEW incident on the same
+  // surfaces is not inheriting the previous incident's dismissal.
+  it("resurfaces a dismissed outage when GitHub changes the incident for the same surfaces", async () => {
+    setAdeMock({ onStatusChanged: vi.fn(() => () => {}) });
+    const secondIncident = deriveGitHubServiceHealth({
+      status: { indicator: "major", description: "Partial System Outage" },
+      components: [
+        { id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" },
+        { id: "hhtssxt0f5v2", name: "Pull Requests", status: "major_outage" },
+      ],
+      incidents: [{ name: "A different incident", shortlink: "https://stspg.io/second", resolved_at: null }],
+    })!;
+
+    const { rerender } = render(
+      <IntegrationBannerHost
+        {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }) })}
+      />,
+    );
+    await act(async () => {});
+    await act(async () => {
+      screen.getByRole("button", { name: /^Dismiss/ }).click();
+    });
+    expect(screen.queryByText("GitHub is down")).toBeNull();
+
+    await act(async () => {
+      rerender(
+        <IntegrationBannerHost
+          {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: secondIncident }) })}
+        />,
+      );
+    });
+    expect(screen.getByText("GitHub is down")).toBeTruthy();
+  });
 });

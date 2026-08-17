@@ -376,6 +376,10 @@ export async function resolveGithubStatusCredentials<
       if (!result.ok) {
         const repositoryAccessFailure = args.isRepositoryAccessFailure(result);
         args.onRejectedProbe(candidate, result, { repositoryAccessFailure, phase: "write" });
+        // Same reasoning as the read chain: a GitHub 5xx says nothing about
+        // this credential, so the next one fails identically. Stop instead of
+        // adding load to a service that is already failing.
+        if (result.authFailure.kind === "service_unavailable") break;
         continue;
       }
       successfulProbes.set(candidate.token, result.value);

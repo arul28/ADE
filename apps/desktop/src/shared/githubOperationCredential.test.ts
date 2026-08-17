@@ -135,4 +135,45 @@ describe("githubOperationCredential", () => {
       { repositoryAccessFailure: false, phase: "read" },
     );
   });
+
+  // A GitHub 5xx is not credential-specific, so the next write candidate would
+  // fail identically. Probing on only adds load to a service already failing.
+  it("stops write fallback after service_unavailable", async () => {
+    type Candidate = { source: "app" | "gh" | "pat"; token: string };
+    const app: Candidate = { source: "app", token: "app" };
+    const gh: Candidate = { source: "gh", token: "gh" };
+    const pat: Candidate = { source: "pat", token: "pat" };
+    type Probe = { repoAccessOk: boolean; write: boolean };
+    const probe = vi.fn(async (candidate: Candidate): Promise<GithubStatusCredentialProbeResult<Probe>> => (
+      candidate.source === "app"
+        ? { ok: true as const, value: { repoAccessOk: true, write: false } }
+        : {
+            ok: false as const,
+            error: "503",
+            authFailure: {
+              kind: "service_unavailable" as const,
+              message: "No server is currently available to service your request.",
+              retryAt: null,
+            },
+            rateLimit: null,
+          }
+    ));
+
+    const result = await resolveGithubStatusCredentials({
+      readCandidates: [app],
+      writeCandidates: [gh, pat],
+      cooldown: () => null,
+      probe,
+      capabilities: (_candidate, value) => ({ read: value.repoAccessOk, write: value.write }),
+      isRepositoryAccessFailure: () => false,
+      onAuthenticatedProbe: vi.fn(),
+      onUsableProbe: vi.fn(),
+      onRejectedProbe: vi.fn(),
+    });
+
+    expect(result.activeWrite).toBeNull();
+    // `pat` must never be probed: one 5xx ends the write chain.
+    const writeProbes = probe.mock.calls.map(([candidate]) => candidate.source);
+    expect(writeProbes).not.toContain("pat");
+  });
 });

@@ -75,10 +75,16 @@ export function describeGithubOutage(
     settingsDetail: `GitHub reports problems with ${affected}. Nothing here needs changing — ADE keeps retrying and reconnects when GitHub is back.`,
     action: "GitHub status",
     actionUrl: health.incidentUrl ?? GITHUB_STATUS_PAGE_URL,
-    // Surfaces only, sorted. GitHub flips component severities several times
-    // per incident; including the level would resurface a dismissed banner on
-    // every flip, including when the incident NARROWS.
-    fingerprint: health.affected.map((entry) => entry.surface).sort().join(","),
+    // Incident identity + the affected surfaces, sorted. Severity is
+    // deliberately excluded: GitHub flips component levels several times per
+    // incident, and including them would resurface a dismissed banner on every
+    // flip, including when the incident NARROWS. The incident link IS included
+    // so a genuinely new incident on the same surfaces resurfaces the notice
+    // instead of inheriting the previous one's dismissal.
+    fingerprint: [
+      health.incidentUrl ?? "no-incident",
+      ...health.affected.map((entry) => entry.surface).sort(),
+    ].join(","),
   };
 }
 

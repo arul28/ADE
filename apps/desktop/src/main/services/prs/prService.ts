@@ -9212,7 +9212,15 @@ export function createPrService({
     // Without this arm a 503 falls through to the "auth is invalid — update it
     // in Settings" default, which is the exact accusation the outage work
     // exists to remove, on the surface a user is most likely to act from.
-    if (githubStatus.authFailure?.kind === "service_unavailable") {
+    //
+    // `serviceHealth` counts on its own: corroboration is also attached to an
+    // `unknown` failure (GitHub answered with something we could not classify),
+    // and a confirmed incident is positive evidence regardless of how the
+    // response itself was classified.
+    if (
+      githubStatus.authFailure?.kind === "service_unavailable"
+      || githubStatus.serviceHealth != null
+    ) {
       return githubStatus.serviceHealth
         ? "GitHub is having problems, so pull requests can't sync right now. Nothing to change here — ADE will catch up when GitHub recovers."
         : "GitHub returned an error, so pull requests can't sync right now. This isn't a problem with your GitHub connection — ADE will keep retrying.";
