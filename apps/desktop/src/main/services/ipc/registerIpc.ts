@@ -1665,7 +1665,7 @@ export function registerIpc({
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
-  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[] };
+  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[]; knownLocalProjectRoots?: string[] };
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
