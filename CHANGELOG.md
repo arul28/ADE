@@ -7,13 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.60] - 2026-08-15
+## [1.2.60] - 2026-08-17
+
+### Startup and recovery
+
+- A background service that is still starting is no longer reported as a failed setup or a project that cannot be opened, and Repair no longer interrupts one that is booting.
+- The `ade` CLI no longer crashes on launch on macOS (missing JIT entitlement).
 
 ### Work and chat
 
 - Project creation and opening now land directly in Work.
 - Highlighted assistant output can become context chips for the next prompt.
 - Import Sessions now reuses ADE-owned session state for more useful recovery flows.
+- The new-chat import hint moved below the activity graph so it no longer overlaps the launch shelf, and the wordmark is scaled to match.
+
+### Files
+
+- File navigation and editing work across any connected machine.
 
 ### Connections and authentication
 
