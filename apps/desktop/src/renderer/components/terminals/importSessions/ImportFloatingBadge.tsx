@@ -58,7 +58,9 @@ export function ImportFloatingBadge({
   if (!projectRoot || dismissed) return null;
 
   return (
-    <div className="flex w-full justify-center">
+    // `shrink-0` because the draft column this sits in is a height-capped
+    // flex-col where the logo is the only row meant to absorb overflow.
+    <div className="flex w-full shrink-0 justify-center">
       <div
         className={cn(
           "relative inline-flex items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",

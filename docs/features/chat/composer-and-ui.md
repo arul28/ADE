@@ -122,13 +122,28 @@ so a new-chat composer is centered rather than shifted for invisible chrome.
 
 ### Empty draft surface
 
-The draft (new-chat) branch is three elements, not seven: the wordmark, the
+The draft (new-chat) branch is three elements at its core, not seven: the wordmark, the
 composer, and a **launch shelf** tucked under the composer, with the activity
 module below. There is no standing "Start a new conversation" caption — the
 wordmark already identifies the app, so the line was a band of vertical space
 spent restating what the user could see. Only a non-default mode still writes a
 line there (`isOrchestratorDraft` renders "Orchestrate a swarm of agents"),
 because that names something the surface does not otherwise show.
+
+The column's row order is wordmark, the optional orchestrator heading, composer,
+launch shelf, activity module, then the `ImportFloatingBadge` import hint as the
+last row. The hint used to sit between the composer and the shelf, where it
+wedged itself into the shelf's row and overlapped it in a narrow window; at the
+bottom it reads as a hint below
+everything it can act on rather than a band cutting the stack in two. Every row
+below the wordmark is `shrink-0` — the wordmark is the only row meant to absorb
+overflow in this height-capped flex column, and it does so by filling its
+aspect-ratio box and letterboxing inside it (`h-full w-full object-contain`).
+Sizing it `h-auto max-h-full` instead left the image at its natural height once
+the box shrank, so a short window cropped the wordmark against the enclosing
+`overflow-hidden` wrapper rather than scaling it down proportionally. The badge
+renders zero nodes when it is dismissed or has no project, so a retired hint
+spends none of the column's `gap-3`; both are pinned by tests.
 
 The shelf holds everything that answers **where this runs**, as two adjacent
 dropdowns plus two labelled actions: `DraftMachinePicker`, then a `LaneCombobox`

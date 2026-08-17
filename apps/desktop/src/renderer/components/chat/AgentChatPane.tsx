@@ -13842,10 +13842,16 @@ export function AgentChatPane({
                           style={{ aspectRatio: "560 / 300" }}
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
+                          {/* `h-auto` + `max-h-full` left the image at its
+                              natural height once the box shrank, so a short
+                              window cropped the wordmark against the column's
+                              `overflow-hidden` instead of scaling it. Filling
+                              the box and letterboxing inside it with
+                              `object-contain` keeps the shrink proportional. */}
                           <img
                             src="./logo.png"
                             alt="ADE"
-                            className="relative z-10 h-auto max-h-full w-full max-w-full object-contain"
+                            className="relative z-10 h-full w-full object-contain"
                           />
                         </motion.div>
 
@@ -13865,14 +13871,6 @@ export function AgentChatPane({
                           <div data-chat-composer-wrapper className="relative z-10 w-full shrink-0">
                             {composerWithTypographyRoot}
                           </div>
-                        ) : null}
-
-                        {onImportedSession && !appPanelOpen ? (
-                          <ImportFloatingBadge
-                            projectRoot={projectRoot}
-                            disabled={!laneId || draftLaunchTargetIsAutoCreate}
-                            onOpen={() => setImportBrowserOpen(true)}
-                          />
                         ) : null}
 
                         {/* Launch shelf — everything that answers "where does this
@@ -14015,6 +14013,19 @@ export function AgentChatPane({
                           >
                             <WorkActivityModule />
                           </motion.div>
+                        ) : null}
+
+                        {/* Last row in the column. Sat between the composer and
+                            the launch shelf before, where it wedged itself into
+                            the shelf's row and overlapped it in a narrow window;
+                            at the bottom it is a hint below everything it can
+                            act on rather than a band cutting the stack in two. */}
+                        {onImportedSession && !appPanelOpen ? (
+                          <ImportFloatingBadge
+                            projectRoot={projectRoot}
+                            disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                            onOpen={() => setImportBrowserOpen(true)}
+                          />
                         ) : null}
                       </div>
                     </div>
