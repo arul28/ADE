@@ -56,6 +56,11 @@ function PromptRows({
   );
 }
 
+/** Strips SGR escapes (e.g. the inverse-video caret cell) for text compares. */
+function stripAnsi(text: string): string {
+  return text.replace(/\u001B\[[0-9;]*m/g, "");
+}
+
 /** Body lines of the rendered box, with the border/padding stripped. */
 function boxBodyLines(frame: string): string[] {
   return frame
@@ -93,8 +98,12 @@ describe("prompt wrap budget", () => {
     );
     const body = boxBodyLines(lastFrame() ?? "");
     expect(body).toHaveLength(1);
-    // Every character survives; the old budget dropped the final one.
-    expect(body[0]!.trim()).toBe(`› ${text}`);
+    // The caret is an inverse-video cell rendered *after* the last character;
+    // PROMPT_ROW_CHROME_CELLS reserves a column for it, so the row still fits
+    // ONE terminal line. The old assertion used `.trim()`, which cannot strip a
+    // space wrapped in SGR escapes, so it never matched — strip the escapes.
+    expect(stripAnsi(body[0]!).trim()).toBe(`› ${text}`);
+    expect(body[0]).toContain("\u001B[7m \u001B[27m");
   });
 
   it("reports when a trailing hint still fits beside a short row", () => {

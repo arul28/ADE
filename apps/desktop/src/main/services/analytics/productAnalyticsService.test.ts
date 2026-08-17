@@ -844,9 +844,11 @@ describe("productAnalyticsService", () => {
 
     const second = makeHarness({ root: first.root });
     expect(second.service.setEnabled(false)).toMatchObject({ enabled: false, effective: false });
-    await vi.waitFor(() => {
-      expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
-    }, { timeout: 3_000, interval: 20 });
+    // Drive the reconcile explicitly instead of racing the cross-process fs
+    // watcher: getStatus() re-reads the shared opt-out marker synchronously via
+    // the same reconcileOptOutMarker() the watcher callback runs.
+    expect(first.service.getStatus()).toMatchObject({ enabled: false, effective: false });
+    expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
     await expect(first.service.flush()).resolves.toBe(true);
 
     await first.service.shutdown();
@@ -860,14 +862,12 @@ describe("productAnalyticsService", () => {
 
     const second = makeHarness({ root: first.root });
     expect(second.service.setEnabled(false)).toMatchObject({ enabled: false, effective: false });
-    await vi.waitFor(() => {
-      expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
-    }, { timeout: 3_000, interval: 20 });
+    // Same synchronous reconcile as above rather than a real-timer watcher race.
+    expect(first.service.getStatus()).toMatchObject({ enabled: false, effective: false });
+    expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
 
     expect(second.service.setEnabled(true)).toMatchObject({ enabled: true, effective: true });
-    await vi.waitFor(() => {
-      expect(first.service.getStatus()).toMatchObject({ enabled: true, effective: true });
-    }, { timeout: 3_000, interval: 20 });
+    expect(first.service.getStatus()).toMatchObject({ enabled: true, effective: true });
     expect(first.service.capture({ event: "ade_screen_viewed", surface: "desktop" })).toEqual({
       accepted: true,
       reason: "accepted",
