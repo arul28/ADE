@@ -140,7 +140,7 @@ describe("selectPrimaryLanePr", () => {
       updatedAt: "2026-07-03T00:00:00.000Z",
     };
 
-    expect(selectPrimaryLanePr(lane, [healthyCurrent, failingPrevious])?.id).toBe("previous");
+    expect(selectPrimaryLanePr(lane, [healthyCurrent, failingPrevious])?.id).toBe("current");
   });
 
   it("uses the latest activity when multiple terminal PRs remain", () => {
@@ -161,13 +161,34 @@ describe("selectPrimaryLanePr", () => {
       githubPrNumber: 7,
       title: "Newer merged",
       state: "merged" as const,
-      headBranch: "newer",
+      headBranch: "current",
       checksStatus: "passing" as const,
       reviewStatus: "approved" as const,
       updatedAt: "2026-07-04T00:00:00.000Z",
     };
 
     expect(selectPrimaryLanePr(lane, [olderMerged, newerMerged])?.id).toBe("newer-merged");
+  });
+
+  it("does not show a previous-branch PR after the primary lane returns to base", () => {
+    const primary = {
+      ...lane,
+      laneType: "primary" as const,
+      branchRef: "main",
+      baseRef: "main",
+    };
+    const mergedPrevious = {
+      ...base,
+      id: "merged-previous",
+      githubPrNumber: 12,
+      title: "Merged previous",
+      state: "merged" as const,
+      headBranch: "current",
+      checksStatus: "passing" as const,
+      reviewStatus: "approved" as const,
+    };
+
+    expect(selectPrimaryLanePr(primary, [mergedPrevious])).toBeNull();
   });
 });
 

@@ -26,6 +26,7 @@ import type { PrChecksStatus } from "../../../shared/types/prs";
 import {
   lanePrAggregateAttention,
   lanePrAttentionColor,
+  lanePrsForLane,
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
@@ -212,9 +213,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
         lanePrs = legacy ? [legacy] : [];
       }
-      const pr = selectPrimaryLanePr(laneForPr, lanePrs) ?? lanePrs[0] ?? null;
+      const visibleLanePrs = lanePrsForLane(laneForPr, lanePrs);
+      const pr = selectPrimaryLanePr(laneForPr, lanePrs);
       if (!requestIsCurrent()) return null;
-      setLinkedPrs(lanePrs);
+      // Keep the aggregate badge attention scoped to the same current-branch
+      // rows as the primary badge. A compact legacy row may have no branch
+      // fields, so retain the single selected row for that compatibility path.
+      setLinkedPrs(visibleLanePrs.length > 0 ? visibleLanePrs : (pr ? [pr] : []));
       setLinkedPr(pr);
       setPrLoaded(true);
       if (options.live && pr && !pr.unmapped) {
