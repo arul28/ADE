@@ -400,11 +400,12 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
   // shared guard (./runtimePinGuard) lets it through unpinned. A pin naming any
   // other machine or project still throws there. The guard covers every
   // pty/terminal shim, sessions.list/get/readTranscriptTail, lanes.list, the
-  // prs reads, and the draft attachment shim in agentChat.ts — the surfaces
-  // cross-machine reads actually reach today. The wider lanes/sessions pin
-  // params in the Electron contract predate per-session routing and stay
-  // unguarded; a real cross-machine web union must extend the adapter (and
-  // these guards) before routing a foreign pin.
+  // prs reads, every pinned git/diff and files member, and the handoff plus
+  // draft attachment shims in agentChat.ts — the surfaces cross-machine reads
+  // and writes actually reach today. The wider lanes/sessions pin params in the
+  // Electron contract predate per-session routing and stay unguarded; a real
+  // cross-machine web union must extend the adapter (and these guards) before
+  // routing a foreign pin.
   const pty: Record<string, unknown> = {
     create: async (args: unknown, pin?: unknown): Promise<PtyCreateResult> => {
       assertWebRuntimePinRoutable("pty.create", pin, infra);
@@ -529,7 +530,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
   };
 
   const terminal: Record<string, unknown> = {
-    list: async (args?: unknown) => {
+    list: async (args?: unknown, pin?: unknown) => {
+      assertWebRuntimePinRoutable("terminal.list", pin, infra);
       const sessions = await commands.call<unknown[]>("terminal.list", asRecord(args), {
         fallback: [],
         idempotent: true,
@@ -537,7 +539,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       terminalRegistry.registerSummaries(sessions);
       return sessions;
     },
-    read: async (args?: unknown): Promise<ChatTerminalReadResult> => {
+    read: async (args?: unknown, pin?: unknown): Promise<ChatTerminalReadResult> => {
+      assertWebRuntimePinRoutable("terminal.read", pin, infra);
       const record = asRecord(args);
       const sessionId = terminalRegistry.resolveSessionId(record);
       if (!sessionId) return { terminalId: "", data: "", nextSince: 0 };
@@ -573,19 +576,22 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         capturedAt: snapshot?.capturedAt ?? new Date().toISOString(),
       };
     },
-    write: async (args: unknown) => {
+    write: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinRoutable("terminal.write", pin, infra);
       const record = asRecord(args);
       const sessionId = terminalRegistry.resolveSessionId(record);
       if (sessionId) await client.sendTerminalInput(sessionId, stringField(record, "data"));
       return { ok: true };
     },
-    signal: async (args: unknown) => {
+    signal: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinRoutable("terminal.signal", pin, infra);
       const record = asRecord(args);
       const sessionId = terminalRegistry.resolveSessionId(record);
       if (sessionId && record.signal === "SIGINT") await client.sendTerminalInput(sessionId, "\u0003");
       return { ok: true };
     },
-    activeForChat: async (args: unknown) => {
+    activeForChat: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinRoutable("terminal.activeForChat", pin, infra);
       const result = await commands.call<Record<string, unknown> | null>("terminal.activeForChat", asRecord(args), {
         fallback: null,
         idempotent: true,
@@ -594,11 +600,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       terminalRegistry.register(stringField(result ?? {}, "terminalId") || stringField(result ?? {}, "id"), stringField(result ?? {}, "ptyId"));
       return result;
     },
-    reattachChatCli: (args: unknown) =>
-      commands.call("terminal.reattachChatCli", asRecord(args), {
+    reattachChatCli: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinRoutable("terminal.reattachChatCli", pin, infra);
+      return await commands.call("terminal.reattachChatCli", asRecord(args), {
         fallback: { terminalId: "", ptyId: "", pid: null, relaunched: false },
         idempotent: false,
-      }),
+      });
+    },
   };
 
   return {

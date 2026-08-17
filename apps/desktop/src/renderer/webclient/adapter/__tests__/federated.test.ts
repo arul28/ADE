@@ -37,12 +37,18 @@ function fakeAdapter(label: string) {
     navigationListeners.add(listener);
     return () => navigationListeners.delete(listener);
   });
+  const stageFile = vi.fn(async () => ({ operationId: label, preHeadSha: null, postHeadSha: null }));
+  const getChanges = vi.fn(async () => ({ files: [] }));
+  const terminalList = vi.fn(async () => []);
   const adapter = {
     ade: {
       app: { onNavigate },
       project: {},
       remoteRuntime: {},
       lanes: { onChanged: onLanesChanged },
+      git: { stageFile },
+      diff: { getChanges },
+      terminal: { list: terminalList },
       agentChat: {
         onEvent: onAgentChatEvent,
         promptStashes: {
@@ -59,6 +65,9 @@ function fakeAdapter(label: string) {
   return {
     adapter,
     createPromptStash,
+    stageFile,
+    getChanges,
+    terminalList,
     onAgentChatEvent,
     onNavigate,
     onLanesChanged,
@@ -232,6 +241,55 @@ describe("createFederatedWebAdapter", () => {
 
     expect(fixture.targetA.createPromptStash).toHaveBeenCalledOnce();
     expect(fixture.targetB.createPromptStash).not.toHaveBeenCalled();
+  });
+
+  it("routes pinned git, diff and terminal calls to the pinned machine, not the displayed one", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "pinned-git-routing",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const bindingA = await federated.openProject("machine-a", "project-machine-a");
+    await federated.openProject("machine-b", "project-machine-b");
+
+    await federated.ade.git.stageFile({ laneId: "lane-1", path: "a.ts" }, bindingA);
+    await federated.ade.diff.getChanges({ laneId: "lane-1" }, bindingA);
+    await federated.ade.terminal.list({ laneId: "lane-1" }, bindingA);
+
+    expect(fixture.targetA.stageFile).toHaveBeenCalledOnce();
+    expect(fixture.targetA.getChanges).toHaveBeenCalledOnce();
+    expect(fixture.targetA.terminalList).toHaveBeenCalledOnce();
+    expect(fixture.targetB.stageFile).not.toHaveBeenCalled();
+    expect(fixture.targetB.getChanges).not.toHaveBeenCalled();
+    expect(fixture.targetB.terminalList).not.toHaveBeenCalled();
+  });
+
+  // A desktop-local pin names a runtime no web adapter can reach, so the
+  // federation must not guess a machine for it. It lands on the displayed
+  // adapter, whose own guard (see runtimePinGuard.test.ts) refuses it loudly
+  // rather than serving another machine's repository.
+  it("never routes a desktop-local pin to a machine adapter", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "local-pin-routing",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+    await federated.openProject("machine-b", "project-machine-b");
+
+    await federated.ade.git.stageFile({ laneId: "lane-1", path: "a.ts" }, {
+      kind: "local",
+      key: "local:/repos/machine-a",
+      rootPath: "/repos/machine-a",
+      displayName: "machine-a",
+    } as OpenProjectBinding);
+
+    expect(fixture.targetA.stageFile).not.toHaveBeenCalled();
+    expect(fixture.targetB.stageFile).toHaveBeenCalledOnce();
   });
 
   it("keeps delayed pinned operations bound to their project on the same machine", async () => {

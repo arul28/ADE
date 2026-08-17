@@ -21,6 +21,7 @@ import type { AdapterProjectState } from "./infra/projectState";
  */
 
 type RuntimePin = {
+  kind: string | null;
   targetId: string | null;
   projectId: string | null;
   key: string;
@@ -38,6 +39,7 @@ function readRuntimePin(pin: unknown): RuntimePin | null {
   if (!pin || typeof pin !== "object") return null;
   const record = pin as Record<string, unknown>;
   return {
+    kind: typeof record.kind === "string" ? record.kind : null,
     targetId: typeof record.targetId === "string" ? record.targetId : null,
     projectId: typeof record.projectId === "string" ? record.projectId : null,
     key: typeof record.key === "string" ? record.key : "unknown binding",
@@ -78,6 +80,13 @@ export function assertWebRuntimePinRoutable(
 ): void {
   if (pin == null) return;
   const parsed = readRuntimePin(pin);
+  // A `kind: "local"` pin names a runtime on the machine running the desktop
+  // app — something the browser has no path to at all, and which carries no
+  // targetId, so the remote comparison below would report it as an unknown
+  // binding. Say what actually happened instead.
+  if (parsed?.kind === "local") {
+    throw new Error("This chat runs on a machine ADE Web can't reach directly.");
+  }
   if (
     parsed
     && pinTargetsThisMachine(parsed, scope.client)

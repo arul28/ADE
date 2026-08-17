@@ -7,7 +7,9 @@ import type {
   AgentChatHandoffResult,
   AgentChatInterruptResult,
   AgentChatLaunchCliResult,
+  AgentChatMarkCrossMachineHandoffArgs,
   AgentChatModelCatalog,
+  AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
@@ -217,7 +219,31 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       delete: (args: PromptStashDeleteArgs) =>
         callRequiredMutation<boolean>("chat.deletePromptStash", args),
     },
-    handoff: (args) => callRequiredMutation<AgentChatHandoffResult>("chat.handoff", args),
+    handoff: async (args, pin) => {
+      assertWebRuntimePinRoutable("agentChat.handoff", pin, infra);
+      return await callRequiredMutation<AgentChatHandoffResult>("chat.handoff", args);
+    },
+    // The cross-machine handoff trio is a real sync command surface
+    // (`chat.prepareCrossMachineHandoff` / `validateCrossMachineSource` /
+    // `markCrossMachineHandoff` are all registered remote commands), so the web
+    // client implements them rather than letting the fallback proxy answer
+    // `undefined` — which made the handoff modal look like it had succeeded.
+    // A host without them still fails loudly through `callRequired`.
+    prepareCrossMachineHandoff: async (args, pin) => {
+      assertWebRuntimePinRoutable("agentChat.prepareCrossMachineHandoff", pin, infra);
+      return await callRequiredMutation<AgentChatPrepareCrossMachineHandoffResult>(
+        "chat.prepareCrossMachineHandoff",
+        args,
+      );
+    },
+    validateCrossMachineSource: async (args, pin) => {
+      assertWebRuntimePinRoutable("agentChat.validateCrossMachineSource", pin, infra);
+      await callRequiredMutation<void>("chat.validateCrossMachineSource", args);
+    },
+    markCrossMachineHandoff: async (args: AgentChatMarkCrossMachineHandoffArgs, pin) => {
+      assertWebRuntimePinRoutable("agentChat.markCrossMachineHandoff", pin, infra);
+      await callRequiredMutation<void>("chat.markCrossMachineHandoff", args);
+    },
     send: async (args: unknown) => {
       await call("chat.send", args, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
