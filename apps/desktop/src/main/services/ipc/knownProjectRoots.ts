@@ -96,8 +96,10 @@ export class AttemptedProjectRoots {
 
 /**
  * Returns the known root that `requested` refers to — in the registry's own
- * spelling, so the rest of the flow works with a normalized path — or null when
- * it is not a project this machine knows about.
+ * spelling, which is what the user picked and what the recent-projects list
+ * shows, NOT the canonical form the comparison runs on — or null when it is not
+ * a project this machine knows about. Callers that need an absolute path
+ * resolve it themselves.
  */
 export function resolveKnownProjectRoot(
   requested: string | null | undefined,

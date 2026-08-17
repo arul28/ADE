@@ -1292,7 +1292,7 @@ describe("product analytics producers", () => {
       code: "db_integrity",
       install_id: "ade_0123456789abcdef0123456789abcdef",
       headline: "ADE couldn't open /Users/ada/photon",
-    } as Record<string, unknown>);
+    });
     expect(leaky).toEqual({ feature: "connections", action: "issue_report", outcome: "opened" });
 
     // An outcome outside the closed set is dropped, not passed through.

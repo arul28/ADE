@@ -2,7 +2,8 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import {
-  REPAIR_STEPS,
+  REPAIR_STEP_LABELS,
+  REPAIR_STEP_ORDER,
   stateForCode,
   type AdeLastFailureReport,
   type AdeRecoveryErrorCode,
@@ -44,11 +45,9 @@ const BRAIN_RESTART_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 // answering yet is presumed to still be starting, not stuck.
 const BRAIN_STARTING_WINDOW_MS = RUNTIME_SERVICE_YOUNG_BRAIN_MS;
 
-const STEP_LABELS: Record<RepairStepId, string> = Object.fromEntries(
-  REPAIR_STEPS.map((step) => [step.id, step.label]),
-) as Record<RepairStepId, string>;
+const STEP_LABELS = REPAIR_STEP_LABELS;
 
-const STEP_ORDER: readonly RepairStepId[] = REPAIR_STEPS.map((step) => step.id);
+const STEP_ORDER = REPAIR_STEP_ORDER;
 
 const REPAIR_MIN_FREE_BYTES = (dbSize: number): number => Math.max(GIB, dbSize + 512 * MIB);
 // Advice = repair gate + margin, so following the advice always satisfies repair.
@@ -495,14 +494,27 @@ export class ProjectRecoveryService {
     const installStartedAt = Date.parse(serviceStatus.serviceInstall.attemptStartedAt ?? "");
     // Time-bounded on purpose: the installer's `starting` flag alone would keep
     // a brain that wedged during boot reading as "starting" forever.
+    //
+    // Deliberately not gated on `!socketReachable`: the brain binds its RPC
+    // socket before it can answer `ade/initialize`, so there is a real window
+    // where the socket accepts connections and the ping still fails. Requiring
+    // an unreachable socket made that window impossible to classify as
+    // starting, and it fell through to "another program owns this" instead.
     const brainStarting =
-      !socketReachable
-      && serviceStatus.serviceHealth.running === true
+      serviceStatus.serviceHealth.running === true
       && Number.isFinite(installStartedAt)
       && this.now() - installStartedAt < BRAIN_STARTING_WINDOW_MS;
     const dbCheck = endpointHealthy
       ? { healthy: null, detail: "Project data check skipped because the background service is using it." }
       : await this.quickCheck(dbPath);
+    // A recorded sync-host failure says phone sync could not start. It says
+    // nothing about whether the desktop can reach this brain, and the brain
+    // deliberately keeps that record until sync really comes up — so a brain
+    // that is bound, answering, and healthy routinely carries a fresh
+    // `sync_host` failure. Repairing on it would kill a brain doing its job.
+    // It stays in `lastFailure` and the technical detail either way.
+    const actionableFailure =
+      freshFailure && endpointHealthy && freshFailure.component === "sync_host" ? null : freshFailure;
     const technicalParts = [
       `freeBytes=${free}`,
       `dbSize=${dbSize}`,
@@ -520,25 +532,26 @@ export class ProjectRecoveryService {
     if (free < GIB) {
       state = "disk_full";
       code = "disk_full";
-    } else if (freshFailure) {
-      state = stateForCode(freshFailure.code);
-      code = freshFailure.code;
+    } else if (actionableFailure) {
+      state = stateForCode(actionableFailure.code);
+      code = actionableFailure.code;
     } else if (dbCheck.healthy === false) {
       state = "db_repair_needed";
       code = "db_integrity";
     } else if (endpointHealthy) {
       state = "healthy";
       code = "unknown";
+    } else if (brainStarting) {
+      // Ahead of the owner, crash-loop and stale-socket branches: a brain that
+      // the installer just started (or reported as still starting) and that
+      // launchd/the supervisor shows running is booting, not broken. Repair
+      // here would only kill it and start its clock over, and a socket it has
+      // bound but cannot answer on yet is this brain's, not a stranger's.
+      state = "brain_starting";
+      code = "unknown";
     } else if (socketReachable) {
       state = "socket_owned_by_other";
       code = "socket_owned_by_other";
-    } else if (brainStarting) {
-      // Ahead of the crash-loop and stale-socket branches: a brain that the
-      // installer just started (or reported as still starting) and that
-      // launchd/the supervisor shows running is booting, not broken. Repair
-      // here would only kill it and start its clock over.
-      state = "brain_starting";
-      code = "unknown";
     } else if (serviceStatus.serviceHealth.installed === false) {
       state = "brain_not_installed";
       code = "brain_not_installed";

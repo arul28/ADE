@@ -306,11 +306,16 @@ export function StorageCleanupDialog({
   }, [open]);
 
   const confirm = React.useCallback(async () => {
+    // Same generation guard the preview uses, for the same reason: a removal
+    // (and the maintenance run after it) outlives a close, and a completion
+    // that lands after the dialog reopened would push the fresh dialog to
+    // "done" and hand the parent a result for a job it is no longer showing.
+    const requestId = requestRef.current;
     setStage("removing");
     setError(null);
     try {
       if (!preview) {
-        setStage("review");
+        if (requestRef.current === requestId) setStage("review");
         return;
       }
       const filesystemResult = preview.items.length > 0
@@ -324,12 +329,14 @@ export function StorageCleanupDialog({
         ...filesystemResult,
         freedBytes: filesystemResult.freedBytes + maintenanceBytes,
       };
+      if (requestRef.current !== requestId) return;
       setReport(nextReport);
       setResult(next);
       setStage("done");
       onCleaned(next);
       if (nextReport) plan?.onMaintenanceDone?.(nextReport);
     } catch (err) {
+      if (requestRef.current !== requestId) return;
       setError(err instanceof Error ? err.message : String(err));
       setErrorPhase("removing");
       setStage("error");

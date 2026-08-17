@@ -1465,7 +1465,9 @@ export class LocalRuntimeConnectionPool {
       path: cliPath,
       message: "Installing the ADE service login item.",
       exitCode: null,
-      updatedAt: attemptStartedAt,
+      // This transition is happening now; `attemptStartedAt` is the streak
+      // marker and the only field that reaches back to the first attempt.
+      updatedAt: new Date().toISOString(),
       attemptStartedAt,
     };
     let result: ServiceManagerCommandResult;

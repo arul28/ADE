@@ -153,6 +153,27 @@ function isPlausibleIpv4(value: string): boolean {
 }
 
 /**
+ * Word boundaries for the name rules. The surrounding angle brackets are
+ * *captured* rather than excluded: an account or machine literally named
+ * `user` or `host` — both common on Windows and in containers — otherwise
+ * matched inside the `<user>`/`<host>` this function had just produced, and
+ * every further pass added another pair of brackets. Excluding `<`/`>` from
+ * the boundaries instead would be worse than the bug it fixed: it would also
+ * suppress the match for a genuine `user=<ada>` or `Host: <buildbox>` log
+ * line, shipping the real name in the report. Re-emitting the brackets keeps
+ * the idempotency this module promises (and asserts in its tests) while still
+ * redacting bracketed names.
+ */
+const NAME_BOUNDARY_START = "(?<![A-Za-z0-9_-])";
+const NAME_BOUNDARY_END = "(?![A-Za-z0-9_-])";
+
+/** `<ada>` → `<user>`, `ada` → `<user>`, `<user>` → `<user>`. */
+function bracketAwarePlaceholder(placeholder: string) {
+  return (_match: string, open: string, close: string): string =>
+    open === "<" && close === ">" ? placeholder : `${open}${placeholder}${close}`;
+}
+
+/**
  * Strips everything that could identify the machine or its owner. Applied to
  * the whole report as the final step, so a section added later cannot leak by
  * forgetting to call it.
@@ -194,7 +215,13 @@ export function redactDiagnosticText(
   // 4. The OS account name wherever it appears on its own.
   const username = context.username?.trim();
   if (username && username.length >= 3) {
-    out = out.replace(new RegExp(`(?<![A-Za-z0-9_-])${escapeRegExp(username)}(?![A-Za-z0-9_-])`, "gi"), "<user>");
+    out = out.replace(
+      new RegExp(
+        `${NAME_BOUNDARY_START}(<?)${escapeRegExp(username)}(>?)${NAME_BOUNDARY_END}`,
+        "gi",
+      ),
+      bracketAwarePlaceholder("<user>"),
+    );
   }
 
   // 5. Emails before token blobs: an address must not be eaten as a secret.
@@ -248,11 +275,14 @@ export function redactDiagnosticText(
       .filter(Boolean)
       .sort((a, b) => b.length - a.length);
     if (names.length > 0) {
+      // Boundaries and brackets hoisted outside the alternation: inside it,
+      // each branch would need its own copy and the capture-group numbering
+      // would shift with every extra name.
       const pattern = new RegExp(
-        names.map((name) => `(?<![A-Za-z0-9_-])${escapeRegExp(name)}(?![A-Za-z0-9_-])`).join("|"),
+        `${NAME_BOUNDARY_START}(<?)(?:${names.map((name) => escapeRegExp(name)).join("|")})(>?)${NAME_BOUNDARY_END}`,
         "gi",
       );
-      out = out.replace(pattern, "<host>");
+      out = out.replace(pattern, bracketAwarePlaceholder("<host>"));
     }
   }
   out = out

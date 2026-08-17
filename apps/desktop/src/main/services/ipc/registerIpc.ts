@@ -4589,6 +4589,20 @@ export function registerIpc({
   });
 
   /**
+   * The open project's root, or null when there is no project context at all.
+   * The surfaces that most need to file an issue are projectless — a renderer
+   * crash on startup, Connections on a fresh install — and `getCtx()` throws
+   * there, which turned "report this" into no report at all.
+   */
+  const openProjectRootOrNull = (): string | null => {
+    try {
+      return getCtx().project.rootPath ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
    * The renderer names a project root; main decides whether that is a project
    * it knows. See `knownProjectRoots.ts` for why trimming is not enough, and
    * why a root that only ever FAILED to open still counts as known.
@@ -4605,7 +4619,7 @@ export function registerIpc({
       // is the safe subset — never a reason to widen what is accepted.
     }
     return resolveKnownProjectRoot(requested, {
-      openProjectRoot: getCtx().project.rootPath,
+      openProjectRoot: openProjectRootOrNull(),
       recentProjectRoots,
       attemptedProjectRoots: attemptedProjectRoots?.list(),
     });
@@ -4658,7 +4672,7 @@ export function registerIpc({
     const rootWasRejected = Boolean(requestedRoot) && !resolvedRoot;
     const projectRoot = rootWasRejected
       ? null
-      : resolvedRoot ?? getCtx().project.rootPath ?? null;
+      : resolvedRoot ?? openProjectRootOrNull();
     return await collectDiagnosticReport(
       {
         appVersion: app.getVersion(),

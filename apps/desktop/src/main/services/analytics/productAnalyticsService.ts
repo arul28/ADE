@@ -1194,8 +1194,21 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
      * installation. Surfaced so a diagnostic report a user files by hand can be
      * matched to the events this machine already sent; it is a random
      * per-install token, not a device or account identifier.
+     *
+     * Null unless events are actually being sent under it. Two reasons: until
+     * something loads the persisted file this service is holding a freshly
+     * minted in-memory id that no event has ever carried (a correlation id
+     * that correlates to nothing), and when the user has analytics off there
+     * is nothing to correlate against — putting the identifier in a report
+     * they are about to paste into a public issue is the opposite of the
+     * choice they made. `getStatus()` is the reader that loads durable state
+     * on both the configured and unconfigured paths.
      */
-    getDistinctId: (): string => state.identifiedUserHash ?? state.anonymousId,
+    getDistinctId: (): string | null => {
+      const status = getStatus();
+      if (!status.effective) return null;
+      return state.identifiedUserHash ?? state.anonymousId;
+    },
     installationIdForTesting: () => state.installationId,
     identifiedUserHashForTesting: () => state.identifiedUserHash,
   };

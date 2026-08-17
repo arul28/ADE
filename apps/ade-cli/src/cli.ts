@@ -17632,9 +17632,24 @@ async function runServe(
       // running. The RPC socket is already published by now; closing it is
       // what `finish()` does, and the recorded failure carries the same code
       // project recovery keyed on before.
-      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof SyncHostSingletonConflictError) {
+      // The conflict class is loaded to classify the failure, and that import
+      // can itself reject (a torn install, a disk error). Letting it escape
+      // would skip `finish()` — the brain would keep serving a socket it has
+      // already decided to give up, and the rejection would surface as an
+      // unhandled one. An unclassifiable failure is still a failure.
+      let conflict = false;
+      try {
+        const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+        conflict = error instanceof SyncHostSingletonConflictError;
+      } catch (importError: unknown) {
+        process.stderr.write(
+          `ADE brain could not classify its sync host failure: ${
+            importError instanceof Error ? importError.message : String(importError)
+          }\n`,
+        );
+      }
+      if (conflict) {
         syncHostStartupFailure = new CliExecutionError("ADE brain refusing to run without mobile sync.", {
           cause: message,
           socketPath,

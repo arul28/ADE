@@ -134,8 +134,11 @@ export function AutoUpdateBanner() {
     <>
       <UpdateTransactionNotice result={snapshot.updateTransaction ?? null} />
       {showBanner && banner ? (
-        <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800">
-          <WarningCircle size={14} weight="fill" className="shrink-0" aria-hidden="true" />
+        // Same dark-shell amber strip as UpdateTransactionNotice below: this
+        // one was still written for a light surface, so its body read as brown
+        // text on near-black while its dismiss was already converted.
+        <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-400/25 bg-amber-400/[0.08] px-3 py-1.5 text-[11px] text-amber-100/90">
+          <WarningCircle size={14} weight="fill" className="shrink-0 text-amber-300" aria-hidden="true" />
           <span className="flex-1 min-w-0">
             {banner.kind === "parked"
               ? "ADE update didn't finish — Restart to retry"
@@ -145,7 +148,7 @@ export function AutoUpdateBanner() {
             type="button"
             onClick={handleRestart}
             disabled={restarting}
-            className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 font-medium text-amber-900 transition-colors hover:bg-amber-500/25 disabled:opacity-60"
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-400/35 bg-amber-400/15 px-2 py-0.5 font-medium text-amber-100 transition-colors hover:bg-amber-400/25 disabled:opacity-60"
           >
             <ArrowsClockwise size={12} weight="bold" aria-hidden="true" />
             {restarting ? "Restarting…" : "Restart now"}

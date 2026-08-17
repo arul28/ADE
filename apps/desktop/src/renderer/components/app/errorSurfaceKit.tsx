@@ -146,27 +146,30 @@ export function TechnicalDetailsFold({
   const { copy, copied } = useCopyToClipboard();
   if (!text.trim()) return null;
   return (
-    <details className={"group rounded-lg border border-border/60 bg-fg/[0.015] " + (className ?? "")}>
-      <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3.5 py-2.5 text-[12px] font-medium text-fg/55 transition-colors hover:text-fg/80">
-        <span className="inline-flex items-center gap-1.5">
-          {ERROR_DISCLOSURE_CARET}
-          Show technical details
-        </span>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.preventDefault();
-            void copy(text);
-          }}
-          className="inline-flex items-center gap-1 text-[11px] text-fg/45 transition-colors hover:text-fg/75"
-        >
-          <Copy size={12} weight="regular" />
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </summary>
-      <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-border/50 px-3.5 py-3 font-mono text-[11px] leading-relaxed text-fg/60">
-        {text}
-      </pre>
-    </details>
+    // Copy sits ON the summary row but not INSIDE `<summary>`: a summary is
+    // itself the disclosure control, and a button nested in one is flattened
+    // away by some assistive technology and has to fight the toggle with
+    // `preventDefault`. Overlaying it keeps the row people already know.
+    <div className={"relative " + (className ?? "")}>
+      <details className="group rounded-lg border border-border/60 bg-fg/[0.015]">
+        <summary className="flex cursor-pointer select-none items-center gap-3 px-3.5 py-2.5 pr-24 text-[12px] font-medium text-fg/55 transition-colors hover:text-fg/80">
+          <span className="inline-flex items-center gap-1.5">
+            {ERROR_DISCLOSURE_CARET}
+            Show technical details
+          </span>
+        </summary>
+        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-border/50 px-3.5 py-3 font-mono text-[11px] leading-relaxed text-fg/60">
+          {text}
+        </pre>
+      </details>
+      <button
+        type="button"
+        onClick={() => void copy(text)}
+        className="absolute right-3.5 top-2.5 inline-flex items-center gap-1 text-[11px] text-fg/45 transition-colors hover:text-fg/75"
+      >
+        <Copy size={12} weight="regular" />
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
   );
 }

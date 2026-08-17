@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -30,11 +31,21 @@ export type ReportIssueResult = {
   installId: string;
 };
 
-/** The same PostHog `distinct_id` the desktop reports, read without writing. */
+/**
+ * The same PostHog `distinct_id` the desktop reports, read without writing.
+ *
+ * Null whenever analytics is off — the `.disabled` marker the desktop writes,
+ * or `enabled: false` in the state itself. No event carries the id then, so it
+ * correlates to nothing, and printing it into a report the user is about to
+ * paste into a public issue is the opposite of the choice they made.
+ */
 function readInstallId(secretsDir: string): string | null {
-  const state = readDiagnosticJsonFile(path.join(secretsDir, "product-analytics.json"));
+  const statePath = path.join(secretsDir, "product-analytics.json");
+  if (fs.existsSync(`${statePath}.disabled`)) return null;
+  const state = readDiagnosticJsonFile(statePath);
   if (!state || typeof state !== "object") return null;
   const record = state as Record<string, unknown>;
+  if (record.enabled === false) return null;
   // Only the two keys PostHog actually uses as `distinct_id`; `installationId`
   // is a different identifier and would make the CLI report an id no event in
   // PostHog is ever attributed to.

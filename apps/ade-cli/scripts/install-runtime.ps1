@@ -385,6 +385,12 @@ function Write-AdeInstallStateNote(
     }
   } elseif ($RestoredPreviousBinary) {
     [Console]::Error.WriteLine("ade install: the ADE you already had was put back, so nothing is broken.")
+  } elseif (Test-Path -LiteralPath $BinaryPath -PathType Leaf) {
+    # The rollback is best effort, so the disk is the only thing worth
+    # believing here: if it could not remove the binary that just failed, the
+    # broken one is still what runs, and saying "nothing was left installed"
+    # sends the user looking in the wrong place.
+    [Console]::Error.WriteLine("ade install: the ADE at $BinaryPath is the one that just failed to start.")
   } else {
     [Console]::Error.WriteLine("ade install: nothing was left installed at $BinaryPath.")
   }

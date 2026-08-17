@@ -468,6 +468,7 @@ backup_runtime_dir="$runtime_dir.previous"
 pending_binary="$dest_dir/ade.new"
 backup_binary="$dest_dir/ade.bak"
 promoted_runtime=0
+promoted_binary=0
 have_backup_binary=0
 # Kept out of $tmp_dir so it survives the EXIT trap: the failure message points
 # a stuck user at it, and a log deleted on the way out points at nothing.
@@ -486,9 +487,31 @@ cleanup_install_scratch() {
     mv "$backup_runtime_dir" "$runtime_dir" 2>/dev/null || true
   fi
   rm -rf "$backup_runtime_dir"
+  # Same protective order for the binary backup, for a different reason. This
+  # script *copies* the old `ade` aside, so $dest_dir/ade is never absent; the
+  # window that matters is the one between the new binary being renamed into
+  # place and its `--version` check passing. Abort in there (the obvious Ctrl-C
+  # when a bad build hangs) and what is installed is an unverified binary, so
+  # the backup goes back over it before it is deleted. Only after the check
+  # passes is the backup just disk. (install-runtime.ps1 uses Move-Item, so
+  # there the backup really is the only copy for a moment -- hence its own
+  # restore-if-missing branch.) Deleting it unconditionally at the end also
+  # keeps an abandoned `ade.bak` from sitting in the install dir forever.
+  if [ "$promoted_binary" -eq 0 ] && [ -e "$backup_binary" ]; then
+    mv "$backup_binary" "$dest_dir/ade" 2>/dev/null || true
+  fi
+  rm -f "$backup_binary"
 }
 
-trap 'cleanup_install_scratch' EXIT HUP INT TERM
+# The EXIT trap alone is not enough: a handler for HUP/INT/TERM that does not
+# exit returns to the interrupted command, so a Ctrl-C mid-download deleted the
+# scratch state and then carried on against paths that no longer existed. Each
+# signal cleans up once (the EXIT trap is cleared first) and aborts with that
+# signal's conventional status.
+trap 'cleanup_install_scratch' EXIT
+trap 'trap - EXIT; cleanup_install_scratch; exit 129' HUP
+trap 'trap - EXIT; cleanup_install_scratch; exit 130' INT
+trap 'trap - EXIT; cleanup_install_scratch; exit 143' TERM
 
 # The runtime sidecar env has to be in place before *any* `--version` check:
 # the binary loads its native modules through it, so a preflight run without it
@@ -547,6 +570,12 @@ die_runtime_unusable() {
     fi
   elif [ "$have_backup_binary" -eq 1 ]; then
     printf 'ade install: the ADE you already had was put back, so nothing is broken.\n' >&2
+  elif [ -e "$dest_dir/ade" ]; then
+    # The rollback is best effort, so the disk is the only thing worth
+    # believing here: if it could not remove the binary that just failed, the
+    # broken one is still what runs, and saying "nothing was left installed"
+    # sends the user looking in the wrong place.
+    printf 'ade install: the ADE at %s is the one that just failed to start.\n' "$dest_dir/ade" >&2
   else
     printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
   fi
@@ -618,6 +647,9 @@ if ! version_check "$dest_dir/ade" "installed"; then
   restore_previous_install
   die_runtime_unusable "the newly installed ADE runtime could not start"
 fi
+# The new binary has now proved it runs, so the cleanup handlers must stop
+# treating $dest_dir/ade as unverified and rolling the backup back over it.
+promoted_binary=1
 
 # Past the point of no return: the install is good, so the rollback copies are
 # just disk. ~150 MB of it, which is why they are not kept around. The log goes

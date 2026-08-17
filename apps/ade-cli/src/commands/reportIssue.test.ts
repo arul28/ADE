@@ -50,4 +50,24 @@ describe("buildCliDiagnosticReport", () => {
     expect(missing.installId).toBe("unknown");
     expect(missing.report.length).toBeGreaterThan(0);
   });
+
+  it("omits the install id when analytics is switched off", () => {
+    const built = buildCliDiagnosticReport({
+      env: { ADE_HOME: adeHome({ identifiedUserHash: "hash-3", anonymousId: "anon-3", enabled: false }) },
+    });
+
+    expect(built.installId).toBe("unknown");
+    expect(built.report).not.toContain("hash-3");
+    expect(built.report).not.toContain("anon-3");
+  });
+
+  it("omits the install id when the opt-out marker is on disk", () => {
+    const home = adeHome({ identifiedUserHash: "hash-4", anonymousId: "anon-4" });
+    fs.writeFileSync(path.join(home, "secrets", "product-analytics.json.disabled"), "disabled\n", "utf8");
+
+    const built = buildCliDiagnosticReport({ env: { ADE_HOME: home } });
+
+    expect(built.installId).toBe("unknown");
+    expect(built.report).not.toContain("hash-4");
+  });
 });

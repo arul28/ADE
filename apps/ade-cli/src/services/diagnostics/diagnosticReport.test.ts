@@ -64,7 +64,10 @@ describe("redactDiagnosticText", () => {
 
     const out = redactDiagnosticText(input, CONTEXT);
 
-    expect(out).not.toContain("example.com/v1".replace("/v1", "")); // userinfo host is fine, creds are not
+    // The email rule runs before the userinfo one, so `ada:hunter2@relay…` is
+    // eaten as an address whole — the host goes with it and the line is left
+    // as `https://<user>:<email>/v1`.
+    expect(out).not.toContain("example.com");
     expect(out).not.toMatch(/hunter2|ghp_ABCDEF|phc_ABCDEF|eyJhbGciOiJ/);
     expect(out).not.toMatch(/sk-ant-api03/);
     expect(out).not.toContain("8e1f2a3b4c5d6e7f");
@@ -221,6 +224,40 @@ describe("buildDiagnosticReport", () => {
     expect(report).toContain(projectPathLabel("/Users/ada/Projects/Photon"));
     // Redaction already ran, so running it again is a no-op.
     expect(redactDiagnosticText(report, CONTEXT)).toBe(report);
+  });
+});
+
+describe("redactDiagnosticText idempotency", () => {
+  // Regression: `user` and `host` are ordinary account and machine names on
+  // Windows and in containers, and the name rules matched them again inside
+  // the `<user>`/`<host>` they had just written — `<<user>>`, then `<<<user>>>`.
+  it("leaves its own placeholders alone when the name IS the placeholder word", () => {
+    const context = { username: "user", hostname: "host" };
+    const once = redactDiagnosticText("user@host started on host as user", context);
+
+    expect(once).toContain("<user>");
+    expect(once).toContain("<host>");
+    expect(once).not.toContain("<<");
+    expect(redactDiagnosticText(once, context)).toBe(once);
+  });
+
+  // Regression: the first fix for the above excluded `<` and `>` from the name
+  // boundaries, which silently suppressed the match for every bracketed name a
+  // log actually writes — `user=<ada>` and `Host: <buildbox>` shipped the real
+  // account and machine name in the report.
+  it("still redacts a bracketed name instead of mistaking it for a placeholder", () => {
+    const context = { username: "ada", hostname: "buildbox" };
+    const once = redactDiagnosticText("user=<ada> host=<buildbox> peer <ada@x>", context);
+
+    expect(once).not.toMatch(/ada/i);
+    expect(once).not.toContain("buildbox");
+    expect(once).toContain("user=<user>");
+    expect(once).toContain("host=<host>");
+    // Brackets are re-emitted, never doubled around a placeholder.
+    expect(once).not.toContain("<<user>>");
+    expect(once).not.toContain("<<host>>");
+    expect(once).toBe("user=<user> host=<host> peer <<user>@x>");
+    expect(redactDiagnosticText(once, context)).toBe(once);
   });
 });
 

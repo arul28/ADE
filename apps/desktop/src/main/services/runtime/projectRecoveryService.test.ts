@@ -208,6 +208,60 @@ describe("ProjectRecoveryService.diagnose", () => {
     expect(diagnosis.canAutoRepair).toBe(canAutoRepair);
     expectNoJargon(`${diagnosis.headline} ${diagnosis.body}`);
   });
+
+  it("calls a bound-but-not-yet-answering brain starting, not another program's socket", async () => {
+    // The brain binds its RPC socket before it can answer `ade/initialize`, so
+    // reachable-but-silent is its own boot window, not a stranger's socket.
+    const service = createProjectRecoveryService(deps({
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => false),
+      connectionPool: pool(status({
+        serviceInstall: {
+          state: "installed", attempted: true, path: null, message: null, exitCode: null,
+          updatedAt: new Date(NOW).toISOString(), starting: true,
+          attemptStartedAt: new Date(NOW - 15_000).toISOString(),
+        },
+        serviceHealth: { state: "running", installed: true, running: true, path: null, message: null, checkedAt: null },
+      })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    expect(diagnosis.state).toBe("brain_starting");
+    expect(diagnosis.canAutoRepair).toBe(false);
+  });
+
+  it("does not report a healthy answering brain as broken over a fresh sync-host failure", async () => {
+    const syncHostFailure: AdeLastFailureReport = {
+      ...failure("socket_owned_by_other"),
+      component: "sync_host",
+    };
+    const service = createProjectRecoveryService(deps({
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => true),
+      readFailureReports: vi.fn(async () => ({ project: null, machine: syncHostFailure })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    expect(diagnosis.state).toBe("healthy");
+    // Still reported, just not treated as a reason to repair.
+    expect(diagnosis.lastFailure?.component).toBe("sync_host");
+  });
+
+  it("still repairs on a fresh sync-host failure when the brain does not answer", async () => {
+    const syncHostFailure: AdeLastFailureReport = {
+      ...failure("socket_owned_by_other"),
+      component: "sync_host",
+    };
+    const service = createProjectRecoveryService(deps({
+      readFailureReports: vi.fn(async () => ({ project: null, machine: syncHostFailure })),
+    }));
+
+    const diagnosis = await service.diagnose(tempRoot());
+
+    expect(diagnosis.state).toBe("socket_owned_by_other");
+  });
 });
 
 describe("ProjectRecoveryService.repair", () => {

@@ -960,6 +960,8 @@ describe("ADE CLI", () => {
    * teardown races surface as unhandled rejections in the runner, and killing
    * a child is the only way to end a brain the way the OS does.
    */
+  // DARWIN-GATE: booting a real brain needs the cr-sqlite extension, which ships
+  // only for macOS, so this can run nowhere else.
   crdtHostIt(
     "binds and serves the RPC socket while the mobile sync host is still retrying",
     async () => {
@@ -1007,7 +1009,10 @@ describe("ADE CLI", () => {
         brain.on("exit", (code, signal) => { brainExit = { code, signal }; });
 
         let client: JsonRpcClient | null = null;
-        const deadline = Date.now() + 90_000;
+        // 60s + 45s worst case leaves headroom inside the 150s test timeout, so
+        // a stuck brain fails with the diagnostic below and still runs `finally`
+        // (which kills the squatter) instead of being cut off by the runner.
+        const deadline = Date.now() + 60_000;
         for (;;) {
           if (brainExit) {
             throw new Error(
@@ -1050,7 +1055,7 @@ describe("ADE CLI", () => {
         // asserted at the moment of connect on purpose: the socket can be (and
         // routinely is) reachable before the first attempt has even failed
         // once, which is the whole point of the reorder.
-        const logDeadline = Date.now() + 60_000;
+        const logDeadline = Date.now() + 45_000;
         while (!stderr.includes("ADE brain sync host failed")) {
           if (Date.now() >= logDeadline) {
             throw new Error(`ADE brain never reported a sync host failure:\n${stderr}`);

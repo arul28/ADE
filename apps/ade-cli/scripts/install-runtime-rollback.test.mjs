@@ -51,6 +51,13 @@ if [ "\$1" = "--version" ]; then
   fi
   case "\$0" in
     */bin/ade)
+      # Stands in for the user hitting Ctrl-C while the promoted binary hangs
+      # on its own \`--version\`: the installer shell gets the same SIGINT the
+      # terminal would have delivered, and runs its signal handler.
+      if [ -n "\${ADE_TEST_INTERRUPT_INSTALLED:-}" ]; then
+        kill -INT "\$PPID" 2>/dev/null || true
+        exit 130
+      fi
       if [ -n "\${ADE_TEST_FAIL_INSTALLED:-}" ]; then
         echo "fake ade: installed copy cannot start" >&2
         exit 3
@@ -315,6 +322,26 @@ test("a promoted runtime that fails its version check is rolled back", () => {
 
     const log = fs.readFileSync(path.join(fixture.adeHome, "install-failure.log"), "utf8");
     assert.match(log, /installed copy cannot start/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("Ctrl-C while the promoted binary is being checked puts the old one back", () => {
+  const fixture = makeInstall();
+  try {
+    const result = runInstaller(fixture, { ADE_TEST_INTERRUPT_INSTALLED: "1" });
+
+    assert.notEqual(result.status, 0);
+    // The interrupt lands after the new binary is already in place but before
+    // it has proved it can start, so the machine must be left on the install
+    // it had -- not on an unverified binary with its backup deleted.
+    assert.equal(
+      fs.readFileSync(path.join(fixture.installDir, "ade"), "utf8"),
+      "#!/bin/sh\necho previous\n",
+    );
+    assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.bak")));
+    assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.new")));
   } finally {
     fixture.cleanup();
   }

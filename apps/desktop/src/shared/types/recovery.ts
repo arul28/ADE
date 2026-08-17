@@ -74,20 +74,41 @@ export type RepairStepId =
   | "reconcile_chats";
 
 /**
- * The repair steps in the order `ProjectRecoveryService.repair` runs them,
- * with the wording each one shows. Shared so the recovery screen can name the
- * step that is running before it has reported, from the same list.
+ * The wording each repair step shows. A `Record` keyed by the id union rather
+ * than a list of pairs: a step added to {@link RepairStepId} without a label
+ * has to fail here, at the definition, instead of surfacing as an unlabeled
+ * row on the recovery screen.
  */
-export const REPAIR_STEPS: ReadonlyArray<{ id: RepairStepId; label: string }> = [
-  { id: "check_space", label: "Checking storage space" },
-  { id: "stop_service", label: "Stopping ADE's background service" },
-  { id: "validate_database", label: "Checking project data" },
-  { id: "resolve_migrations", label: "Finishing interrupted saves" },
-  { id: "restart_service", label: "Restarting ADE's background service" },
-  { id: "verify_endpoint", label: "Checking the background service" },
-  { id: "verify_project_rpc", label: "Checking this project" },
-  { id: "reconcile_chats", label: "Checking chats" },
+export const REPAIR_STEP_LABELS: Record<RepairStepId, string> = {
+  check_space: "Checking storage space",
+  stop_service: "Stopping ADE's background service",
+  validate_database: "Checking project data",
+  resolve_migrations: "Finishing interrupted saves",
+  restart_service: "Restarting ADE's background service",
+  verify_endpoint: "Checking the background service",
+  verify_project_rpc: "Checking this project",
+  reconcile_chats: "Checking chats",
+};
+
+/** The order `ProjectRecoveryService.repair` runs the steps in. */
+export const REPAIR_STEP_ORDER: readonly RepairStepId[] = [
+  "check_space",
+  "stop_service",
+  "validate_database",
+  "resolve_migrations",
+  "restart_service",
+  "verify_endpoint",
+  "verify_project_rpc",
+  "reconcile_chats",
 ];
+
+/**
+ * The repair steps in the order they run, with their wording. Shared so the
+ * recovery screen can name the step that is running before it has reported,
+ * from the same list.
+ */
+export const REPAIR_STEPS: ReadonlyArray<{ id: RepairStepId; label: string }> =
+  REPAIR_STEP_ORDER.map((id) => ({ id, label: REPAIR_STEP_LABELS[id] }));
 
 export type RepairStepResult = {
   id: RepairStepId;

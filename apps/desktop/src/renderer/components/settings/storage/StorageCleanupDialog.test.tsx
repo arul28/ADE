@@ -140,4 +140,53 @@ describe("StorageCleanupDialog failures", () => {
     expect(screen.queryByText("stale.log")).toBeNull();
     expect(screen.getByText("fresh.log")).toBeTruthy();
   });
+
+  it("ignores a cleanup completion after close and reopen", async () => {
+    const previews: Array<(value: unknown) => void> = [];
+    const cleanupPreview = vi.fn(() => new Promise((resolve) => { previews.push(resolve); }));
+    const cleanups: Array<(value: unknown) => void> = [];
+    const cleanupCall = vi.fn(() => new Promise((resolve) => { cleanups.push(resolve); }));
+    (window as unknown as { ade?: unknown }).ade = {
+      storage: { cleanupPreview, cleanup: cleanupCall },
+    };
+
+    const onCleaned = vi.fn();
+    const props = {
+      title: "Free up space",
+      targets: [] as never[],
+      onClose: vi.fn(),
+      onCleaned,
+    };
+    const { rerender } = render(<StorageCleanupDialog open {...props} />);
+    await waitFor(() => expect(cleanupPreview).toHaveBeenCalledTimes(1));
+    previews[0]({
+      items: [{ path: "/tmp/first.log", label: "first.log", bytes: 10 }],
+      blocked: [],
+      totalBytes: 10,
+    });
+    await screen.findByText("first.log");
+
+    // Start the removal, then close and reopen before it answers.
+    fireEvent.click(screen.getByRole("button", { name: /Remove 1 item/ }));
+    await waitFor(() => expect(cleanupCall).toHaveBeenCalledTimes(1));
+    rerender(<StorageCleanupDialog open={false} {...props} />);
+    rerender(<StorageCleanupDialog open {...props} />);
+    await waitFor(() => expect(cleanupPreview).toHaveBeenCalledTimes(2));
+    previews[1]({
+      items: [{ path: "/tmp/second.log", label: "second.log", bytes: 20 }],
+      blocked: [],
+      totalBytes: 20,
+    });
+    await screen.findByText("second.log");
+
+    // The abandoned removal answers last: it must not settle the reopened
+    // dialog to "done", and must not report a result for a job nobody is
+    // looking at any more.
+    cleanups[0]({ removed: ["/tmp/first.log"], failed: [], freedBytes: 10 });
+    await waitFor(() => expect(cleanupCall).toHaveBeenCalledTimes(1));
+
+    expect(onCleaned).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Remove 1 item/ })).toBeTruthy();
+    expect(screen.getByText("second.log")).toBeTruthy();
+  });
 });

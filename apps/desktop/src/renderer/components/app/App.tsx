@@ -9,7 +9,6 @@ import {
   useNavigate
 } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
-import { WarningCircle } from "@phosphor-icons/react";
 
 import { AppShell } from "./AppShell";
 import { resolveSettingsTab } from "../settings/settingsManifest";
@@ -22,19 +21,11 @@ import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
-import { ReportIssueButton } from "./ReportIssueButton";
-import {
-  ERROR_PRIMARY_BUTTON,
-  ERROR_SECONDARY_BUTTON,
-  ErrorSurfaceCard,
-  TechnicalDetailsFold,
-  WhatToDo,
-} from "./errorSurfaceKit";
+import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { GlossaryPage } from "../onboarding/GlossaryPage";
-import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -181,110 +172,6 @@ const StartupSplashScreen = (
 
 /** Used by React.lazy Suspense boundaries while route chunks load. */
 const GuardLoadingFallback = StartupSplashScreen;
-
-/* ---------- Per-route error boundary ---------- */
-
-const PAGE_CRASH_STEPS: readonly string[] = [
-  "Go to Work — the rest of ADE keeps running.",
-  "Come back to this screen. If it breaks again, choose Report issue so we can see what happened here.",
-];
-
-type PageErrorBoundaryState = { hasError: boolean; message: string };
-
-class PageErrorBoundaryInner extends React.Component<
-  { children: React.ReactNode; onGoHome: () => void },
-  PageErrorBoundaryState
-> {
-  state: PageErrorBoundaryState = { hasError: false, message: "" };
-
-  static getDerivedStateFromError(error: unknown): PageErrorBoundaryState {
-    return { hasError: true, message: error instanceof Error ? error.message : String(error) };
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    console.error("page.crash", error, errorInfo, error?.stack);
-    logRendererDebugEvent("renderer.page_boundary_crash", {
-      message: error?.message ?? String(error),
-      route: window.location.hash || window.location.pathname,
-      componentStack: errorInfo.componentStack ?? null,
-      causeStack: error?.stack ?? null,
-    });
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="h-full w-full overflow-y-auto text-fg">
-          {/* Min-height row rather than `items-center` on the scroller: a card
-              taller than the pane would otherwise be clipped at the top. */}
-          <div className="flex min-h-full items-center justify-center p-8">
-          <div className="w-full max-w-[520px]">
-            <ErrorSurfaceCard
-              icon={<WarningCircle size={18} weight="fill" aria-hidden="true" />}
-              headline="Something went wrong on this screen"
-              body="The rest of ADE is still running, and your project, chats and files are safe."
-            >
-              <WhatToDo
-                title="What to do"
-                steps={PAGE_CRASH_STEPS}
-              />
-
-              <div className="mt-5 flex flex-wrap items-center gap-2">
-                {/* Work first: this screen just failed to draw, so re-rendering
-                    it usually fails the same way. Leaving is the move that
-                    reliably works, and Try again stays for the transient case. */}
-                <button
-                  type="button"
-                  className={ERROR_PRIMARY_BUTTON}
-                  onClick={() => {
-                    this.setState({ hasError: false, message: "" });
-                    this.props.onGoHome();
-                  }}
-                >
-                  Go to Work
-                </button>
-                <button
-                  type="button"
-                  className={ERROR_SECONDARY_BUTTON}
-                  onClick={() => this.setState({ hasError: false, message: "" })}
-                >
-                  Try again
-                </button>
-              </div>
-            </ErrorSurfaceCard>
-
-            <div className="mt-4">
-              <ReportIssueButton
-                variant="secondary"
-                context={{
-                  surface: "page_crash",
-                  headline: "Something went wrong on this screen",
-                  technicalDetail: this.state.message || null,
-                }}
-              />
-            </div>
-
-            <TechnicalDetailsFold
-              text={this.state.message || "No error message was recorded."}
-              className="mt-4"
-            />
-          </div>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-function PageErrorBoundary({ children }: { children: React.ReactNode }) {
-  const navigate = useNavigate();
-  return (
-    <PageErrorBoundaryInner onGoHome={() => navigate("/work")}>
-      {children}
-    </PageErrorBoundaryInner>
-  );
-}
 
 const RouteLoadingFallback = (
   <div
