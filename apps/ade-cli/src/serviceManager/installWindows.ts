@@ -966,8 +966,9 @@ async function installWindowsServiceImpl(
     readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
     // Shorter than the POSIX budget on purpose: the Windows install
     // already spends several PowerShell round-trips before this wait, and the
-    // desktop bounds the whole child at 60s. A supervised brain that is not
-    // ready by then is reported as `starting`, not as a failure.
+    // whole child is bounded by `RUNTIME_SERVICE_START_WAIT_MS` (90s). A
+    // supervised brain that is not ready by then is reported as `starting`,
+    // not as a failure.
     timeoutMs: deps.handoverTimeoutMs ?? WINDOWS_HANDOVER_TIMEOUT_MS,
     pollMs: deps.handoverPollMs ?? 100,
     sleep: deps.sleep,

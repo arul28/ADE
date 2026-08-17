@@ -20,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
+import type { AttemptedProjectRoots } from "./knownProjectRoots";
 import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
@@ -1657,6 +1658,7 @@ export function registerIpc({
   openAttentionItem,
   getCurrentAccountOwnerId,
   accountAttentionClient,
+  attemptedProjectRoots,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
@@ -1679,6 +1681,12 @@ export function registerIpc({
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  /**
+   * Roots main has tried to open. Owned by main.ts so every open path records
+   * into the same registry; see `knownProjectRoots.ts` for why a merely
+   * *attempted* root has to count as known.
+   */
+  attemptedProjectRoots?: AttemptedProjectRoots;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
@@ -1882,6 +1890,10 @@ export function registerIpc({
   // custom properties from thrown errors, so we re-throw with the code
   // prepended to the message. Renderer matches on the prefix.
   const surfaceCodedError = (error: unknown, meta?: { rootPath?: string }): never => {
+    // A coded failure carrying a root is exactly what puts the recovery screen
+    // on screen for that root, so remember it even if this path never reached
+    // `switchProjectFromDialog`.
+    if (meta?.rootPath) attemptedProjectRoots?.record(meta.rootPath);
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
       if (typeof code === "string" && code.length > 0) {
@@ -4574,7 +4586,8 @@ export function registerIpc({
 
   /**
    * The renderer names a project root; main decides whether that is a project
-   * it knows. See `knownProjectRoots.ts` for why trimming is not enough.
+   * it knows. See `knownProjectRoots.ts` for why trimming is not enough, and
+   * why a root that only ever FAILED to open still counts as known.
    */
   const resolveRequestedProjectRoot = (requested: string): string | null => {
     let recentProjectRoots: string[] = [];
@@ -4590,6 +4603,7 @@ export function registerIpc({
     return resolveKnownProjectRoot(requested, {
       openProjectRoot: getCtx().project.rootPath,
       recentProjectRoots,
+      attemptedProjectRoots: attemptedProjectRoots?.list(),
     });
   };
 
@@ -4631,11 +4645,16 @@ export function registerIpc({
   ) => {
     const surface = typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown";
     const requestedRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    // An unknown root falls back to the open project rather than failing: the
-    // point of this handler is that someone can always file an issue.
-    const projectRoot = (requestedRoot ? resolveRequestedProjectRoot(requestedRoot) : null)
-      ?? getCtx().project.rootPath
-      ?? null;
+    const resolvedRoot = requestedRoot ? resolveRequestedProjectRoot(requestedRoot) : null;
+    // A root the renderer named but main does not recognise is dropped rather
+    // than quietly swapped for the currently open project: substituting one
+    // would put another project's logs, volumes and recovery diagnosis under a
+    // report about this failure. Reporting stays possible either way — the
+    // report degrades to machine-level state and says so.
+    const rootWasRejected = Boolean(requestedRoot) && !resolvedRoot;
+    const projectRoot = rootWasRejected
+      ? null
+      : resolvedRoot ?? getCtx().project.rootPath ?? null;
     return await collectDiagnosticReport(
       {
         appVersion: app.getVersion(),
@@ -4657,6 +4676,9 @@ export function registerIpc({
         code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
         technicalDetail: typeof arg?.technicalDetail === "string" ? arg.technicalDetail.slice(0, 16_000) : null,
         projectRoot,
+        extraNotes: rootWasRejected
+          ? ["requested project root was not recognised; machine-level state only"]
+          : undefined,
       },
     );
   };

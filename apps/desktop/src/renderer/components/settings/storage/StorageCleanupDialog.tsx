@@ -271,7 +271,7 @@ export function StorageCleanupDialog({
   // drag a settled dialog back to "error".
   const requestRef = React.useRef(0);
 
-  const loadPreview = React.useCallback(() => {
+  const loadPreview = React.useCallback((): Promise<void> => {
     const { targets: openTargets } = initRef.current;
     const requestId = ++requestRef.current;
     setResult(null);
@@ -282,17 +282,15 @@ export function StorageCleanupDialog({
     return window.ade.storage
       .cleanupPreview(openTargets)
       .then((next) => {
-        if (requestRef.current !== requestId) return false;
+        if (requestRef.current !== requestId) return;
         setPreview(next);
         setStage("review");
-        return true;
       })
       .catch((err: unknown) => {
-        if (requestRef.current !== requestId) return false;
+        if (requestRef.current !== requestId) return;
         setError(err instanceof Error ? err.message : String(err));
         setErrorPhase("checking");
         setStage("error");
-        return false;
       });
   }, []);
 

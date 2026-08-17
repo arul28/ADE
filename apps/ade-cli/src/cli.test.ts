@@ -11553,6 +11553,18 @@ describe("unlinkOwnedRuntimeSocket", () => {
     expect(unlinked).toEqual([]);
   });
 
+  // A failed unlink used to be reported as "absent", which is the opposite of
+  // what happened: the socket file is still there, still ours, and the next
+  // brain will probe it as stale. The caller logs the difference.
+  it("reports a failed unlink as failed, not absent", () => {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: () => { throw new Error("EPERM"); },
+    });
+
+    expect(outcome).toBe("failed");
+  });
+
   it("falls back to the unconditional unlink when no inode was recorded at bind time", () => {
     const unlinked: string[] = [];
     const outcome = unlinkOwnedRuntimeSocket(socketPath, null, {

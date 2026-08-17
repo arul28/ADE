@@ -47,6 +47,7 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
 import {
   createProductAnalyticsService,
@@ -507,6 +508,14 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
 // a burst of near-simultaneous opens from each passing the cap before any has
 // begun.
 // ---------------------------------------------------------------------------
+/**
+ * Every project open/switch attempt is recorded here, successful or not, so the
+ * recovery and diagnostics IPC handlers can accept the root the user just
+ * picked even when its first open failed before it could reach the
+ * recent-projects list. See `services/ipc/knownProjectRoots.ts`.
+ */
+const attemptedProjectRoots = new AttemptedProjectRoots();
+
 const RECONCILE_GLOBAL_MAX = 1;
 let reconcileActiveOrScheduled = 0;
 const pendingReconciles: Array<() => void> = [];
@@ -5847,6 +5856,10 @@ app.whenReady().then(async () => {
   const switchProjectFromDialog = async (
     selectedPath: string,
   ): Promise<ProjectInfo> => {
+    // Recorded before anything can fail: a first open that fails never reaches
+    // the recent-projects list, and the recovery screen it puts on screen asks
+    // main to diagnose/repair this exact root.
+    attemptedProjectRoots.record(selectedPath);
     const startedAt = Date.now();
     const windowId = currentIpcWindowId();
     let repoRoot: string | null = null;
@@ -7528,6 +7541,7 @@ app.whenReady().then(async () => {
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,
+    attemptedProjectRoots,
     closeCurrentProject,
     closeProjectByPath,
     globalStatePath,

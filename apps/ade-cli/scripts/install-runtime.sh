@@ -449,13 +449,22 @@ downloaded_bytes="$((
 ))"
 
 staged_binary="$tmp_dir/ade"
-staged_runtime_dir="$tmp_dir/runtime"
+# The staged runtime, the runtime backup, the staged binary copy and the binary
+# backup all live next to what they replace, under the ADE home -- never in
+# $TMPDIR. Two reasons, and both have bitten this script:
+#   - promoting and restoring have to be same-directory renames, which are
+#     atomic. A `mv` out of $TMPDIR is a copy across filesystems, and a
+#     half-copied `ade` or runtime is the broken install this block exists to
+#     prevent;
+#   - a /tmp mounted `noexec` (common on hardened Linux hosts and in
+#     containers) makes the preflight fail on every install. The binary is not
+#     the only thing that has to be executable: it `dlopen`s the .node modules
+#     NODE_PATH points at, and those come out of the runtime archive. Staging
+#     the runtime under the ADE home is what makes the preflight test the same
+#     files the promoted install will load.
+staged_runtime_dir="$runtime_dir.new"
 staged_node_modules="$staged_runtime_dir/node_modules"
-backup_runtime_dir="$tmp_dir/runtime.previous"
-# Both live next to the real binary, not in $TMPDIR: promoting and restoring
-# have to be same-directory renames, which are atomic. A `mv` out of $TMPDIR is
-# a copy across filesystems, and a half-copied `ade` is the broken install this
-# whole block exists to prevent.
+backup_runtime_dir="$runtime_dir.previous"
 pending_binary="$dest_dir/ade.new"
 backup_binary="$dest_dir/ade.bak"
 promoted_runtime=0
@@ -464,7 +473,22 @@ have_backup_binary=0
 # a stuck user at it, and a log deleted on the way out points at nothing.
 install_log="$ade_home/install-failure.log"
 
-trap 'rm -rf "$tmp_dir"; rm -f "$dest_dir/ade.new"' EXIT HUP INT TERM
+# Scratch state only: the download, the staged runtime, and the staged binary
+# copy. The runtime backup is deleted too, but only after the window in which
+# it is the machine's only runtime -- an abort (Ctrl-C, SIGTERM) between moving
+# the old runtime aside and moving the new one in would otherwise leave the
+# machine with no runtime at all.
+cleanup_install_scratch() {
+  rm -rf "$tmp_dir"
+  rm -f "$pending_binary"
+  rm -rf "$staged_runtime_dir"
+  if [ "$promoted_runtime" -eq 0 ] && [ -e "$backup_runtime_dir" ] && [ ! -e "$runtime_dir" ]; then
+    mv "$backup_runtime_dir" "$runtime_dir" 2>/dev/null || true
+  fi
+  rm -rf "$backup_runtime_dir"
+}
+
+trap 'cleanup_install_scratch' EXIT HUP INT TERM
 
 # The runtime sidecar env has to be in place before *any* `--version` check:
 # the binary loads its native modules through it, so a preflight run without it
@@ -541,18 +565,17 @@ mkdir -p "$staged_runtime_dir"
 tar -xzf "$tmp_dir/native.tar.gz" -C "$staged_runtime_dir"
 [ -d "$staged_node_modules" ] || die "native dependency archive is missing node_modules"
 
-# The preflight copy lands in $dest_dir, not $TMPDIR. A /tmp mounted `noexec`
-# is common on hardened Linux hosts and in containers, and running the staged
-# binary from there fails with EACCES on every install -- reported as "the
-# runtime could not start", which is a lie about a perfectly good download.
-# $dest_dir/ade.new is the scratch name the promotion below renames from, and
-# the EXIT trap already removes it, so this costs nothing but the copy.
+# The preflight copy lands in $dest_dir, not $TMPDIR -- see the noexec note
+# above. $dest_dir/ade.new is the scratch name the promotion below renames
+# from, and the EXIT trap already removes it, so this costs nothing but the
+# copy.
 rm -f "$pending_binary"
 cp "$staged_binary" "$pending_binary"
 chmod 755 "$pending_binary"
 
 # Preflight before anything is promoted: the new binary against the staged
-# runtime. A download that cannot even print its version never replaces
+# runtime, both under the ADE home so neither is executed or `dlopen`ed out of
+# $TMPDIR. A download that cannot even print its version never replaces
 # $dest_dir/ade, so the previous install is still there and still working.
 set_runtime_env "$staged_runtime_dir"
 if ! version_check "$pending_binary" "staged"; then

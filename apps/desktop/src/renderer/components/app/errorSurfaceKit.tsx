@@ -40,7 +40,7 @@ export const ERROR_DISCLOSURE_CARET = (
 );
 
 /** The card every full-screen failure state sits in. */
-export const ERROR_CARD =
+const ERROR_CARD =
   "rounded-2xl border border-border/70 bg-fg/[0.02] px-6 py-5 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset]";
 
 /** The headline every failure card leads with. */

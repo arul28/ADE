@@ -105,6 +105,16 @@ stays behind disclosure. `projectRecoveryService` does not depend on a healthy
 brain, so it can validate and repair the database that prevented the brain from
 starting.
 
+Both `recovery.diagnose` and `recovery.repair` validate the root the renderer
+names before acting on it (`apps/desktop/src/main/services/ipc/knownProjectRoots.ts`):
+a renderer may only name the open project, a local recent-projects entry, or a
+root main itself recently attempted to open. That last source is what keeps the
+recovery screen working — a folder whose *first* open failed never reaches the
+recent-projects list, so main records every open attempt in a bounded, expiring
+registry and treats those roots as known. Diagnostics applies the same rule; a
+root it cannot place is dropped rather than swapped for the open project, and
+the report says it carries machine-level state only.
+
 The repair sequence stops at the first unsafe step. It checks free space,
 establishes exclusive ownership, runs `quick_check`, opens the database so the
 pre-migration recovery pass can resolve staging, restarts the service, verifies

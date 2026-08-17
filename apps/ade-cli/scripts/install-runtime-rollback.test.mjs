@@ -44,6 +44,11 @@ if [ "\$1" = "--version" ]; then
   if [ -n "\${ADE_TEST_VERSION_LOG:-}" ]; then
     echo "\$0" >>"\$ADE_TEST_VERSION_LOG"
   fi
+  # Records the runtime env the installer handed this check, so a test can
+  # prove the native modules are not \`dlopen\`ed out of \$TMPDIR either.
+  if [ -n "\${ADE_TEST_ENV_LOG:-}" ]; then
+    echo "\$0|\${ADE_RUNTIME_ROOT:-}|\${ADE_RUNTIME_NODE_MODULES:-}|\${NODE_PATH:-}" >>"\$ADE_TEST_ENV_LOG"
+  fi
   case "\$0" in
     */bin/ade)
       if [ -n "\${ADE_TEST_FAIL_INSTALLED:-}" ]; then
@@ -170,6 +175,10 @@ test("a downloaded runtime that cannot start never replaces the installed one", 
     assert.ok(fs.existsSync(path.join(fixture.runtimeDir, "previous-runtime.txt")));
     assert.ok(!fs.existsSync(path.join(fixture.runtimeDir, "node_modules")));
     assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.new")));
+    // The runtime now stages next to the real one; a failed install must not
+    // leave either scratch directory under the ADE home.
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.new`));
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.previous`));
   } finally {
     fixture.cleanup();
   }
@@ -198,6 +207,59 @@ test("the staged preflight runs the install-directory copy, not the one in TMPDI
     ]);
     // Nothing was ever executed out of the $TMPDIR staging directory.
     assert.ok(!executed.some((entry) => entry.includes("ade-install.")));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// The binary is not the only thing the preflight has to run from an
+// executable filesystem: it `dlopen`s the .node modules NODE_PATH points at.
+// Staging the runtime archive in $TMPDIR made the binary copy's relocation
+// pointless on a `noexec` /tmp, because the native modules were still loaded
+// from there.
+test("the staged preflight loads native modules from the ADE home, not TMPDIR", () => {
+  const fixture = makeInstall();
+  const envLog = path.join(fixture.adeHome, "version-env.log");
+  try {
+    const result = runInstaller(fixture, { ADE_TEST_ENV_LOG: envLog });
+
+    assert.equal(result.status, 0, result.stderr);
+    const rows = fs.readFileSync(envLog, "utf8").split("\n").filter(Boolean);
+    assert.ok(rows.length >= 2, `expected a staged and a promoted check, got ${rows.length}`);
+
+    // Nothing the installer executed saw a TMPDIR staging path, as the binary
+    // it ran or anywhere in its runtime env.
+    for (const row of rows) {
+      assert.ok(!row.includes("ade-install."), `TMPDIR staging path in: ${row}`);
+    }
+
+    // The staged preflight runs against the runtime staged under the ADE home,
+    // one same-filesystem rename away from where it will be promoted; the
+    // second check runs against the promoted one. NODE_PATH keeps whatever the
+    // ambient environment had after the runtime entry, so only the first entry
+    // is this script's.
+    const parse = (row) => {
+      const [binary, runtimeRoot, nodeModules, nodePath] = row.split("|");
+      return { binary, runtimeRoot, nodeModules, firstNodePath: nodePath.split(":")[0] };
+    };
+    const staged = parse(rows[0]);
+    assert.deepEqual(staged, {
+      binary: path.join(fixture.installDir, "ade.new"),
+      runtimeRoot: `${fixture.runtimeDir}.new`,
+      nodeModules: path.join(`${fixture.runtimeDir}.new`, "node_modules"),
+      firstNodePath: path.join(`${fixture.runtimeDir}.new`, "node_modules"),
+    });
+    const promoted = parse(rows[1]);
+    assert.deepEqual(promoted, {
+      binary: path.join(fixture.installDir, "ade"),
+      runtimeRoot: fixture.runtimeDir,
+      nodeModules: path.join(fixture.runtimeDir, "node_modules"),
+      firstNodePath: path.join(fixture.runtimeDir, "node_modules"),
+    });
+
+    // Neither staging directory survives a successful install.
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.new`));
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.previous`));
   } finally {
     fixture.cleanup();
   }
@@ -248,6 +310,8 @@ test("a promoted runtime that fails its version check is rolled back", () => {
     // The rollback copies are scratch state, not something to leave behind.
     assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.bak")));
     assert.ok(!fs.existsSync(path.join(fixture.installDir, "ade.new")));
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.new`));
+    assert.ok(!fs.existsSync(`${fixture.runtimeDir}.previous`));
 
     const log = fs.readFileSync(path.join(fixture.adeHome, "install-failure.log"), "utf8");
     assert.match(log, /installed copy cannot start/);

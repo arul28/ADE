@@ -27,6 +27,12 @@ export {
 export type DiagnosticReportRequest = DiagnosticReportContext & {
   /** Verbatim `UpdateTransactionResult` (or anything JSON) from the caller. */
   updateTransaction?: unknown;
+  /**
+   * Caller-supplied notes appended to the machine-collected ones — how a
+   * handler explains a degraded report, e.g. a project root it could not
+   * recognise and therefore did not collect project state for.
+   */
+  extraNotes?: readonly string[];
 };
 
 export type DiagnosticReportDeps = {
@@ -177,7 +183,7 @@ export async function collectDiagnosticReport(
     },
     storage: sources.storage,
     logs,
-    notes: sources.notes,
+    notes: [...sources.notes, ...(request.extraNotes ?? [])],
     redaction,
   });
 

@@ -17892,6 +17892,11 @@ async function runServe(
         socketPath,
         reason: "Another process rebound this path; removing it would delete their socket.",
       });
+    } else if (outcome === "failed") {
+      headlessProjectLogger.warn("brain.socket_unlink_failed", {
+        socketPath,
+        reason: "The socket file is still ours and still present; the next brain will probe it as stale.",
+      });
     }
   }
   if (syncHostStartupFailure != null) {
@@ -17968,26 +17973,6 @@ function isPidAlive(pid: number): boolean {
 /** How often a bound brain re-checks that it still owns its socket path. */
 const BRAIN_SOCKET_OWNERSHIP_POLL_MS = 5_000;
 
-/**
- * A unix-domain brain can lose its own endpoint AFTER a successful `listen()`.
- * The bind is preceded by a check, not a lock: `existsSync` -> await
- * `assertBrainSocketUnowned` -> `unlink` -> `listen`. Two brains that both
- * probe the same *stale* socket file race across that await — the first
- * unlinks and binds inode X, the second (whose probe predates that bind) then
- * unlinks the path->X link and binds a fresh inode Y. Neither sees
- * `EADDRINUSE`, so the guard around `listen` never fires, and the first brain
- * lives on listening to an inode nothing can reach: the PR #949 zombie.
- *
- * The sync-host loop's `abortIf` used to catch this incidentally, because the
- * loser was still inside that loop when the socket went live. Binding before
- * the sync host removed that accident, so make the check explicit: remember
- * the inode we bound and end the brain if the path stops pointing at it. The
- * supervisor then restarts us, and the restarted brain finds the rival's live
- * socket and reports `socket_owned_by_other` instead of squatting silently.
- *
- * Windows named pipes are exempt: a pipe name is a kernel object with no
- * directory entry to steal, and a bound pipe can never be probed as stale.
- */
 /** Inode of a socket path, or null when it is gone or unreadable. */
 export function readRuntimeSocketInode(target: string): bigint | null {
   try {
@@ -18016,7 +18001,7 @@ export function unlinkOwnedRuntimeSocket(
     readInode?: (target: string) => bigint | null;
     unlink?: (target: string) => void;
   } = {},
-): "unlinked" | "not_owned" | "absent" {
+): "unlinked" | "not_owned" | "absent" | "failed" {
   if (isAdeRuntimeNamedPipePath(socketPath)) return "not_owned";
   const readInode = deps.readInode ?? readRuntimeSocketInode;
   const unlink = deps.unlink ?? ((target: string) => fs.unlinkSync(target));
@@ -18026,11 +18011,34 @@ export function unlinkOwnedRuntimeSocket(
   try {
     unlink(socketPath);
   } catch {
-    return "absent";
+    // Distinct from "absent": the socket file is still there and still ours,
+    // so the next brain to start will probe a stale path we failed to clean up.
+    return "failed";
   }
   return "unlinked";
 }
 
+/**
+ * A unix-domain brain can lose its own endpoint AFTER a successful `listen()`.
+ * The bind is preceded by a check, not a lock: `existsSync` -> await
+ * `assertBrainSocketUnowned` -> `unlink` -> `listen`. Two brains that both
+ * probe the same *stale* socket file race across that await — the first
+ * unlinks and binds inode X, the second (whose probe predates that bind) then
+ * unlinks the path->X link and binds a fresh inode Y. Neither sees
+ * `EADDRINUSE`, so the guard around `listen` never fires, and the first brain
+ * lives on listening to an inode nothing can reach: the PR #949 zombie.
+ *
+ * The sync-host loop's socket-liveness abort used to catch this incidentally,
+ * because the loser was still inside that loop when the socket went live.
+ * Binding before the sync host removed that accident, so make the check
+ * explicit: remember the inode we bound and end the brain if the path stops
+ * pointing at it. The supervisor then restarts us, and the restarted brain
+ * finds the rival's live socket and reports `socket_owned_by_other` instead of
+ * squatting silently.
+ *
+ * Windows named pipes are exempt: a pipe name is a kernel object with no
+ * directory entry to steal, and a bound pipe can never be probed as stale.
+ */
 export function monitorBrainSocketOwnership(
   socketPath: string,
   onLost: (reason: "removed" | "replaced") => void,
