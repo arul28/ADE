@@ -17,6 +17,7 @@ import {
   isGithubRealtimeHealthy,
   isGithubRepoAccessPending,
 } from "../../lib/githubIntegrationStatus";
+import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 
 const ADE_GITHUB_APP_NAME = "ADE";
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
@@ -488,6 +489,14 @@ function repoView(
         return {
           pill: { tone: "warn", color: COLORS.warning, label: "Rate limited" },
           subtext: "GitHub temporarily paused automatic App checks. Wait for the cooldown, then recheck.",
+        };
+      }
+      // GitHub answered with a server error, so the install state is unknown
+      // rather than broken. Say so instead of implying ADE's setup failed.
+      if (isGithubServiceUnavailable({ message: error })) {
+        return {
+          pill: { tone: "neutral", color: COLORS.textMuted, label: "Waiting on GitHub" },
+          subtext: "GitHub returned a server error, so ADE couldn't check this repo. Nothing to fix here — it will recheck once GitHub recovers.",
         };
       }
       return {

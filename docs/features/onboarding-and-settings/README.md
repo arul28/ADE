@@ -106,15 +106,38 @@ Main process:
   user, OAuth, and PAT credentials for the same account, so an exhausted primary
   bucket pauses known credentials for that account instead of cycling tokens.
   `GitHubStatus.authFailure` distinguishes rate limiting, invalid credentials,
-  permission denial, network failures, and unknown validation errors so clients
-  do not flatten every failed probe into missing permissions.
+  permission denial, GitHub's own 5xx (`service_unavailable`), network failures,
+  and unknown validation errors so clients do not flatten every failed probe
+  into missing permissions. `service_unavailable` gets no credential cooldown,
+  because the credential is not the problem and must stay usable the instant
+  GitHub recovers.
+- `apps/desktop/src/shared/githubServiceHealth.ts` and
+  `apps/desktop/src/main/services/github/githubStatusPage.ts` — telling a GitHub
+  outage apart from a broken credential. The shared module parses
+  githubstatus.com's Statuspage `summary.json` into `GitHubServiceHealth` and
+  exposes `isGithubServiceUnavailable`; it counts only components ADE actually
+  uses (API Requests, Pull Requests, Issues, Actions, Webhooks, Git Operations),
+  so a Copilot or Codespaces outage never becomes an ADE claim. The main-process
+  module is failure-triggered and never polls: it runs only after a GitHub
+  request already failed, caches results (including negative ones) for 60 s,
+  times out at 2 s, and fails silent. `attachGitHubServiceHealth` populates
+  `GitHubStatus.serviceHealth` and is applied in both `getStatus` owners.
+  Attribution is one-directional — a corroborated incident clears the user of
+  blame, while a healthy status page never implies the opposite, because the
+  page lags real incidents by 10-20 minutes. See
+  [pull requests](../pull-requests/README.md#telling-a-github-outage-apart-from-a-broken-credential).
 - `apps/desktop/src/shared/githubOperationCredential.ts` — the capability-aware
   read/write credential order, App read-only rule, and duplicate-token removal
-  used by desktop and runtime-side GitHub services.
+  used by desktop and runtime-side GitHub services. A `service_unavailable`
+  probe stops the credential walk instead of retrying every candidate against a
+  service that is already failing.
 - `apps/ade-cli/src/headlessLinearServices.ts` — runtime-owned mirror of the
   GitHub request/status path. It applies the same candidate order, cooldowns,
-  GraphQL classification, conditional-request cache isolation, and read/write
-  status fields when a packaged or remote-bound window uses `ade serve`.
+  GraphQL classification, conditional-request cache isolation, read/write
+  status fields, and githubstatus.com corroboration when a packaged or
+  remote-bound window uses `ade serve`. The renderer reaches GitHub through
+  whichever service owns the project, so anything applied to only one of the two
+  `getStatus` implementations is dead in the shipping runtime-backed build.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~3,150 lines, the largest service.
@@ -139,9 +162,9 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/git.ts` — `GitHubStatus`,
   `GitHubAuthFailure`, `GitHubRateLimitState`, and the credential source,
   capability, state, and fallback contracts. `writeAuthSource`,
-  `credentialStates`, `credentialFallback`, and
-  `backgroundRefreshPausedUntil` are optional so a newer client remains
-  compatible with an older remote runtime.
+  `credentialStates`, `credentialFallback`, `backgroundRefreshPausedUntil`, and
+  `serviceHealth` are optional so a newer client remains compatible with an
+  older remote runtime.
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
     complete, setDismissed)
@@ -335,8 +358,16 @@ Renderer — settings:
   GitHub's raw request-id / scraping-policy error. Raw network/unknown
   validation errors stay in Settings rather than the global banner. The shared
   `renderer/lib/githubIntegrationStatus.ts` presentation helper keeps banner
-  and Settings classification aligned. This section also hosts the
-  `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".
+  and Settings classification aligned. When githubstatus.com corroborates an
+  outage the whole card goes neutral instead of reading as "your setup is
+  broken": the status chip says "GitHub outage", the failure box drops its
+  warning tint and grows a link to the live incident, `READS WITH` / `WRITES
+  WITH` say "Unknown" rather than the false-negative "Not connected",
+  connection-order badges read "Waiting on GitHub" instead of "Reconnect
+  needed", and the `gh auth login` instructions are hidden so nobody replaces a
+  credential that was working. A missing token still shows its instruction —
+  that is a local fact an outage cannot explain away. This section also hosts
+  the `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".
 - `apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx`
   — install / status card for the hosted ADE GitHub App that backs
   webhook-relay PR updates. Reads per-repo installation + webhook state via
@@ -361,7 +392,9 @@ Renderer — settings:
     After device authorization succeeds, the panel force-refreshes the hosted
     relay status with a short retry window and treats GitHub repo-access 404s as a
     temporary "Checking access" (`access_pending`) state so App installation
-    propagation does not look like failed authorization.
+    propagation does not look like failed authorization. A GitHub server error
+    renders as "Waiting on GitHub" rather than "Couldn't verify": the install
+    state is unknown, not broken.
 
   `clearAppUserAuth` revokes the local token. Offers a Refresh. Rendered in
   Settings and, in a compact `onboarding` variant, during setup. The device-flow,
@@ -381,7 +414,13 @@ Renderer — settings:
   sub-states. Imported by `GitHubAppInstallPanel`, `IntegrationBannerHost`, and
   write surfaces such as `FeedbackReporterModal`; App-only read connectivity
   therefore keeps PR data live while still prompting for GitHub CLI or a PAT
-  before a mutation.
+  before a mutation. `describeGithubOutage(status)` is the one presentation
+  entry point for a corroborated GitHub outage — it answers "is there an
+  outage", "what do we say", and "where does the button go" together, and every
+  GitHub-blaming surface gates on it. `describeGithubAuthFailure` and
+  `describeGithubCliBanner` consult it first, so an outage outranks every
+  credential-shaped reading of the same failure. When it returns null ADE says
+  nothing about GitHub's health and keeps its existing copy.
 - `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` and
   `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
   app shell raises a write-access banner for an otherwise connected App-only

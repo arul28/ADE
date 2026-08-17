@@ -9208,6 +9208,15 @@ export function createPrService({
         : " Try again after GitHub resets the API limit.";
       return `GitHub API rate limit reached.${retry}`;
     }
+    // GitHub itself failed, so nothing about the credential is in question.
+    // Without this arm a 503 falls through to the "auth is invalid — update it
+    // in Settings" default, which is the exact accusation the outage work
+    // exists to remove, on the surface a user is most likely to act from.
+    if (githubStatus.authFailure?.kind === "service_unavailable") {
+      return githubStatus.serviceHealth
+        ? "GitHub is having problems, so pull requests can't sync right now. Nothing to change here — ADE will catch up when GitHub recovers."
+        : "GitHub returned an error, so pull requests can't sync right now. This isn't a problem with your GitHub connection — ADE will keep retrying.";
+    }
     if (githubStatus.repo && githubStatus.repoAccessError) {
       return `GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
     }

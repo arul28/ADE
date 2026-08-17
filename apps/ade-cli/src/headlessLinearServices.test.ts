@@ -36,6 +36,7 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
 
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
+import { resetGitHubServiceHealthCache } from "../../desktop/src/main/services/github/githubStatusPage";
 import {
   clearGithubCredentialHealth,
   githubCredentialCooldown,
@@ -182,6 +183,55 @@ describe("headlessLinearServices", () => {
       } else {
         process.env.ADE_HOME = previousAdeHome;
       }
+    }
+  });
+
+  // The renderer reaches GitHub through whichever service owns the project, so
+  // corroboration applied only to the desktop in-process service left the whole
+  // outage attribution dead in the shipping, runtime-backed (brain) build.
+  it("corroborates a GitHub server error against the status page", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-outage-"));
+    const statusPagePayload = {
+      status: { indicator: "major", description: "Partial System Outage" },
+      components: [{ id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" }],
+      incidents: [{ name: "Incident with GitHub.com", shortlink: "https://stspg.io/live", resolved_at: null }],
+    };
+    const statusPageCalls: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("githubstatus.com")) statusPageCalls.push(url);
+      if (url.includes("githubstatus.com")) {
+        return new Response(JSON.stringify(statusPagePayload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // Every api.github.com call fails the way GitHub fails during an incident.
+      return new Response("No server is currently available to service your request.", { status: 503 });
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+    try {
+      githubService.setToken("ghp_outage_token");
+      const status = await githubService.getStatus({ forceRefresh: true });
+
+      expect(status.authFailure?.kind).toBe("service_unavailable");
+      expect(status.serviceHealth?.affected.map((entry) => entry.surface)).toEqual(["api"]);
+      expect(status.serviceHealth?.incidentUrl).toBe("https://stspg.io/live");
+      expect(statusPageCalls).toHaveLength(1);
+    } finally {
+      // Module-level cache: leaving it warm would silently change what the
+      // sibling status-lookup tests observe.
+      resetGitHubServiceHealthCache();
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
     }
   });
 

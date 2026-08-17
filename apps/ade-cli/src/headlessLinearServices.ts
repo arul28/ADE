@@ -17,6 +17,7 @@ import type { createLinearIssueTracker } from "../../desktop/src/main/services/c
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { resolveSmartLinkPreview } from "../../desktop/src/main/services/chat/smartLinkPreviewService";
+import { attachGitHubServiceHealth } from "../../desktop/src/main/services/github/githubStatusPage";
 import type { SmartLinkPreview } from "../../desktop/src/shared/smartLinks";
 import {
   getModelById,
@@ -1873,26 +1874,46 @@ export function createHeadlessGitHubService(
     }
   };
 
+  const resolveStatus = async (opts: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
+    const forceRefresh = opts.forceRefresh === true;
+    if (forcedStatusLookupInFlight?.generation === statusLookupGeneration) {
+      return await forcedStatusLookupInFlight.promise;
+    }
+    if (!forceRefresh) {
+      return await performStatusLookup(false, statusLookupGeneration);
+    }
+
+    invalidateStatusCache();
+    const generation = statusLookupGeneration;
+    const lookup = performStatusLookup(true, generation);
+    forcedStatusLookupInFlight = { generation, promise: lookup };
+    try {
+      return await lookup;
+    } finally {
+      if (forcedStatusLookupInFlight?.promise === lookup) forcedStatusLookupInFlight = null;
+    }
+  };
+
   service = {
     verifyStoredPat,
     async getStatus(opts: { forceRefresh?: boolean } = {}) {
-      const forceRefresh = opts.forceRefresh === true;
-      if (forcedStatusLookupInFlight?.generation === statusLookupGeneration) {
-        return await forcedStatusLookupInFlight.promise;
-      }
-      if (!forceRefresh) {
-        return await performStatusLookup(false, statusLookupGeneration);
-      }
-
-      invalidateStatusCache();
-      const generation = statusLookupGeneration;
-      const lookup = performStatusLookup(true, generation);
-      forcedStatusLookupInFlight = { generation, promise: lookup };
-      try {
-        return await lookup;
-      } finally {
-        if (forcedStatusLookupInFlight?.promise === lookup) forcedStatusLookupInFlight = null;
-      }
+      // Corroborate a failing status against githubstatus.com, exactly as the
+      // desktop in-process service does. The renderer reaches GitHub through
+      // whichever service owns the project, so applying this to only one of
+      // them would leave the outage attribution dead in the shipping,
+      // runtime-backed build. Wrapped at this single exit rather than inside
+      // `resolveStatus` so a cache hit still gets fresh corroboration — and so
+      // a future early return cannot skip it.
+      // `options.fetchImpl` is threaded through deliberately: it is the same
+      // seam every other GitHub call in this service uses, so a test that
+      // provokes a 5xx/unclassified failure stubs the status page instead of
+      // reaching the real githubstatus.com from the unit suite. Passed raw
+      // rather than via `requestGitHub`, which would replace the status-page
+      // lookup's own abort signal and defeat its timeout.
+      return await attachGitHubServiceHealth(await resolveStatus(opts), {
+        logger,
+        fetchImpl: options.fetchImpl,
+      });
     },
     async getBackgroundRequestPauseUntilMs() {
       const inventory = await readCredentialInventoryAsync();

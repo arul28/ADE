@@ -314,7 +314,14 @@ export async function resolveGithubStatusCredentials<
       }
       failures.push({ candidate, ...result });
       args.onRejectedProbe(candidate, result, { repositoryAccessFailure, phase: "read" });
-      if (result.authFailure.kind === "network" || result.authFailure.kind === "unknown") break;
+      if (
+        result.authFailure.kind === "network"
+        || result.authFailure.kind === "unknown"
+        // GitHub returning 5xx says nothing about this credential, so the next
+        // one in the chain would fail identically. Stop instead of multiplying
+        // load against a service that is already failing.
+        || result.authFailure.kind === "service_unavailable"
+      ) break;
       continue;
     }
     const candidateCapabilities = args.capabilities(candidate, result.value);

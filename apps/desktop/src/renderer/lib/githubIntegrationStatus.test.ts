@@ -4,12 +4,24 @@ import {
   deriveGithubRepoConnectionState,
   describeGithubAuthFailure,
   describeGithubCliBanner,
+  describeGithubOutage,
   describeGithubPatVerification,
   githubCredentialPresentation,
   githubStatusHasUsablePat,
   isGithubRateLimitMessage,
   isGithubRepoAccessPending,
 } from "./githubIntegrationStatus";
+import { deriveGitHubServiceHealth } from "../../shared/githubServiceHealth";
+
+function outageHealth(components = [{ id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" }]) {
+  return deriveGitHubServiceHealth(
+    {
+      status: { indicator: "major", description: "Partial System Outage" },
+      components,
+      incidents: [{ name: "Incident with GitHub.com", shortlink: "https://stspg.io/x", resolved_at: null }],
+    },
+  )!;
+}
 
 function makeStatus(overrides: Partial<GitHubAppInstallationStatus> = {}): GitHubAppInstallationStatus {
   return {
@@ -294,5 +306,89 @@ describe("isGithubRateLimitMessage", () => {
     expect(isGithubRateLimitMessage("You have exceeded a secondary rate limit.")).toBe(true);
     expect(isGithubRateLimitMessage("Bad credentials")).toBe(false);
     expect(isGithubRateLimitMessage(null)).toBe(false);
+  });
+});
+
+describe("GitHub outage attribution", () => {
+  // The bug this whole feature exists for: a GitHub 503 used to fall through to
+  // the generic "unknown" branch and render as "GitHub authentication check
+  // failed", blaming the user's credential for GitHub's incident.
+  const githubOutage503 = {
+    kind: "service_unavailable" as const,
+    message: "No server is currently available to service your request.",
+    retryAt: null,
+  };
+
+  it("never blames the credential for a GitHub 5xx, even with no status page corroboration", () => {
+    const failure = describeGithubAuthFailure(makeCliStatus({ authFailure: githubOutage503 }));
+    expect(failure?.title).toBe("GitHub isn't responding");
+    expect(failure?.subState).toBe("service-unavailable");
+    expect(failure?.settingsDetail).toContain("not a problem with your credential");
+    expect(failure?.action).not.toMatch(/reconnect/i);
+  });
+
+  it("attributes a corroborated outage to GitHub and drops the reconnect CTA", () => {
+    const status = makeCliStatus({
+      authFailure: githubOutage503,
+      serviceHealth: outageHealth(),
+    });
+    const failure = describeGithubAuthFailure(status);
+    expect(failure?.statusLabel).toBe("GitHub outage");
+    expect(failure?.title).toBe("GitHub is down");
+    expect(failure?.detail).toContain("API Requests");
+    expect(failure?.detail).toContain("isn't your setup");
+    expect(failure?.action).toBe("GitHub status");
+  });
+
+  // Outage attribution has to beat every credential-shaped reading of the same
+  // failure, including the ones that fire before the authFailure branch.
+  it("overrides the missing-write-credential banner during an outage", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      connected: true,
+      writeAuthSource: "none",
+      serviceHealth: outageHealth(),
+    }));
+    expect(banner.title).toBe("GitHub is down");
+    expect(banner.subState).toBe("outage:major");
+  });
+
+  // A stored token is a local fact; an outage cannot explain it away, so the
+  // genuine "connect GitHub" instruction must survive.
+  it("still asks an unconnected user to connect GitHub during an outage", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      tokenStored: false,
+      serviceHealth: outageHealth(),
+    }));
+    expect(banner.subState).toBe("no-token");
+  });
+
+  it("says nothing about GitHub health when no incident is corroborated", () => {
+    expect(describeGithubOutage(makeCliStatus())).toBeNull();
+    expect(describeGithubOutage(makeCliStatus({ serviceHealth: null }))).toBeNull();
+    expect(describeGithubOutage(null)).toBeNull();
+  });
+
+  it("points the action at the live incident, falling back to the status page", () => {
+    expect(describeGithubOutage(makeCliStatus({ serviceHealth: outageHealth() }))?.actionUrl)
+      .toBe("https://stspg.io/x");
+    const noIncident = deriveGitHubServiceHealth(
+      {
+        status: { indicator: "major", description: "Partial System Outage" },
+        components: [{ id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" }],
+        incidents: [],
+      },
+    )!;
+    expect(describeGithubOutage(makeCliStatus({ serviceHealth: noIncident }))?.actionUrl)
+      .toBe("https://www.githubstatus.com");
+  });
+
+  it("softens the wording when GitHub reports degradation rather than an outage", () => {
+    const failure = describeGithubAuthFailure(makeCliStatus({
+      authFailure: githubOutage503,
+      serviceHealth: outageHealth([
+        { id: "8l4ygp009s5s", name: "Git Operations", status: "degraded_performance" },
+      ]),
+    }));
+    expect(failure?.title).toBe("GitHub is having problems");
   });
 });

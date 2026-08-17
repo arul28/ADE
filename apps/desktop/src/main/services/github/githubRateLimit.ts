@@ -1,4 +1,5 @@
 import type { GitHubAuthFailure, GitHubRateLimitState } from "../../../shared/types";
+import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 
 export class GitHubRateLimitError extends Error {
   constructor(
@@ -90,6 +91,19 @@ export function classifyGitHubAuthFailure(args: {
       rateLimit,
       authFailure: {
         kind: "permission_denied",
+        message,
+        retryAt: null,
+      },
+    };
+  }
+  // Ordered before the transient-network check: GitHub's 503 body contains
+  // "temporarily unavailable"-adjacent wording that the transient regex also
+  // matches, and "GitHub is down" is the more precise, more actionable answer.
+  if (isGithubServiceUnavailable({ status: args.status, message })) {
+    return {
+      rateLimit,
+      authFailure: {
+        kind: "service_unavailable",
         message,
         retryAt: null,
       },

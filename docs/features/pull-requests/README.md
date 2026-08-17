@@ -182,8 +182,9 @@ GitHub access and relay dependencies:
 | File | Responsibility |
 |------|---------------|
 | `apps/desktop/src/main/services/github/githubService.ts`, `apps/ade-cli/src/headlessLinearServices.ts` | Desktop-local and runtime-owned GitHub request paths. Both build the environment → App → GitHub CLI → PAT read chain, skip the read-only App for writes, retry compatible credentials after auth/permission/rate failures, and expose the active/fallback sources through `GitHubStatus`. |
-| `apps/desktop/src/main/services/github/githubCredentialHealth.ts`, `githubRateLimit.ts` | Token-digest health keyed by REST/GraphQL resource, five-minute invalid/permission cooldowns, rate-limit reset handling, same-account primary-quota propagation, and the 500-request background reserve. |
-| `apps/desktop/src/shared/githubOperationCredential.ts`, `apps/desktop/src/shared/types/git.ts` | Capability-aware credential order and the optional status DTOs for source state, fallback, write availability, and background-pause time. |
+| `apps/desktop/src/main/services/github/githubCredentialHealth.ts`, `githubRateLimit.ts` | Token-digest health keyed by REST/GraphQL resource, five-minute invalid/permission cooldowns, rate-limit reset handling, same-account primary-quota propagation, and the 500-request background reserve. `classifyGitHubAuthFailure` maps GitHub 5xx (and GitHub's own outage bodies) to `service_unavailable` ahead of the transient-network check, and that kind is deliberately given **no** credential cooldown — the credential is not the problem, so parking it would fail the user's next local merge or PR read for the whole window. |
+| `apps/desktop/src/main/services/github/githubStatusPage.ts`, `apps/desktop/src/shared/githubServiceHealth.ts` | GitHub-outage attribution. See [Telling a GitHub outage apart from a broken credential](#telling-a-github-outage-apart-from-a-broken-credential). The shared module is the pure half — Statuspage `summary.json` parsing into `GitHubServiceHealth`, the ADE-relevant component allowlist, and `isGithubServiceUnavailable`; the main-process module owns the failure-triggered lookup, its cache, and `attachGitHubServiceHealth`. |
+| `apps/desktop/src/shared/githubOperationCredential.ts`, `apps/desktop/src/shared/types/git.ts` | Capability-aware credential order and the optional status DTOs for source state, fallback, write availability, background-pause time, and corroborated service health. `resolveGithubStatusCredentials` stops walking the chain on `service_unavailable` alongside `network` / `unknown`: a GitHub 5xx says nothing about the credential, so the next candidate would fail identically and only add load to a failing service. |
 | `apps/desktop/src/main/services/automations/automationIngressService.ts`, `apps/ade-cli/src/bootstrap.ts`, `apps/desktop/src/main/main.ts` | Relay cursor drain and targeted reconciliation, relay-health tracking, and injection of relay/quota state into the runtime-owned or desktop-local PR poller. |
 | `apps/webhook-relay/src/relay.ts` | Hosted event/subscription authorization. Signed-in ADE account requests use the installed repository binding in D1 first; legacy clients fall back to a GitHub-token repository-access check. |
 
@@ -924,9 +925,16 @@ Fields:
   attempted once.
 - `authFailure` — optional structured validation failure for compatibility
   with older runtimes: `rate_limited`, `invalid_token`, `permission_denied`,
-  `network`, or `unknown`, with the original message and optional retry time. A
-  present failure means ADE found credentials but could not finish validating
-  a usable read path; clients must not reinterpret that as missing scopes.
+  `service_unavailable`, `network`, or `unknown`, with the original message and
+  optional retry time. A present failure means ADE found credentials but could
+  not finish validating a usable read path; clients must not reinterpret that
+  as missing scopes. `service_unavailable` means GitHub itself answered with
+  5xx: it is provably not a credential problem, so no client may offer
+  reconnect or re-auth for it.
+- `serviceHealth` — optional `GitHubServiceHealth`, set only when a request
+  already failed **and** githubstatus.com corroborates an incident on a surface
+  ADE uses. Present means "this failure is GitHub's, not yours"; absent means
+  ADE makes no claim in either direction.
 - `rateLimit` — the latest quota headers (`limit`, `remaining`, `used`,
   `resetAt`, and `resource`) from the active status probe.
 - `backgroundRefreshPausedUntil` — optional reset time exposed when the core or
@@ -988,6 +996,100 @@ The App Shell banner uses the same shared presentation helper as Settings. It
 stays quiet when a fallback keeps reads and writes usable, distinguishes
 App-only read access from a write-capable connection, and never advertises a
 reconnect command for an account-level rate-limit pause.
+
+## Telling a GitHub outage apart from a broken credential
+
+A failing GitHub request looks the same at the response layer whether the
+credential is wrong or GitHub is down, so ADE used to render an incident as
+"GitHub authentication check failed" — blaming the user for something they
+cannot fix and pushing them toward a reconnect that can destroy a working
+credential. Two layers now separate the two cases.
+
+**The response itself.** `isGithubServiceUnavailable` in
+`apps/desktop/src/shared/githubServiceHealth.ts` treats any 5xx status as
+GitHub's failure, and additionally matches GitHub's own outage bodies (`no
+server is currently available to service your request`, `service unavailable`,
+`bad gateway`, `gateway timeout`, `unicorn!`) for the surfaces where the HTTP
+status is already gone by the time the text reaches the UI. The pattern is
+deliberately narrow: generic wording like "server error" and GitHub's 404 page
+text also appear on responses that genuinely are the user's problem, where
+"nothing to fix here" would be a lie. This alone produces the
+`service_unavailable` auth-failure kind, with no network call.
+
+**Corroboration.** `apps/desktop/src/main/services/github/githubStatusPage.ts`
+reads githubstatus.com's Statuspage `summary.json` — hosted outside GitHub's
+infrastructure, so it stays reachable while GitHub is down. It is **not a
+poller**: while GitHub works, ADE makes zero requests to it and no third party
+learns the app is running. The only trigger is a failure ADE already observed,
+and only for the `service_unavailable` and `unknown` kinds. `invalid_token`,
+`permission_denied`, and `rate_limited` are definitive answers from GitHub
+about *this credential*, so letting an unrelated mild degradation overwrite
+them would hide the user's actual remedy; `network` is ADE's own connectivity
+failing, when the status page is just as unreachable. Results — including
+negative ones — are cached for 60 s, the lookup has a 2 s timeout, and every
+failure mode resolves to "say nothing", because an unreachable status page must
+never itself become a banner.
+
+`deriveGitHubServiceHealth` is strict about what counts: attribution requires a
+component ADE actually depends on (API Requests, Pull Requests, Issues,
+Actions, Webhooks, Git Operations) to be non-operational. A page-wide "major"
+indicator driven entirely by Copilot, Codespaces, Pages, or Packages produces
+nothing. Components are keyed by Statuspage's stable IDs with name matching as
+a fallback, and the incident shortlink is validated as `https:` at this trust
+boundary because it ends up in `openExternalUrl`.
+
+**Attribution is one-directional.** A corroborated incident lets ADE stop
+blaming the credential. A *healthy* status page never means "so it's your
+fault" — the page lags real incidents by 10-20 minutes, so absence of a
+reported incident proves nothing, and ADE keeps its existing error copy.
+
+`attachGitHubServiceHealth` applies this at the single exit of `getStatus` in
+**both** owners — the desktop in-process `githubService` and the headless
+`createHeadlessGitHubService` in `apps/ade-cli/src/headlessLinearServices.ts`.
+The renderer reaches GitHub through whichever of those owns the project, so
+wrapping only one leaves the feature inert in the shipping runtime-backed
+build. It wraps the resolved status rather than sitting inside the lookup, so a
+status-cache hit still gets fresh corroboration.
+
+### What the UI does during a corroborated outage
+
+`describeGithubOutage(status)` in `renderer/lib/githubIntegrationStatus.ts` is
+the single presentation entry point — one function rather than a family of
+predicates, because every caller needs the same three things together (is there
+an outage, what do we say, where does the button go). It returns null when
+nothing is corroborated, and every GitHub-blaming surface gates on it:
+
+- `IntegrationBannerHost` collapses the whole GitHub banner family into one
+  neutral `info` notice linking the live incident. The other banners (AI
+  provider, mock provider, relay) are untouched, and the suppression is gated
+  on the same condition that renders the replacement, so the GitHub family can
+  never go silent without its explanation appearing. The notice is pinned first
+  in the sort order despite being `info`, so severity ranking cannot push the
+  explanation into the collapsed overflow while it is still suppressing the
+  banners it replaces. Its dismissal fingerprint is the affected surfaces only
+  (not their severity levels), so a widening incident resurfaces a dismissed
+  banner while GitHub's routine severity flapping does not.
+- `GitHubSection` goes neutral: the status chip reads "GitHub outage", the
+  auth-failure box drops its warning tint, `READS WITH` / `WRITES WITH` report
+  "Unknown" instead of the false-negative "Not connected", credential-ladder
+  cooldown badges read "Waiting on GitHub" instead of "Reconnect needed", and
+  the `gh auth login` instructions are hidden so nobody replaces a credential
+  that was never broken. A *missing* token still shows its instruction — that
+  is a local fact an outage cannot explain away.
+- `GitHubAppInstallPanel` reports the per-repo install state as "Waiting on
+  GitHub" rather than "Couldn't verify".
+- `describeGithubPatVerification` says a saved token is unverified rather than
+  bad. This is the highest-risk place to misattribute: the user is already in
+  the token field, so "check the token" reads as "replace it".
+
+`describeGithubAuthFailure` and `describeGithubCliBanner` both consult
+`describeGithubOutage` first, so a corroborated outage outranks every
+credential-shaped reading of the same failure even though `IntegrationBannerHost`
+already suppresses those banners — the redundancy exists so a future refactor of
+that suppression cannot silently reintroduce the accusation. Without
+corroboration, a bare `service_unavailable` still renders its own honest copy
+("GitHub isn't responding", pointing at ADE Settings rather than an external
+link) and never suggests reconnecting.
 
 ## Background polling
 
