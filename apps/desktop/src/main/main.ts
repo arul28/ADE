@@ -160,6 +160,7 @@ import {
   type RecentProjectInspection,
 } from "./services/projects/recentProjectSummary";
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
+import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
@@ -1838,22 +1839,18 @@ app.whenReady().then(async () => {
     rootPaths: string[],
   ): ProjectInfo[] => {
     if (windowId == null) return [];
-    const roots = new Set<string>();
-    for (const rootPath of rootPaths) {
-      const normalized = rootPath.trim() ? normalizeProjectRoot(rootPath) : "";
-      if (normalized) roots.add(normalized);
-    }
-    const activeRoot = windowProjectRoots.get(windowId) ?? null;
-    if (activeRoot) roots.add(activeRoot);
-    windowProjectTabRoots.set(windowId, roots);
-    // Only roots that resolve to a project this process actually opened may join
-    // the window's local runtime scope. `rootPaths` comes straight from the
-    // renderer, and `windowKnownLocalProjectRoots` is an authorization set
-    // (runtimeBridge treats membership as "this window opened it"), so an
-    // unopened path must not earn local-runtime access just by appearing in a
-    // tab-set call. This is the same gate `projectsForWindowTabs` applies.
-    for (const root of roots) {
-      if (projectForRoot(root)) rememberWindowKnownLocalProjectRoot(windowId, root);
+    // The gate on what may join the window's local runtime scope lives in
+    // `resolveWindowTabRoots` (see it for why a renderer-named path is not
+    // enough), so it can be tested without standing up a window.
+    const { tabRoots, authorizedLocalRoots } = resolveWindowTabRoots({
+      rootPaths,
+      activeRoot: windowProjectRoots.get(windowId) ?? null,
+      normalizeRoot: normalizeProjectRoot,
+      isOpenedProjectRoot: (root) => projectForRoot(root) != null,
+    });
+    windowProjectTabRoots.set(windowId, tabRoots);
+    for (const root of authorizedLocalRoots) {
+      rememberWindowKnownLocalProjectRoot(windowId, root);
     }
     scheduleProjectContextRebalance();
     return projectsForWindowTabs(windowId);

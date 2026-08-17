@@ -1,11 +1,17 @@
 /* @vitest-environment jsdom */
 
+import { createElement, type ReactNode } from "react";
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../shared/types";
+import type {
+  AgentChatSession,
+  LaneSummary,
+  OpenProjectBinding,
+  TerminalSessionSummary,
+} from "../../shared/types";
 import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
-import { useAppStore } from "./appStore";
+import { AppStoreProvider, createProjectAppStore, useAppStore } from "./appStore";
 import {
   buildCrossMachineLaneRows,
   cancelCrossMachineOptimisticChatSession,
@@ -19,6 +25,8 @@ import {
   resetCrossMachineLaneSyncForTest,
   seedCrossMachineOptimisticChatSession,
   selectOtherMachineBranchStates,
+  useLanesForPin,
+  useMachineEntryForBinding,
   startCrossMachineLaneSync,
   useCrossMachineLaneUnion,
 } from "./crossMachineLanes";
@@ -2071,5 +2079,93 @@ describe("believing a drop before a machine dims", () => {
     expect(isOnline()).toBe(false);
 
     stop();
+  });
+});
+
+describe("pinned lane resolution reads the store that owns the union", () => {
+  const pin: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    projectId: "project-a",
+    rootPath: "/Users/arul/repo",
+    displayName: "Repo",
+    runtimeName: "Mac Studio (12)",
+    hostname: "studio.local",
+  } as OpenProjectBinding;
+
+  function scopedWrapper() {
+    // A project surface store, exactly as `App` builds one for a project tab.
+    // `crossMachineLanesByMachineId` is written ONLY to the root store and is
+    // deliberately not copied here, so any pinned read that resolves against
+    // this store sees an empty union forever.
+    const projectStore = createProjectAppStore(
+      { rootPath: "/Users/arul/repo", displayName: "Repo", baseRef: "main" } as never,
+    );
+    expect(projectStore.getState().crossMachineLanesByMachineId).toEqual({});
+    return {
+      projectStore,
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(AppStoreProvider, { store: projectStore, children }),
+    };
+  }
+
+  it("resolves a pinned machine's lanes under AppStoreProvider", () => {
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding: pin,
+      online: true,
+      lanes: [makeLane({ id: "lane-foreign", name: "Foreign Lane" })],
+      sessions: [],
+    });
+
+    const { wrapper } = scopedWrapper();
+    const { result } = renderHook(() => useLanesForPin(pin), { wrapper });
+
+    // Fails the moment this goes back to a scoped `useAppStore` read.
+    expect(result.current?.map((lane) => lane.id)).toEqual(["lane-foreign"]);
+  });
+
+  it("sees a pinned machine's offline verdict under AppStoreProvider", () => {
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding: pin,
+      online: true,
+      lanes: [makeLane({ id: "lane-foreign" })],
+    });
+    useAppStore.getState().setCrossMachineMachinesOnline([]);
+
+    const { wrapper } = scopedWrapper();
+    const { result } = renderHook(() => useMachineEntryForBinding(pin), { wrapper });
+
+    expect(result.current?.machineName).toBe("Mac Studio (12)");
+    expect(result.current?.online).toBe(false);
+  });
+
+  it("falls back to the surrounding store's warm lane cache, never to its lanes", () => {
+    // No union entry for this machine yet — the warm cache lives on the scoped
+    // store, so this half must NOT be read from the root store.
+    const { projectStore, wrapper } = scopedWrapper();
+    projectStore.setState({
+      lanes: [makeLane({ id: "lane-of-the-tabs-machine" })],
+      laneCacheByProject: {
+        [pin.key]: { lanes: [makeLane({ id: "lane-cached" })], laneSnapshots: [] } as never,
+      },
+    });
+
+    const { result } = renderHook(() => useLanesForPin(pin), { wrapper });
+    expect(result.current?.map((lane) => lane.id)).toEqual(["lane-cached"]);
+  });
+
+  it("returns null for an unpinned read so callers keep their own source", () => {
+    const { wrapper } = scopedWrapper();
+    const { result } = renderHook(() => useLanesForPin(null), { wrapper });
+    expect(result.current).toBeNull();
   });
 });

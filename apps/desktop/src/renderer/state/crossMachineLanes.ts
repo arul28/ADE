@@ -257,6 +257,12 @@ const EMPTY_LANES: LaneSummary[] = [];
  * A binding key — not a machine id — is the join: `machineId` is only known
  * once a machine has answered, while a pin carries its routing target from the
  * moment a chat is selected.
+ *
+ * `state` MUST be ROOT state. `crossMachineLanesByMachineId` is written only to
+ * the root store (every writer goes through `rootAppStoreApi`) and
+ * `createProjectAppStore` does not copy it, so a project-scoped store sees an
+ * empty record forever. React callers must use {@link useMachineEntryForBinding}
+ * rather than passing a `useAppStore` state here.
  */
 export function machineEntryForBinding(
   state: Pick<AppState, "crossMachineLanesByMachineId">,
@@ -267,6 +273,23 @@ export function machineEntryForBinding(
     if (entry.binding?.key === pin.key) return entry;
   }
   return null;
+}
+
+function laneCacheKeyForPin(pin: OpenProjectBinding): string {
+  return pin.kind === "remote" ? pin.key : pin.rootPath;
+}
+
+/**
+ * The pinned machine's union slice, read from the ROOT store.
+ *
+ * This is the only correct React reading of {@link machineEntryForBinding}:
+ * under `AppStoreProvider` a plain `useAppStore` resolves to the project-scoped
+ * store, which never carries `crossMachineLanesByMachineId` at all.
+ */
+export function useMachineEntryForBinding(
+  pin: OpenProjectBinding | null | undefined,
+): CrossMachineMachineLanes | null {
+  return useRootAppStore((state) => machineEntryForBinding(state, pin));
 }
 
 /**
@@ -281,16 +304,22 @@ export function machineEntryForBinding(
  *
  * Returns null for an absent pin so callers keep their own unpinned source
  * (`state.lanes`, `availableLanes`, …) explicitly rather than by accident.
+ *
+ * Each half is read from the store that actually owns it: the union from the
+ * root store, the warm lane cache from the surrounding (project-scoped) store.
+ * A single `useAppStore` read of both would resolve the union against a scoped
+ * store and see nothing at all.
  */
-export function lanesForPin(
-  state: Pick<AppState, "crossMachineLanesByMachineId" | "laneCacheByProject">,
+export function useLanesForPin(
   pin: OpenProjectBinding | null | undefined,
 ): LaneSummary[] | null {
-  if (!pin) return null;
-  const entry = machineEntryForBinding(state, pin);
-  if (entry) return entry.lanes;
-  const cached = state.laneCacheByProject[pin.kind === "remote" ? pin.key : pin.rootPath];
-  return cached?.lanes ?? EMPTY_LANES;
+  const entry = useMachineEntryForBinding(pin);
+  const cached = useAppStore((state) =>
+    (pin ? state.laneCacheByProject[laneCacheKeyForPin(pin)] ?? null : null));
+  return useMemo(
+    () => (!pin ? null : entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
+    [cached, entry, pin],
+  );
 }
 
 /**

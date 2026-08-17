@@ -129,7 +129,11 @@ import {
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
-import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import {
+  ChatRuntimeScopeProvider,
+  useChatScopeDerivation,
+  useForeignSessionLaneId,
+} from "./ChatRuntimeScope";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -3940,8 +3944,7 @@ export function AgentChatPane({
     chatLaneWorktreePath,
   } = useChatScopeDerivation({
     selectedSessionId,
-    selectedSessionLaneId: selectedSession?.laneId ?? null,
-    selectedSessionIsLocal: Boolean(selectedSession),
+    selectedSession: selectedSession ? { laneId: selectedSession.laneId ?? null } : null,
     laneId,
     chatMachineRouter,
     projectBinding,
@@ -3980,14 +3983,10 @@ export function AgentChatPane({
     ),
     [initialSessionSummary, renderedSessionId, sessions],
   );
-  const foreignRenderedLaneId = useRootAppStore((state) => {
-    if (!renderedSessionId || renderedSession) return null;
-    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
-      const session = machine.sessions.find((candidate) => candidate.id === renderedSessionId);
-      if (session) return session.laneId;
-    }
-    return null;
-  });
+  const foreignRenderedLaneId = useForeignSessionLaneId(
+    renderedSessionId,
+    Boolean(renderedSession),
+  );
   const renderedChatRuntimePin = useMemo(
     () => chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId),
     [chatMachineRouter, foreignRenderedLaneId, laneId, renderedSession?.laneId],
@@ -11954,7 +11953,7 @@ export function AgentChatPane({
             description="Move this chat to another computer running ADE."
             disabled={isRemoteChat || handoffTurnGate}
             footnote={isRemoteChat
-              ? `This chat runs on ${chatMachineName ?? "another machine"}. Open that machine's project to start a cross-machine handoff.`
+              ? `This chat runs on ${chatMachineName}. Open that machine's project to start a cross-machine handoff.`
               : null}
             onClick={() => setCrossMachineHandoffOpen(true)}
           />

@@ -6,7 +6,7 @@ import {
   selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
-import { lanesForPin, selectOtherMachineBranchStates } from "../../state/crossMachineLanes";
+import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
@@ -250,7 +250,7 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
 // here makes it warn that This computer diverged from itself.
 import {
   THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
-  THIS_MACHINE_NAME as THIS_MACHINE_GUARD_NAME,
+  machineNameForBinding,
 } from "../../../shared/machineIdentity";
 
 export {
@@ -698,7 +698,7 @@ export function LaneGitActionsPane({
   // `lanes` — that is the TAB's machine, and lane ids are unique only per
   // machine, so falling back there can match a different machine's lane and
   // drive git on the wrong checkout.
-  const pinnedMachineLanes = useAppStore((s) => lanesForPin(s, pin));
+  const pinnedMachineLanes = useLanesForPin(pin);
   const pinnedLanes: LaneSummary[] = pinnedMachineLanes ?? lanes;
 
   const lane = useMemo(() => pinnedLanes.find((entry) => entry.id === laneId) ?? null, [pinnedLanes, laneId]);
@@ -1402,8 +1402,7 @@ export function LaneGitActionsPane({
     const guardBinding = pin ?? projectBinding;
     const activeMachineId = currentMachineId
       ?? (guardBinding?.kind === "remote" ? guardBinding.targetId : THIS_MACHINE_GUARD_ID);
-    const activeMachineName = currentMachineName
-      ?? (guardBinding?.kind === "remote" ? guardBinding.runtimeName : THIS_MACHINE_GUARD_NAME);
+    const activeMachineName = currentMachineName ?? machineNameForBinding(guardBinding);
     // The union slice keeps a stable reference while unchanged, so subscribing
     // costs one identity check per store tick and re-renders nothing. The
     // selector itself is memoized and only runs here, at click time. An

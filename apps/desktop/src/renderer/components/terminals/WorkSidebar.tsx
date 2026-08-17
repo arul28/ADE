@@ -34,7 +34,7 @@ import {
   dispatchWorkPtyContextInserted,
   type WorkPtyContextInsertKind,
 } from "../../lib/workPtyContextEvents";
-import { lanesForPin, machineEntryForBinding } from "../../state/crossMachineLanes";
+import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { formatToolTypeLabel, isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { isMacPlatform } from "../../lib/platform";
@@ -278,8 +278,8 @@ export function WorkSidebar({
   // A foreign chat's lane is absent from the tab-bound `lanes` array, so the
   // worktree path (and therefore iOS / App Control) resolved to null. Fall
   // back to the machine's slice of the cross-machine union.
-  const pinnedMachine = useAppStore((state) => machineEntryForBinding(state, runtimePin));
-  const pinnedLanes = useAppStore((state) => lanesForPin(state, runtimePin));
+  const pinnedMachine = useMachineEntryForBinding(runtimePin);
+  const pinnedLanes = useLanesForPin(runtimePin);
   const scopedLanes = pinnedLanes ?? lanes;
   const activeLane = useMemo(
     () => (laneId ? scopedLanes.find((lane) => lane.id === laneId) ?? null : null),

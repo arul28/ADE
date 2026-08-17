@@ -3,7 +3,7 @@ import React, { createContext, useContext, useMemo } from "react";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import { THIS_MACHINE_NAME, machineNameForBinding } from "../../../shared/machineIdentity";
-import { lanesForPin, machineEntryForBinding } from "../../state/crossMachineLanes";
+import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 
 /**
@@ -85,8 +85,8 @@ export function useChatRuntimeScopeForPin(
   // The pinned machine's own slice of the cross-machine union. A foreign lane
   // is absent from the tab-bound `lanes` array, so its worktree path — and
   // therefore the iOS / App Control project root — is only knowable from here.
-  const pinnedMachine = useRootAppStore((state) => machineEntryForBinding(state, pin));
-  const pinnedLanes = useAppStore((state) => lanesForPin(state, pin));
+  const pinnedMachine = useMachineEntryForBinding(pin);
+  const pinnedLanes = useLanesForPin(pin);
   const boundLanes = useAppStore((state) => state.lanes);
   const boundProjectRoot = useAppStore(selectActiveProjectRoot);
   const boundBinding = useAppStore((state) => state.projectBinding);
@@ -129,13 +129,37 @@ export type ChatScopeLaneOption = {
   laneType?: string | null;
 };
 
+/**
+ * A session's lane, found on some OTHER machine.
+ *
+ * A chat selected from another machine is absent from this tab's session list,
+ * so its lane — and with it its machine — is only knowable from the
+ * cross-machine union. `presentLocally` short-circuits the scan for the common
+ * case: the tab already holds the session, so its lane is already known.
+ */
+export function useForeignSessionLaneId(
+  sessionId: string | null,
+  presentLocally: boolean,
+): string | null {
+  return useRootAppStore((state) => {
+    if (!sessionId || presentLocally) return null;
+    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
+      const session = machine.sessions.find((candidate) => candidate.id === sessionId);
+      if (session) return session.laneId;
+    }
+    return null;
+  });
+}
+
 export type ChatScopeDerivationInput = {
   /** The chat the pane is routing for. */
   selectedSessionId: string | null;
-  /** That session's lane, when the session is in this tab's own list. */
-  selectedSessionLaneId: string | null;
-  /** True when the selected session IS in this tab's list (so no union scan). */
-  selectedSessionIsLocal: boolean;
+  /**
+   * That session's row, when it is in THIS tab's own list. Null means the chat
+   * is not local — the union scan then has to find its lane. One value, because
+   * "is it local" and "what is its lane" are the same fact.
+   */
+  selectedSession: { laneId: string | null } | null;
   /** The pane's lane, used when no chat is selected (drafts, new chats). */
   laneId: string | null;
   chatMachineRouter: { pinForLane: (laneId: string | null) => OpenProjectBinding | null };
@@ -174,26 +198,18 @@ export type ChatScopeDerivation = {
  */
 export function useChatScopeDerivation({
   selectedSessionId,
-  selectedSessionLaneId,
-  selectedSessionIsLocal,
+  selectedSession,
   laneId,
   chatMachineRouter,
   projectBinding,
   lanes,
   availableLanes,
 }: ChatScopeDerivationInput): ChatScopeDerivation {
-  // A chat selected from another machine is absent from this tab's session
-  // list, so its lane — and with it its machine — is only knowable from the
-  // cross-machine union.
-  const foreignSelectedLaneId = useRootAppStore((state) => {
-    if (!selectedSessionId || selectedSessionIsLocal) return null;
-    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
-      const session = machine.sessions.find((candidate) => candidate.id === selectedSessionId);
-      if (session) return session.laneId;
-    }
-    return null;
-  });
-  const chatScopeLaneId = selectedSessionLaneId ?? foreignSelectedLaneId ?? laneId ?? null;
+  const foreignSelectedLaneId = useForeignSessionLaneId(
+    selectedSessionId,
+    Boolean(selectedSession),
+  );
+  const chatScopeLaneId = selectedSession?.laneId ?? foreignSelectedLaneId ?? laneId ?? null;
   const chatRuntimePin = useMemo(
     () => chatMachineRouter.pinForLane(chatScopeLaneId),
     [chatMachineRouter, chatScopeLaneId],
@@ -207,7 +223,7 @@ export function useChatScopeDerivation({
   const chatEffectiveBinding = chatRuntimePin ?? projectBinding ?? null;
   // The chat machine's own lane list, or null for an unpinned chat — which
   // keeps its existing tab-bound source (`availableLanes ?? lanes`) explicitly.
-  const pinnedLanes = useAppStore((state) => lanesForPin(state, chatRuntimePin));
+  const pinnedLanes = useLanesForPin(chatRuntimePin);
   /**
    * A brief handoff lands in a lane on the CHAT's machine, so both the picker
    * and the auto-created lane have to target that machine. `availableLanes`/

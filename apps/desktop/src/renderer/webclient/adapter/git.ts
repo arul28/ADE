@@ -22,20 +22,30 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
    * throwing synchronously out of the caller's expression.
    * (`conflicts.*` takes no pin in the preload contract, so it stays as-is.)
    *
-   * `operation` names the member in the user-facing refusal and defaults to the
-   * action, which is the same string everywhere except the three `diff.*`
-   * members that call a `git.*` action.
+   * The member name in the refusal is the action, which is the same string
+   * everywhere except the three `diff.*` members that call a `git.*` action —
+   * those go through {@link guardedAs}.
    */
-  async function guarded<T>(
+  async function guardedAs<T>(
+    operation: string,
     action: string,
     args: unknown,
     pin: Pin,
     fallback: T,
     idempotent = true,
-    operation: string = action,
   ): Promise<T> {
     assertWebRuntimePinRoutable(operation, pin, infra);
     return await call<T>(action, args, fallback, idempotent);
+  }
+
+  function guarded<T>(
+    action: string,
+    args: unknown,
+    pin: Pin,
+    fallback: T,
+    idempotent = true,
+  ): Promise<T> {
+    return guardedAs(action, action, args, pin, fallback, idempotent);
   }
 
   const gitActionFallback = { operationId: "", preHeadSha: null, postHeadSha: null };
@@ -110,10 +120,11 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
 
   const diff: Record<string, unknown> = {
     getChanges: (args: unknown, pin?: Pin) =>
-      guarded("git.getChanges", args, pin, { files: [] }, true, "diff.getChanges"),
-    getFile: (args: unknown, pin?: Pin) => guarded("git.getFile", args, pin, null, true, "diff.getFile"),
+      guardedAs("diff.getChanges", "git.getChanges", args, pin, { files: [] }),
+    getFile: (args: unknown, pin?: Pin) =>
+      guardedAs("diff.getFile", "git.getFile", args, pin, null),
     getFilePatch: (args: unknown, pin?: Pin) =>
-      guarded("git.getFilePatch", args, pin, null, true, "diff.getFilePatch"),
+      guardedAs("diff.getFilePatch", "git.getFilePatch", args, pin, null),
   };
 
   const conflicts: Record<string, unknown> = {

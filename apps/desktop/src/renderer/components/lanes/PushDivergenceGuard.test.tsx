@@ -42,6 +42,9 @@ vi.mock("../../state/appStore", () => ({
   selectActiveProjectStateKey: (state: { project?: { rootPath?: string | null } | null }) =>
     state.project?.rootPath?.trim() || null,
   useAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
+  // The pinned-lane hooks read the union from the ROOT store; this harness has
+  // exactly one store, so both readings resolve to the same mock state.
+  useRootAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
 }));
 
 const LANE_BRANCH_REF = "feature/divergence";
