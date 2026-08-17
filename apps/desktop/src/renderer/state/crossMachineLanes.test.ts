@@ -25,6 +25,7 @@ import {
   resetCrossMachineLaneSyncForTest,
   seedCrossMachineOptimisticChatSession,
   selectOtherMachineBranchStates,
+  useForeignSessionLaneId,
   useLanesForPin,
   useMachineEntryForBinding,
   startCrossMachineLaneSync,
@@ -2167,5 +2168,54 @@ describe("pinned lane resolution reads the store that owns the union", () => {
     const { wrapper } = scopedWrapper();
     const { result } = renderHook(() => useLanesForPin(null), { wrapper });
     expect(result.current).toBeNull();
+  });
+
+  it("finds a foreign session's lane across the union from the root store", () => {
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding: pin,
+      online: true,
+      lanes: [makeLane({ id: "lane-foreign", name: "Foreign Lane" })],
+      sessions: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })],
+    });
+
+    const { wrapper } = scopedWrapper();
+    const { result } = renderHook(
+      () => useForeignSessionLaneId("session-foreign", false),
+      { wrapper },
+    );
+
+    // Fails if this ever resolves against the scoped store's empty union.
+    expect(result.current).toBe("lane-foreign");
+  });
+
+  it("short-circuits the foreign-lane scan for local or absent sessions", () => {
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding: pin,
+      online: true,
+      lanes: [],
+      sessions: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })],
+    });
+
+    const { wrapper } = scopedWrapper();
+    const locallyPresent = renderHook(
+      () => useForeignSessionLaneId("session-foreign", true),
+      { wrapper },
+    );
+    const unknown = renderHook(() => useForeignSessionLaneId("session-missing", false), {
+      wrapper,
+    });
+    const noSession = renderHook(() => useForeignSessionLaneId(null, false), { wrapper });
+
+    expect(locallyPresent.result.current).toBeNull();
+    expect(unknown.result.current).toBeNull();
+    expect(noSession.result.current).toBeNull();
   });
 });
