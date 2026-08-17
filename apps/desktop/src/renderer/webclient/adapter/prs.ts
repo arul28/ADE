@@ -212,21 +212,21 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       invalidatePrsReads();
       return arrayField<PrSummary>(result, "prs");
     },
-    getStatus: (prId: string, pin?: RuntimePinArg) => {
+    getStatus: async (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getStatus", pin, infra);
-      return read("prs.getStatus", { prId }, null);
+      return await read("prs.getStatus", { prId }, null);
     },
-    getChecks: (prId: string, pin?: RuntimePinArg) => {
+    getChecks: async (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getChecks", pin, infra);
-      return read("prs.getChecks", { prId }, []);
+      return await read("prs.getChecks", { prId }, []);
     },
-    getComments: (prId: string, pin?: RuntimePinArg) => {
+    getComments: async (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getComments", pin, infra);
-      return read("prs.getComments", { prId }, []);
+      return await read("prs.getComments", { prId }, []);
     },
-    getReviews: (prId: string, pin?: RuntimePinArg) => {
+    getReviews: async (prId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getReviews", pin, infra);
-      return read("prs.getReviews", { prId }, []);
+      return await read("prs.getReviews", { prId }, []);
     },
     getReviewThreads: (prId: string) => read("prs.getReviewThreads", { prId }, []),
     delete: (args: unknown) => call("prs.delete", args, { ok: false, error: "unsupported" }, false),

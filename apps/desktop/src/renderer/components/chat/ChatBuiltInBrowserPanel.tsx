@@ -16,6 +16,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { machineNameForBinding } from "../../../shared/machineIdentity";
 import type { AgentChatFileRef, OpenProjectBinding } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type {
@@ -729,7 +730,28 @@ async function cropBrowserScreenshot(
   });
 }
 
-export function ChatBuiltInBrowserPanel({
+/**
+ * The browser window belongs to ONE computer: it is a view owned by that
+ * desktop's main process, positioned over this panel's on-screen bounds. Pinned
+ * to another machine, every call here would drive that machine's browser and
+ * shove it around that machine's screen while this panel stayed blank — so the
+ * surface says where the browser runs instead of pretending. A pin on another
+ * checkout of THIS computer still drives this window's browser, so it renders
+ * normally.
+ */
+export function ChatBuiltInBrowserPanel(props: ChatBuiltInBrowserPanelProps) {
+  const { runtimePin = null } = props;
+  if (runtimePin?.kind === "remote") {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center px-6 text-center text-[12px] leading-5 text-muted-fg">
+        {`The browser opens on this computer. This chat runs on ${machineNameForBinding(runtimePin)}, so open the browser from a chat here.`}
+      </div>
+    );
+  }
+  return <BuiltInBrowserPanelView {...props} />;
+}
+
+function BuiltInBrowserPanelView({
   sessionId,
   projectRootOverride,
   onAddContext,

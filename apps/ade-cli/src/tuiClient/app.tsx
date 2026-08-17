@@ -681,6 +681,38 @@ export function formatLaneReclaimPreview(risk: LaneReclaimRisk): string {
   ].join("\n");
 }
 
+// Three different features want Esc while the chat composer has focus, so the
+// order between them is a product decision rather than an accident of where the
+// branches happen to sit in the key handler. Resolved in one pure place so the
+// precedence is testable and stays explicit:
+//   1. the @/slash palette — it floats over the composer and advertises
+//      "Esc close", so the visible affordance wins;
+//   2. an active chat mouse selection;
+//   3. vim insert -> normal.
+// Each is one Esc: with the palette open and vim on, the first Esc only closes
+// the palette and a second Esc then switches vim to normal.
+export type ChatEscapeAction =
+  | "dismiss-composer-trigger"
+  | "clear-chat-selection"
+  | "vim-normal"
+  | null;
+
+export function resolveChatEscapeAction(args: {
+  pane: string;
+  textInputActive: boolean;
+  modified: boolean;
+  composerTriggerOpen: boolean;
+  chatSelectionActive: boolean;
+  vimModeEnabled: boolean;
+}): ChatEscapeAction {
+  if (args.pane === "chat" && args.composerTriggerOpen) return "dismiss-composer-trigger";
+  if (args.chatSelectionActive) return "clear-chat-selection";
+  if (args.pane === "chat" && args.textInputActive && args.vimModeEnabled && !args.modified) {
+    return "vim-normal";
+  }
+  return null;
+}
+
 export type ModelPickerEscapeAction =
   | { kind: "clear-search"; pane: Extract<RightPaneContent, { kind: "model-picker" }> }
   | { kind: "return-new-chat" }
@@ -15492,18 +15524,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
-    if (key.escape && chatMouseSelectionRef.current) {
-      stopChatSelectionEdgeScroll();
-      chatSelectionAnchorRef.current = null;
-      updateChatMouseSelection(null);
-      return;
-    }
-
-    if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
-      if (key.escape) {
+    // Single arbitration point for the three composer-adjacent Esc consumers —
+    // see resolveChatEscapeAction for the precedence and why. Keeping it ahead
+    // of both the vim block and the generic Esc chain is what makes the
+    // palette's advertised "Esc close" actually reachable with vim mode on.
+    if (key.escape) {
+      const chatEscapeAction = resolveChatEscapeAction({
+        pane,
+        textInputActive,
+        modified: Boolean(key.ctrl || key.meta),
+        composerTriggerOpen: Boolean(activeComposerTrigger),
+        chatSelectionActive: Boolean(chatMouseSelectionRef.current),
+        vimModeEnabled,
+      });
+      if (chatEscapeAction === "dismiss-composer-trigger" && activeComposerTrigger) {
+        // Recording the dismissal is what makes the palette stay closed as the
+        // user finishes typing the token instead of reopening on the very next
+        // keystroke.
+        setDismissedComposerTrigger({
+          type: activeComposerTrigger.type,
+          start: activeComposerTrigger.start,
+          query: activeComposerTrigger.query,
+        });
+        return;
+      }
+      if (chatEscapeAction === "clear-chat-selection") {
+        stopChatSelectionEdgeScroll();
+        chatSelectionAnchorRef.current = null;
+        updateChatMouseSelection(null);
+        return;
+      }
+      if (chatEscapeAction === "vim-normal") {
         setVimMode("normal");
         return;
       }
+    }
+
+    if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
       if (vimMode === "normal") {
         if (input === "i" || input === "a") {
           setVimMode("insert");
@@ -15531,18 +15588,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     if (key.escape) {
-      // The @/slash palette floats over the composer and advertises "Esc
-      // close", so it takes Esc before anything behind it. Recording the
-      // dismissal is what makes it stay closed as the user finishes typing the
-      // token instead of reopening on the very next keystroke.
-      if (pane === "chat" && activeComposerTrigger) {
-        setDismissedComposerTrigger({
-          type: activeComposerTrigger.type,
-          start: activeComposerTrigger.start,
-          query: activeComposerTrigger.query,
-        });
-        return;
-      }
       // First Esc unwinds a subagent transcript back to the main chat; the
       // right pane stays focused on the main agent's info, so a second Esc
       // would close the pane normally.

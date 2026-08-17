@@ -161,6 +161,21 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     return callRequired<T>(action, args, "Chat", false);
   }
 
+  /**
+   * A chat's runtime pin names the machine the chat actually lives on. This
+   * adapter speaks to exactly one machine, so every member the Electron
+   * contract declares with a trailing pin must declare it here too — omitting
+   * the parameter does not make the pin harmless, it makes JS discard it and
+   * run the read or write against whichever host this adapter holds.
+   *
+   * The members below stay `async` so an unroutable pin rejects rather than
+   * throwing synchronously out of the caller's expression; `onEvent` is the
+   * exception, since a subscription has no promise to reject.
+   */
+  function guardPin(operation: string, pin: RuntimePinArg): void {
+    assertWebRuntimePinRoutable(`agentChat.${operation}`, pin, infra);
+  }
+
   // Typed, not cast: `AdeNamespace` compares every method implemented here
   // against the real `window.ade.agentChat` contract. The previous
   // `Record<string, unknown>` + `as` cast is what let `create`/`launch`
@@ -173,7 +188,8 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       // hydration behind background sessions.
       return await call<AgentChatSessionSummary[]>("chat.listSessions", args, []);
     },
-    getSummary: async (args) => {
+    getSummary: async (args, pin) => {
+      guardPin("getSummary", pin);
       const result = await call<AgentChatSessionSummary | null>("chat.getSummary", args, null);
       ensureFromResult(result);
       return result;
@@ -181,7 +197,8 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     // Both answer with an AgentChatSessionSummary; every caller consumes an
     // AgentChatSession. Translate rather than pass through — see
     // `chatSessionFromRemoteSummary`.
-    create: async (args) => {
+    create: async (args, pin) => {
+      guardPin("create", pin);
       const result = await callRequiredMutation<unknown>("chat.create", args);
       ensureFromResult(result);
       return chatSessionFromRemoteSummary(result);
@@ -201,26 +218,37 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       if (result?.sessionId && result?.ptyId) terminalRegistry.register(result.sessionId, result.ptyId);
       return result;
     },
-    generateAutoLaneIdentity: (args) =>
-      callRequiredMutation<AutoLaneIdentitySuggestion>("chat.generateAutoLaneIdentity", args),
+    generateAutoLaneIdentity: async (args, pin) => {
+      guardPin("generateAutoLaneIdentity", pin);
+      return await callRequiredMutation<AutoLaneIdentitySuggestion>("chat.generateAutoLaneIdentity", args);
+    },
     parallelLaunchState: {
-      get: (args: unknown) => call("chat.getParallelLaunchState", args, null),
-      set: async (args: unknown) => {
+      get: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("parallelLaunchState.get", pin);
+        return await call("chat.getParallelLaunchState", args, null);
+      },
+      set: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("parallelLaunchState.set", pin);
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
     },
     promptStashes: {
-      list: async () => {
+      list: async (pin?: RuntimePinArg) => {
+        guardPin("promptStashes.list", pin);
         const result = await call<unknown>("chat.listPromptStashes", {}, []);
         return Array.isArray(result) ? result as PromptStashEntry[] : [];
       },
-      create: (args: PromptStashCreateArgs) =>
-        callRequiredMutation<PromptStashEntry>("chat.createPromptStash", args),
-      delete: (args: PromptStashDeleteArgs) =>
-        callRequiredMutation<boolean>("chat.deletePromptStash", args),
+      create: async (args: PromptStashCreateArgs, pin?: RuntimePinArg) => {
+        guardPin("promptStashes.create", pin);
+        return await callRequiredMutation<PromptStashEntry>("chat.createPromptStash", args);
+      },
+      delete: async (args: PromptStashDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("promptStashes.delete", pin);
+        return await callRequiredMutation<boolean>("chat.deletePromptStash", args);
+      },
     },
     handoff: async (args, pin) => {
-      assertWebRuntimePinRoutable("agentChat.handoff", pin, infra);
+      guardPin("handoff", pin);
       return await callRequiredMutation<AgentChatHandoffResult>("chat.handoff", args);
     },
     // The cross-machine handoff trio is a real sync command surface
@@ -230,25 +258,27 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     // `undefined` — which made the handoff modal look like it had succeeded.
     // A host without them still fails loudly through `callRequired`.
     prepareCrossMachineHandoff: async (args, pin) => {
-      assertWebRuntimePinRoutable("agentChat.prepareCrossMachineHandoff", pin, infra);
+      guardPin("prepareCrossMachineHandoff", pin);
       return await callRequiredMutation<AgentChatPrepareCrossMachineHandoffResult>(
         "chat.prepareCrossMachineHandoff",
         args,
       );
     },
     validateCrossMachineSource: async (args, pin) => {
-      assertWebRuntimePinRoutable("agentChat.validateCrossMachineSource", pin, infra);
+      guardPin("validateCrossMachineSource", pin);
       await callRequiredMutation<void>("chat.validateCrossMachineSource", args);
     },
     markCrossMachineHandoff: async (args: AgentChatMarkCrossMachineHandoffArgs, pin) => {
-      assertWebRuntimePinRoutable("agentChat.markCrossMachineHandoff", pin, infra);
+      guardPin("markCrossMachineHandoff", pin);
       await callRequiredMutation<void>("chat.markCrossMachineHandoff", args);
     },
-    send: async (args: unknown) => {
+    send: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("send", pin);
       await call("chat.send", args, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
     },
-    steer: async (args: unknown) => {
+    steer: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("steer", pin);
       // Do NOT fabricate a queued success when chat.steer can't execute
       // (missing descriptor, disconnected/host_unavailable). A fake
       // `queued: true` would clear the draft and, for Send now, try to dispatch
@@ -265,77 +295,136 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       }
       return result;
     },
-    cancelSteer: async (args: unknown) => {
+    cancelSteer: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("cancelSteer", pin);
       await call("chat.cancelSteer", args, undefined, false);
     },
     editSteer: async (args: unknown) => {
       await call("chat.editSteer", args, undefined, false);
     },
-    dispatchSteer: (args) =>
-      callRequiredMutation<AgentChatDispatchSteerResult>("chat.dispatchSteer", args),
-    cancelDispatchedSteer: (args) =>
-      callRequiredMutation<AgentChatCancelDispatchedSteerResult>("chat.cancelDispatchedSteer", args),
-    interrupt: (args: unknown) => call<AgentChatInterruptResult>(
-      "chat.interrupt",
-      args,
-      { mode: "stop_and_clear", cancelledQueuedCount: 0 },
-      false,
-    ),
-    restoreCancelledQueue: (args: unknown) => call<AgentChatRestoreCancelledQueueResult>(
-      "chat.restoreCancelledQueue",
-      args,
-      { restored: false, restoredCount: 0 },
-      false,
-    ),
-    approve: async (args: unknown) => {
+    dispatchSteer: async (args, pin) => {
+      guardPin("dispatchSteer", pin);
+      return await callRequiredMutation<AgentChatDispatchSteerResult>("chat.dispatchSteer", args);
+    },
+    cancelDispatchedSteer: async (args, pin) => {
+      guardPin("cancelDispatchedSteer", pin);
+      return await callRequiredMutation<AgentChatCancelDispatchedSteerResult>(
+        "chat.cancelDispatchedSteer",
+        args,
+      );
+    },
+    interrupt: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("interrupt", pin);
+      return await call<AgentChatInterruptResult>(
+        "chat.interrupt",
+        args,
+        { mode: "stop_and_clear", cancelledQueuedCount: 0 },
+        false,
+      );
+    },
+    restoreCancelledQueue: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("restoreCancelledQueue", pin);
+      return await call<AgentChatRestoreCancelledQueueResult>(
+        "chat.restoreCancelledQueue",
+        args,
+        { restored: false, restoredCount: 0 },
+        false,
+      );
+    },
+    approve: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("approve", pin);
       await call("chat.approve", args, undefined, false);
     },
-    respondToInput: async (args: unknown) => {
+    respondToInput: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("respondToInput", pin);
       await call("chat.respondToInput", args, undefined, false);
     },
-    models: (args: unknown) => call("chat.models", args, []),
-    modelCatalog: (args?, pin?) => {
+    models: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("models", pin);
+      return await call("chat.models", args, []);
+    },
+    modelCatalog: async (args?, pin?) => {
       // A catalog describes the machine that served it, so a foreign pin cannot
       // be answered from this adapter's single connection. The picker treats a
       // rejection as "no catalog" and falls back to the pin-scoped model list.
-      assertWebRuntimePinRoutable("agentChat.modelCatalog", pin, infra);
-      return call<AgentChatModelCatalog>("chat.modelCatalog", args, {
+      guardPin("modelCatalog", pin);
+      return await call<AgentChatModelCatalog>("chat.modelCatalog", args, {
         groups: [],
         fetchedAt: new Date(0).toISOString(),
         stale: true,
       });
     },
-    archive: async (args: unknown) => {
+    archive: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("archive", pin);
       await call("chat.archive", args, undefined, false);
     },
-    unarchive: async (args: unknown) => {
+    unarchive: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("unarchive", pin);
       await call("chat.unarchive", args, undefined, false);
     },
-    delete: async (args: unknown) => {
+    delete: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("delete", pin);
       await call("chat.delete", args, undefined, false);
     },
-    updateSession: (args) => callRequiredMutation<AgentChatSession>("chat.updateSession", args),
-    createScheduledWork: (args: unknown) =>
-      callRequired<AgentChatCreateScheduledWorkResult>("chat.createScheduledWork", args, "Scheduled work", false),
-    listScheduledWork: (args?: unknown) =>
-      call<AgentChatScheduledWorkItem[]>("chat.listScheduledWork", args, []),
-    cancelScheduledWork: (args: unknown) =>
-      callRequired<AgentChatCancelScheduledWorkResult>("chat.cancelScheduledWork", args, "Scheduled work", false),
-    setScheduledWorkPaused: (args: unknown) =>
-      callRequired<AgentChatSetScheduledWorkPausedResult>("chat.setScheduledWorkPaused", args, "Scheduled work", false),
-    warmupModel: async (args: unknown) => {
+    updateSession: async (args, pin) => {
+      guardPin("updateSession", pin);
+      return await callRequiredMutation<AgentChatSession>("chat.updateSession", args);
+    },
+    createScheduledWork: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("createScheduledWork", pin);
+      return await callRequired<AgentChatCreateScheduledWorkResult>(
+        "chat.createScheduledWork", args, "Scheduled work", false,
+      );
+    },
+    listScheduledWork: async (args?: unknown, pin?: RuntimePinArg) => {
+      guardPin("listScheduledWork", pin);
+      return await call<AgentChatScheduledWorkItem[]>("chat.listScheduledWork", args, []);
+    },
+    cancelScheduledWork: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("cancelScheduledWork", pin);
+      return await callRequired<AgentChatCancelScheduledWorkResult>(
+        "chat.cancelScheduledWork", args, "Scheduled work", false,
+      );
+    },
+    setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("setScheduledWorkPaused", pin);
+      return await callRequired<AgentChatSetScheduledWorkPausedResult>(
+        "chat.setScheduledWorkPaused", args, "Scheduled work", false,
+      );
+    },
+    warmupModel: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("warmupModel", pin);
       await call("chat.warmupModel", args, undefined, false);
     },
-    onEvent: (listener) => events.on("agentChatEvent", listener as never),
-    slashCommands: (args: unknown) => call("chat.getSlashCommands", args, []),
+    // No promise to reject: a subscription taking a foreign pin is asking for
+    // another machine's event stream, and handing back this machine's stream
+    // would be a silent mis-route, so the refusal is synchronous.
+    onEvent: (listener, pin) => {
+      guardPin("onEvent", pin);
+      return events.on("agentChatEvent", listener as never);
+    },
+    slashCommands: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("slashCommands", pin);
+      return await call("chat.getSlashCommands", args, []);
+    },
     reloadClaudePlugins: (args) =>
       callRequiredMutation<AgentChatReloadClaudePluginsResult>("chat.reloadClaudePlugins", args),
     setClaudeOutputStyle: (args) => callRequiredMutation<AgentChatSession>("chat.setClaudeOutputStyle", args),
-    getSubagentTranscript: (args: unknown) => call("chat.getSubagentTranscript", args, null),
-    getMainTranscript: (args: unknown) => call("chat.getMainTranscript", args, null),
-    getContextUsage: (args: unknown) => call("chat.getContextUsage", args, null),
-    rewindFiles: (args: unknown) =>
-      call(
+    getSubagentTranscript: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getSubagentTranscript", pin);
+      return await call("chat.getSubagentTranscript", args, null);
+    },
+    getMainTranscript: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getMainTranscript", pin);
+      return await call("chat.getMainTranscript", args, null);
+    },
+    getContextUsage: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getContextUsage", pin);
+      return await call("chat.getContextUsage", args, null);
+    },
+    rewindFiles: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("rewindFiles", pin);
+      return await call(
         "chat.rewindFiles",
         args,
         {
@@ -346,8 +435,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
           dryRun: true,
         },
         false
-      ),
-    fileSearch: async (args: unknown) => {
+      );
+    },
+    fileSearch: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("fileSearch", pin);
       try {
         const blob = await requestFileBlob(client, infra.state, "quickOpen", asRecord(args));
         return JSON.parse(blob.content);
@@ -355,26 +446,38 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         return [];
       }
     },
-    getTurnFileDiff: (args: unknown) => call("chat.getTurnFileDiff", args, null),
-    listSubagents: (args: unknown) => call("chat.listSubagents", args, []),
-    getSessionCapabilities: (args) =>
-      call<AgentChatSessionCapabilities>("chat.getSessionCapabilities", args, {
+    getTurnFileDiff: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getTurnFileDiff", pin);
+      return await call("chat.getTurnFileDiff", args, null);
+    },
+    listSubagents: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listSubagents", pin);
+      return await call("chat.listSubagents", args, []);
+    },
+    getSessionCapabilities: async (args, pin) => {
+      guardPin("getSessionCapabilities", pin);
+      return await call<AgentChatSessionCapabilities>("chat.getSessionCapabilities", args, {
         supportsSubagentInspection: false,
         supportsSubagentControl: false,
         supportsReviewMode: false,
         subagent: NO_SUBAGENT_CAPABILITY,
-      }),
-    saveTempAttachment: (args: unknown, pin?: RuntimePinArg) => {
-      assertWebRuntimePinRoutable("agentChat.saveTempAttachment", pin, infra);
-      return call("chat.saveTempAttachment", args, { path: "" }, false);
+      });
     },
-    getImageDataUrl: async (path: string) => ({ dataUrl: (await requestDataUrl(client, infra.state, "readArtifact", { path })) ?? "" }),
+    saveTempAttachment: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("saveTempAttachment", pin);
+      return await call("chat.saveTempAttachment", args, { path: "" }, false);
+    },
+    getImageDataUrl: async (path: string, pin?: RuntimePinArg) => {
+      guardPin("getImageDataUrl", pin);
+      return { dataUrl: (await requestDataUrl(client, infra.state, "readArtifact", { path })) ?? "" };
+    },
     resolveSmartLinkPreview: (args: unknown) => {
       const record = asRecord(args);
       const url = stringField(record, "url");
       return call("chat.resolveSmartLinkPreview", record, deriveSmartLinkPreview(url));
     },
-    getEventHistory: async (args: unknown) => {
+    getEventHistory: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getEventHistory", pin);
       const record = asRecord(args);
       // AgentChatPane requests history when a session becomes visible. Metadata
       // reads such as list/getSummary are also used for background rows, so this
@@ -407,7 +510,8 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         }
       );
     },
-    getEventHistoryPage: async (args: unknown) => {
+    getEventHistoryPage: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getEventHistoryPage", pin);
       const record = asRecord(args);
       ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
       const historyPageAction = commands.hasAction("chat.getChatEventHistoryPage")
@@ -427,10 +531,22 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       );
     },
     codex: {
-      getGoal: (args: unknown) => call("chat.codex.getGoal", args, null),
-      setGoal: (args: unknown) => call("chat.codex.setGoal", args, null, false),
-      setGoalStatus: (args: unknown) => call("chat.codex.setGoalStatus", args, null, false),
-      clearGoal: (args: unknown) => call("chat.codex.clearGoal", args, null, false),
+      getGoal: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("codex.getGoal", pin);
+        return await call("chat.codex.getGoal", args, null);
+      },
+      setGoal: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("codex.setGoal", pin);
+        return await call("chat.codex.setGoal", args, null, false);
+      },
+      setGoalStatus: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("codex.setGoalStatus", pin);
+        return await call("chat.codex.setGoalStatus", args, null, false);
+      },
+      clearGoal: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("codex.clearGoal", pin);
+        return await call("chat.codex.clearGoal", args, null, false);
+      },
     },
   };
 

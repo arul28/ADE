@@ -14,7 +14,6 @@ import type {
   AgentChatFileRef,
   AppControlContextItem,
   AppControlSession,
-  BuiltInBrowserStatus,
   GitCommitSummary,
   IosElementContextItem,
   IosSimulatorSession,
@@ -171,26 +170,6 @@ function formatAttachmentForPty(attachment: AgentChatFileRef): string {
   ].join("\n");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function browserEventProjectRoot(value: unknown): string | null | undefined {
-  if (!isRecord(value)) return undefined;
-  if ("collectionProjectRoot" in value) {
-    const root = value.collectionProjectRoot;
-    return typeof root === "string" && root.trim().length > 0 ? root : null;
-  }
-  return browserEventProjectRoot(value.status);
-}
-
-function browserEventMatchesProject(event: unknown, projectRoot: string | null): boolean {
-  const root = browserEventProjectRoot(event);
-  if (root === undefined) return projectRoot == null;
-  if (!projectRoot) return root === null;
-  return root === projectRoot;
-}
-
 function hideBuiltInBrowserView(projectRoot: string | null): void {
   const browser = window.ade?.builtInBrowser;
   if (!browser) return;
@@ -257,8 +236,13 @@ export function WorkSidebar({
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
-  const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The browser view is owned by THIS window's main process. A pin on another
+  // checkout of this computer still drives that view, just under the pinned
+  // checkout's tab collection, so hiding it on leave has to follow the pin. A
+  // pin on another machine never opens a view here — the panel explains that
+  // instead of driving a browser nobody in this window can see.
+  const browserViewRoot = runtimePin?.kind === "local" ? runtimePin.rootPath : projectRoot;
   const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   const supportsIosSimulator = isMacPlatform();
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -323,39 +307,12 @@ export function WorkSidebar({
   useEffect(() => {
     const wasBrowser = previousBrowserTabRef.current;
     const isBrowser = active && effectiveTab === "browser";
-    if (wasBrowser && !isBrowser) hideBuiltInBrowserView(projectRoot);
+    if (wasBrowser && !isBrowser) hideBuiltInBrowserView(browserViewRoot);
     previousBrowserTabRef.current = isBrowser;
     return () => {
-      if (previousBrowserTabRef.current) hideBuiltInBrowserView(projectRoot);
+      if (previousBrowserTabRef.current) hideBuiltInBrowserView(browserViewRoot);
     };
-  }, [active, effectiveTab, projectRoot]);
-
-  useEffect(() => {
-    if (!active) return undefined;
-    if (effectiveTab !== "browser") return undefined;
-    const browser = window.ade?.builtInBrowser;
-    if (!browser?.getStatus || !browser.onEvent) return undefined;
-    let cancelled = false;
-    const scope = projectRoot ? { projectRoot } : {};
-    void browser.getStatus(scope)
-      .then((status) => {
-        if (!cancelled) setBrowserStatus(status);
-      })
-      .catch(() => {
-        if (!cancelled) setBrowserStatus(null);
-      });
-    const unsubscribe = browser.onEvent((event) => {
-      if (event.type === "status" || event.type === "open-request") {
-        if (!isRecord(event.status)) return;
-        if (!browserEventMatchesProject(event, projectRoot)) return;
-        setBrowserStatus(event.status as BuiltInBrowserStatus);
-      }
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [active, effectiveTab, projectRoot]);
+  }, [active, browserViewRoot, effectiveTab]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -749,7 +706,7 @@ export function WorkSidebar({
           activeItem={effectiveTab}
           compact={compactTabs}
           onItemClick={(nextTab) => {
-            if (effectiveTab === "browser" && nextTab !== "browser") hideBuiltInBrowserView(projectRoot);
+            if (effectiveTab === "browser" && nextTab !== "browser") hideBuiltInBrowserView(browserViewRoot);
             onTabChange(nextTab);
           }}
         />
@@ -758,7 +715,7 @@ export function WorkSidebar({
           className="ade-shell-control inline-flex w-9 shrink-0 items-center justify-center self-stretch rounded-none border-l border-white/[0.08] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
           data-variant="ghost"
           onClick={() => {
-            if (effectiveTab === "browser") hideBuiltInBrowserView(projectRoot);
+            if (effectiveTab === "browser") hideBuiltInBrowserView(browserViewRoot);
             onClose();
           }}
           title="Close Tools sidebar"

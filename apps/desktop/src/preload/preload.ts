@@ -1040,7 +1040,10 @@ const iosSimulatorDevicesCache = createKeyedShortIpcCache<IosSimulatorDevice[]>(
   2_000,
 );
 
-const appControlStatusCache = createShortIpcCache<AppControlStatus>(
+// Keyed by binding only (the read takes no arguments): an unpinned status read
+// resolves against whatever machine this window is bound to, so the previous
+// machine's session must not answer for the new one inside the TTL.
+const appControlStatusCache = createKeyedShortIpcCache<AppControlStatus>(
   () =>
     callProjectRuntimeActionOr("app_control", "getStatus", {}, () =>
       ipcRenderer.invoke(IPC.appControlGetStatus),
@@ -1048,6 +1051,9 @@ const appControlStatusCache = createShortIpcCache<AppControlStatus>(
   1_000,
 );
 
+// Deliberately NOT binding-keyed: only the unpinned read is cached, and the
+// unpinned read always lands on this window's own main process, which owns the
+// browser view. A pinned read bypasses the cache entirely.
 const builtInBrowserStatusCache = createKeyedShortIpcCache<BuiltInBrowserStatus>(
   (key) => {
     const args = parseIpcCacheArgs<BuiltInBrowserProjectScopeArgs>(key, {});
@@ -7519,7 +7525,7 @@ const adeBridge = {
             "getStatus",
             {},
           )
-        : appControlStatusCache.get(),
+        : appControlStatusCache.get(boundReadCacheKey()),
     launch: async (
       args: AppControlLaunchArgs = {},
       pin?: OpenProjectBinding | null,

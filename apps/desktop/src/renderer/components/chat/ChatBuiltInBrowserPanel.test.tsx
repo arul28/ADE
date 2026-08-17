@@ -230,6 +230,34 @@ describe("ChatBuiltInBrowserPanel", () => {
     expect(document.querySelector("webview")).toBeNull();
   });
 
+  it("says where the browser runs instead of driving another machine's browser", async () => {
+    const { api } = installBrowserApi();
+
+    render(
+      <ChatBuiltInBrowserPanel
+        sessionId="chat-1"
+        runtimePin={{
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Mac Studio",
+          projectId: "project-a",
+          rootPath: "/remote/repo-a",
+          displayName: "repo-a",
+        }}
+      />,
+    );
+
+    expect(await screen.findByText(
+      "The browser opens on this computer. This chat runs on Mac Studio, so open the browser from a chat here.",
+    )).toBeTruthy();
+    // Nothing may reach the pinned machine: its browser view would be moved
+    // around a screen nobody in this window can see.
+    expect(api.getStatus).not.toHaveBeenCalled();
+    expect(api.setBounds).not.toHaveBeenCalled();
+    expect(api.onEvent).not.toHaveBeenCalled();
+  });
+
   it("routes personal chat browser calls to the personal tab collection", async () => {
     const { api } = installBrowserApi();
 
