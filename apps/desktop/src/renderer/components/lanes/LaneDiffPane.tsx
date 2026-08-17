@@ -5,7 +5,7 @@ import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
-import type { FileDiff, FilePatch, GitCommitSummary } from "../../../shared/types";
+import type { FileDiff, FilePatch, GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./laneDesignTokens";
 
@@ -48,15 +48,25 @@ export function LaneDiffPane({
   selectedPath,
   selectedFileMode,
   selectedCommit,
-  liveSync = false
+  liveSync = false,
+  runtimePin = null
 }: {
   laneId: string | null;
   selectedPath: string | null;
   selectedFileMode: "staged" | "unstaged" | null;
   selectedCommit: GitCommitSummary | null;
   liveSync?: boolean;
+  /**
+   * Machine this lane actually lives on. `null` means the tab's bound machine
+   * (the historical behavior). When set, every diff/git read is routed there.
+   */
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
+  const pin = runtimePin ?? null;
+  // File-workspace IPC (watch/save) has no pin parameter yet, so a foreign
+  // lane's diff is read-only and does not live-sync.
+  const isForeign = pin != null;
   const diffRef = useRef<AdeDiffViewerHandle | null>(null);
   const workingDiffRequestSeq = useRef(0);
   const commitFilesRequestSeq = useRef(0);
@@ -91,8 +101,8 @@ export function LaneDiffPane({
     }
 
     return Promise.allSettled([
-      window.ade.diff.getFile({ laneId, path: selectedPath, mode: selectedFileMode }),
-      window.ade.diff.getFilePatch({ laneId, path: selectedPath, mode: selectedFileMode }),
+      window.ade.diff.getFile({ laneId, path: selectedPath, mode: selectedFileMode }, pin),
+      window.ade.diff.getFilePatch({ laneId, path: selectedPath, mode: selectedFileMode }, pin),
     ])
       .then(([diffResult, patchResult]) => {
         if (workingDiffRequestSeq.current !== requestId) return;
@@ -122,14 +132,14 @@ export function LaneDiffPane({
         setPatch(null);
         setDiffFailed(true);
       });
-  }, [laneId, selectedPath, selectedFileMode]);
+  }, [laneId, pin, selectedPath, selectedFileMode]);
 
   useEffect(() => {
     void refreshWorkingDiff();
   }, [refreshWorkingDiff]);
 
   useEffect(() => {
-    if (!liveSync) return;
+    if (!liveSync || isForeign) return;
     if (!laneId || !selectedPath || !selectedFileMode || selectedCommit) return;
 
     let cancelled = false;
@@ -186,7 +196,7 @@ export function LaneDiffPane({
         });
       }
     };
-  }, [liveSync, laneId, selectedPath, selectedFileMode, selectedCommit, refreshWorkingDiff]);
+  }, [liveSync, isForeign, laneId, selectedPath, selectedFileMode, selectedCommit, refreshWorkingDiff]);
 
   useEffect(() => {
     const requestId = ++commitFilesRequestSeq.current;
@@ -200,7 +210,7 @@ export function LaneDiffPane({
 
     let cancelled = false;
     window.ade.git
-      .listCommitFiles({ laneId, commitSha: selectedCommit.sha })
+      .listCommitFiles({ laneId, commitSha: selectedCommit.sha }, pin)
       .then((files) => {
         if (cancelled || commitFilesRequestSeq.current !== requestId) return;
         setCommitFiles(files);
@@ -214,7 +224,7 @@ export function LaneDiffPane({
     return () => {
       cancelled = true;
     };
-  }, [laneId, selectedCommit]);
+  }, [laneId, pin, selectedCommit]);
 
   const refreshCommitDiff = React.useCallback(() => {
     const requestId = ++commitDiffRequestSeq.current;
@@ -230,8 +240,8 @@ export function LaneDiffPane({
         compareTo: "parent"
       } as const;
     Promise.allSettled([
-      window.ade.diff.getFile(args),
-      window.ade.diff.getFilePatch(args),
+      window.ade.diff.getFile(args, pin),
+      window.ade.diff.getFilePatch(args, pin),
     ])
       .then(([diffResult, patchResult]) => {
         if (commitDiffRequestSeq.current !== requestId) return;
@@ -260,7 +270,7 @@ export function LaneDiffPane({
         setCommitDiff(null);
         setCommitDiffFailed(true);
       });
-  }, [laneId, selectedCommit, selectedCommitFilePath]);
+  }, [laneId, pin, selectedCommit, selectedCommitFilePath]);
 
   useEffect(() => {
     refreshCommitDiff();
@@ -407,7 +417,7 @@ export function LaneDiffPane({
             ))}
           </div>
           <div className="flex items-center" style={{ gap: 3 }}>
-            {selectedFileMode === "unstaged" ? (
+            {selectedFileMode === "unstaged" && !isForeign ? (
               <SmartTooltip content={{
                 label: "Open in Files",
                 description: "Open this file in the Files tab for full editing.",
@@ -425,7 +435,7 @@ export function LaneDiffPane({
                 </button>
               </SmartTooltip>
             ) : null}
-            {selectedFileMode === "unstaged" && diff && !diff.isBinary ? (
+            {selectedFileMode === "unstaged" && !isForeign && diff && !diff.isBinary ? (
               <SmartTooltip content={{
                 label: "Save",
                 description: "Write the edited content back to the working tree.",
@@ -456,7 +466,7 @@ export function LaneDiffPane({
             ) : null}
           </div>
         </div>
-        <AdeDiffViewer ref={diffRef} diff={diff} patch={patch} editable={selectedFileMode === "unstaged"} className="flex-1" />
+        <AdeDiffViewer ref={diffRef} diff={diff} patch={patch} editable={selectedFileMode === "unstaged" && !isForeign} className="flex-1" />
       </div>
     );
   }

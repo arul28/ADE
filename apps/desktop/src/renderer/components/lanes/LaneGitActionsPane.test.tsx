@@ -359,8 +359,8 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByRole("button", { name: "SYNC" });
 
     expect(mockStoreState.refreshLanes).not.toHaveBeenCalled();
-    expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" });
-    expect(window.ade.git.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+    expect(window.ade.git.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
     expect(window.ade.git.getSyncStatus).toHaveBeenCalledTimes(1);
     expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
   });
@@ -397,7 +397,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: /abort merge/i }));
 
     await waitFor(() => {
-      expect((window.ade.git as any).mergeAbort).toHaveBeenCalledWith("lane-1");
+      expect((window.ade.git as any).mergeAbort).toHaveBeenCalledWith("lane-1", null);
     });
   });
 
@@ -455,7 +455,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(window.ade.git.restoreStagedFile).toHaveBeenCalledWith({
         laneId: "lane-1",
         path: ".claude/worktrees/fix-session-auto-naming",
-      });
+      }, null);
     });
     await waitFor(() => {
       expect(mockStoreState.refreshLanes).toHaveBeenCalledWith({
@@ -481,7 +481,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(window.ade.git.stageFile).toHaveBeenCalledWith({
         laneId: "lane-1",
         path: "src/file.ts",
-      });
+      }, null);
     });
 
     cleanup();
@@ -499,7 +499,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(window.ade.git.unstageFile).toHaveBeenCalledWith({
         laneId: "lane-1",
         path: "src/file.ts",
-      });
+      }, null);
     });
   });
 
@@ -521,7 +521,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         message: "stash untracked audit",
         includeUntracked: true,
-      });
+      }, null);
     });
   });
 
@@ -669,7 +669,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         stashRef: "stash@{0}",
         stashOid: "oid-drop",
-      });
+      }, null);
     });
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -705,7 +705,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         stashRef: "stash@{0}",
         stashOid: "oid-restore",
-      });
+      }, null);
     });
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -730,7 +730,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         stashRef: "stash@{0}",
         stashOid: "oid-copy",
-      });
+      }, null);
     });
   });
 
@@ -803,7 +803,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: "DELETE ALL" }));
 
     await waitFor(() => {
-      expect(window.ade.git.stashClear).toHaveBeenCalledWith({ laneId: "lane-1" });
+      expect(window.ade.git.stashClear).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
     });
     await waitFor(() => {
       expect(screen.getByText("None saved")).toBeTruthy();
@@ -863,7 +863,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await user.click(await screen.findByRole("button", { name: "COMMIT" }));
     await waitFor(() => {
-      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false });
+      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);
     });
     expect(screen.getByRole("button", { name: "GENERATING..." })).toBeTruthy();
 
@@ -926,7 +926,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     resolveGeneratedMessage!({ message: "feat: auto", model: "openai/gpt-5.4-mini" });
     await waitFor(() => {
-      expect(window.ade.git.commit).toHaveBeenCalledWith({ laneId: "lane-1", message: "feat: auto", amend: false });
+      expect(window.ade.git.commit).toHaveBeenCalledWith({ laneId: "lane-1", message: "feat: auto", amend: false }, null);
     });
 
     const commitInput = screen.getByPlaceholderText(/commit message/i) as HTMLInputElement;

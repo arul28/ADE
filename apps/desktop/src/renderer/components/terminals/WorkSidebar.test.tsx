@@ -402,6 +402,7 @@ describe("WorkSidebar context targets", () => {
   it("renders the attached terminal panel for running CLI session owners", () => {
     renderSidebar({
       tab: "terminal",
+      activeSession: { ...activeSession, id: "term-1", toolType: "codex" },
       contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "codex" },
     });
 
@@ -415,6 +416,7 @@ describe("WorkSidebar context targets", () => {
   it("renders the attached terminal panel for chat owners", () => {
     renderSidebar({
       tab: "terminal",
+      activeSession: { ...activeSession, id: "chat-1", toolType: "claude-chat" },
       contextTarget: { kind: "chat", sessionId: "chat-1" },
     });
 
@@ -452,7 +454,7 @@ describe("WorkSidebar context targets", () => {
       terminalId: "term-1",
       ptyId: "pty-1",
       data: expect.stringContaining("\x1b[200~"),
-    });
+    }, null);
     expect(terminalWrite.mock.calls[0]?.[0].data).toContain("iOS visual inspect context attached by the user.");
     expect(terminalWrite.mock.calls[0]?.[0].data).toContain("Continue");
     expect(dispatchSpy).not.toHaveBeenCalledWith(expect.objectContaining({ type: "ade:agent-chat:add-ios-context" }));

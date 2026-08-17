@@ -19,6 +19,7 @@ import type {
   IosElementContextItem,
   IosSimulatorSession,
   LaneSummary,
+  OpenProjectBinding,
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
@@ -33,7 +34,7 @@ import {
   dispatchWorkPtyContextInserted,
   type WorkPtyContextInsertKind,
 } from "../../lib/workPtyContextEvents";
-import { formatToolTypeLabel } from "../../lib/sessions";
+import { formatToolTypeLabel, isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { isMacPlatform } from "../../lib/platform";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
@@ -230,6 +231,7 @@ export function WorkSidebar({
   onClose,
   contextTarget,
   contextDisabledReason: targetDisabledReason,
+  runtimePin = null,
 }: {
   active?: boolean;
   laneId: string | null;
@@ -240,6 +242,12 @@ export function WorkSidebar({
   onClose: () => void;
   contextTarget: WorkSidebarContextTarget | null;
   contextDisabledReason: string | null;
+  /**
+   * The machine the active Work session actually runs on. Null means this
+   * tab's bound machine. Every tool in here follows the chat: a chat on
+   * another machine gets THAT machine's git, terminals, and files.
+   */
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -265,17 +273,34 @@ export function WorkSidebar({
     supportsIosSimulator,
   }) ? tab : "git";
 
+  // A foreign chat's lane is absent from the tab-bound `lanes` array, so the
+  // worktree path (and therefore iOS / App Control) resolved to null. Fall
+  // back to the machine's slice of the cross-machine union.
+  const pinnedMachineLanes = useAppStore((state) => {
+    if (!runtimePin) return null;
+    for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
+      if (entry.binding?.key === runtimePin.key) return entry;
+    }
+    return null;
+  });
+  const scopedLanes = pinnedMachineLanes?.lanes ?? lanes;
   const activeLane = useMemo(
-    () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
-    [laneId, lanes],
+    () => (laneId ? scopedLanes.find((lane) => lane.id === laneId) ?? null : null),
+    [laneId, scopedLanes],
   );
   const laneRoot = activeLane?.worktreePath ?? null;
+  // Pinned calls have no local fallback, so a machine that is not answering
+  // gets one plain line instead of a wall of rejected IPC.
+  const pinnedMachineOffline = Boolean(runtimePin) && pinnedMachineLanes?.online === false;
+  const pinnedMachineName = runtimePin
+    ? (runtimePin.kind === "remote" ? runtimePin.runtimeName : runtimePin.displayName)
+    : null;
 
   useEffect(() => {
     setSelectedPath(null);
     setSelectedMode(null);
     setSelectedCommit(null);
-  }, [laneId]);
+  }, [laneId, runtimePin?.key]);
 
   useEffect(() => {
     if (!isAvailableWorkSidebarTab(tab, {
@@ -340,16 +365,25 @@ export function WorkSidebar({
   useEffect(() => {
     if (!active) return undefined;
     if (effectiveTab !== "app-control") return undefined;
+    if (pinnedMachineOffline) return undefined;
     const appControl = window.ade?.appControl;
     if (!appControl?.getStatus || !appControl.onEvent) return undefined;
     let cancelled = false;
-    void appControl.getStatus()
+    void appControl.getStatus(runtimePin)
       .then((status) => {
         if (!cancelled) setAppControlSession(status.activeSession ?? null);
       })
       .catch(() => {
         if (!cancelled) setAppControlSession(null);
       });
+    // `appControl.onEvent` has no pin parameter, so its stream is this
+    // machine's. Subscribing while pinned would feed the wrong machine's
+    // sessions into the header; the pinned panel re-reads status instead.
+    if (runtimePin) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const unsubscribe = appControl.onEvent((event) => {
       if (event.type === "session-started" || event.type === "session-updated") {
         setAppControlSession(event.session ?? null);
@@ -361,21 +395,28 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [active, effectiveTab]);
+  }, [active, effectiveTab, pinnedMachineOffline, runtimePin]);
 
   useEffect(() => {
     if (!active) return undefined;
     if (effectiveTab !== "ios") return undefined;
+    if (pinnedMachineOffline) return undefined;
     const iosSimulator = window.ade?.iosSimulator;
     if (!iosSimulator?.getStatus || !iosSimulator.onEvent) return undefined;
     let cancelled = false;
-    void iosSimulator.getStatus()
+    void iosSimulator.getStatus(runtimePin)
       .then((status) => {
         if (!cancelled) setIosSession(status.activeSession ?? null);
       })
       .catch(() => {
         if (!cancelled) setIosSession(null);
       });
+    // Same as App Control above: the event stream is unpinnable.
+    if (runtimePin) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const unsubscribe = iosSimulator.onEvent((event) => {
       if (event.type === "session-started" || event.type === "session-updated") {
         setIosSession(event.session ?? null);
@@ -387,15 +428,15 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [active, effectiveTab]);
+  }, [active, effectiveTab, pinnedMachineOffline, runtimePin]);
 
   function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
     if (effectiveTab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
-      return laneMismatchMessage("App Control", appControlSession.laneId, laneId, lanes);
+      return laneMismatchMessage("App Control", appControlSession.laneId, laneId, scopedLanes);
     }
     if (effectiveTab === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
-      return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, lanes);
+      return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, scopedLanes);
     }
     return null;
   }
@@ -405,10 +446,26 @@ export function WorkSidebar({
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
-  const terminalOwnerSessionId =
-    contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
+  // Terminal ownership is an identity question, not a permission one: any chat
+  // or running agent-CLI session can host attached terminals, including one on
+  // another machine. Deriving it from `contextTarget` conflated the two and
+  // showed foreign chats an "open a chat..." empty state instead of a terminal.
+  const terminalOwnerSessionId = useMemo(() => {
+    if (activeSession) {
+      if (isChatToolType(activeSession.toolType)) return activeSession.id;
+      if (
+        activeSession.status === "running"
+        && activeSession.ptyId
+        && isPtyContextInsertableToolType(activeSession.toolType)
+      ) {
+        return activeSession.id;
+      }
+      return null;
+    }
+    return contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
       ? contextTarget.sessionId
       : null;
+  }, [activeSession, contextTarget]);
 
   const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
   dispatchTargetRef.current = { contextTarget, contextDisabledReason };
@@ -424,7 +481,7 @@ export function WorkSidebar({
       terminalId: target.sessionId,
       ptyId: target.ptyId,
       data: bracketedPaste(payload),
-    })
+    }, runtimePin)
       .then(() => {
         dispatchWorkPtyContextInserted({
           sessionId: target.sessionId,
@@ -440,7 +497,7 @@ export function WorkSidebar({
           error,
         });
       });
-  }, []);
+  }, [runtimePin]);
 
   const withContextTarget = useCallback((
     fallbackError: string,
@@ -531,13 +588,20 @@ export function WorkSidebar({
           : "Open a chat or running agent CLI session to attach terminals.";
         return <TerminalPanelEmpty message={message} />;
       }
+      if (pinnedMachineOffline) {
+        return <TerminalPanelEmpty message={`${pinnedMachineName} is offline.`} />;
+      }
       return (
         <ChatTerminalDrawer
+          // Remount on a machine change so a foreign machine's tabs can never
+          // paint into the machine you just switched to.
+          key={`work-terminal:${runtimePin?.key ?? "bound"}:${terminalOwnerSessionId}`}
           variant="panel"
           open
           onToggle={onClose}
           laneId={laneId}
           chatSessionId={terminalOwnerSessionId}
+          runtimePin={runtimePin}
           emptyMessage="Create a terminal to work alongside this session."
         />
       );
@@ -550,6 +614,7 @@ export function WorkSidebar({
           <div className="min-h-0 flex-1 overflow-hidden">
             <ChatBuiltInBrowserPanel
               sessionId={panelSessionId}
+              runtimePin={runtimePin}
               onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
               onAddContext={canInsertContext ? addBuiltInBrowserContext : undefined}
               onInsertDraft={canInsertContext ? insertDraft : undefined}
@@ -568,12 +633,17 @@ export function WorkSidebar({
     }
 
     if (effectiveTab === "git") {
+      if (pinnedMachineOffline) {
+        return <TerminalPanelEmpty message={`${pinnedMachineName} is offline.`} />;
+      }
       const hasDiffSelection = Boolean(selectedPath || selectedCommit);
       return (
         <div className="flex h-full min-h-0 flex-col">
           <div className={cn("min-h-0 overflow-auto", hasDiffSelection ? "max-h-[58%] shrink-0" : "flex-1")}>
             <LaneGitActionsPane
+              key={`work-git:${runtimePin?.key ?? "bound"}:${laneId}`}
               laneId={laneId}
+              runtimePin={runtimePin}
               autoRebaseEnabled={false}
               onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
               onSelectFile={(path, mode) => {
@@ -603,6 +673,7 @@ export function WorkSidebar({
             <div className="min-h-0 flex-1 border-t border-white/[0.08]">
               <LaneDiffPane
                 laneId={laneId}
+                runtimePin={runtimePin}
                 selectedPath={selectedPath}
                 selectedFileMode={selectedMode}
                 selectedCommit={selectedCommit}
@@ -615,13 +686,21 @@ export function WorkSidebar({
     }
 
     if (effectiveTab === "files") {
-      return <FilesTab preferredLaneId={laneId} embedded />;
+      return (
+        <FilesTab
+          key={`work-files:${runtimePin?.key ?? "bound"}`}
+          preferredLaneId={laneId}
+          pin={runtimePin}
+          embedded
+        />
+      );
     }
 
     const panel = effectiveTab === "ios" ? (
       <ChatIosSimulatorPanel
         sessionId={panelSessionId}
         laneId={laneId}
+        runtimePin={runtimePin}
         projectRoot={laneRoot}
         controlDisabledReason={null}
         ignoreChatOwnership
@@ -633,6 +712,7 @@ export function WorkSidebar({
       <ChatAppControlPanel
         sessionId={panelSessionId}
         laneId={laneId}
+        runtimePin={runtimePin}
         projectRoot={laneRoot}
         controlDisabledReason={null}
         onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
@@ -666,6 +746,9 @@ export function WorkSidebar({
     effectiveTab,
     activeSession,
     onClose,
+    pinnedMachineName,
+    pinnedMachineOffline,
+    runtimePin,
     terminalOwnerSessionId,
   ]);
 

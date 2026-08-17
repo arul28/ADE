@@ -17,6 +17,19 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
 }
 
 /**
+ * Agent CLI sessions whose PTY accepts pasted tool context (and, with it, an
+ * attached terminal). Shells are excluded: they host terminals but are not a
+ * context insertion target.
+ */
+export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary["toolType"]): boolean {
+  return toolType === "claude"
+    || toolType === "codex"
+    || toolType === "cursor-cli"
+    || toolType === "droid"
+    || toolType === "opencode";
+}
+
+/**
  * Turns a runtime rejection into copy a person can act on.
  *
  * Every runtime call the Work rows make crosses `ipcRenderer.invoke`, which

@@ -116,7 +116,7 @@ describe("LaneDiffPane", () => {
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
     expect(screen.getByText("src/generated/file-500.ts")).toBeTruthy();
-    expect(api.git.listCommitFiles).toHaveBeenCalledWith({ laneId: "lane-1", commitSha: commit.sha });
+    expect(api.git.listCommitFiles).toHaveBeenCalledWith({ laneId: "lane-1", commitSha: commit.sha }, null);
   });
 
   it("retries a failed working-tree diff", async () => {

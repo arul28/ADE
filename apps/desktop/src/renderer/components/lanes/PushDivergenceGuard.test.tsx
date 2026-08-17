@@ -173,7 +173,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
     await clickPush();
 
     await waitFor(() => {
-      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false });
+      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, null);
     });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -234,7 +234,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
     await userEvent.click(screen.getByRole("button", { name: "Push anyway" }));
 
     await waitFor(() => {
-      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false });
+      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, null);
     });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
