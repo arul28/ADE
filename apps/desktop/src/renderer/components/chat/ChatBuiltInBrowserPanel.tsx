@@ -27,7 +27,7 @@ import type {
 } from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
 import { formatBytes } from "../../lib/format";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { chatScopePinArgs, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -133,29 +133,29 @@ type BuiltInBrowserEventPayload = {
 };
 
 type BuiltInBrowserApi = {
-  getStatus: (args?: BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
+  getStatus: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
   getProfileDiagnostics?: () => Promise<BuiltInBrowserProfileDiagnostics>;
   listPermissions?: () => Promise<{ permissions: BuiltInBrowserPermissionDecision[] }>;
   clearPermissions?: (args?: {
     origin?: string | null;
     permission?: string | null;
   }) => Promise<{ removed: number; permissions: BuiltInBrowserPermissionDecision[] }>;
-  setBounds: (bounds: BrowserBounds & BuiltInBrowserProjectScopeArgs) => Promise<void>;
+  setBounds: (bounds: BrowserBounds & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
   attachWebview?: (args: { tabId: string; webContentsId: number } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
-  navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
-  createTab?: (args?: { url?: string | null; activate?: boolean } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
-  switchTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
-  closeTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
-  reload: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
-  goBack: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
-  goForward: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
-  stop: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
-  startInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<void>;
-  stopInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<void>;
-  captureScreenshot: (args?: BuiltInBrowserTabTargetArgs) => Promise<unknown>;
-  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null } & BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
-  selectCurrent: (args?: BuiltInBrowserProjectScopeArgs) => Promise<unknown>;
-  clearSelection: (args?: BuiltInBrowserProjectScopeArgs) => Promise<void>;
+  navigate: (args: { url: string; tabId?: string | null; newTab?: boolean } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  createTab?: (args?: { url?: string | null; activate?: boolean } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  switchTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  closeTab?: (args: { tabId: string } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  reload: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  goBack: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  goForward: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  stop: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  startInspect: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+  stopInspect: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+  captureScreenshot: (args?: BuiltInBrowserTabTargetArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  selectPoint?: (args: { x: number; y: number; includeScreenshot?: boolean; tabId?: string | null } & BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  selectCurrent: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<unknown>;
+  clearSelection: (args?: BuiltInBrowserProjectScopeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
   onEvent: (cb: (event: BuiltInBrowserEventPayload) => void) => () => void;
 };
 
@@ -734,10 +734,16 @@ export function ChatBuiltInBrowserPanel({
   onInsertDraft,
   runtimePin = null,
 }: ChatBuiltInBrowserPanelProps) {
-  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  // Also rendered from the Work sidebar and the personal-chats page, so the
+  // scope is derived from the pin this panel is handed.
+  const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
   const projectRoot = projectRootOverride === undefined
-    ? activeProjectRoot
+    ? chatScope.rootPath
     : projectRootOverride;
+  // Every pin-aware `builtInBrowser.*` call below reads this. `attachWebview`
+  // is deliberately absent from that set: it wires a <webview> in THIS window.
+  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  runtimePinRef.current = runtimePin;
   const browserSurfaceRef = useRef<HTMLDivElement | null>(null);
   const browserWebviewsRef = useRef<Map<string, BrowserWebviewElement>>(new Map());
   const browserWebviewAttachCleanupRef = useRef<Map<string, () => void>>(new Map());
@@ -838,7 +844,7 @@ export function ChatBuiltInBrowserPanel({
 
   const refreshStatus = useCallback(async () => {
     const api = requireBrowserApi();
-    const nextStatus = await api.getStatus(browserScope);
+    const nextStatus = await api.getStatus(browserScope, ...chatScopePinArgs(runtimePinRef.current));
     applyStatus(nextStatus);
   }, [applyStatus, browserScope]);
 
@@ -902,7 +908,7 @@ export function ChatBuiltInBrowserPanel({
       const hidden: BrowserBounds = { x: 0, y: 0, width: 0, height: 0, visible: false };
       if (boundsEqual(latestBoundsRef.current, hidden)) return;
       latestBoundsRef.current = hidden;
-      api.setBounds(withBrowserScope(hidden)).catch((error: unknown) => {
+      api.setBounds(withBrowserScope(hidden), ...chatScopePinArgs(runtimePinRef.current)).catch((error: unknown) => {
         setMessage({ tone: "error", text: `Could not hide browser fallback: ${errorMessage(error)}` });
       });
       return;
@@ -919,7 +925,7 @@ export function ChatBuiltInBrowserPanel({
     };
     if (boundsEqual(latestBoundsRef.current, next)) return;
     latestBoundsRef.current = next;
-    api.setBounds(withBrowserScope(next)).catch((error: unknown) => {
+    api.setBounds(withBrowserScope(next), ...chatScopePinArgs(runtimePinRef.current)).catch((error: unknown) => {
       setMessage({ tone: "error", text: `Could not position browser: ${errorMessage(error)}` });
     });
   }, [withBrowserScope]);
@@ -936,8 +942,8 @@ export function ChatBuiltInBrowserPanel({
       visible: false,
     };
     latestBoundsRef.current = hidden;
-    await api.stopInspect(browserScope).catch(() => {});
-    await api.setBounds(withBrowserScope(hidden)).catch(() => {});
+    await api.stopInspect(browserScope, ...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
+    await api.setBounds(withBrowserScope(hidden), ...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
   }, [browserScope, withBrowserScope]);
 
   useEffect(() => {
@@ -1092,9 +1098,9 @@ export function ChatBuiltInBrowserPanel({
       const last = latestBoundsRef.current;
       const api = getBrowserApi();
       if (api && last) {
-        api.stopInspect(browserScope).catch(() => {});
+        api.stopInspect(browserScope, ...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
         latestBoundsRef.current = { ...last, visible: false };
-        api.setBounds(withBrowserScope({ ...last, visible: false })).catch(() => {});
+        api.setBounds(withBrowserScope({ ...last, visible: false }), ...chatScopePinArgs(runtimePinRef.current)).catch(() => {});
       }
     };
   }, [browserScope, reportBounds, withBrowserScope]);
@@ -1106,7 +1112,7 @@ export function ChatBuiltInBrowserPanel({
       return undefined;
     }
     let cancelled = false;
-    api.getStatus(browserScope)
+    api.getStatus(browserScope, ...chatScopePinArgs(runtimePinRef.current))
       .then((nextStatus) => {
         if (!cancelled) applyStatus(nextStatus);
       })
@@ -1359,7 +1365,7 @@ export function ChatBuiltInBrowserPanel({
     void (async () => {
       try {
         if (shouldUseRendererBrowserWebviews(api) && api.createTab) {
-          const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true })), statusRef.current);
+          const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true }), ...chatScopePinArgs(runtimePinRef.current)), statusRef.current);
           applyStatus(nextStatus);
           const tabId = nextStatus.activeTabId;
           if (!tabId) throw new Error("ADE browser could not create a tab.");
@@ -1368,8 +1374,8 @@ export function ChatBuiltInBrowserPanel({
           return;
         }
         const nextStatus = api.createTab
-          ? await api.createTab(withBrowserScope({ url: DEFAULT_BROWSER_URL, activate: true }))
-          : await api.navigate(withBrowserScope({ url: DEFAULT_BROWSER_URL, newTab: true }));
+          ? await api.createTab(withBrowserScope({ url: DEFAULT_BROWSER_URL, activate: true }), ...chatScopePinArgs(runtimePinRef.current))
+          : await api.navigate(withBrowserScope({ url: DEFAULT_BROWSER_URL, newTab: true }), ...chatScopePinArgs(runtimePinRef.current));
         applyStatus(nextStatus);
         setUrlInput(DEFAULT_BROWSER_URL);
       } catch (error) {
@@ -1396,7 +1402,7 @@ export function ChatBuiltInBrowserPanel({
           let tabId: string | null = activeTabId;
           if (!tabId) {
             if (!api.createTab) throw new Error("This ADE build does not support browser tab creation.");
-            const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true })), statusRef.current);
+            const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true }), ...chatScopePinArgs(runtimePinRef.current)), statusRef.current);
             applyStatus(nextStatus);
             tabId = nextStatus.activeTabId;
           }
@@ -1405,7 +1411,7 @@ export function ChatBuiltInBrowserPanel({
           setUrlInput(nextUrl);
           return;
         }
-        await api.navigate(withBrowserScope({ url: nextUrl }));
+        await api.navigate(withBrowserScope({ url: nextUrl }), ...chatScopePinArgs(runtimePinRef.current));
         setUrlInput(nextUrl);
         await refreshStatus();
       });
@@ -1418,7 +1424,7 @@ export function ChatBuiltInBrowserPanel({
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
       if (shouldUseRendererBrowserWebviews(api) && api.createTab) {
-        const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true })), statusRef.current);
+        const nextStatus = normalizeStatus(await api.createTab(withBrowserScope({ activate: true }), ...chatScopePinArgs(runtimePinRef.current)), statusRef.current);
         applyStatus(nextStatus);
         const tabId = nextStatus.activeTabId;
         if (!tabId) throw new Error("ADE browser could not create a tab.");
@@ -1427,10 +1433,10 @@ export function ChatBuiltInBrowserPanel({
         return;
       }
       if (api.createTab) {
-        const nextStatus = await api.createTab(withBrowserScope({ url: DEFAULT_BROWSER_URL, activate: true }));
+        const nextStatus = await api.createTab(withBrowserScope({ url: DEFAULT_BROWSER_URL, activate: true }), ...chatScopePinArgs(runtimePinRef.current));
         applyStatus(nextStatus);
       } else {
-        const nextStatus = await api.navigate(withBrowserScope({ url: DEFAULT_BROWSER_URL, newTab: true }));
+        const nextStatus = await api.navigate(withBrowserScope({ url: DEFAULT_BROWSER_URL, newTab: true }), ...chatScopePinArgs(runtimePinRef.current));
         applyStatus(nextStatus);
       }
       setUrlInput(DEFAULT_BROWSER_URL);
@@ -1442,7 +1448,7 @@ export function ChatBuiltInBrowserPanel({
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
       if (api.switchTab) {
-        await api.switchTab(withBrowserScope({ tabId }));
+        await api.switchTab(withBrowserScope({ tabId }), ...chatScopePinArgs(runtimePinRef.current));
       } else {
         throw new Error("This ADE build does not support browser tab switching.");
       }
@@ -1455,7 +1461,7 @@ export function ChatBuiltInBrowserPanel({
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
       if (api.closeTab) {
-        await api.closeTab(withBrowserScope({ tabId }));
+        await api.closeTab(withBrowserScope({ tabId }), ...chatScopePinArgs(runtimePinRef.current));
       } else {
         throw new Error("This ADE build does not support closing browser tabs.");
       }
@@ -1466,7 +1472,7 @@ export function ChatBuiltInBrowserPanel({
   const handleBack = useCallback(() => {
     void runBusy("back", async () => {
       const api = requireBrowserApi();
-      await api.goBack(browserScope);
+      await api.goBack(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       await refreshStatus();
     });
   }, [browserScope, refreshStatus, runBusy]);
@@ -1474,7 +1480,7 @@ export function ChatBuiltInBrowserPanel({
   const handleForward = useCallback(() => {
     void runBusy("forward", async () => {
       const api = requireBrowserApi();
-      await api.goForward(browserScope);
+      await api.goForward(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       await refreshStatus();
     });
   }, [browserScope, refreshStatus, runBusy]);
@@ -1482,7 +1488,7 @@ export function ChatBuiltInBrowserPanel({
   const handleReload = useCallback(() => {
     void runBusy("reload", async () => {
       const api = requireBrowserApi();
-      await api.reload(browserScope);
+      await api.reload(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       await refreshStatus();
     });
   }, [browserScope, refreshStatus, runBusy]);
@@ -1490,7 +1496,7 @@ export function ChatBuiltInBrowserPanel({
   const handleStop = useCallback(() => {
     void runBusy("stop", async () => {
       const api = requireBrowserApi();
-      await api.stop(browserScope);
+      await api.stop(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       await refreshStatus();
     });
   }, [browserScope, refreshStatus, runBusy]);
@@ -1499,9 +1505,9 @@ export function ChatBuiltInBrowserPanel({
     void runBusy(inspecting ? "inspect-off" : "inspect-on", async () => {
       const api = requireBrowserApi();
       if (inspecting) {
-        await api.stopInspect(browserScope);
+        await api.stopInspect(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       } else {
-        await api.startInspect(browserScope);
+        await api.startInspect(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       }
       await refreshStatus();
     });
@@ -1510,7 +1516,7 @@ export function ChatBuiltInBrowserPanel({
   const handleClearSelection = useCallback(() => {
     void runBusy("clear-selection", async () => {
       const api = requireBrowserApi();
-      await api.clearSelection(browserScope);
+      await api.clearSelection(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       selectedItemRef.current = null;
       setSelectedItem(null);
       setStatus((current) => current ? { ...current, selectedItem: null } : current);
@@ -1521,7 +1527,7 @@ export function ChatBuiltInBrowserPanel({
   const handleAttachSelection = useCallback(() => {
     void runBusy("select", async () => {
       const api = requireBrowserApi();
-      const result = await api.selectCurrent(browserScope);
+      const result = await api.selectCurrent(browserScope, ...chatScopePinArgs(runtimePinRef.current));
       const item =
         normalizeSelectionResult(result, statusRef.current)
         ?? selectedItemRef.current
@@ -1544,7 +1550,7 @@ export function ChatBuiltInBrowserPanel({
       await attachActiveRendererWebview();
       let screenshot: BuiltInBrowserScreenshot | null = null;
       try {
-        const result = await api.captureScreenshot(browserScope);
+        const result = await api.captureScreenshot(browserScope, ...chatScopePinArgs(runtimePinRef.current));
         screenshot = normalizeScreenshot(result, statusRef.current);
       } catch (error) {
         screenshot = await captureActiveRendererWebview();
@@ -1592,7 +1598,7 @@ export function ChatBuiltInBrowserPanel({
     let domItem: BuiltInBrowserContextItem | null = null;
     if (api?.selectPoint) {
       try {
-        const pointResult = await api.selectPoint(withBrowserScope({ x: domPoint.x, y: domPoint.y, includeScreenshot: false }));
+        const pointResult = await api.selectPoint(withBrowserScope({ x: domPoint.x, y: domPoint.y, includeScreenshot: false }), ...chatScopePinArgs(runtimePinRef.current));
         domItem = normalizeSelectionResult(pointResult, statusRef.current);
       } catch (error) {
         setMessage({ tone: "error", text: `Captured region, but DOM point context failed: ${errorMessage(error)}` });

@@ -376,21 +376,13 @@ export function WorkSidebar({
       .catch(() => {
         if (!cancelled) setAppControlSession(null);
       });
-    // `appControl.onEvent` has no pin parameter, so its stream is this
-    // machine's. Subscribing while pinned would feed the wrong machine's
-    // sessions into the header; the pinned panel re-reads status instead.
-    if (runtimePin) {
-      return () => {
-        cancelled = true;
-      };
-    }
     const unsubscribe = appControl.onEvent((event) => {
       if (event.type === "session-started" || event.type === "session-updated") {
         setAppControlSession(event.session ?? null);
       } else if (event.type === "session-stopped") {
         setAppControlSession(null);
       }
-    });
+    }, runtimePin);
     return () => {
       cancelled = true;
       unsubscribe();
@@ -411,19 +403,13 @@ export function WorkSidebar({
       .catch(() => {
         if (!cancelled) setIosSession(null);
       });
-    // Same as App Control above: the event stream is unpinnable.
-    if (runtimePin) {
-      return () => {
-        cancelled = true;
-      };
-    }
     const unsubscribe = iosSimulator.onEvent((event) => {
       if (event.type === "session-started" || event.type === "session-updated") {
         setIosSession(event.session ?? null);
       } else if (event.type === "session-released") {
         setIosSession(null);
       }
-    });
+    }, runtimePin);
     return () => {
       cancelled = true;
       unsubscribe();

@@ -101,7 +101,11 @@ vi.mock("./ChatIosSimulatorPanel", () => {
 vi.mock("./ChatAppControlPanel", () => {
   const ReactMod = require("react") as typeof React;
   return {
-    ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "App Control panel mounted"),
+    ChatAppControlPanel: (props: { runtimePin?: { key: string } | null }) => ReactMod.createElement(
+      "div",
+      { "data-testid": "app-control-panel", "data-runtime-pin": props?.runtimePin?.key ?? "" },
+      "App Control panel mounted",
+    ),
   };
 });
 
@@ -10422,20 +10426,21 @@ describe("AgentChatPane per-chat runtime routing", () => {
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
 
-  it("does not mount machine-control panels against the globally bound runtime for a foreign chat", async () => {
+  it("routes machine-control panels to the chat's machine instead of refusing them", async () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
     installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
 
     renderPane(session);
 
+    // Support is asked of the chat's machine, not the tab's.
+    await waitFor(() => expect(window.ade.appControl.getStatus).toHaveBeenCalledWith(machineB));
+
     const appControlButton = (await screen.findAllByRole("button", { name: "Open App Control drawer" }))[0]!;
     fireEvent.click(appControlButton);
 
-    expect(screen.queryByTestId("app-control-panel")).toBeNull();
-    expect(screen.getByText(
-      "Switch this project tab to machine-b before using this tool. Chat and attachments remain pinned to that machine.",
-    )).toBeTruthy();
+    const panel = await screen.findByTestId("app-control-panel");
+    expect(panel.getAttribute("data-runtime-pin")).toBe(machineB.key);
   });
 
   it("pins This computer history and live events while the project tab stays remote-bound", async () => {

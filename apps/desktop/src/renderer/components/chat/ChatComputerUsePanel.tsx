@@ -24,6 +24,7 @@ import type {
   ComputerUseOwnerSnapshot,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { chatScopePinArgs, useChatRuntimeScope } from "./ChatRuntimeScope";
 
 function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
@@ -130,6 +131,7 @@ function useVisibleArtifactPreview(
   loading: boolean;
   loaded: boolean;
 } {
+  const scope = useChatRuntimeScope();
   const containerRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -178,7 +180,7 @@ function useVisibleArtifactPreview(
     }
     let cancelled = false;
     setLoading(true);
-    void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri })
+    void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, ...chatScopePinArgs(scope.pin))
       .then((dataUrl) => {
         if (cancelled) return;
         setPreview(dataUrl);
@@ -194,7 +196,7 @@ function useVisibleArtifactPreview(
     return () => {
       cancelled = true;
     };
-  }, [allowLocalArtifactProtocol, artifact, loaded, visible]);
+  }, [allowLocalArtifactProtocol, artifact, loaded, scope.pin, visible]);
 
   return { containerRef, preview, loading, loaded };
 }
@@ -607,6 +609,7 @@ export function ChatComputerUsePanel({
   onRefresh: () => void | Promise<void>;
   allowLocalArtifactProtocol?: boolean;
 }) {
+  const scope = useChatRuntimeScope();
   // Stable identity: `?? []` would hand every memo below a fresh array each
   // render and defeat them.
   const artifacts = useMemo(() => snapshot?.artifacts ?? [], [snapshot]);
@@ -641,30 +644,30 @@ export function ChatComputerUsePanel({
   const handleDelete = useCallback(
     (artifact: ComputerUseArtifactView) => {
       void withBusy([artifact.id], async () => {
-        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id });
+        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }, ...chatScopePinArgs(scope.pin));
         assertArtifactDeletionSucceeded(result);
       });
     },
-    [withBusy],
+    [scope.pin, withBusy],
   );
 
   const handleRecover = useCallback(
     (artifact: ComputerUseArtifactView) => {
       void withBusy([artifact.id], () =>
-        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }),
+        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }, ...chatScopePinArgs(scope.pin)),
       );
     },
-    [withBusy],
+    [scope.pin, withBusy],
   );
 
   const handlePruneBroken = useCallback(() => {
     const ids = artifacts.filter((artifact) => isBrokenArtifact(artifact)).map((artifact) => artifact.id);
     if (!ids.length) return;
     void withBusy(ids, async () => {
-      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids });
+      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids }, ...chatScopePinArgs(scope.pin));
       assertArtifactDeletionSucceeded(result);
     });
-  }, [artifacts, withBusy]);
+  }, [artifacts, scope.pin, withBusy]);
 
   if (!snapshot || artifacts.length === 0) {
     return (

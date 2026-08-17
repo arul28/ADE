@@ -2101,7 +2101,10 @@ declare global {
           args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number },
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorSelectResult>;
-        onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => () => void;
+        onEvent: (
+          cb: (ev: IosSimulatorEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       appControl: {
         getStatus: (
@@ -2167,7 +2170,10 @@ declare global {
           args: { targetId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
-        onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
+        onEvent: (
+          cb: (ev: AppControlEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       builtInBrowser: {
         getStatus: (

@@ -129,6 +129,7 @@ import {
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -3293,7 +3294,6 @@ export function AgentChatPane({
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
-  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   // The originating project's binding, captured per launch so detached draft
   // work can keep targeting the project that started it after the user switches
   // to another project.
@@ -3959,9 +3959,11 @@ export function AgentChatPane({
   // lives on the tab's own binding (the common case: identical to before).
   // Held in a ref so call sites can read it without perturbing any existing
   // effect/callback dependency array.
+  /** The lane this chat lives in, on its own machine. */
+  const chatScopeLaneId = selectedSession?.laneId ?? foreignSelectedLaneId ?? laneId ?? null;
   const chatRuntimePin = useMemo(
-    () => chatMachineRouter.pinForLane(selectedSession?.laneId ?? foreignSelectedLaneId ?? laneId),
-    [chatMachineRouter, foreignSelectedLaneId, laneId, selectedSession?.laneId],
+    () => chatMachineRouter.pinForLane(chatScopeLaneId),
+    [chatMachineRouter, chatScopeLaneId],
   );
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
@@ -3994,6 +3996,24 @@ export function AgentChatPane({
     ];
     return cached?.lanes ?? [];
   }, [availableLanes, chatRuntimePin, crossMachineLanesByMachineId, laneCacheByProject, lanes]);
+  /**
+   * The chat's lane checkout, on the chat's own machine. `lanes` is the tab's
+   * bound machine, so for a foreign chat it does not contain this lane at all —
+   * and the old global fallback silently handed the local project root to a
+   * tool that was about to drive another machine.
+   */
+  const chatLaneWorktreePath = useMemo(() => {
+    if (!chatScopeLaneId) return null;
+    if (!chatRuntimePin) return lanes.find((lane) => lane.id === chatScopeLaneId)?.worktreePath ?? null;
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      if (machine.binding?.key !== chatRuntimePin.key) continue;
+      return machine.lanes.find((lane) => lane.id === chatScopeLaneId)?.worktreePath ?? null;
+    }
+    const cached = laneCacheByProject[
+      chatRuntimePin.kind === "remote" ? chatRuntimePin.key : chatRuntimePin.rootPath
+    ];
+    return cached?.lanes.find((lane) => lane.id === chatScopeLaneId)?.worktreePath ?? null;
+  }, [chatRuntimePin, chatScopeLaneId, crossMachineLanesByMachineId, laneCacheByProject, lanes]);
   // Provided for the WHOLE pane, not just the transcript: the proposed-plan
   // card and question-option previews render agent markdown from the composer
   // subtree, and without an opener their file paths fall back to inert text.
@@ -4085,12 +4105,12 @@ export function AgentChatPane({
       setAppControlAvailable(false);
       return;
     }
-    if (isRemoteProject && !effectiveAppControlOpen) {
-      setAppControlAvailable(false);
-      return;
-    }
+    // Support is a property of the machine the chat runs on, so ask that
+    // machine. The probe used to be skipped for a remote project entirely,
+    // which left the toggle permanently hidden — and hiding the toggle is what
+    // kept the panel from ever opening to un-skip it.
     let cancelled = false;
-    void api.getStatus()
+    void api.getStatus(chatRuntimePin)
       .then((status) => {
         if (cancelled) return;
         setAppControlAvailable(Boolean(status.supported));
@@ -4102,7 +4122,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [effectiveAppControlOpen, isRemoteProject, laneToolsVisible]);
+  }, [chatRuntimePin, laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -4193,12 +4213,8 @@ export function AgentChatPane({
     clearPromptSuggestionForSession(selectedSessionId);
   }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
 
-  const iosSimulatorProjectRoot = useMemo(() => {
-    const scopedLaneId = selectedSession?.laneId ?? laneId;
-    if (!scopedLaneId) return projectRoot;
-    const lane = lanes.find((entry) => entry.id === scopedLaneId);
-    return lane?.worktreePath ?? projectRoot;
-  }, [laneId, lanes, projectRoot, selectedSession?.laneId]);
+  const iosSimulatorProjectRoot = chatLaneWorktreePath
+    ?? (chatRuntimePin ? chatRuntimePin.rootPath : projectRoot);
   // `selectedSessionId` is internal state synced from props in an effect, so it
   // trails the incoming selection by one render. Deriving the transcript from
   // it painted the OUTGOING chat's events for a beat after the pane was pointed
@@ -7329,7 +7345,7 @@ export function AgentChatPane({
     const previousTurnActive = sameSession ? sessionDeltaTurnActiveRef.current : false;
     sessionDeltaSessionIdRef.current = selectedSessionId;
     sessionDeltaTurnActiveRef.current = turnActive;
-    if (isRemoteProject) {
+    if (isRemoteChat) {
       const completedTurn =
         sameSession
         && previousTurnActive
@@ -7355,7 +7371,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [isRemoteProject, isTileActive, selectedSessionId, turnActive]);
+  }, [isRemoteChat, isTileActive, selectedSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -7621,7 +7637,7 @@ export function AgentChatPane({
         envelope.event.type === "user_message"
         || (envelope.event.type === "status" && envelope.event.turnStatus === "started")
       ) {
-        if (isRemoteProject && envelope.event.type === "status") {
+        if (isRemoteChat && envelope.event.type === "status") {
           remoteDeltaArmedSessionsRef.current.add(envelope.sessionId);
         }
         patchSessionSummary(
@@ -7734,7 +7750,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -11676,15 +11692,15 @@ export function AgentChatPane({
       : draftAttachmentTransferPending
         ? "Moving attached images to the selected machine."
         : draftAttachmentTransferBlockedReason;
+  /**
+   * The tools drive the composer's machine directly now that every
+   * `iosSimulator.*` / `appControl.*` call carries a pin, so a machine that is
+   * simply not the tab's binding is routed to, not refused. The one thing left
+   * to say is that there is no machine to route to at all.
+   */
   const auxiliaryToolDisabledReason = !activeComposerRuntimeBinding
     ? "Reconnect the selected machine project before using this tool."
-    : !projectBinding || activeComposerRuntimeBinding.key !== projectBinding.key
-      ? `Switch this project tab to ${
-          activeComposerRuntimeBinding.kind === "remote"
-            ? activeComposerRuntimeBinding.runtimeName
-            : THIS_MACHINE_NAME
-        } before using this tool. Chat and attachments remain pinned to that machine.`
-      : null;
+    : null;
 
   useEffect(() => {
     if (!showDraftLaunchControls || !isTileActive) return;
@@ -11846,7 +11862,7 @@ export function AgentChatPane({
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
-        allowLocalArtifactProtocol={!isRemoteProject}
+        allowLocalArtifactProtocol={!isRemoteChat}
       />
     </div>
   );
@@ -12220,6 +12236,7 @@ export function AgentChatPane({
       laneId={laneId}
       chatSessionId={selectedSessionId}
       revealRequest={terminalRevealRequest}
+      runtimePin={chatRuntimePin}
     />
   ) : null;
   const iosSimulatorPanelContent = (
@@ -12242,6 +12259,7 @@ export function AgentChatPane({
           </div>
         ) : (
           <ChatIosSimulatorPanel
+            key={activeComposerRuntimeBinding?.key ?? "bound"}
             sessionId={selectedSessionId}
             laneId={selectedSession?.laneId ?? laneId}
             projectRoot={iosSimulatorProjectRoot}
@@ -12275,6 +12293,7 @@ export function AgentChatPane({
           </div>
         ) : (
           <ChatAppControlPanel
+            key={activeComposerRuntimeBinding?.key ?? "bound"}
             sessionId={selectedSessionId}
             laneId={laneId}
             projectRoot={iosSimulatorProjectRoot}
@@ -13514,6 +13533,7 @@ export function AgentChatPane({
   ) : null;
 
   return (
+    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId}>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
@@ -13864,7 +13884,7 @@ export function AgentChatPane({
                         scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
-                        allowLocalProofArtifactProtocol={!isRemoteProject}
+                        allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                       />
                     </ChatInfoHostContext.Provider>
@@ -14207,5 +14227,6 @@ export function AgentChatPane({
       ) : null}
     </>
     </ChatWorkspacePathProvider>
+    </ChatRuntimeScopeProvider>
   );
 }

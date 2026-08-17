@@ -3341,7 +3341,23 @@ function subscribeComputerUseEvents(
 
 function subscribeIosSimulatorEvents(
   cb: (payload: IosSimulatorEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  // A pinned panel drives the simulator on the chat's machine, so it has to
+  // hear that machine's session events. Without this it got status reads and
+  // no live updates, and the bound machine's stream would describe a different
+  // simulator entirely.
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<IosSimulatorEventPayload>(
+      payload,
+      "ios_simulator_event",
+    ),
+    cb,
+    "iOS simulator",
+    clearIosSimulatorStatusCaches,
+  );
+  if (removePinned) return removePinned;
   const removeLocal = iosSimulatorEventFanout(cb);
   const removeRemote = subscribeRemoteIosSimulatorEvents(cb);
   return () => {
@@ -3352,7 +3368,19 @@ function subscribeIosSimulatorEvents(
 
 function subscribeAppControlEvents(
   cb: (payload: AppControlEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<AppControlEventPayload>(
+      payload,
+      "app_control_event",
+    ),
+    cb,
+    "App Control",
+    () => appControlStatusCache.clear(),
+  );
+  if (removePinned) return removePinned;
   const removeLocal = appControlEventFanout(cb);
   const removeRemote = subscribeRemoteAppControlEvents(cb);
   return () => {
