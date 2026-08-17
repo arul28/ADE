@@ -206,17 +206,24 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   starts `runSyncHostStartupLoop` in the background right after the socket is
   published), so a desktop can reach it within a second or two of spawn even
   while a project scope is still opening or the sync port band is being
-  reclaimed. The launchd/Windows installers wait
+  reclaimed. All three installers — launchd, systemd, and Windows — wait
   `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS` (30 s; Windows 15 s) for the
   replacement to answer and, if it is alive but still quiet, return
   `ok: true, starting: true` instead of a `replacement_responsive` failure —
-  the supervisor owns that child and it will answer. The desktop then keeps
+  the supervisor owns that child and it will answer. The shared primitives
+  (responsiveness probe, young-brain age check, crash-loop veto) live in
+  `apps/ade-cli/src/serviceManager/serviceHandover.ts` so the platforms cannot
+  drift; `installSystemd.ts` reads unit state from a single
+  `systemctl --user show -p ActiveState -p MainPID` and treats systemd's own
+  `activating` as a live brain. The desktop then keeps
   dialling the socket for `LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`
   (90 s). A forced install (Repair) that finds an unchanged agent whose child
   is younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) and not answering
   yet waits for that child rather than killing it — restarting a booting brain
   only resets its clock, and doing it on every Repair click was how a slow
-  machine could never finish starting one. `projectRecoveryService.diagnose`
+  machine could never finish starting one. A brain that keeps dying is always
+  young, so a recorded crash-loop streak vetoes that wait: it needs the restart
+  and the diagnosis, not more patience. `projectRecoveryService.diagnose`
   reports the same window as `brain_starting` (no Repair offered; the recovery
   screen re-diagnoses every 2 s and reopens the project itself once healthy),
   and `repair()` streams each step to the window via `IPC.recoveryRepairStep`
@@ -224,6 +231,25 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   handover budget expired against healthy-but-slow brains on cold or slower
   machines, the update transaction reported "couldn't be set up", and the
   recovery screen's Repair killed the brain that was seconds from ready.
+- **Linux parity.** `ade` on Linux (headless brains, `install.sh` installs,
+  remote runtimes reached over SSH) goes through `installSystemdService`, which
+  before this used to write the unit, `enable --now`, `restart`, and report
+  success the moment systemd accepted the restart — no proof the replacement
+  ever answered and no way to say "installed, still starting". A remote
+  bootstrap then dialled a socket that was not up yet and read a
+  healthy-but-slow brain as a broken one. It now runs the same handover as
+  macOS: no-op when an unchanged unit already answers, wait rather than restart
+  a child younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (vetoed by a crash-loop
+  streak), and `starting`/`restarted`/`failureStep` on the way out.
+- **A brain that loses its socket ends itself.** `monitorBrainSocketOwnership`
+  (`apps/ade-cli/src/cli.ts`) remembers the inode it bound and polls the path.
+  Binding before the sync host removed the incidental protection the startup
+  loop's `abortIf` gave: two brains that both probe the same *stale* socket can
+  race across the `unlink`/`listen` await, and the loser ends up listening to
+  an inode nothing can reach without ever seeing `EADDRINUSE`. Losing the inode
+  now ends the brain, the supervisor restarts it, and the restart reports
+  `socket_owned_by_other` instead of squatting silently. Windows named pipes
+  are exempt — a pipe name has no directory entry to steal.
 - `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
   one-time packaged-release reset of the old machine-connection trust files.
   It preserves account auth, machine identity, pairing PINs, projects, and SSH

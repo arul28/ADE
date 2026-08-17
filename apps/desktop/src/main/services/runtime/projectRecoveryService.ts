@@ -190,7 +190,7 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
     default:
       return {
         headline: "ADE couldn't open this project.",
-        body: "You can try a repair, or send the technical details to support.",
+        body: "Something stopped ADE's background service from answering. A repair restarts it and checks the project's data — your files and chats aren't touched.",
         canAutoRepair: true,
       };
   }

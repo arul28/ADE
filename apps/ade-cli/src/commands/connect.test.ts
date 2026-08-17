@@ -291,6 +291,25 @@ describe("runConnectCommand", () => {
     expect(result.steps[1]).toMatchObject({ id: "service", state: "ok" });
   });
 
+  it("says the service is still starting instead of claiming it is running", async () => {
+    // `ok: true, starting: true`: registered, brain alive, socket not answering
+    // yet. Neither a failure nor "running" — the step has to say which.
+    const { deps } = makeDeps({
+      service: { installed: false, running: false },
+      installService: async () => ({
+        ok: true,
+        starting: true,
+        message: "the background service (pid 4242) is still starting.",
+      }),
+    });
+    const result = await runConnectCommand([], deps);
+
+    expect(result.ok).toBe(true);
+    expect(result.steps[1]).toMatchObject({ id: "service", state: "ok" });
+    expect(result.steps[1].detail).toContain("still starting");
+    expect(result.steps[1].detail).not.toContain("installed and running");
+  });
+
   it("reports a real service install failure with a foreground fallback", async () => {
     const { deps } = makeDeps({
       service: { installed: false, running: false },

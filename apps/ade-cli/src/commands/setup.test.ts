@@ -521,6 +521,64 @@ describe("runSetupCommand", () => {
     expect(chunks.join("")).toContain("What's left");
   });
 
+  it("waits out a still-starting background service instead of calling it broken", async () => {
+    // The regression this pins: a brain that is registered, alive and simply
+    // not answering yet used to surface as a failed install ("installed but
+    // not running" / "sign-in didn't finish") with a Repair button attached.
+    const chunks: string[] = [];
+    let budget = 0;
+    const result = await runSetupCommand(["--continue", "--no-desktop"], deps({
+      reporter: reporter(chunks),
+      awaitRuntimeService: async ({ budgetMs, onStarting }) => {
+        budget = budgetMs;
+        onStarting();
+        return { ready: false, starting: true, detail: "still starting" };
+      },
+      getAccountStatus: async () => ({ signedIn: false, identity: null }),
+      runConnect: async () => ({ ok: false, detail: "sign-in didn't finish" }),
+      verify: async () => ({
+        ok: false,
+        detail: "the ADE brain is not running",
+        nextAction: "ade brain start",
+      }),
+    }));
+
+    expect(budget).toBeGreaterThanOrEqual(60_000);
+    const account = result.steps.find((s) => s.id === "account");
+    expect(account?.state).toBe("skipped");
+    expect(account?.detail).toContain("still starting");
+    expect(account?.nextAction).toBe("ade connect");
+    // No step failed, so the install is not reported as one.
+    expect(result.ok).toBe(true);
+    const output = chunks.join("");
+    expect(output).toContain("Starting ADE's background service");
+    expect(output).not.toContain("the ADE brain is not running");
+  });
+
+  it("still reports a real failure once the background service is answering", async () => {
+    const chunks: string[] = [];
+    const result = await runSetupCommand(["--continue", "--no-desktop"], deps({
+      reporter: reporter(chunks),
+      awaitRuntimeService: async () => ({
+        ready: true,
+        starting: false,
+        detail: "background service is running",
+      }),
+      getAccountStatus: async () => ({ signedIn: false, identity: null }),
+      runConnect: async () => ({ ok: false, detail: "sign-in didn't finish" }),
+      verify: async () => ({
+        ok: false,
+        detail: "sign-in didn't finish",
+        nextAction: "ade connect",
+      }),
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.steps.find((s) => s.id === "account")?.state).toBe("failed");
+    // Nothing was waited on, so nothing announced a wait.
+    expect(chunks.join("")).not.toContain("Starting ADE's background service");
+  });
+
   it("fails verification for a signed-in machine that never reached the account", async () => {
     // The exact state a clean install lands in: brain healthy, account signed
     // in, machine absent from the account directory because no project is

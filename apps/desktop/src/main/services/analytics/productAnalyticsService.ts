@@ -1189,6 +1189,13 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       return new Date(state.enabledSinceMs).toISOString();
     },
     hashProjectId: (value: string) => opaqueId("project", value),
+    /**
+     * The id PostHog sees as `distinct_id` for anonymous events from this
+     * installation. Surfaced so a diagnostic report a user files by hand can be
+     * matched to the events this machine already sent; it is a random
+     * per-install token, not a device or account identifier.
+     */
+    getDistinctId: (): string => state.identifiedUserHash ?? state.anonymousId,
     installationIdForTesting: () => state.installationId,
     identifiedUserHashForTesting: () => state.identifiedUserHash,
   };

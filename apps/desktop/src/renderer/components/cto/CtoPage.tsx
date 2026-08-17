@@ -17,6 +17,7 @@ import { getPersonalityTheme } from "./personalityTheme";
 import { resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 import { shellBodyCls } from "./shared/designTokens";
+import { TechnicalDetailsFold } from "../app/errorSurfaceKit";
 
 const CTO_ACCENT = "#22D3EE";
 const MAX_WAKING_RETRIES = 4;
@@ -373,7 +374,8 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           <WakingState
             theme={theme}
             title="Couldn't reach the CTO"
-            subtitle={error}
+            subtitle="ADE tried a few times and the CTO didn't answer. Nothing was lost — your thread is still here."
+            detail={error}
             action={{
               label: "Try again",
               onClick: () => {
@@ -444,12 +446,15 @@ function WakingState({
   theme,
   title,
   subtitle,
+  detail = null,
   pulsing = false,
   action,
 }: {
   theme: ReturnType<typeof getPersonalityTheme>;
   title: string;
   subtitle: string;
+  /** Raw failure text. Never on the main line — it goes in the fold. */
+  detail?: string | null;
   pulsing?: boolean;
   /** A failure pane with no way out is a dead end; give it one. */
   action?: { label: string; onClick: () => void };
@@ -471,7 +476,17 @@ function WakingState({
           <Icon size={20} weight="duotone" style={{ color: theme.hex }} />
         </div>
         <div className="mt-4 text-[14px] font-semibold text-fg">{title}</div>
-        <div className="mt-1 max-w-xs text-[12.5px] leading-5 text-muted-fg/50">{subtitle}</div>
+        {/* A failure sentence is longer than "Restoring identity, memory, and
+            recent context." — `max-w-xs` broke it into four ragged centred
+            lines. */}
+        <div
+          className={cn(
+            "mt-1 text-[12.5px] leading-5 text-muted-fg/50",
+            detail || action ? "max-w-[360px]" : "max-w-xs",
+          )}
+        >
+          {subtitle}
+        </div>
         {action ? (
           <button
             type="button"
@@ -480,6 +495,9 @@ function WakingState({
           >
             {action.label}
           </button>
+        ) : null}
+        {detail ? (
+          <TechnicalDetailsFold text={detail} className="mt-4 w-full max-w-[420px] text-left" />
         ) : null}
       </div>
     </div>

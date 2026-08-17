@@ -795,6 +795,15 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
+import {
+  collectDiagnosticReport,
+  writeDiagnosticReportFile,
+} from "../diagnostics/diagnosticReportService";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+} from "../../../shared/types/diagnostics";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 let appResourceUsageCache: {
@@ -4584,6 +4593,89 @@ export function registerIpc({
       },
     });
   });
+
+  /**
+   * Assembles the redacted diagnostic report for whichever error screen asked.
+   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
+   * without a recovery service must never stop someone from filing an issue,
+   * so every optional input degrades to "unknown" rather than throwing.
+   */
+  const buildDiagnosticsReport = async (
+    arg: DiagnosticReportRequestPayload | undefined,
+  ) => {
+    const surface = typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown";
+    const requestedRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    const projectRoot = requestedRoot || getCtx().project.rootPath || null;
+    return await collectDiagnosticReport(
+      {
+        appVersion: app.getVersion(),
+        packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+        isPackaged: app.isPackaged,
+        userDataPath: app.getPath("userData"),
+        reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
+        installId: productAnalyticsService?.getDistinctId() ?? null,
+        accountUserId: getCurrentAccountOwnerId?.() ?? null,
+        projectLogsDir: projectRoot ? resolveAdeLayout(projectRoot).logsDir : null,
+        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
+        diagnoseProject: projectRecoveryService
+          ? (root: string) => projectRecoveryService.diagnose(root)
+          : undefined,
+      },
+      {
+        surface,
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string" ? arg.technicalDetail.slice(0, 16_000) : null,
+        projectRoot,
+      },
+    );
+  };
+
+  ipcMain.handle(
+    IPC.diagnosticsBuildReport,
+    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
+      const result = await buildDiagnosticsReport(arg);
+      return { report: result.report, filePath: result.filePath, issueUrl: result.issueUrl, installId: result.installId };
+    },
+  );
+
+  ipcMain.handle(
+    IPC.diagnosticsOpenIssue,
+    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
+      const result = await buildDiagnosticsReport(arg);
+      const written = writeDiagnosticReportFile(result.filePath, result.report);
+      let copied = false;
+      try {
+        clipboard.writeText(result.report);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+      let opened = false;
+      try {
+        await openExternalUrl(result.issueUrl);
+        opened = true;
+      } catch {
+        opened = false;
+      }
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "issue_report", outcome: opened ? "opened" : "failed" },
+        projectId: null,
+        dedupeKey: `issue_report:${opened ? "opened" : "failed"}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+      return {
+        report: result.report,
+        filePath: written ? result.filePath : "",
+        issueUrl: result.issueUrl,
+        installId: result.installId,
+        copied,
+        opened,
+      };
+    },
+  );
 
   ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
     const ctx = getCtx();

@@ -116,6 +116,40 @@ describe("Windows runtime supervisor", () => {
     });
   });
 
+  it("reports `supervised` from the probe's identity check, never from pid liveness", async () => {
+    const record = {
+      supervisorPid: 4321,
+      runtimePid: 5678,
+      runtimeStartedAtMs: Date.now(),
+      restartCount: 0,
+      lastExitCode: null,
+      lastExitAt: null,
+      nextRestartAt: null,
+      lastLaunchError: null,
+      sessionBound: null,
+    };
+    const wait = (supervised: boolean | undefined) => waitForWindowsRuntimeReadiness({
+      command: { command: "C:\\ADE\\ade.exe", args: ["serve"] },
+      launcherPath: "C:\\ADE\\brain-service.ps1",
+      pidPath: "C:\\ADE\\brain.pid.json",
+      socketPath: "\\\\.\\pipe\\ade-test",
+      spawnSync,
+      readPidRecord: () => record,
+      readinessProbe: () => ({ ready: false, supervised, diagnostic: "not yet" }),
+      timeoutMs: 0,
+      pollMs: 10,
+    });
+
+    // The recorded pids are alive as far as `process.kill(pid, 0)` is
+    // concerned in every one of these cases -- what differs is whether
+    // `Win32_Process` says the pid is a powershell running OUR launcher. Only
+    // that answer may promote a failed install to "still starting".
+    await expect(wait(true)).resolves.toMatchObject({ ready: false, supervised: true });
+    await expect(wait(false)).resolves.toMatchObject({ ready: false, supervised: false });
+    // A probe that says nothing is unknown, and unknown is not healthy.
+    await expect(wait(undefined)).resolves.toMatchObject({ ready: false, supervised: false });
+  });
+
   (process.platform === "win32" ? it : it.skip)(
     "keeps supervising a missing executable and publishes launch-error backoff diagnostics",
     async () => {

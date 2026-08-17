@@ -29,6 +29,7 @@ import {
 } from "../eventDedup";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import type { ProjectLaunchContext } from "../types";
+import type { ServiceManagerResult } from "../../serviceManager/common";
 
 const childProcess = vi.hoisted(() => {
   // `pid` stays undefined by default so the spawn record is a no-op for the
@@ -41,7 +42,9 @@ const childProcess = vi.hoisted(() => {
 });
 
 const runtimeService = vi.hoisted(() => ({
-  installRuntimeService: vi.fn(() => ({
+  // Typed as the real result so a test can set `starting`/`failureStep` — the
+  // two fields that decide whether a rival brain may be spawned.
+  installRuntimeService: vi.fn((): ServiceManagerResult => ({
     ok: false,
     serviceName: "com.ade.runtime",
     action: "install" as const,
@@ -913,6 +916,59 @@ describe("connectToAde embedded mode", () => {
     const spawnCall = childProcess.spawn.mock.calls[0] as unknown[] | undefined;
     expect(spawnCall?.[1]).toEqual(expect.arrayContaining(["serve", "--socket", socketPath]));
     expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to spawn a rival brain while the installed service is still starting", async () => {
+    // The installer left a live, supervised brain that had not answered yet.
+    // Falling through to spawnDaemon here is what put a second, unmanaged brain
+    // on the socket the service already owns.
+    useMissingMachineSocket();
+    runtimeService.installRuntimeService.mockReturnValue({
+      ok: true,
+      starting: true,
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: "/tmp/com.ade.runtime.plist",
+      message: "ADE brain service is registered and starting",
+    });
+    vi.spyOn(JsonRpcClient, "connect").mockRejectedValue(
+      Object.assign(new Error("connect ENOENT"), { code: "ENOENT" }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const attempt = connectToAde({ project, preferServiceRepair: true });
+      const rejection = expect(attempt).rejects.toThrow(
+        /background service is still starting/,
+      );
+      // Long enough to outlast the whole `starting` retry budget.
+      await vi.advanceTimersByTimeAsync(180_000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses to spawn a rival brain when the failed install left a registered replacement", async () => {
+    useMissingMachineSocket();
+    runtimeService.installRuntimeService.mockReturnValue({
+      ok: false,
+      failureStep: "replacement_responsive",
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: "/tmp/com.ade.runtime.plist",
+      message: "replacement did not answer in time",
+    });
+    vi.spyOn(JsonRpcClient, "connect").mockRejectedValue(
+      Object.assign(new Error("connect ENOENT"), { code: "ENOENT" }),
+    );
+
+    await expect(connectToAde({ project, preferServiceRepair: true })).rejects.toThrow(
+      /background service is still starting/,
+    );
+    expect(childProcess.spawn).not.toHaveBeenCalled();
   });
 
   it("keeps the script entrypoint argv shape when a CLI script is resolved", async () => {

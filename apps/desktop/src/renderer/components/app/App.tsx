@@ -9,6 +9,7 @@ import {
   useNavigate
 } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
+import { WarningCircle } from "@phosphor-icons/react";
 
 import { AppShell } from "./AppShell";
 import { resolveSettingsTab } from "../settings/settingsManifest";
@@ -21,6 +22,14 @@ import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
+import { ReportIssueButton } from "./ReportIssueButton";
+import {
+  ERROR_CARD,
+  ERROR_PRIMARY_BUTTON,
+  ERROR_SECONDARY_BUTTON,
+  TechnicalDetailsFold,
+  WhatToDo,
+} from "./errorSurfaceKit";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
@@ -175,6 +184,11 @@ const GuardLoadingFallback = StartupSplashScreen;
 
 /* ---------- Per-route error boundary ---------- */
 
+const PAGE_CRASH_STEPS: readonly string[] = [
+  "Go to Work — the rest of ADE keeps running.",
+  "Come back to this screen. If it breaks again, choose Report issue so we can see what happened here.",
+];
+
 type PageErrorBoundaryState = { hasError: boolean; message: string };
 
 class PageErrorBoundaryInner extends React.Component<
@@ -200,29 +214,71 @@ class PageErrorBoundaryInner extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-8 text-fg">
-          <div className="max-w-[560px] rounded-lg border border-red-500/30 bg-red-500/5 p-4 text-sm">
-            <div className="font-semibold text-red-300">This page crashed</div>
-            <div className="mt-1 text-xs text-muted-fg">{this.state.message || "Unknown error"}</div>
+        <div className="h-full w-full overflow-y-auto text-fg">
+          {/* Min-height row rather than `items-center` on the scroller: a card
+              taller than the pane would otherwise be clipped at the top. */}
+          <div className="flex min-h-full items-center justify-center p-8">
+          <div className="w-full max-w-[520px]">
+            <div className={ERROR_CARD}>
+              <div className="flex items-start gap-3.5">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-400/25 bg-amber-400/10 text-amber-300">
+                  <WarningCircle size={18} weight="fill" aria-hidden="true" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h1 className="text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95">
+                    Something went wrong on this screen
+                  </h1>
+                  <p className="mt-1.5 text-[13px] leading-relaxed text-fg/60">
+                    The rest of ADE is still running, and your project, chats and files are safe.
+                  </p>
+                </div>
+              </div>
+
+              <WhatToDo
+                title="What to do"
+                steps={PAGE_CRASH_STEPS}
+              />
+
+              <div className="mt-5 flex flex-wrap items-center gap-2">
+                {/* Work first: this screen just failed to draw, so re-rendering
+                    it usually fails the same way. Leaving is the move that
+                    reliably works, and Try again stays for the transient case. */}
+                <button
+                  type="button"
+                  className={ERROR_PRIMARY_BUTTON}
+                  onClick={() => {
+                    this.setState({ hasError: false, message: "" });
+                    this.props.onGoHome();
+                  }}
+                >
+                  Go to Work
+                </button>
+                <button
+                  type="button"
+                  className={ERROR_SECONDARY_BUTTON}
+                  onClick={() => this.setState({ hasError: false, message: "" })}
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <ReportIssueButton
+                variant="secondary"
+                context={{
+                  surface: "page_crash",
+                  headline: "Something went wrong on this screen",
+                  technicalDetail: this.state.message || null,
+                }}
+              />
+            </div>
+
+            <TechnicalDetailsFold
+              text={this.state.message || "No error message was recorded."}
+              className="mt-4"
+            />
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="rounded border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors"
-              onClick={() => this.setState({ hasError: false, message: "" })}
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              className="rounded border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors"
-              onClick={() => {
-                this.setState({ hasError: false, message: "" });
-                this.props.onGoHome();
-              }}
-            >
-              Go Home
-            </button>
           </div>
         </div>
       );

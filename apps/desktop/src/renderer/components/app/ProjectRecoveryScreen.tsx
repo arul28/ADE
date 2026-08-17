@@ -1,7 +1,7 @@
 import {
   ArrowLeft,
   CheckCircle,
-  Copy,
+  CircleNotch,
   MinusCircle,
   WarningCircle,
   XCircle,
@@ -16,9 +16,17 @@ import {
   type ProjectRepairReport,
   type RepairStepResult,
 } from "../../../shared/types/recovery";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useAppStore } from "../../state/appStore";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import {
+  ERROR_CARD,
+  ERROR_GHOST_BUTTON,
+  ERROR_PRIMARY_BUTTON,
+  ERROR_SECONDARY_BUTTON,
+  TechnicalDetailsFold,
+  WhatToDo,
+} from "./errorSurfaceKit";
+import { ReportIssueButton } from "./ReportIssueButton";
 
 /**
  * Codes we can attempt an automatic repair for when a live diagnosis isn't
@@ -118,6 +126,50 @@ const FALLBACK_COPY: Record<AdeRecoveryErrorCode, { headline: string; body: stri
   },
 };
 
+type DiagnosisState = ProjectRecoveryDiagnosis["state"];
+
+/**
+ * The part the diagnosis does not carry: what the person should do before
+ * pressing anything. Only states with a real prerequisite get one — inventing
+ * a chore for every state would train people to skip the list.
+ */
+const PREREQUISITE_STEPS: Partial<Record<DiagnosisState, readonly string[]>> = {
+  disk_full: [
+    "Free up space on this computer — emptying the Trash is usually the quickest win.",
+    "Come back here and run the repair.",
+  ],
+  insufficient_headroom: [
+    "Free up a little space on this computer.",
+    "Come back here and run the repair.",
+  ],
+  socket_owned_by_other: [
+    "Quit the other copy of ADE that's running on this computer.",
+    "Then choose Try again.",
+  ],
+};
+
+/** Same idea, keyed by code, for when no live diagnosis came back. */
+const PREREQUISITE_STEPS_BY_CODE: Partial<Record<AdeRecoveryErrorCode, readonly string[]>> = {
+  disk_full: PREREQUISITE_STEPS.disk_full,
+  insufficient_headroom: PREREQUISITE_STEPS.insufficient_headroom,
+  socket_owned_by_other: PREREQUISITE_STEPS.socket_owned_by_other,
+};
+
+/** What pressing Repair actually does, in the order it does it. */
+const REPAIR_PROMISE: readonly string[] = [
+  "Restart ADE's background service",
+  "Check this project's data and finish anything that was interrupted",
+  "Reopen the project",
+];
+
+/** What to do when the repair itself came back empty-handed. */
+const REPAIR_FAILED_STEPS: readonly string[] = [
+  "Try the repair once more — a second pass clears most of these.",
+  "If it fails again, choose Report issue. ADE collects everything needed to look into it, with your personal details removed.",
+];
+
+const REASSURANCE = "Your files, chats and settings aren't touched by a repair.";
+
 type Phase = "diagnosing" | "idle" | "repairing" | "success" | "failure";
 
 /**
@@ -174,7 +226,6 @@ export function ProjectRecoveryScreen() {
   // final report replaces them; until then they are what the user watches.
   const [liveSteps, setLiveSteps] = useState<RepairStepResult[]>([]);
   const [repairError, setRepairError] = useState<string | null>(null);
-  const { copy, copied } = useCopyToClipboard();
   const reopenStartedRef = useRef(false);
 
   // Diagnose on mount / when the failed root changes. On failure fall back to
@@ -217,7 +268,7 @@ export function ProjectRecoveryScreen() {
         if (report.ok) {
           setPhase("success");
         } else {
-          setRepairError(report.nextAction ?? "ADE could not finish the repair.");
+          setRepairError(report.nextAction ?? null);
           setPhase("failure");
         }
       }, SETTLE_MS);
@@ -302,12 +353,38 @@ export function ProjectRecoveryScreen() {
     }
   }, [rootPath, phase]);
 
+  const reopenProject = useCallback(() => {
+    if (!rootPath) return;
+    // Plain reopen, no repair: right after "close the other copy of ADE" or a
+    // transient failure this is the whole fix, and Back alone left people
+    // re-clicking the project.
+    reopenStartedRef.current = true;
+    void switchProjectToPath(rootPath).catch(() => {
+      reopenStartedRef.current = false;
+    });
+  }, [rootPath, switchProjectToPath]);
+
   const fallback = FALLBACK_COPY[code] ?? FALLBACK_COPY.unknown;
   const headline = diagnosis?.headline ?? fallback.headline;
   const body = diagnosis?.body ?? fallback.body;
   const canAutoRepair = Boolean(
     rootPath && (diagnosis ? diagnosis.canAutoRepair : AUTO_REPAIR_CODES.includes(code)),
   );
+  const starting = phase === "idle" && diagnosis?.state === "brain_starting";
+  const isSuccess = phase === "success";
+  const isFailure = phase === "failure";
+  const prerequisites =
+    (diagnosis ? PREREQUISITE_STEPS[diagnosis.state] : PREREQUISITE_STEPS_BY_CODE[code]) ?? null;
+  /** Whether the amber Repair action is on screen at all. */
+  const repairOffered = canAutoRepair && !starting;
+  /**
+   * Storage is the fix for exactly two states. Everywhere else "Review storage"
+   * is a way out rather than the way out, and dressing it like the alternative
+   * to Repair made three buttons of equal weight on every failure.
+   */
+  const storageRelevant = diagnosis
+    ? diagnosis.state === "disk_full" || diagnosis.state === "insufficient_headroom"
+    : code === "disk_full" || code === "insufficient_headroom";
 
   const technicalText = [
     diagnosis?.technicalDetail,
@@ -332,161 +409,188 @@ export function ProjectRecoveryScreen() {
     ? (liveSteps.length ? REPAIR_STEP_LABELS[liveSteps.length] ?? null : REPAIR_STEP_LABELS[0])
     : null;
 
-  const isSuccess = phase === "success";
+  const reviewStorageButton = (
+    <button
+      type="button"
+      onClick={() => {
+        // Clearing the error first exits the recovery takeover; while
+        // projectTransitionError is set, ProjectTabHost keeps rendering this
+        // screen and the route change alone would never reveal Settings.
+        clearProjectTransitionError();
+        navigate(settingsRouteFor("storage.usage"));
+      }}
+      className={storageRelevant ? ERROR_SECONDARY_BUTTON : ERROR_GHOST_BUTTON}
+    >
+      Review storage
+    </button>
+  );
+
+  const heroHeadline = isFailure ? "ADE couldn't finish the repair" : headline;
+  const heroBody = isFailure
+    ? (repairError
+      ?? "The repair ran but didn't clear the problem. Nothing was removed, and you can try again.")
+    : body;
 
   return (
     <div
-      className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto bg-bg/98 px-6 py-10 text-fg backdrop-blur-sm"
+      className="absolute inset-0 z-30 overflow-y-auto bg-bg/98 text-fg backdrop-blur-sm"
       role="region"
       aria-label="Project recovery"
     >
-      <div className="w-full max-w-[520px]">
+      {/* Centred, but as a min-height row rather than `items-center` on the
+          scroller: a card taller than the window would otherwise have its top
+          — Back included — clipped above the scroll origin. */}
+      <div className="flex min-h-full items-center justify-center px-6 py-10">
+      <div className="w-full max-w-[560px]">
         <button
           type="button"
           onClick={clearProjectTransitionError}
-          className="mb-6 inline-flex items-center gap-1.5 text-[12px] font-medium text-fg/55 transition-colors hover:text-fg/85"
+          className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-fg/55 transition-colors hover:text-fg/85"
         >
           <ArrowLeft size={13} weight="bold" />
           Back
         </button>
 
-        <div className="flex flex-col items-center text-center">
-          <div
-            className={
-              "mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border " +
-              (isSuccess
-                ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-400"
-                : "border-amber-400/25 bg-amber-400/10 text-amber-400")
-            }
-          >
-            {isSuccess ? (
-              <CheckCircle size={30} weight="duotone" />
-            ) : (
-              <WarningCircle size={30} weight="duotone" />
-            )}
-          </div>
-
-          {isSuccess ? (
-            <SuccessCard report={report} onOpenWork={() => navigate("/work")} />
-          ) : (
-            <>
-              <h1 className="text-[19px] font-semibold leading-tight tracking-[-0.01em] text-fg/95">
-                {phase === "failure" ? "ADE couldn't finish the repair" : headline}
-              </h1>
-              <p className="mt-2.5 max-w-[420px] text-[13.5px] leading-relaxed text-fg/60">
-                {phase === "failure"
-                  ? (repairError ?? "Try the repair again, or review your storage.")
-                  : body}
-              </p>
-            </>
-          )}
-        </div>
-
-        {/* Repair progress / failure checklist */}
-        {(phase === "repairing" || phase === "failure") && (report || phase === "repairing") ? (
-          <div className="mt-6 rounded-xl border border-amber-400/12 bg-amber-400/[0.04] px-4 py-3.5">
-            {phase === "repairing" ? (
-              <div className="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-amber-100/80">
-                <span
-                  aria-hidden="true"
-                  className="h-3 w-3 shrink-0 animate-spin rounded-full border border-amber-200/30 border-t-amber-300"
-                />
-                {activeStepLabel ? `${activeStepLabel}…` : "Repairing…"}
-              </div>
-            ) : null}
-            {visibleSteps.length ? (
-              <ul className="flex flex-col gap-1.5">
-                {visibleSteps.map((step) => (
-                  <StepRow key={step.id} step={step} />
-                ))}
-              </ul>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* Booting service: no actions, just a live status line. */}
-        {phase === "idle" && diagnosis?.state === "brain_starting" ? (
-          <div className="mt-6 flex items-center justify-center gap-2 text-[12.5px] font-medium text-fg/60">
-            <span
-              aria-hidden="true"
-              className="h-3 w-3 shrink-0 animate-spin rounded-full border border-fg/20 border-t-fg/60"
-            />
-            Waiting for the background service…
-          </div>
-        ) : null}
-
-        {/* Actions. While the service is merely starting, Repair is withheld
-            (it would restart the very brain we are waiting for) but the other
-            ways out stay: a person must never be pinned on a spinner. */}
-        {phase !== "repairing" && !isSuccess ? (
-          <div className="mt-7 flex flex-wrap items-center justify-center gap-2.5">
-            {canAutoRepair && diagnosis?.state !== "brain_starting" ? (
-              <button
-                type="button"
-                onClick={() => void runRepair()}
-                className="inline-flex h-9 items-center justify-center rounded-lg bg-amber-400/90 px-4 text-[13px] font-semibold text-[#1a1206] transition-colors hover:bg-amber-300"
-              >
-                {phase === "failure" ? "Try again" : "Repair ADE"}
-              </button>
-            ) : null}
-            {rootPath ? (
-              <button
-                type="button"
-                onClick={() => {
-                  // Plain reopen, no repair: right after "close the other
-                  // copy of ADE" or a transient failure this is the whole fix,
-                  // and Back alone left people re-clicking the project.
-                  reopenStartedRef.current = true;
-                  void switchProjectToPath(rootPath).catch(() => {
-                    reopenStartedRef.current = false;
-                  });
-                }}
-                className="inline-flex h-9 items-center justify-center rounded-lg border border-border/80 bg-fg/[0.03] px-4 text-[13px] font-medium text-fg/75 transition-colors hover:bg-fg/[0.07]"
-              >
-                {canAutoRepair ? "Open without repairing" : "Try again"}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                // Clearing the error first exits the recovery takeover; while
-                // projectTransitionError is set, ProjectTabHost keeps rendering
-                // this screen and the route change alone would never reveal
-                // Settings.
-                clearProjectTransitionError();
-                navigate(settingsRouteFor("storage.usage"));
-              }}
-              className="inline-flex h-9 items-center justify-center rounded-lg border border-border/80 bg-fg/[0.03] px-4 text-[13px] font-medium text-fg/75 transition-colors hover:bg-fg/[0.07]"
+        <div className={ERROR_CARD}>
+          <div className="flex items-start gap-3.5">
+            <div
+              className={
+                "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border " +
+                (isSuccess
+                  ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-400"
+                  : starting
+                    ? "border-border/70 bg-fg/[0.04] text-fg/55"
+                    : "border-amber-400/25 bg-amber-400/10 text-amber-300")
+              }
             >
-              Review storage
-            </button>
+              {isSuccess ? (
+                <CheckCircle size={18} weight="fill" aria-hidden="true" />
+              ) : starting ? (
+                // Nothing is broken while the service boots; a warning badge
+                // here is the "broken ADE" report this state exists to avoid.
+                <CircleNotch size={17} weight="bold" aria-hidden="true" className="animate-spin" />
+              ) : (
+                <WarningCircle size={18} weight="fill" aria-hidden="true" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              {isSuccess ? (
+                <SuccessCard report={report} onOpenWork={() => navigate("/work")} />
+              ) : (
+                <>
+                  <h1 className="text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95">
+                    {heroHeadline}
+                  </h1>
+                  <p className="mt-1.5 text-[13px] leading-relaxed text-fg/60">{heroBody}</p>
+                </>
+              )}
+            </div>
           </div>
-        ) : null}
 
-        {/* Technical details fold — the only place raw internals appear. */}
-        {technicalText ? (
-          <details className="group mt-6 rounded-lg border border-border/60 bg-fg/[0.015]">
-            <summary className="flex cursor-pointer select-none items-center justify-between px-3.5 py-2.5 text-[12px] font-medium text-fg/55 transition-colors hover:text-fg/80">
-              Show technical details
-              <span className="flex items-center gap-3">
+          {/* Repair progress / failure checklist */}
+          {(phase === "repairing" || isFailure) && (report || phase === "repairing") ? (
+            <div className="mt-5 rounded-xl border border-amber-400/12 bg-amber-400/[0.04] px-4 py-3.5">
+              {phase === "repairing" ? (
+                <div className="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-amber-100/80">
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                    <span
+                      aria-hidden="true"
+                      className="h-3 w-3 animate-spin rounded-full border border-amber-200/30 border-t-amber-300"
+                    />
+                  </span>
+                  {activeStepLabel ? `${activeStepLabel}…` : "Repairing…"}
+                </div>
+              ) : null}
+              {visibleSteps.length ? (
+                <ul className="flex flex-col gap-1.5">
+                  {visibleSteps.map((step) => (
+                    <StepRow key={step.id} step={step} />
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Booting service: nothing to press, so say who is doing the work. */}
+          {starting ? (
+            <div className="mt-5 flex items-start gap-2.5 rounded-xl border border-border/60 bg-fg/[0.02] px-4 py-3 text-[12.5px] leading-relaxed text-fg/65">
+              <span
+                aria-hidden="true"
+                className="mt-1 h-3 w-3 shrink-0 animate-spin rounded-full border border-fg/20 border-t-fg/60"
+              />
+              <span>
+                Waiting for the background service… You can leave this screen — ADE keeps
+                checking and opens the project on its own.
+              </span>
+            </div>
+          ) : null}
+
+          {/* What to do. One list at a time: a prerequisite the person owns, the
+              next move after a failed repair, or what Repair is about to do. */}
+          {!isSuccess && phase !== "repairing" && !starting ? (
+            isFailure ? (
+              <WhatToDo title="What to do next" steps={REPAIR_FAILED_STEPS} />
+            ) : prerequisites ? (
+              <WhatToDo title="What to do" steps={prerequisites} />
+            ) : canAutoRepair ? (
+              <WhatToDo title="What the repair does" steps={REPAIR_PROMISE} />
+            ) : null
+          ) : null}
+
+          {!isSuccess && phase !== "repairing" && !starting && canAutoRepair ? (
+            <p className="mt-3 text-[12.5px] leading-relaxed text-fg/45">{REASSURANCE}</p>
+          ) : null}
+
+          {/* Actions. While the service is merely starting, Repair is withheld
+              (it would restart the very brain we are waiting for) but the other
+              ways out stay: a person must never be pinned on a spinner. */}
+          {phase !== "repairing" && !isSuccess ? (
+            <div className="mt-5 flex flex-wrap items-center gap-2">
+              {repairOffered ? (
+                <button type="button" onClick={() => void runRepair()} className={ERROR_PRIMARY_BUTTON}>
+                  {isFailure ? "Try again" : "Repair ADE"}
+                </button>
+              ) : null}
+              {storageRelevant ? reviewStorageButton : null}
+              {rootPath ? (
                 <button
                   type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void copy(technicalText);
-                  }}
-                  className="inline-flex items-center gap-1 text-[11px] text-fg/45 transition-colors hover:text-fg/75"
+                  onClick={reopenProject}
+                  // With no Repair on screen this *is* the action to take, so
+                  // it carries the primary weight rather than leaving the row
+                  // headless — except while the service is merely starting,
+                  // where the honest answer is that there is nothing to press.
+                  className={
+                    repairOffered || starting ? ERROR_SECONDARY_BUTTON : ERROR_PRIMARY_BUTTON
+                  }
                 >
-                  <Copy size={12} weight="regular" />
-                  {copied ? "Copied" : "Copy"}
+                  {repairOffered ? "Open without repairing" : "Try again"}
                 </button>
-              </span>
-            </summary>
-            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-border/50 px-3.5 py-3 font-mono text-[11px] leading-relaxed text-fg/60">
-              {technicalText}
-            </pre>
-          </details>
+              ) : null}
+              {storageRelevant ? null : reviewStorageButton}
+            </div>
+          ) : null}
+        </div>
+
+        {/* Meta actions live outside the card: they are about this screen, not
+            about the project. */}
+        {phase !== "repairing" && !isSuccess ? (
+          <div className="mt-4">
+            <ReportIssueButton
+              variant="secondary"
+              context={{
+                surface: "project_recovery",
+                headline: heroHeadline,
+                code,
+                technicalDetail: technicalText,
+                projectRoot: rootPath,
+              }}
+            />
+          </div>
         ) : null}
+
+        <TechnicalDetailsFold text={technicalText} className="mt-4" />
+      </div>
       </div>
     </div>
   );
@@ -511,10 +615,10 @@ function SuccessCard({
 
   return (
     <>
-      <h1 className="text-[19px] font-semibold leading-tight tracking-[-0.01em] text-fg/95">
+      <h1 className="text-[16.5px] font-semibold leading-snug tracking-[-0.01em] text-fg/95">
         ADE repaired the project and reopened it
       </h1>
-      <ul className="mt-4 flex flex-col items-center gap-1.5 text-[13px] leading-relaxed text-fg/60">
+      <ul className="mt-3 flex flex-col gap-1.5 text-[12.5px] leading-relaxed text-fg/60">
         {dbLine ? <li>{dbLine}</li> : null}
         {resumedNormally != null ? (
           <li>{pluralize(resumedNormally, "chat")} resumed normally</li>

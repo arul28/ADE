@@ -117,7 +117,13 @@ type WindowsServiceManagerDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   sleep?: (ms: number) => Promise<void>;
-  /** Process liveness for the supervisor/brain pids in the record; tests inject it. */
+  /**
+   * Process liveness for the supervisor/brain pids in the record; tests inject
+   * it. Only ever a cheap gate on ENTERING the young-brain wait -- the
+   * authority on whether a recorded pid is really ours is the readiness
+   * probe's `Win32_Process` identity check, which runs inside that wait and
+   * decides whether the install may report `starting`.
+   */
   pidAlive?: (pid: number) => boolean;
 };
 
@@ -855,7 +861,6 @@ async function installWindowsServiceImpl(
       timeoutMs: deps.handoverTimeoutMs ?? 15_000,
       pollMs: deps.handoverPollMs ?? 100,
       sleep: deps.sleep,
-      pidAlive: deps.pidAlive,
     });
     if (youngReadiness.ready) {
       return {
@@ -964,7 +969,6 @@ async function installWindowsServiceImpl(
     timeoutMs: deps.handoverTimeoutMs ?? 15_000,
     pollMs: deps.handoverPollMs ?? 100,
     sleep: deps.sleep,
-    pidAlive: deps.pidAlive,
   });
   if (!readiness.ready && readiness.supervised) {
     // Same contract as launchd: a supervised brain that has not answered yet

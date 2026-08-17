@@ -27,6 +27,7 @@ import {
 } from "./pinnedRuntimeEvents";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { DiagnosticReportPayload, DiagnosticReportRequestPayload } from "../shared/types/diagnostics";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
@@ -3968,6 +3969,16 @@ contextBridge.exposeInMainWorld("ade", {
         removeLocal();
       };
     },
+  },
+  diagnostics: {
+    buildReport: (
+      context: DiagnosticReportRequestPayload,
+    ): Promise<DiagnosticReportPayload> =>
+      ipcRenderer.invoke(IPC.diagnosticsBuildReport, context),
+    openIssue: (
+      context: DiagnosticReportRequestPayload,
+    ): Promise<DiagnosticReportPayload> =>
+      ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
   },
   recovery: {
     diagnose: (projectRoot: string): Promise<ProjectRecoveryDiagnosis> =>

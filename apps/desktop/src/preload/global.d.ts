@@ -720,6 +720,7 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { DiagnosticReportPayload, DiagnosticReportRequestPayload } from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
 import type {
   ProductAnalyticsCapture,
@@ -891,6 +892,14 @@ declare global {
         runIntegrityCheck: () => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
+      };
+      /**
+       * Absent on older preloads: every call site must tolerate `undefined`
+       * and simply not offer the button.
+       */
+      diagnostics: {
+        buildReport: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
+        openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;

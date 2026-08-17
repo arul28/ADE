@@ -13,6 +13,7 @@ import {
 import { extractError } from "../../lib/format";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
+import { ReportIssueButton } from "../app/ReportIssueButton";
 import {
   COLORS,
   MONO_FONT,
@@ -83,6 +84,12 @@ type RemoteTargetListProps = {
 type ConnectTargetOptions = {
   skipHostKeyTrustCheck?: boolean;
   onError?: (message: string) => void;
+  /**
+   * The connect was stopped because this machine's SSH identity has to be
+   * confirmed first. Distinct from `onError`: nothing failed, and the caller
+   * has to reveal the trust prompt rather than report a failure.
+   */
+  onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
 type AddMode = "choose" | "nearby" | "pair" | "ssh";
@@ -541,18 +548,26 @@ export function RemoteTargetList({
     );
   }, []);
 
-  const ensureHostKeyTrust = useCallback(async (targetId: string) => {
-    const status = await window.ade.remoteRuntime.getSshHostKeyTrust(targetId);
-    if (status.state === "needs_trust" || status.state === "changed") {
-      setHostKeyTrust(status);
-      setError(null);
-      return false;
-    }
-    setHostKeyTrust((current) =>
-      current?.targetId === targetId ? null : current,
-    );
-    return true;
-  }, []);
+  /**
+   * Reveals the host-key prompt when this machine's SSH identity still has to
+   * be confirmed, and reports which case it is. Returns null when the identity
+   * is already trusted and the connect may proceed.
+   */
+  const blockingHostKeyTrust = useCallback(
+    async (targetId: string): Promise<"needs_trust" | "changed" | null> => {
+      const status = await window.ade.remoteRuntime.getSshHostKeyTrust(targetId);
+      if (status.state === "needs_trust" || status.state === "changed") {
+        setHostKeyTrust(status);
+        setError(null);
+        return status.state;
+      }
+      setHostKeyTrust((current) =>
+        current?.targetId === targetId ? null : current,
+      );
+      return null;
+    },
+    [],
+  );
 
   const connectTarget = useCallback(
     async (targetId: string, options: ConnectTargetOptions = {}) => {
@@ -560,8 +575,11 @@ export function RemoteTargetList({
       setSelectedId(targetId);
       try {
         if (!options.skipHostKeyTrustCheck) {
-          const trusted = await ensureHostKeyTrust(targetId);
-          if (!trusted) return null;
+          const blocked = await blockingHostKeyTrust(targetId);
+          if (blocked) {
+            options.onTrustRequired?.(blocked);
+            return null;
+          }
         }
         const result = await window.ade.remoteRuntime.connect(targetId);
         const connectedTarget = {
@@ -621,13 +639,15 @@ export function RemoteTargetList({
         onConnected?.(result);
         return result;
       } catch (err) {
-        let trustRequired = false;
+        let trustState: "needs_trust" | "changed" | null = null;
         try {
-          trustRequired = !(await ensureHostKeyTrust(targetId));
+          trustState = await blockingHostKeyTrust(targetId);
         } catch {
           // Preserve the connect failure when a follow-up trust probe also fails.
         }
-        if (!trustRequired) {
+        if (trustState) {
+          options.onTrustRequired?.(trustState);
+        } else {
           const message = formatRemoteTargetError(err);
           if (options.onError) options.onError(message);
           else setError(message);
@@ -637,7 +657,7 @@ export function RemoteTargetList({
         setBusyId(null);
       }
     },
-    [ensureHostKeyTrust, nextLocalConnectionSnapshotUpdatedAt, onConnected, targets],
+    [blockingHostKeyTrust, nextLocalConnectionSnapshotUpdatedAt, onConnected, targets],
   );
 
   const trustAndConnect = useCallback(async () => {
@@ -767,12 +787,24 @@ export function RemoteTargetList({
               [machineKey]: message,
             }));
           },
+          onTrustRequired: (state) => {
+            connectionErrorReported = true;
+            // Show the trust prompt this row was silently blocked on: it only
+            // renders for the selected target, and this flow had deselected it.
+            setSelectedId(paired.targetId);
+            setAccountRowErrors((current) => ({
+              ...current,
+              [machineKey]: state === "changed"
+                ? "This machine's identity has changed since you last connected. Check the fingerprint below before you continue."
+                : "This machine hasn't been trusted on this computer yet. Check the fingerprint below, then continue.",
+            }));
+          },
         });
         if (!result) {
           if (!connectionErrorReported) {
             setAccountRowErrors((current) => ({
               ...current,
-              [machineKey]: "Couldn't open the connection. Try again.",
+              [machineKey]: "ADE couldn't finish opening the connection, and didn't say why. Try again — if it keeps happening, check that ADE is running on that machine.",
             }));
           }
           return;
@@ -1264,6 +1296,15 @@ export function RemoteTargetList({
                   {publishHealthDisplay.minutes} min
                 </span>
                 {showRepair ? <BrainRepairButton repair={repair} height={22} /> : null}
+                <ReportIssueButton
+                  variant="ghost"
+                  context={{
+                    surface: "connections",
+                    headline: "Other machines may not find this one",
+                    code: "publish_failing",
+                    technicalDetail: `publish health: ${publishHealthDisplay.kind}`,
+                  }}
+                />
               </div>
             ) : null}
           </div>

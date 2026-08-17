@@ -316,8 +316,9 @@ describe("ThisMacCard", () => {
     render(<ThisMacCard sync={makeSync({ status: unreadableSessionStatus() })} sessionState="active" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Repair" }));
-    const failure = await screen.findByText("Repair failed — quit and reopen ADE.");
-    // Terse copy on screen; the technical detail rides along as the tooltip.
+    // The reason the main process gave is the message, not a hidden tooltip:
+    // "Repair failed" alone left people with an instruction and no reason.
+    const failure = await screen.findByText("Repair didn't finish. launchctl load failed.");
     expect(failure.getAttribute("title")).toBe("launchctl load failed.");
     expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
   });

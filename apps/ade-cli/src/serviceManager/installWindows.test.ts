@@ -492,9 +492,14 @@ describe("Windows background service helpers", () => {
       command: serviceCommand,
       launcherPath,
       readPidRecord: immediateReadiness.readPidRecord,
-      readinessProbe: () => ({ ready: false, diagnostic: "Runtime PID 5678 has not bound the pipe yet." }),
+      // The probe's Win32_Process identity check confirmed the recorded pid IS
+      // our supervisor; it is the brain behind it that has not answered.
+      readinessProbe: () => ({
+        ready: false,
+        supervised: true,
+        diagnostic: "Runtime PID 5678 has not bound the pipe yet.",
+      }),
       handoverTimeoutMs: 0,
-      pidAlive: () => true,
       serviceName,
       spawnSync,
       userName: taskUser,
@@ -511,7 +516,7 @@ describe("Windows background service helpers", () => {
     expect(result.message).toContain("still starting");
   });
 
-  it("fails, not starting, when the record's supervisor is dead", async () => {
+  it("fails, not starting, when the recorded supervisor pid is not ours", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
@@ -527,15 +532,23 @@ describe("Windows background service helpers", () => {
       command: serviceCommand,
       launcherPath,
       readPidRecord: immediateReadiness.readPidRecord,
-      readinessProbe: () => ({ ready: false, diagnostic: "not bound" }),
+      // Recycled pid: alive, but `Win32_Process` says it is not a powershell
+      // running our launcher. `pidAlive` would call this "our brain, starting";
+      // only the identity check can tell, and it says no.
+      readinessProbe: () => ({
+        ready: false,
+        supervised: false,
+        diagnostic: "Supervisor PID 1234 is stale or belongs to another process.",
+      }),
       handoverTimeoutMs: 0,
-      pidAlive: () => false,
+      pidAlive: () => true,
       serviceName,
       spawnSync,
       userName: taskUser,
     });
 
     expect(result).toMatchObject({ ok: false, failureStep: "replacement_responsive" });
+    expect(result.starting).toBeUndefined();
   });
 
   it("waits for a young unresponsive brain instead of replacing it", async () => {

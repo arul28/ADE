@@ -138,9 +138,16 @@ describe("ProjectRecoveryScreen", () => {
       await vi.waitFor(() => {
         expect(screen.getByText("ADE's background service is starting.")).toBeTruthy();
       });
-      expect(screen.getByText("Waiting for the background service…")).toBeTruthy();
+      expect(screen.getByText(/Waiting for the background service/)).toBeTruthy();
+      // It says who is doing the work, so the spinner is not the whole story,
+      // without restating the body sentence above it.
+      expect(screen.getByText(/ADE keeps\s+checking and opens the project on its own/)).toBeTruthy();
       // No Repair offer while it is merely starting: Repair would restart it.
       expect(screen.queryByRole("button", { name: "Repair ADE" })).toBeNull();
+      // ...but the ways out stay: nobody is pinned on a spinner.
+      expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Review storage" })).toBeTruthy();
 
       await vi.advanceTimersByTimeAsync(2_100);
       expect(diagnose).toHaveBeenCalledTimes(2);
@@ -224,6 +231,30 @@ describe("ProjectRecoveryScreen", () => {
     expect(
       await screen.findByText("Free up at least 2 GB of space, then try again."),
     ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("names a next action when the repair fails without one of its own", async () => {
+    const diagnose = vi.fn(async () => makeDiagnosis());
+    const repair = vi.fn(async () =>
+      makeReport({
+        ok: false,
+        steps: [{ id: "restart_service", label: "Restarting ADE", status: "failed" }],
+        dbHealthy: null,
+        chatsTotal: null,
+        chatsNeedingAttention: null,
+      }),
+    );
+    globalThis.window.ade = { recovery: { diagnose, repair } } as any;
+    setError();
+
+    render(<ProjectRecoveryScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "Repair ADE" }));
+
+    // A dead end is the failure mode this screen exists to prevent: with no
+    // nextAction from the main process it still says what to do next.
+    expect(await screen.findByText("What to do next")).toBeTruthy();
+    expect(screen.getByText(/Try the repair once more/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 

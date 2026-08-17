@@ -19,7 +19,7 @@
 | `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
 | `apps/ade-cli/src/commands/doctor.ts` | `ade doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account); exits non-zero on any `fail`. `evaluateDoctorRows` is pure and dependency-injected so the desktop connection-doctor card and the CLI share one verdict. |
 | `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
-| `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button — which shares one `restartServiceAndWait()` sequence (install → wait ≤20 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer ADE runtime is already running — quit and reopen ADE instead."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
+| `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer ADE runtime is already running — quit and reopen ADE instead."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
 | `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes lane files in the background. The **storage doctor** compresses history and maintains the database; filesystem candidates such as staging, backups, DerivedData, and build output remain review-first. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
@@ -466,6 +466,69 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 | Desktop JSONL logs | 10 MiB × 2 generations | Current log plus one `.1` rotation; the older rotation is replaced. |
 | Transparent compressed history read | 256 MiB decompressed | Larger inputs are rejected rather than expanded in memory. |
 | Automatic compression sweep | 25 files | Oldest eligible files first, with a delay between files. |
+
+### Diagnostic reports ("Report issue")
+
+Every error surface — the project recovery screen, the renderer and page error
+boundaries, the update-transaction notice, the brain Repair control, and the
+Connections pane's publish-failure line — carries a **Report issue** button
+(`renderer/components/app/ReportIssueButton.tsx`). One press assembles a
+redacted Markdown report, saves it, copies it to the clipboard, and opens a
+prefilled GitHub new-issue page for `arul28/ADE` in the default browser. The URL
+carries only a short stub: GitHub rejects issue URLs somewhere north of 8 KB, so
+the full report rides the clipboard.
+
+| Piece | Where |
+| --- | --- |
+| Pure builder + redactor | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` |
+| Desktop collection (logs, disk, runtime status, recovery diagnosis) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
+| IPC | `IPC.diagnosticsBuildReport`, `IPC.diagnosticsOpenIssue` |
+| Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
+| Headless equivalent | `ade report-issue [--open]` |
+
+The report contains: app version/channel/packaging, platform, arch, OS release
+(plus `sw_vers -productVersion` on macOS), Electron/Node/Chrome versions,
+timezone offset, the surface and recovery code the user hit, the technical
+detail that screen already showed, the local runtime status snapshot, the
+machine and project `last-failure.json`, `last-wedge.json`, the recovery
+diagnosis for the open project, free disk for the ADE home and the project, and
+a bounded tail (120 lines / 32 KB each) of the background-service log
+(`launchd.err.log`, or the Windows supervisor log), `brain.jsonl`,
+`local-runtime.jsonl`, `ade-update.jsonl` and the project's `main.jsonl`. The
+`ade doctor` checks are **not** run: the report must be collectable on a machine
+whose brain will not start.
+
+**Redaction guarantees.** `redactDiagnosticText` runs over the whole assembled
+document as the last step — not per field — so a section added later cannot leak
+by forgetting to opt in. It removes, in order: project roots (collapsed to
+`<project:<name>#<6 hex>>`, stable per path so two reports about one project
+correlate without naming its location), the home directory in every spelling
+(native, JSON-escaped backslashes, percent-encoded, `file://`), any other
+`/Users/…`, `/home/…` or `X:\Users\…` shape, the OS account name, email
+addresses, credentials (JWTs, `Bearer`/`Basic`/`Token` headers, `sk-`/`gh?_`/
+`ph[cx]_`/`xox?-` prefixes, `?token=`-style query params, and hex/base64 blobs
+of 32+ characters adjacent to a key/secret/authorization/cookie word), URL
+userinfo, non-loopback IPv4 and IPv6 addresses (`127.0.0.0/8` and `::1` are
+kept — "the brain answered on 127.0.0.1" is signal and identifies nobody), this
+machine's hostname, `*.ts.net` tailnet names, and `*.local` names. Environment
+variables, the credential store, `~/.ade/secrets/*`, keychain output and
+pairing PINs are never collected at all. The function is idempotent, so
+re-redacting a stored report is a no-op.
+
+**Correlating a report with PostHog.** The report's `Install id (PostHog
+distinct_id)` line is exactly the value the desktop sends as PostHog's
+`distinct_id` (`productAnalyticsService.getDistinctId()` — the identified
+account hash when signed in, otherwise the anonymous `ade_<32 hex>` install
+token). Search PostHog for that `distinct_id` to get the same installation's
+event history. When an account is signed in, `Account hash` carries a 12-hex
+truncated SHA-256 of the account user id — enough to tell two reports apart,
+never enough to recover the account. The account email and name are never
+included.
+
+One coarse analytics event is emitted per press:
+`ade_feature_used { feature: "connections", action: "issue_report", outcome:
+"opened" | "failed" }`, deduped to one per hour per outcome.
+
 
 ## Gotchas
 
