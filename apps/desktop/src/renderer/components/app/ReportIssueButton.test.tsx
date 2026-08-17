@@ -83,5 +83,10 @@ describe("ReportIssueButton", () => {
 
     rerender(<ReportIssueButton context={CONTEXT} variant="ghost" showDisclosure />);
     expect(screen.getByText("What's in the report?")).toBeTruthy();
+    // The one sentence that tells the user what is stripped must survive any
+    // rewording of the fold above it.
+    expect(
+      screen.getByText(/File paths, your name, email addresses and any sign-in codes are removed/i),
+    ).toBeTruthy();
   });
 });

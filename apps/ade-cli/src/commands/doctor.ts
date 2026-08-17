@@ -21,10 +21,7 @@ import {
   type CredentialStoreHealth,
 } from "../services/credentials/credentialStore";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
-import {
-  readBrainStartupState,
-  type BrainStartupState,
-} from "../services/runtime/brainStartupState";
+import { readBrainStartupState } from "../services/runtime/brainStartupState";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
 import type {
   SyncListenerPortDiagnosis,
@@ -145,11 +142,6 @@ export type DoctorCommandDependencies<
     expectedDefaultRole: Options["role"],
   ): string | null;
   unwrapActionEnvelope(value: unknown): unknown;
-  /**
-   * Only consulted when the brain did not answer. Defaults to the real service
-   * probe; injectable so tests can drive the starting/failed split.
-   */
-  readBrainStartupState?(): Promise<BrainStartupState>;
 };
 
 export type DoctorCommandResult = {
@@ -914,7 +906,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
   // never starting.
   const startupState = brainProbe.brain.running
     ? null
-    : await (dependencies.readBrainStartupState ?? readBrainStartupState)();
+    : await readBrainStartupState();
   const input: DoctorInput = {
     nowMs,
     app: {

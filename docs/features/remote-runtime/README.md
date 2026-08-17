@@ -591,6 +591,23 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   be tested against a probe that answers on the Nth call. A failed install with
   `starting` set is not a failure: the service is registered and supervised, so
   it keeps dialling.
+- `apps/ade-cli/src/services/runtime/brainStartupState.ts` —
+  `readBrainStartupState`, the CLI's read of the desktop's `brain_starting`
+  verdict, for callers whose brain did not answer (a brain that answers is
+  running, never starting). The desktop reaches that verdict through its
+  connection pool; the CLI has no pool, so it asks the platform service manager
+  the same questions — is the service registered and running, how old is the
+  brain it supervises, and has that brain been restarted — and calls it
+  `starting` only when the service is installed, not stopped, its brain is
+  younger than the shared `RUNTIME_SERVICE_YOUNG_BRAIN_MS` window, and that
+  brain is not crash-looping. The crash-loop veto matters because a brain that
+  dies and relaunches every few seconds is always young, so age alone would
+  report a crash loop as "starting" forever: on macOS and Linux the veto reads
+  the brain's own `last-failure.json` streak, and on Windows it is the
+  supervisor's `restartCount`. Windows has no `ps -o etime=` either, so the age
+  comes from the same supervisor pid record (`runtimeStartedAtMs`) rather than
+  from the process table. Every probe failure fails closed to not-starting:
+  claiming a brain is starting when we cannot tell would hide a dead one.
 - `apps/ade-cli/src/services/runtime/connectWhileServiceStarts.ts` — dials the
   endpoint of a just-installed service, allowing for a `starting` one, and
   throws `RuntimeServiceStillStartingError` rather than a plain connect failure

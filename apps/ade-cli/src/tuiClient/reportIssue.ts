@@ -1,7 +1,9 @@
-import fs from "node:fs";
 import path from "node:path";
 import { buildCliDiagnosticReport } from "../commands/reportIssue";
-import { diagnosticReportFilePath } from "../services/diagnostics/diagnosticReport";
+import {
+  diagnosticReportFilePath,
+  writeDiagnosticReportFile,
+} from "../services/diagnostics/diagnosticReport";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 /**
@@ -37,19 +39,6 @@ export type TuiDiagnosticReport = {
   installId: string;
 };
 
-/** Mirrors the desktop's report file: owner-only directory and file. */
-function writeReportFile(filePath: string, report: string): boolean {
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(filePath, report, { encoding: "utf8", mode: 0o600 });
-    return true;
-  } catch {
-    // A read-only or full disk must not turn "report a bug" into a second bug;
-    // the issue URL below is still usable on its own.
-    return false;
-  }
-}
-
 export function buildTuiDiagnosticReport(args: {
   projectRoot: string | null;
   env?: NodeJS.ProcessEnv;
@@ -70,7 +59,7 @@ export function buildTuiDiagnosticReport(args: {
   const reportsDir = args.reportsDir
     ?? path.join(resolveMachineAdeLayout(env).adeDir, "diagnostic-reports");
   const filePath = diagnosticReportFilePath(reportsDir, surface, at);
-  const written = writeReportFile(filePath, built.report);
+  const written = writeDiagnosticReportFile(filePath, built.report);
   const body = [
     "A diagnostic report has been prepared.",
     "Private paths, account names, emails and tokens are removed before it is written.",
@@ -83,7 +72,7 @@ export function buildTuiDiagnosticReport(args: {
     "",
     `Install id: ${built.installId}`,
     "",
-    "If ADE Code will not start at all, run `ade report-issue --open` in any terminal — it reads local files only.",
+    "If ADE Code will not start at all, run ade report-issue --open in any terminal — it reads local files only.",
   ]
     .filter((line): line is string => line !== null)
     .join("\n");

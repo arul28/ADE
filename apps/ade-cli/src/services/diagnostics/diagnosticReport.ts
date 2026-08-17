@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Pure diagnostic-report assembly and redaction, shared by the desktop
+ * Diagnostic-report assembly and redaction, shared by the desktop
  * "Report issue" button and the headless `ade report-issue` command.
  *
- * Nothing here touches the filesystem, Electron, or the network: collection
- * lives in the callers, so both a Markdown report and its redaction can be
- * unit-tested with synthetic inputs on every platform.
+ * Assembly and redaction are pure — they touch neither Electron nor the
+ * network, and collection lives in the callers — so both a Markdown report and
+ * its redaction can be unit-tested with synthetic inputs on every platform.
+ * The one exception is {@link writeDiagnosticReportFile}, which lives here so
+ * every surface writes the report with the same owner-only permissions.
  */
 
 /** Where a maintainer files the issue this report is attached to. */
@@ -520,4 +523,22 @@ export function diagnosticReportFileName(surface: string, at: Date): string {
 /** Convenience for callers that already know the directory. */
 export function diagnosticReportFilePath(dir: string, surface: string, at: Date): string {
   return path.join(dir, diagnosticReportFileName(surface, at));
+}
+
+/**
+ * Writes the report with an owner-only directory and file. Best effort: a
+ * read-only or full disk must not turn "report a bug" into a second bug, and
+ * the issue URL is still usable on its own.
+ *
+ * Shared by every surface (desktop button, `ade report-issue`, the TUI) so the
+ * 0o700/0o600 modes are stated in exactly one place.
+ */
+export function writeDiagnosticReportFile(filePath: string, report: string): boolean {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(filePath, report, { encoding: "utf8", mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
 }

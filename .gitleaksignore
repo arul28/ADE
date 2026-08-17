@@ -30,3 +30,10 @@
 
 # Public Clerk OAuth client id (PKCE public client) documented in the dev recipe.
 baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:generic-api-key:77
+
+# Synthetic JWT used as a redaction fixture: the test proves `token=<jwt>` is
+# stripped from diagnostic reports, so it must contain a JWT-shaped string. The
+# working tree now assembles it from three segments at runtime, but the commit
+# that introduced the literal still carries it in its own patch, and gitleaks
+# fingerprints are commit-scoped. Scoped to that one commit and finding.
+359ae24fd3fdf638b1e4b28cbeea34c068285aad:apps/ade-cli/src/services/diagnostics/diagnosticReport.test.ts:generic-api-key:54

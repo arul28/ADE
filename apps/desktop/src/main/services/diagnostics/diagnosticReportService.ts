@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -22,6 +21,8 @@ export {
   buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   redactDiagnosticText,
+  /** Writes the report next to the app's other user data. Best effort. */
+  writeDiagnosticReportFile,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticReport";
 
 export type DiagnosticReportRequest = DiagnosticReportContext & {
@@ -200,15 +201,4 @@ export async function collectDiagnosticReport(
   });
 
   return { report, filePath, issueUrl, installId };
-}
-
-/** Writes the report next to the app's other user data. Best effort. */
-export function writeDiagnosticReportFile(filePath: string, report: string): boolean {
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(filePath, report, { encoding: "utf8", mode: 0o600 });
-    return true;
-  } catch {
-    return false;
-  }
 }

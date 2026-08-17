@@ -1509,17 +1509,6 @@ const watchdogServiceCommand: AdeServiceCommand = {
   env: { ADE_HOME: "/Users/example/.ade" },
 };
 
-function watchdogTempHome(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "ade-watchdog-home-"));
-}
-
-function watchdogRecordingSpawn(calls: Array<{ command: string; args: string[] }>) {
-  return (command: string, args: string[]) => {
-    calls.push({ command, args });
-    return { status: 0, stdout: "", stderr: "" };
-  };
-}
-
 describe("resolveWatchdogServiceName", () => {
   it("keeps each channel on its own watchdog", () => {
     expect(resolveWatchdogServiceName("com.ade.runtime")).toBe("com.ade.watchdog");
@@ -1572,12 +1561,12 @@ describe("renderWatchdogLaunchdPlist", () => {
 
 describe("installLaunchdWatchdogAgent", () => {
   it("writes and loads the agent", () => {
-    const homeDir = watchdogTempHome();
+    const homeDir = makeTempHome("ade-watchdog-home-");
     const calls: Array<{ command: string; args: string[] }> = [];
     const result = installLaunchdWatchdogAgent({
       command: watchdogServiceCommand,
       homeDir,
-      spawnSync: watchdogRecordingSpawn(calls),
+      spawnSync: spawnSequence(calls, []),
     });
 
     const servicePath = watchdogLaunchAgentPath(homeDir);
@@ -1587,7 +1576,7 @@ describe("installLaunchdWatchdogAgent", () => {
   });
 
   it("reports a load failure instead of claiming the agent is armed", () => {
-    const homeDir = watchdogTempHome();
+    const homeDir = makeTempHome("ade-watchdog-home-");
     const result = installLaunchdWatchdogAgent({
       command: watchdogServiceCommand,
       homeDir,
@@ -1600,17 +1589,17 @@ describe("installLaunchdWatchdogAgent", () => {
   });
 
   it("removes the agent with the brain it guards", () => {
-    const homeDir = watchdogTempHome();
+    const homeDir = makeTempHome("ade-watchdog-home-");
     installLaunchdWatchdogAgent({
       command: watchdogServiceCommand,
       homeDir,
-      spawnSync: watchdogRecordingSpawn([]),
+      spawnSync: spawnSequence([], []),
     });
     const servicePath = watchdogLaunchAgentPath(homeDir);
     expect(fs.existsSync(servicePath)).toBe(true);
 
     const calls: Array<{ command: string; args: string[] }> = [];
-    uninstallLaunchdWatchdogAgent({ homeDir, spawnSync: watchdogRecordingSpawn(calls) });
+    uninstallLaunchdWatchdogAgent({ homeDir, spawnSync: spawnSequence(calls, []) });
 
     expect(fs.existsSync(servicePath)).toBe(false);
     expect(calls.map((call) => call.args[0])).toEqual(["bootout", "unload"]);

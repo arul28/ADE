@@ -249,6 +249,7 @@ type InvocationStep = {
 type FormatterId =
   | "status"
   | "doctor"
+  | "brain-status"
   | "auth"
   | "account-auth"
   | "account-token"
@@ -15381,6 +15382,32 @@ function isServiceManagedMachineRuntimeSocket(socketPath: string): boolean {
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
+/**
+ * Whether a silent socket earns the `brain_starting` probe.
+ *
+ * Two vetoes, both about not making a bad situation worse:
+ *
+ * - Supervisor and handover probes run `ade runtime status` as a CHILD process
+ *   with `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`. Probing the service manager
+ *   from inside such a child is recursive on Windows: the status probe asks the
+ *   service manager, which spawns another `ade runtime status`, which fails on
+ *   the same silent pipe and probes again. Windows has no process groups, so
+ *   the spawn timeout kills only the leader and leaks every descendant.
+ * - A `--socket` override points at a different runtime entirely. The default
+ *   machine service's youth says nothing about it, and "still starting, nothing
+ *   to repair" would bury that runtime's real connect error.
+ */
+export function shouldProbeBrainStartupState(args: {
+  socketOverride: string | null;
+  socketPath: string;
+  machineSocketPath: string;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  const env = args.env ?? process.env;
+  if (env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1") return false;
+  return !args.socketOverride || args.socketPath === args.machineSocketPath;
+}
+
 export function shouldBlockManualMachineRuntimeSpawn(
   socketPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -15753,16 +15780,25 @@ async function runRuntimeCommand(
       // registered and the brain behind it is alive and young, it is still
       // coming up — the same verdict the desktop calls `brain_starting`.
       // Callers keep waiting for the endpoint instead of restarting it.
-      const startup = await readBrainStartupState();
+      const starting = shouldProbeBrainStartupState({
+        socketOverride,
+        socketPath,
+        machineSocketPath: resolveMachineAdeLayout().socketPath,
+      })
+        ? (await readBrainStartupState()).starting
+        : false;
       return {
         ok: false,
         running: false,
-        starting: startup.starting,
+        starting,
         socketPath,
-        message: startup.starting
+        // `detail` is the raw connect error on both branches, so it is always
+        // present: a caller reading it should never have to know which verdict
+        // produced the message above it.
+        detail,
+        message: starting
           ? `ADE brain is still starting; it has not answered on ${socketPath} yet. Keep waiting — there is nothing to repair.`
           : detail,
-        ...(startup.starting ? { detail } : {}),
       };
     }
   }
@@ -20508,6 +20544,49 @@ function formatAccountMachines(value: unknown): string {
   ].join("\n");
 }
 
+/**
+ * `ade brain status` and `ade runtime status` in --text mode.
+ *
+ * `starting` — the CLI's read of the desktop's `brain_starting` state — only
+ * means something if a human can see it, so it is printed here with the same
+ * wording as the `ade doctor` Brain row, next to the last-failure line it has
+ * to be read against. Accepts both shapes: `ade brain status` wraps the runtime
+ * result, `ade runtime status` is that result.
+ */
+function brainStatusFormatter(rest: string[]): FormatterId | undefined {
+  const sub = rest.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? "status";
+  return sub === "status" || sub === "show" ? "brain-status" : undefined;
+}
+
+export function formatBrainStatus(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const runtime = isRecord(result.runtime) ? result.runtime : result;
+  const service = isRecord(result.service) ? result.service : null;
+  const starting = result.starting === true || runtime.starting === true;
+  return renderKeyValues("ADE brain", [
+    ["ok", result.ok],
+    ["endpoint", runtime.running === true ? "running" : "not responding"],
+    ["socket", runtime.socketPath],
+    ["version", runtime.version],
+    ["pid", runtime.pid],
+    [
+      "starting",
+      starting
+        ? "yes \u00b7 the background service is up and its brain is coming up; nothing to repair"
+        : null,
+    ],
+    ["channel", runtime.packageChannel],
+    ["build", runtime.buildHash],
+    ["role", runtime.defaultRole],
+    ["project", runtime.projectRoot],
+    ["service", service ? service.message : null],
+    ["port", result.port],
+    ["connected peers", result.connectedPeers],
+    ["last failure", result.lastFailure],
+    ["message", starting ? null : result.message],
+  ]);
+}
+
 function formatTextOutput(
   value: unknown,
   formatter: FormatterId | undefined,
@@ -20528,6 +20607,8 @@ function formatTextOutput(
         ["workspace", isRecord(value) ? value.workspaceRoot : null],
         ["socket", isRecord(value) ? value.socketPath : null],
       ]);
+    case "brain-status":
+      return formatBrainStatus(value);
     case "doctor": {
       const doctorRows = isRecord(value) && Array.isArray(value.rows)
         ? value.rows.filter(isRecord)
@@ -22214,14 +22295,14 @@ async function runCli(
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);
       return {
-        output: formatOutput(result, parsed.options, undefined),
+        output: formatOutput(result, parsed.options, brainStatusFormatter(plan.rest)),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
     }
     if (plan.kind === "brain") {
       const result = await runBrainCommand(plan.rest, parsed.options);
       return {
-        output: formatOutput(result, parsed.options, undefined),
+        output: formatOutput(result, parsed.options, brainStatusFormatter(plan.rest)),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
     }

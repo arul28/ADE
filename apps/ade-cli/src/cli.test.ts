@@ -39,7 +39,9 @@ import {
   startHeadlessRpcSocketServer,
   startHeadlessRpcTcpServer,
   shouldAutoRegisterProjectForPlan,
+  formatBrainStatus,
   shouldBlockManualMachineRuntimeSpawn,
+  shouldProbeBrainStartupState,
   shouldEnforceMachineRuntimeBuildCompatibility,
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
@@ -1254,6 +1256,57 @@ describe("ADE CLI", () => {
     expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(false);
+  });
+
+  it("renders the brain starting verdict in --text next to the last-failure line", () => {
+    const text = formatBrainStatus({
+      ok: false,
+      starting: true,
+      runtime: { running: false, starting: true, socketPath: "/Users/example/.ade/sock/ade.sock" },
+      service: { message: "ADE login service is loaded." },
+      lastFailure: "brain serve failed 2x",
+    });
+    expect(text).toContain("nothing to repair");
+    expect(text).toContain("brain serve failed 2x");
+    // The same output has to read as a plain failure when nothing is coming up.
+    expect(formatBrainStatus({ ok: false, starting: false, runtime: { running: false } }))
+      .not.toContain("nothing to repair");
+  });
+
+  it("skips the brain-starting probe inside supervisor and handover probe children", () => {
+    // Those children run `ade runtime status` with the install lock set. On
+    // Windows the probe would ask the service manager, which spawns another
+    // `ade runtime status` — an unbounded recursive fan-out that leaks
+    // descendants past the spawn timeout.
+    expect(shouldProbeBrainStartupState({
+      socketOverride: null,
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: { ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1" },
+    })).toBe(false);
+    expect(shouldProbeBrainStartupState({
+      socketOverride: null,
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(true);
+  });
+
+  it("skips the brain-starting probe when --socket points at another runtime", () => {
+    expect(shouldProbeBrainStartupState({
+      socketOverride: "/tmp/other.sock",
+      socketPath: "/tmp/other.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(false);
+    // An override that resolves back to this machine's own brain is still the
+    // machine brain, so it keeps the starting verdict.
+    expect(shouldProbeBrainStartupState({
+      socketOverride: "/Users/example/.ade/sock/ade.sock",
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(true);
   });
 
   it("parses runtime idle expiry with a minimum clamp", () => {

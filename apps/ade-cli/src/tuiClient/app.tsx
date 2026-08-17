@@ -10459,7 +10459,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             "",
             error instanceof Error ? error.message : String(error),
             "",
-            "Run `ade report-issue --open` in any terminal instead.",
+            "Run ade report-issue --open in any terminal instead.",
           ].join("\n"),
         });
       }
@@ -17293,7 +17293,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             This can take a minute the first time or right after an update.
             ADE Code opens as soon as it is ready — there is nothing to do.
           </Text>
-          <Text color={theme.color.mutedFg} dimColor>{error}</Text>
           <Text color={theme.color.mutedFg} dimColor>
             Waiting automatically · r retry now · Ctrl+C quit
           </Text>
@@ -17317,7 +17316,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           Retrying automatically · r retry now · Ctrl+C quit
         </Text>
         <Text color={theme.color.mutedFg} dimColor>
-          Run `ade report-issue --open` in another terminal to file this with a redacted diagnostic report.
+          Run ade report-issue --open in another terminal to prepare a report you can post. Personal information is removed.
         </Text>
       </Box>
     );
