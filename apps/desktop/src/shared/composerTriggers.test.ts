@@ -6,6 +6,7 @@ import {
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
+  isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
 } from "./composerTriggers";
 
@@ -281,5 +282,28 @@ describe("composerTriggerSpansWholeDraft", () => {
   it("is false when other content surrounds the token", () => {
     expect(composerTriggerSpansWholeDraft("run /plan", { start: 4, query: "plan" })).toBe(false);
     expect(composerTriggerSpansWholeDraft("/plan it", { start: 0, query: "plan" })).toBe(false);
+  });
+});
+
+describe("isComposerTriggerDismissed", () => {
+  const dismissed = { type: "at" as const, start: 4, query: "cursor" };
+
+  it("keeps a dismissed query dismissed as the user keeps typing", () => {
+    expect(isComposerTriggerDismissed({ type: "at", start: 4, query: "cursor" }, dismissed)).toBe(true);
+    expect(isComposerTriggerDismissed({ type: "at", start: 4, query: "cursor is" }, dismissed)).toBe(true);
+  });
+
+  it("reopens when the query is edited back out of the dead branch", () => {
+    expect(isComposerTriggerDismissed({ type: "at", start: 4, query: "curso" }, dismissed)).toBe(false);
+    expect(isComposerTriggerDismissed({ type: "at", start: 4, query: "curbs" }, dismissed)).toBe(false);
+  });
+
+  it("reopens for a different trigger character or a new trigger position", () => {
+    expect(isComposerTriggerDismissed({ type: "at", start: 9, query: "cursor" }, dismissed)).toBe(false);
+    expect(isComposerTriggerDismissed({ type: "slash", start: 4, query: "cursor" }, dismissed)).toBe(false);
+  });
+
+  it("is false with no dismissal recorded", () => {
+    expect(isComposerTriggerDismissed({ type: "at", start: 4, query: "cursor" }, null)).toBe(false);
   });
 });
