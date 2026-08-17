@@ -194,6 +194,20 @@ export type MultiProjectRpcHandlerOptions = {
    * pretending to have restarted something.
    */
   machineUpdateControls?: MachineUpdateAndRestartDeps;
+  /**
+   * Backs `machine.reportPowerTransition`: the desktop's OS-level pre-suspend
+   * beat, forwarded into the brain.
+   *
+   * The brain is plain Node and gets no such beat of its own — its only native
+   * signal is the heartbeat gap, which cannot be observed until the machine is
+   * already back. Forwarding is what lets the account directory learn "asleep"
+   * BEFORE the machine goes dark, so a phone says "Asleep" with confidence
+   * instead of inferring it from silence. Absent on hosts with no desktop app
+   * (every Linux machine), where the gap detector remains the whole story.
+   */
+  reportMachinePowerTransition?: (
+    input: { kind: "suspend" | "resume"; budgetMs?: number },
+  ) => Promise<void> | void;
   getRuntimeStatus?: () => {
     syncPort: number | null;
     publishHealth: Pick<
@@ -256,6 +270,7 @@ const RUNTIME_METHODS = new Set([
   "personalChats.streamEvents",
   "machineInfo.get",
   "machine.updateAndRestart",
+  "machine.reportPowerTransition",
   "projects.list",
   "projects.add",
   "projects.setCatalogVisibility",
@@ -1524,6 +1539,36 @@ export function createMultiProjectRpcRequestHandler(
       } finally {
         if (machineUpdateAndRestartInFlight === run) machineUpdateAndRestartInFlight = null;
       }
+    }
+
+    // The desktop's pre-suspend beat, forwarded to the brain that publishes
+    // this machine to the account directory.
+    //
+    // The window before the OS takes the machine down is short, so this must
+    // stay bounded and must never be something the desktop waits on: the
+    // publish it triggers carries its own budget, and a brain with nothing
+    // wired answers immediately rather than hanging the caller.
+    if (method === "machine.reportPowerTransition") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "machine.reportPowerTransition requires the cto role.",
+        );
+      }
+      const kind = typeof params.kind === "string" ? params.kind.trim() : "";
+      if (kind !== "suspend" && kind !== "resume") {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "machine.reportPowerTransition requires kind 'suspend' or 'resume'.",
+        );
+      }
+      const report = options.reportMachinePowerTransition;
+      if (!report) return { accepted: false, reason: "unsupported" };
+      const budgetMs = typeof params.budgetMs === "number" && Number.isFinite(params.budgetMs)
+        ? Math.max(250, Math.floor(params.budgetMs))
+        : undefined;
+      await report({ kind, ...(budgetMs === undefined ? {} : { budgetMs }) });
+      return { accepted: true };
     }
 
     if (method === "attention.call") {

@@ -376,7 +376,9 @@ ade code remote --target mac --route tailscale --project ADE
 ade code remote session --target mac --project ADE --session chat-1
                                    # open a remote chat or provider CLI terminal session
 ade login                          # sign in to the optional shared machine account
-ade machines list --text          # list account machines, including offline state
+ade machines list --text          # list account machines: dial status, plus a
+                                   # presence column (Connected/Online/Asleep/
+                                   # Offline and battery or wall power)
 ade machines rename <machine-key> "Build Mac"
                                    # set the account-wide display name
 ade machines rename <machine-key> --clear
@@ -459,7 +461,7 @@ ade login --headless                      # print verification URL + user code
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout
-ade machines list --text
+ade machines list --text                           # includes presence: asleep/online + battery or wall power
 ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
 ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity
 ade machines reconnect                             # re-pair THIS machine after it was removed

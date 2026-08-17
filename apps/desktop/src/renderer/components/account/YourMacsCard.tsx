@@ -14,7 +14,16 @@ import type {
   AdeAccountMachineRemovalResult,
 } from "../../../shared/types";
 import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "../../../shared/types/account";
+import type { MachinePresence } from "../../../shared/types/power";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
+import {
+  NO_CONNECTED_MACHINE_IDS,
+  accountMachinePresence,
+  connectedMachineIds,
+  isMachineConnected,
+  machineStatusLine,
+  type ConnectedMachineIds,
+} from "../../../shared/machinePresence";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   COLORS,
@@ -332,6 +341,8 @@ type ComputerDisplayRow = {
   name: string;
   thisMac: boolean;
   rememberedOnly: boolean;
+  /** This computer holds a live runtime channel to it right now. */
+  connected: boolean;
   statusColor: string;
   statusGlow: boolean;
   statusLine: string | null;
@@ -340,22 +351,45 @@ type ComputerDisplayRow = {
   catalogKeys: string[];
 };
 
+/**
+ * The row's second line, and the ONE place this list decides it.
+ *
+ * `machineStatusLine` answers for everything except an offline machine, where
+ * it can only say the word "Offline" — and "Last seen 3 days ago" answers the
+ * question a reader of that row actually has. The remote-targets list makes the
+ * same call (`AccountMachineRow`), and the two lists describing one machine
+ * differently is worse than either wording.
+ */
+function accountMachineStatusLine(
+  machine: AdeAccountMachine,
+  presence: MachinePresence,
+): string | null {
+  if (presence === "offline") return lastSeenLabel(machine.lastSeenAt);
+  // `connected` is the only presence whose word is empty, so this falls back to
+  // the route only for a connected machine that reported no power — never to a
+  // last-seen time we are in the middle of disproving.
+  return machineStatusLine(machine, { presence }) ?? machineRouteHint(machine);
+}
+
 function displayRowFromAccountMachine(
   machine: AdeAccountMachine,
   thisMac: boolean,
+  connected: boolean,
 ): ComputerDisplayRow {
+  // Presence, then power, then the route. A sleeping laptop says "Asleep · 82%
+  // battery" rather than a route hint that has not been dialable for an hour.
+  const presence = accountMachinePresence(machine, { connected });
+  const asleep = presence === "asleep";
+  const awake = presence === "connected" || (machine.online && !asleep);
   return {
     key: machine.machineKey,
     name: accountMachineDisplayName(machine) ?? "Unnamed computer",
     thisMac,
     rememberedOnly: false,
-    statusColor: machine.online ? COLORS.success : COLORS.textDim,
-    statusGlow: machine.online,
-    statusLine: thisMac
-      ? null
-      : machine.online
-        ? machineRouteHint(machine) ?? "Online"
-        : lastSeenLabel(machine.lastSeenAt),
+    connected: presence === "connected",
+    statusColor: awake ? COLORS.success : COLORS.textDim,
+    statusGlow: awake,
+    statusLine: thisMac ? null : accountMachineStatusLine(machine, presence),
     accountMachine: machine,
     environmentEnvId: null,
     catalogKeys: [],
@@ -368,6 +402,9 @@ function displayRowFromWebMachine(machine: WebMachineEntry): ComputerDisplayRow 
     name: machine.name,
     thisMac: false,
     rememberedOnly: machine.rememberedOnly,
+    // Hosted web rows keep their own vocabulary in `webMachineRowStatusLine`;
+    // they do not borrow the desktop's live-channel mark.
+    connected: false,
     statusColor: WEB_MACHINE_DOT_COLOR[machine.status],
     statusGlow: machine.status === "live",
     statusLine: webMachineRowStatusLine(machine),
@@ -387,6 +424,9 @@ export function YourMacsCard() {
   const [result, setResult] = useState<AdeAccountMachinesResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [localIdentity, setLocalIdentity] = useState<AdeAccountLocalMachineIdentity | null>(null);
+  const [connectedIds, setConnectedIds] = useState<ConnectedMachineIds>(
+    () => NO_CONNECTED_MACHINE_IDS,
+  );
   const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
@@ -488,6 +528,31 @@ export function YourMacsCard() {
     [localIdentity],
   );
 
+  // Which of these computers this one is actually talking to right now.
+  //
+  // Pushed by the main process rather than polled: a live channel is the one
+  // presence signal that changes the instant it changes, and a row that says
+  // "Online" about a machine we hold open is the same class of lie this branch
+  // exists to remove. Absent bridge (hosted web) means no channel, not unknown.
+  useEffect(() => {
+    const api = (window.ade as typeof window.ade | undefined)?.remoteRuntime;
+    if (!api?.getConnectionSnapshot) return;
+    let cancelled = false;
+    void api
+      .getConnectionSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) setConnectedIds(connectedMachineIds(snapshot.connections));
+      })
+      .catch(() => {});
+    const unsubscribe = api.onConnectionSnapshotChanged?.((snapshot) => {
+      if (!cancelled) setConnectedIds(connectedMachineIds(snapshot.connections));
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
   const machines = useMemo(() => {
     const list = [...(result?.machines ?? [])];
     // Pin this computer first; keep directory order otherwise.
@@ -496,8 +561,14 @@ export function YourMacsCard() {
 
   const rows = useMemo<ComputerDisplayRow[]>(() => {
     if (usingWorkspaceRoster) return webMachines.map(displayRowFromWebMachine);
-    return machines.map((machine) => displayRowFromAccountMachine(machine, isThisMac(machine)));
-  }, [isThisMac, machines, usingWorkspaceRoster, webMachines]);
+    return machines.map((machine) =>
+      displayRowFromAccountMachine(
+        machine,
+        isThisMac(machine),
+        isMachineConnected(machine, connectedIds),
+      ),
+    );
+  }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
   const onlineCount = machines.filter((m) => m.online).length;
 
@@ -955,6 +1026,14 @@ export function YourMacsCard() {
                     {row.rememberedOnly ? (
                       <span style={inlineBadge(COLORS.textMuted, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
                         This browser
+                      </span>
+                    ) : null}
+                    {/* Says the word the status line deliberately drops: with
+                        a live channel open, that line spends itself on the
+                        power reading instead. */}
+                    {row.connected ? (
+                      <span style={inlineBadge(COLORS.success, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                        Connected
                       </span>
                     ) : null}
                   </>

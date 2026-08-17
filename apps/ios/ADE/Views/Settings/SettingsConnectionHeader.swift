@@ -49,6 +49,97 @@ func syncConnectionSubjectMachineName(
   }
 }
 
+/// Which machine the card's sleep copy — and its "Wake it" — are about, or nil
+/// when no machine is asleep.
+///
+/// One function for both halves because they used to be computed apart and
+/// drifted: the name came from the failure (the MacBook) while the identity
+/// came from the live attempt target, which `restorePreviousConnection` has
+/// already repointed at the fallback — so "Wake it" under "MacBook Pro is
+/// asleep" dialled the Mac Studio.
+///
+/// While an attempt is in flight the subject is the attempt, and ONLY when that
+/// attempt is itself a wake: the restore that follows a failed switch is a
+/// plain redial with `attemptIsWakingMachine` false, and letting the stale
+/// failure speak for it made the card say "MacBook Pro is waking up" while it
+/// dialled the Mac Studio. Once the attempt is over the failure is the only
+/// thing that still remembers which machine was asleep.
+func syncAsleepCardSubject(
+  transport: SyncTransportHealth,
+  attemptIsWakingMachine: Bool,
+  attemptMachineName: String?,
+  attemptMachineIdentity: String?,
+  failure: SyncConnectAttemptFailure?
+) -> (name: String, identity: String?)? {
+  if transport == .connecting {
+    guard attemptIsWakingMachine,
+          let name = syncTrimmedMachineName(attemptMachineName) else { return nil }
+    return (name, syncTrimmedMachineName(attemptMachineIdentity))
+  }
+  guard let failure,
+        failure.machineWasAsleep,
+        let name = syncTrimmedMachineName(failure.machineName) else { return nil }
+  return (name, syncTrimmedMachineName(failure.machineIdentity))
+}
+
+/// What the connection card leads with.
+///
+/// `.standard` is the transport's own vocabulary — Connected, Reconnecting,
+/// Can't reach — and it is right whenever the machine in question is awake.
+/// It is wrong for a sleeping Mac in a specific and damaging way: it reports
+/// the mechanism ("Reconnecting") instead of the outcome ("it's asleep"), and
+/// the mechanism is what let two machines end up named on one card. The two
+/// sleep cases lead with the outcome and carry the action that fixes it.
+enum SettingsConnectionOutcome: Equatable {
+  case standard
+  case waking(machine: String)
+  case asleep(machine: String, attachedTo: String?)
+}
+
+/// A sleeping machine owns the card for as long as its failure is the newest
+/// thing that happened — which is the same rule the machine rows already use
+/// for their inline failures, and for the same reason: a failed switch restores
+/// the previous connection, so "attached to the Studio, card explaining that
+/// the MacBook is asleep" is the honest steady state, not a contradiction. Any
+/// new attempt clears it.
+func settingsConnectionOutcome(
+  transport: SyncTransportHealth,
+  asleepMachineName: String?,
+  attachedMachineName: String?
+) -> SettingsConnectionOutcome {
+  guard let machine = syncTrimmedMachineName(asleepMachineName) else { return .standard }
+  switch transport {
+  case .connecting:
+    return .waking(machine: machine)
+  case .connected:
+    return .asleep(machine: machine, attachedTo: syncTrimmedMachineName(attachedMachineName))
+  case .unreachable, .disconnected:
+    // Nowhere to fall back to. Naming a machine we are not on would be the
+    // same lie in the other direction.
+    return .asleep(machine: machine, attachedTo: nil)
+  }
+}
+
+func settingsConnectionOutcomeTitle(_ outcome: SettingsConnectionOutcome) -> String? {
+  switch outcome {
+  case .standard: return nil
+  case .waking(let machine): return "\(machine) is waking up"
+  case .asleep(let machine, _): return "\(machine) is asleep"
+  }
+}
+
+func settingsConnectionOutcomeDetail(_ outcome: SettingsConnectionOutcome) -> String? {
+  switch outcome {
+  case .standard:
+    return nil
+  case .waking:
+    return "This can take a moment."
+  case .asleep(_, let attachedTo):
+    guard let attachedTo else { return "Not connected right now" }
+    return "You\u{2019}re still on \(attachedTo)"
+  }
+}
+
 private func syncTrimmedMachineName(_ value: String?) -> String? {
   guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
         !trimmed.isEmpty else {
@@ -64,11 +155,22 @@ struct SettingsConnectionHeader: View {
   let onDisconnect: () -> Void
   let onReconnect: () -> Void
   var onPairWithPin: (() -> Void)?
+  /// Dials the sleeping machine again. Bounded by the same connect attempt as
+  /// every other path, so the card always lands back on a definite state.
+  var onWake: (() -> Void)?
 
   @State private var pulsing = false
 
   private var health: SyncConnectionHealth {
     snapshot.health
+  }
+
+  private var outcome: SettingsConnectionOutcome {
+    settingsConnectionOutcome(
+      transport: health.transport,
+      asleepMachineName: snapshot.asleepMachineName,
+      attachedMachineName: snapshot.attachedMachineName
+    )
   }
 
   var body: some View {
@@ -77,10 +179,11 @@ struct SettingsConnectionHeader: View {
         SettingsStatusDot(
           health: health,
           pulsing: pulsing,
-          reduceMotion: reduceMotion
+          reduceMotion: reduceMotion,
+          isAsleep: outcome != .standard
         )
         VStack(alignment: .leading, spacing: 4) {
-          Text(SettingsConnectionPresentation.statusLabel(
+          Text(settingsConnectionOutcomeTitle(outcome) ?? SettingsConnectionPresentation.statusLabel(
             for: health,
             canReconnectToSavedHost: snapshot.canReconnectToSavedHost
           ))
@@ -94,6 +197,7 @@ struct SettingsConnectionHeader: View {
               .fixedSize(horizontal: false, vertical: true)
           }
           if health.transport.isConnected,
+             outcome == .standard,
              let routeLabel = syncTransportBadgeText(routeKind: snapshot.routeKind) {
             Text(routeLabel)
               .font(.caption2.weight(.semibold))
@@ -114,7 +218,31 @@ struct SettingsConnectionHeader: View {
         .layoutPriority(1)
       }
 
-      if !health.transport.isConnected, let hostName = pendingHostName {
+      if showsWakeAction, let onWake {
+        // Its own row rather than the trailing slot: the trailing control
+        // belongs to the connection we are ON, and taking it would cost the
+        // user their Disconnect for as long as this card stands.
+        HStack {
+          Spacer(minLength: 0)
+          ADEGlassActionButton(
+            title: "Wake it",
+            symbol: "power",
+            tint: ADEColor.purpleAccent
+          ) {
+            onWake()
+          }
+          .accessibilityLabel("Wake the machine")
+        }
+      }
+
+      if outcome != .standard {
+        // The outcome lines above already name both machines and carry the
+        // action. Anything else here is the second label that started this.
+        EmptyView()
+      } else if health.transport == .unreachable, let hostName = pendingHostName {
+        // Only after the attempt is over. While it is running the status line
+        // above already names the machine being reached, and a second line
+        // repeating it is how this card came to carry two of them.
         Text(pendingDescription(hostName: hostName))
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
@@ -130,6 +258,7 @@ struct SettingsConnectionHeader: View {
       }
 
       if let errorMessage,
+         outcome == .standard,
          !health.transport.isConnected {
         SettingsInlineErrorBanner(
           message: errorMessage,
@@ -228,15 +357,30 @@ struct SettingsConnectionHeader: View {
     return "Update ADE on this machine for full mobile support."
   }
 
+  /// Shown only once the wake has settled. During the attempt the trailing
+  /// Cancel is the right control, and a second button offering to start what is
+  /// already running is how a card stops being trustworthy.
+  private var showsWakeAction: Bool {
+    guard onWake != nil else { return false }
+    if case .asleep = outcome { return true }
+    return false
+  }
+
   private var stateDetailLine: String? {
+    if let detail = settingsConnectionOutcomeDetail(outcome) { return detail }
     switch health.transport {
     case .connected:
       // Name the machine you're attached to, right under the status word.
       return snapshot.hostDisplayName
     case .connecting:
       // Never claim the target is a *saved* machine — an account adoption can
-      // be reaching a Mac this phone has never paired with.
-      return snapshot.accountConnectStageLabel ?? "Connecting to your machine"
+      // be reaching a Mac this phone has never paired with. With no stage
+      // label, name the machine this attempt is actually aimed at: the subject
+      // name is repointed with the attempt, so the two lines of this card
+      // cannot name different machines by construction.
+      if let stage = snapshot.accountConnectStageLabel { return stage }
+      guard let machine = pendingHostName else { return "Connecting to your machine" }
+      return "Connecting to \(machine)\u{2026}"
     case .unreachable:
       return "Can\u{2019}t reach your machine"
     case .disconnected:
@@ -353,6 +497,7 @@ private struct SettingsStatusDot: View {
   let health: SyncConnectionHealth
   let pulsing: Bool
   let reduceMotion: Bool
+  var isAsleep = false
 
   var body: some View {
     ZStack {
@@ -392,6 +537,9 @@ private struct SettingsStatusDot: View {
   }
 
   private var dotColor: Color {
+    // A sleeping machine is not a fault. Amber says "needs a tap", which is
+    // exactly true, where red would say something is broken.
+    if isAsleep { return ADEColor.warning }
     switch health.transport {
     case .connected:
       return health.load == .strained ? ADEColor.warning : ADEColor.purpleAccent

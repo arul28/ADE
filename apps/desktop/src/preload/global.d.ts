@@ -29,6 +29,9 @@ import type {
   AppNavigationRequest,
   AppZoomCommand,
   AutoUpdatePreferences,
+  KeepAwakeFixResult,
+  KeepAwakeLevel,
+  KeepAwakeSnapshot,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -3067,6 +3070,9 @@ declare global {
         runProjectScan: () => Promise<CtoRunProjectScanResult>;
         getAttention: () => Promise<CtoAttentionState>;
       };
+      keepAwakeGet: () => Promise<KeepAwakeSnapshot>;
+      keepAwakeSetLevel: (level: KeepAwakeLevel) => Promise<KeepAwakeSnapshot>;
+      keepAwakeFixSystemSleep: () => Promise<KeepAwakeFixResult>;
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateGetPreferences: () => Promise<AutoUpdatePreferences>;

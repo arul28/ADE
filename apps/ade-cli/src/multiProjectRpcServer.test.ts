@@ -2768,3 +2768,140 @@ describe("machine.updateAndRestart", () => {
     }
   });
 });
+
+describe("machine.reportPowerTransition", () => {
+  const initialize = async (
+    handler: ReturnType<typeof createMultiProjectRpcRequestHandler>,
+    role: string,
+  ) => {
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { identity: { role } },
+    });
+  };
+
+  it("carries the desktop's pre-suspend beat to the brain within its budget", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const reportMachinePowerTransition = vi.fn(async () => {});
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        reportMachinePowerTransition,
+      });
+      await initialize(handler, "cto");
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.reportPowerTransition",
+        params: { kind: "suspend", budgetMs: 2_000 },
+      });
+
+      expect(result).toEqual({ accepted: true });
+      expect(reportMachinePowerTransition).toHaveBeenCalledWith({
+        kind: "suspend",
+        budgetMs: 2_000,
+      });
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("carries the wake back too", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const reportMachinePowerTransition = vi.fn(async () => {});
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        reportMachinePowerTransition,
+      });
+      await initialize(handler, "cto");
+      await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.reportPowerTransition",
+        params: { kind: "resume" },
+      });
+
+      expect(reportMachinePowerTransition).toHaveBeenCalledWith({ kind: "resume" });
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("refuses a caller below the cto role", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const reportMachinePowerTransition = vi.fn(async () => {});
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        reportMachinePowerTransition,
+      });
+      await initialize(handler, "agent");
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.reportPowerTransition",
+        params: { kind: "suspend" },
+      })).rejects.toThrow(/requires the cto role/);
+      expect(reportMachinePowerTransition).not.toHaveBeenCalled();
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("rejects a transition it does not understand", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const reportMachinePowerTransition = vi.fn(async () => {});
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        reportMachinePowerTransition,
+      });
+      await initialize(handler, "cto");
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.reportPowerTransition",
+        params: { kind: "hibernate" },
+      })).rejects.toThrow(/kind 'suspend' or 'resume'/);
+      expect(reportMachinePowerTransition).not.toHaveBeenCalled();
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("answers honestly on a brain with nothing wired instead of hanging the caller", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+      });
+      await initialize(handler, "cto");
+      expect(await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.reportPowerTransition",
+        params: { kind: "suspend" },
+      })).toEqual({ accepted: false, reason: "unsupported" });
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+});

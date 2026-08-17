@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, shell } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -298,6 +298,9 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createKeepAwakeService } from "./services/power/keepAwakeService";
+import { getPowerStateService } from "./services/power/powerStateService";
+import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
 import { createAgentToolsCacheService } from "./services/tools/agentToolsCacheService";
@@ -1709,6 +1712,19 @@ app.whenReady().then(async () => {
       }
     },
   });
+  // Carry this machine's OS-level suspend/resume into the brain, which has no
+  // such hook of its own and owns the account-directory publisher. Registered
+  // here rather than lazily so the beat is already wired the first time the lid
+  // closes, and disposed with the app below.
+  const machinePowerBrainBridge = createMachinePowerBrainBridge({
+    powerSource: getPowerStateService(),
+    logger: localRuntimeLogger,
+    report: ({ kind, budgetMs }) => localRuntimePool.callSync(
+      "machine.reportPowerTransition",
+      { kind, budgetMs },
+      { timeoutMs: budgetMs },
+    ),
+  });
   const mirrorDesktopRecentProjectToMachineCatalog = (rootPath: string): void => {
     void localRuntimePool.ensureProject(rootPath, {
       catalogVisibility: "recent",
@@ -2492,6 +2508,20 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  // Opt-in, default off: ADE holds no power assertion until the user picks a
+  // level, and even then only while an agent turn is actually running. Turns
+  // live in the brain, so the live count is asked of the runtime pool.
+  const keepAwakeService = createKeepAwakeService({
+    globalStatePath,
+    powerSaveBlocker,
+    readActiveTurns: async () => (await localRuntimePool.activitySummary()).activeAgentTurns,
+    logger: {
+      info: (event, data) => updateLogger.info(event, data as Record<string, unknown> | undefined),
+      warn: (event, data) => updateLogger.warn(event, data as Record<string, unknown> | undefined),
+    },
+    productAnalyticsService,
+  });
+  keepAwakeService.start();
   // Pinned agent tools are fetched, not bundled. The brain kicks its own
   // background fetch on `ade serve`, but the desktop app can be launched
   // against a brain that is already running (or one that failed its fetch), so
@@ -3597,6 +3627,10 @@ app.whenReady().then(async () => {
       linearCredentials: linearCredentialService,
       prService,
       diskPressureMonitor,
+      // Electron's `suspend` fires a beat BEFORE the machine goes down, which
+      // is the only moment a turn in flight can still be told why it is about
+      // to stall.
+      hostPowerSource: getPowerStateService(),
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
@@ -6189,7 +6223,17 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
+    try {
+      keepAwakeService?.dispose();
+    } catch {
+      // ignore
+    }
     disposeSharedTranscriptionService();
+    try {
+      machinePowerBrainBridge.dispose();
+    } catch {
+      // ignore
+    }
     try {
       localRuntimePool.dispose();
     } catch {
@@ -6291,6 +6335,11 @@ app.whenReady().then(async () => {
 
       try {
         autoUpdateService?.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        keepAwakeService?.dispose();
       } catch {
         // ignore
       }
@@ -7555,6 +7604,9 @@ app.whenReady().then(async () => {
       const ctx = getActiveContext();
       if (!ctx.autoUpdateService) {
         ctx.autoUpdateService = autoUpdateService;
+      }
+      if (!ctx.keepAwakeService) {
+        ctx.keepAwakeService = keepAwakeService;
       }
       if (!ctx.agentToolsCacheService) {
         ctx.agentToolsCacheService = agentToolsCacheService;

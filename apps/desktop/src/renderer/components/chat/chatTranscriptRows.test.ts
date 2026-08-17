@@ -2272,6 +2272,106 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.messageId).toBe("msg-new");
   });
 
+  it("resolves the host-sleep chip in place instead of appending a second artifact", () => {
+    const pausedThenResumed: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Running tests…",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: { hostSleep: { sleepId: "host-sleep-1" } },
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:04:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "host_awake",
+          message: "Resumed · paused 4m",
+          detail: { hostSleep: { sleepId: "host-sleep-1", pausedMs: 240_000 } },
+          turnId: "turn-1",
+        },
+      },
+    ];
+
+    const rows = collapseChatTranscriptEvents(pausedThenResumed);
+    const sleepRows = rows.filter((row) => row.key.startsWith("host-sleep:"));
+    expect(sleepRows).toHaveLength(1);
+    expect(sleepRows[0]?.event).toMatchObject({
+      type: "system_notice",
+      status: "host_awake",
+      message: "Resumed · paused 4m",
+    });
+
+    // The incremental path must land on exactly the same single row, since it
+    // is the one the live transcript actually runs.
+    const incremental = collapseChatTranscriptEventsIncremental(
+      pausedThenResumed,
+      pausedThenResumed.slice(0, 2),
+      collapseChatTranscriptEvents(pausedThenResumed.slice(0, 2)),
+    );
+    expect(incremental.filter((row) => row.key.startsWith("host-sleep:"))).toHaveLength(1);
+    expect(incremental.map((row) => row.key)).toEqual(rows.map((row) => row.key));
+  });
+
+  it("gives a second sleep in the same turn its own chip", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: { hostSleep: { sleepId: "host-sleep-1" } },
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:04:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "host_awake",
+          message: "Resumed · paused 4m",
+          detail: { hostSleep: { sleepId: "host-sleep-1", pausedMs: 240_000 } },
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:05:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: { hostSleep: { sleepId: "host-sleep-2" } },
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rows.filter((row) => row.key.startsWith("host-sleep:"))).toHaveLength(2);
+  });
+
   it("collapses started and completed context_compact events into one divider row", () => {
     const rows = collapseChatTranscriptEvents([
       {

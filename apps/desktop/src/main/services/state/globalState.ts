@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AppWelcomeVideoState,
   AutoUpdatePreferences,
+  KeepAwakePreferences,
   OpenProjectBinding,
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
@@ -66,6 +67,8 @@ export type GlobalState = {
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;
   failedInstallAttempts?: FailedInstallAttempts;
   autoUpdatePreferences?: AutoUpdatePreferences;
+  /** Whether ADE may hold this machine awake while agents run. Default: never. */
+  keepAwakePreferences?: KeepAwakePreferences;
   welcomeVideo?: AppWelcomeVideoState;
 };
 

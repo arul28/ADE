@@ -294,6 +294,18 @@ export type AgentChatNoticeDetail = {
     targetLaneId: string;
     targetSessionId: string;
   };
+  /**
+   * Identity of one host sleep, carried by both halves of the pause/resume
+   * chip (`status: "host_asleep"` then `"host_awake"`). The renderer folds the
+   * two into a SINGLE transcript row by this id, so a machine that sleeps
+   * mid-turn adds one artifact to the transcript and then resolves it in
+   * place — never a second banner under the first.
+   */
+  hostSleep?: {
+    sleepId: string;
+    /** How long the machine was out. Present on the resumed half when measured. */
+    pausedMs?: number;
+  };
 };
 
 export type AgentChatLocalFileRef = {

@@ -446,6 +446,34 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "account-machines",
     )).toContain("unreachable");
+    // A machine that announced its own suspend must read "Asleep" here, not
+    // "online" — the whole point of publishing the announcement is that the
+    // heartbeat window alone cannot tell a shut lid from a live machine. The
+    // battery slot is absent for a machine that reported none, so a desktop
+    // never renders as one at 0%.
+    const sleeping = formatOutput(
+      {
+        state: "ok",
+        message: null,
+        machines: [{
+          machineKey: "laptop",
+          deviceId: "device-laptop",
+          name: "MacBook Pro",
+          platform: "macOS",
+          deviceType: "desktop",
+          reachableEndpoints: [],
+          lastSeenAt: Date.now(),
+          online: true,
+          sleepState: "asleep",
+          sleepStateAt: Date.now(),
+          power: { batteryPercent: 82, charging: false, onExternalPower: false },
+        }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "account-machines",
+    );
+    expect(sleeping).toContain("Asleep · 82% battery");
+    expect(sleeping).toContain("wakes when you connect to it");
     const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
     expect(rawActionPlan.steps[0]).toMatchObject({
       method: "account.call",

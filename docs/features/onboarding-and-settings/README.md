@@ -76,6 +76,21 @@ Main process:
   brain, the CLI, and the desktop all see an interrupted rotation. `tryBegin`
   compare-and-swaps that entry so a live peer's in-flight Clerk refresh is a
   mutex, not a race.
+- `apps/desktop/src/main/services/power/keepAwakeService.ts` and
+  `systemSleepConfig.ts` — the opt-in keep-awake setting. The service holds an
+  Electron `powerSaveBlocker` only while a turn is actually running, reads and
+  writes the macOS lid-sleep switch, and reads the machine's own idle-sleep
+  timer so the UI can offer to fix a setting that would stop agents anyway.
+  Constructed in `main.ts` with `readActiveTurns` wired to the runtime pool's
+  `activitySummary()`. See [Keeping the machine awake](#keeping-the-machine-awake).
+- `apps/desktop/src/shared/types/keepAwake.ts` — `KeepAwakeLevel`,
+  `KeepAwakeSnapshot`, `normalizeKeepAwakePreferences` (anything unrecognized
+  degrades to `never` — an unreadable preference must never be read as "hold the
+  lock"), `systemSleepStopsAgents`, and the frozen `INERT_KEEP_AWAKE_SNAPSHOT`
+  shared by every surface that holds no lock.
+- `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
+  radiogroup, the "This Mac can still sleep" recovery alert, and the
+  system-sleep fix card.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, suggested config
   application, plus passive glossary help state. The active renderer
@@ -1189,7 +1204,7 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), and privacy. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and privacy. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance | `AppearanceSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, launch-prompt clipboard, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
@@ -1216,6 +1231,62 @@ filter out hides its heading too. Cmd-K entries are generated from the
 same manifest — one per tab plus one per setting — so searching "rebase"
 surfaces *Auto-rebase child lanes — Lanes* and lands on that card.
 
+### Keeping the machine awake
+
+**Keep this Mac awake while agents work** (Settings > General > Sleep, anchor
+`keep-awake`) is one radiogroup with three levels, persisted as
+`keepAwakePreferences` on `GlobalState`:
+
+| Level | What it does | Where it works |
+|---|---|---|
+| `never` (default) | ADE holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
+| `while-away` | Electron `powerSaveBlocker.start("prevent-app-suspension")`, held **only while a turn is running**. Stops idle sleep. Not the lid. | macOS, Windows |
+| `lid-closed` | `pmset -a disablesleep 1` through the system authorization dialog. Machine-wide, and it outlives ADE. | macOS only |
+
+The distinction between the middle and top levels is the whole point of the
+setting, and it was measured rather than assumed: **a wake lock stops idle sleep
+only.** An `IOPMAssertion` held continuously for 35 days sat through two
+clamshell sleeps. Nothing in this feature's code or copy may imply otherwise.
+Only `pmset -a disablesleep` survives a closed lid, and it is root-only and
+machine-wide — which is why the top level asks for a password and warns that it
+stays on after you quit. Windows has no equivalent, so the third level is
+**absent** on Windows rather than disabled; a greyed row would imply one is
+coming. The renderer keys that off `snapshot.lidClosedSupported` rather than a
+client-side platform check, and only the copy ("this Mac" vs "this PC") reads
+the local platform.
+
+Two behaviors follow from the level being an arming switch, not a pin:
+
+- The blocker follows the **turn**, not the setting. A 5-second poll asks the
+  runtime pool how many agent turns are active and acquires or releases
+  accordingly; a failed read counts as zero, failing toward releasing the lock.
+  Choosing `never` releases synchronously instead of waiting for the next poll.
+  The `runtime.activitySummary` call the poll depends on carries its own 4-second
+  budget precisely because a wedged call inheriting the 10-minute RPC default
+  could hold the lock long after the user turned it off.
+- The snapshot reports what the **machine** says, not what the stored level
+  says. A `lid-closed` level whose assertion was released behind ADE's back
+  renders a "This Mac can still sleep." alert with a **Turn on again** action,
+  rather than silently claiming a lock it does not hold. `pmset -a disablesleep`
+  is deliberately left engaged at quit — reverting would either prompt for a
+  password on the way out or re-prompt on every launch to put it back.
+
+Separately, the section reads the OS's own idle-sleep timer (`pmset -g custom`
+on macOS, `powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE` on Windows,
+nothing on Linux) and, when a non-zero timer would stop agents anyway, offers a
+one-click fix. The macOS fix writes system power settings and is labelled
+**Fix — needs your password**; the Windows fix edits the signed-in user's active
+scheme and needs no elevation.
+
+The three IPC channels are `ade.keepAwake.get`, `ade.keepAwake.setLevel`, and
+`ade.keepAwake.fixSystemSleep`. Hosted web and the browser mock implement the
+same names against `INERT_KEEP_AWAKE_SNAPSHOT` and answer the fix with "Change
+this on the computer itself."
+
+For what happens when the machine sleeps anyway, see
+[chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
+and [machine power and sleep in the account directory](../sync-and-multi-device/README.md#account-directory-and-connection-leases).
+
 ### Where durable data lives
 
 | What | Location | Notes |
@@ -1226,6 +1297,7 @@ surfaces *Auto-rebase child lanes — Lanes* and lands on that card.
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
+| Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
 | GitHub credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
 | Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
 

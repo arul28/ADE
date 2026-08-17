@@ -285,6 +285,76 @@ describe("AccountPage signed-in", () => {
     expect(screen.queryByText(/you're in/i)).toBeNull();
   });
 
+  it("marks a computer this one holds a live channel to, and drops the stale last-seen", async () => {
+    // Directory heartbeats alone said "Last seen 1h ago" about a machine this
+    // computer was actively talking to. The live channel outranks them, and
+    // the badge — not the status line — is what says the word.
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({
+          machineKey: "studio-key",
+          deviceId: "studio-dev",
+          name: "Studio",
+          online: false,
+          lastSeenAt: Date.now() - 3_600_000,
+          power: { onExternalPower: true },
+        }),
+      ],
+    });
+    const remoteRuntime = {
+      getConnectionSnapshot: vi.fn(async () => ({
+        connections: [
+          {
+            target: {
+              id: "t-1",
+              name: "Studio",
+              hostname: "studio.local",
+              pairedMachine: { hostIdentity: "studio-dev" },
+              sshUser: null,
+              port: null,
+              sshKeyPath: null,
+              lastSeenArch: null,
+              runtimeBinaryVersion: null,
+              lastConnectedAt: null,
+            },
+            state: "connected",
+            arch: null,
+            version: null,
+            projects: [],
+            lastError: null,
+            lastAttemptedAt: null,
+            connectedAt: Date.now(),
+          },
+        ],
+        connectedCount: 1,
+        updatedAt: Date.now(),
+      })),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    };
+    (window.ade as unknown as Record<string, unknown>).remoteRuntime = remoteRuntime;
+
+    renderPage();
+    await screen.findByText("Studio");
+    await waitFor(() => expect(screen.getByText("Connected")).toBeTruthy());
+    expect(screen.getByText("Plugged in")).toBeTruthy();
+    expect(screen.queryByText(/Last seen/)).toBeNull();
+  });
+
+  it("tells an offline computer's last-seen time rather than the bare word Offline", async () => {
+    // `machineStatusLine` only ever returns null for a CONNECTED machine, so
+    // the `?? lastSeenLabel(...)` arm this list used to rely on was dead and
+    // every offline row silently degraded to "Offline" — while the remote
+    // targets list, describing the same machine, kept saying "Last seen 1h
+    // ago". Two lists, one machine, two stories.
+    renderPage();
+    await screen.findByText("Studio");
+
+    expect(await screen.findByText(/Last seen/)).toBeTruthy();
+    expect(screen.queryByText("Offline")).toBeNull();
+  });
+
   it("pins this computer first with a badge and offers rename but never removal", async () => {
     renderPage();
     await screen.findByText("MacBook Pro");

@@ -875,8 +875,55 @@ struct SyncConnectAttemptTarget: Equatable {
 /// restore's `hello_ok` clears `lastError` — which would erase the explanation
 /// for the failure the user just watched. Scoped to one attempt: every new
 /// attempt clears it, so it never needs to carry which machine it was about.
+///
+/// It does carry the machine's NAME, though, and whether that machine was
+/// asleep: the restore that follows a failed switch clears the attempt target,
+/// and without those two the connection card cannot say "MacBook Pro (97) is
+/// asleep — you're still on Arul's Mac Studio" once the dust settles. Both
+/// default to absent so a failure that knows neither reads exactly as before.
 struct SyncConnectAttemptFailure: Equatable {
   let message: String
+  var machineName: String?
+  /// The account-directory identity of that machine. Carried because the name
+  /// alone cannot pick between two Macs called "MacBook Pro", and because the
+  /// card's "Wake it" must dial the machine the card NAMES — the attempt target
+  /// it used to resolve through has already been repointed at the fallback by
+  /// the time the card is standing.
+  var machineIdentity: String?
+  var machineWasAsleep = false
+}
+
+/// What a failed attempt is allowed to say.
+///
+/// The transport's own words describe the last thing that went wrong on the
+/// wire, which is a fair account of a machine that was awake and would not
+/// answer. It is not a fair account of a Mac that was asleep: the relay really
+/// did accept the connection, and the bridge really was not ready — because the
+/// machine on the far end had not finished waking. Reporting that as a relay
+/// fault sent the user looking at ADE's cloud for a closed lid.
+///
+/// A failure the HOST named is never a failed wake, whatever the machine's
+/// presence said when the tap started. A missing PIN, a wrong PIN, or an
+/// account mismatch all came back over a wire that plainly worked; reporting
+/// them as "it didn't wake up in time" sends the user to the machine while the
+/// same block is offering them the PIN sheet.
+func syncConnectFailureMessage(
+  wasWakingMachine: Bool,
+  transportMessage: String,
+  pairingFailure: SyncPairingFailureCode? = nil
+) -> String {
+  guard pairingFailure == nil else { return transportMessage }
+  return wasWakingMachine ? "It didn\u{2019}t wake up in time." : transportMessage
+}
+
+/// Whether a failure is allowed to put the sleep-flavoured card on screen.
+/// Same rule as the message above, and kept beside it so the two cannot drift:
+/// a host-named failure must not leave the card saying "MacBook Pro is asleep".
+func syncConnectFailureBlamesSleep(
+  wasWakingMachine: Bool,
+  pairingFailure: SyncPairingFailureCode?
+) -> Bool {
+  wasWakingMachine && pairingFailure == nil
 }
 
 private struct AccountAdoptionRoute: Equatable, Hashable {
@@ -2869,6 +2916,25 @@ struct WorkLaneNavigationRequest: Equatable, Identifiable {
 }
 
 struct WorkSessionNavigationRequest: Equatable, Identifiable {
+  /// Who minted this request, which decides whether it may go looking for the
+  /// session's owning machine.
+  ///
+  /// Only a link that arrived from OUTSIDE the app — a widget tap, a
+  /// notification, a deeplink — can be about a machine this phone is not on,
+  /// and only those pay the cost of resolving one. An in-app producer already
+  /// knows where it is. The cold-launch restore is the case that forced this to
+  /// be explicit: it mints a request with no machine key before the launch
+  /// reconnect has even started, and owner resolution would turn every plain
+  /// cold launch into a machine transition — a "Sign in again…" error before
+  /// Clerk has restored, an unsolicited "Wake & open" sheet on the launch
+  /// screen, or a pairing racing the reconnect.
+  enum Origin: Equatable {
+    /// Minted inside the app, on the machine it is already attached to.
+    case inApp
+    /// Arrived from a widget, notification or deeplink.
+    case external
+  }
+
   let id: String
   let sessionId: String
   let laneId: String?
@@ -2884,6 +2950,14 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   /// no route-level chat/terminal scroll hook.
   let event: Int?
   let offset: Int?
+  let origin: Origin
+
+  /// The session id, but only where owner resolution is allowed to use it.
+  /// `ensureAccountMachineForNavigation` reads this rather than `sessionId`, so
+  /// the rule lives with the request instead of at every call site.
+  var ownerResolutionSessionId: String? {
+    origin == .external ? sessionId : nil
+  }
 
   var hasProjectScope: Bool {
     [laneId, repoName, branch].contains {
@@ -2911,7 +2985,11 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     itemId: String? = nil,
     eventId: String? = nil,
     event: Int? = nil,
-    offset: Int? = nil
+    offset: Int? = nil,
+    // Defaults to the conservative reading. A producer that IS a link from
+    // outside says so; forgetting costs a link its owner lookup, while the
+    // reverse would cost every cold launch a machine transition.
+    origin: Origin = .inApp
   ) {
     self.id = UUID().uuidString
     self.sessionId = sessionId
@@ -2925,6 +3003,7 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     self.eventId = eventId
     self.event = event
     self.offset = offset
+    self.origin = origin
   }
 }
 
@@ -2965,6 +3044,79 @@ func syncAccountMachineNavigationIsCurrent(
   }
   return targetDeviceId == activeHostIdentity
 }
+
+/// Which account machine actually owns `sessionId`, for a link that did not say.
+///
+/// Links minted before the widget/snapshot path learned to scope itself carry
+/// no machine key at all, and those installs are still on people's phones. The
+/// old reading of "no key" was "the machine you are attached to is fine", which
+/// is only true by luck: a lock-screen tap while attached to a second Mac
+/// opened that Mac against a chat id belonging to the first, and the UI said
+/// "Connected" over the top of it.
+///
+/// Answers from the account-wide Attention feed first — it spans every signed-in
+/// machine, so it is the only source that can name a machine this phone is NOT
+/// attached to. The machine-local workspace snapshot is the fallback and can
+/// only ever confirm the attached machine, which is exactly what a genuinely
+/// local legacy link should resolve to.
+///
+/// Returns nil when nothing knows, and nil MUST mean "unknown owner" to the
+/// caller — never "no owner".
+func syncOwningAccountMachineKey(
+  sessionId: String?,
+  attentionItems: [AccountAttentionItem],
+  workspaceSnapshot: WorkspaceSnapshot?
+) -> String? {
+  guard let sessionId = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !sessionId.isEmpty else {
+    return nil
+  }
+  for item in attentionItems {
+    guard case .session(let itemSessionId, _, _) = item.destination,
+          itemSessionId == sessionId else { continue }
+    if let key = item.machine.accountMachineKey?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !key.isEmpty {
+      return key
+    }
+  }
+  guard let workspaceSnapshot,
+        let key = workspaceSnapshot.machineId?
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+        !key.isEmpty,
+        workspaceSnapshot.agents.contains(where: { $0.sessionId == sessionId }) else {
+    return nil
+  }
+  return key
+}
+
+/// The machine a tapped link should be resolved against, or nil for "whichever
+/// machine is attached is fine".
+///
+/// A link that names a machine is taken at its word — that half never changed.
+/// The change is what "names none" means: it is now a question, answered by
+/// `syncOwningAccountMachineKey`, and only an unanswerable one falls back to the
+/// attached machine. That fallback is load-bearing: links minted by builds
+/// already on people's phones carry no key and must keep working.
+func syncNavigationMachineKey(
+  rawMachineKey: String?,
+  sessionId: String?,
+  attentionItems: [AccountAttentionItem],
+  workspaceSnapshot: WorkspaceSnapshot?
+) -> String? {
+  if let named = rawMachineKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !named.isEmpty {
+    return named
+  }
+  return syncOwningAccountMachineKey(
+    sessionId: sessionId,
+    attentionItems: attentionItems,
+    workspaceSnapshot: workspaceSnapshot
+  )
+}
+
+// The machine-wake vocabulary — `SyncMachineWakeNeed`, the presence windows and
+// `SyncMachineWakeRequest` — lives in `SyncMachineWake.swift`.
 
 /// Whether a landing `hello_ok` means the user must be returned to the Hub.
 ///
@@ -3593,6 +3745,11 @@ final class SyncService: ObservableObject {
       // state — is what stops a stale attempt name from outliving the attempt.
       if isAttached {
         connectAttemptTarget = nil
+        // The wake is over the moment we are on the machine. Left set, a later
+        // background reconnect would inherit both the copy ("is waking up") and
+        // the 25s budget from an attempt that has already succeeded.
+        connectAttemptIsWakingMachine = false
+        connectAttemptBudget = .standard
       }
     }
   }
@@ -3649,6 +3806,15 @@ final class SyncService: ObservableObject {
   /// saved profile happens to point at. Cleared on success and on any user
   /// connection change.
   @Published private(set) var connectAttemptTarget: SyncConnectAttemptTarget?
+  /// Whether the machine the current attempt is aimed at was asleep when it
+  /// started. Drives both the wake budget below and the copy: a failure while
+  /// waking is a machine that did not get up in time, never a broken relay.
+  private(set) var connectAttemptIsWakingMachine = false
+  /// The deadlines this attempt runs under. A wake is slower than a dial by a
+  /// whole machine boot, so the budget belongs to the attempt rather than to
+  /// the app; every race, sleep, and relay negotiation the attempt spawns reads
+  /// it from here. Reset with the rest of the attempt state.
+  private(set) var connectAttemptBudget: SyncConnectionRaceBudget = .standard
   /// The most recent user-initiated attempt failure, kept even when the
   /// previous connection is successfully restored afterwards. Cleared when a
   /// new attempt starts.
@@ -4289,6 +4455,22 @@ final class SyncService: ObservableObject {
     projectHubPresented = false
   }
 
+  /// Drops the sleep claim from the last failed attempt, keeping the failure
+  /// itself. Owns the setter so the wake extension can expire a stale "it's
+  /// asleep" card without the property having to be writable from anywhere
+  /// else.
+  ///
+  /// The distinction is the whole point: `machineWasAsleep` is what puts the
+  /// sleep card and its "Wake it" on screen, so clearing it retires the claim
+  /// the directory just disproved. The message is a separate fact — the
+  /// attempt still failed — and it survives, because the machine woke is not
+  /// the same news as the work opened.
+  func retireSleepClaimOnLastConnectAttemptFailure() {
+    guard var failure = lastConnectAttemptFailure, failure.machineWasAsleep else { return }
+    failure.machineWasAsleep = false
+    lastConnectAttemptFailure = failure
+  }
+
   /// Resets the transient affordances a fresh user-initiated attempt owns.
   ///
   /// This used to also force `projectHubPresented = true`, on the theory that a
@@ -4306,6 +4488,8 @@ final class SyncService: ObservableObject {
     accountConnectStageLabel = nil
     accountPairingPinFallbackHost = nil
     connectAttemptTarget = nil
+    connectAttemptIsWakingMachine = false
+    connectAttemptBudget = .standard
     lastConnectAttemptFailure = nil
     // Owned here rather than by the callers. Requiring each switch path to
     // remember a second call is how the Clip-handoff and SSH-bootstrap paths
@@ -4322,10 +4506,21 @@ final class SyncService: ObservableObject {
   /// `prepareForUserConnectionChange()` so it cannot be forgotten here.
   private func setConnectAttemptTarget(machineName: String?, machineIdentity: String?) {
     guard let name = syncNonEmpty(machineName) else { return }
-    connectAttemptTarget = SyncConnectAttemptTarget(
+    let target = SyncConnectAttemptTarget(
       machineName: name,
       machineIdentity: syncNonEmpty(machineIdentity)
     )
+    // The stage label describes the OLD target's progress, so retargeting has
+    // to retire it here rather than leave it for the end of the attempt. The
+    // fallback path repoints this target and then keeps dialling, which is how
+    // "Connecting to MacBook Pro…" survived onto the card that was already
+    // saying "Reaching Arul's Mac Studio…" underneath it. Two machines, one
+    // card. Clearing at the single place that repoints means no future caller
+    // has to remember a second call — the same disease the target itself had.
+    if connectAttemptTarget != target {
+      accountConnectStageLabel = nil
+    }
+    connectAttemptTarget = target
   }
 
   func disconnectForUserConnectionChange() {
@@ -6637,7 +6832,7 @@ final class SyncService: ObservableObject {
         "peer": self.currentPeerMetadata(connectionAttempt: connectionAttempt),
         "auth": auth,
       ],
-      timeoutNanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds,
+      timeoutNanoseconds: connectAttemptBudget.overallNanoseconds,
       timeoutMessage: "That computer did not finish account connection. Try again.",
       relayAccountOwnerId: owner
     )
@@ -6878,6 +7073,9 @@ final class SyncService: ObservableObject {
       AccountAdoptionRaceFailure(underlying: error, relayRouteFailed: relayRouteFailed)
     }
 
+    // Captured before the group so the detached budget task reads the attempt's
+    // deadline rather than reaching back into the actor for it.
+    let budget = connectAttemptBudget
     return try await withThrowingTaskGroup(of: AdoptedConnectionRaceEvent.self) { group in
       var scheduler = SyncConnectionRaceWaveScheduler(candidates: candidates)
       func start(_ candidate: SyncConnectionRaceScheduledCandidate, in group: inout ThrowingTaskGroup<AdoptedConnectionRaceEvent, Error>) {
@@ -6907,7 +7105,7 @@ final class SyncService: ObservableObject {
       for candidate in scheduler.startInitialCandidates() { start(candidate, in: &group) }
       group.addTask {
         do {
-          try await Task.sleep(nanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds)
+          try await Task.sleep(nanoseconds: budget.overallNanoseconds)
           return .budgetExpired
         } catch {
           return .failed(candidateId: -1, error: error)
@@ -6999,6 +7197,16 @@ final class SyncService: ObservableObject {
       machineName: machine.displayName,
       machineIdentity: machine.deviceId
     )
+    // Decided once, at the top, from the roster this tap came from: everything
+    // below — how long the race waits, what the card says, and what a failure
+    // is allowed to blame — reads the same answer.
+    connectAttemptIsWakingMachine = syncMachineWakeNeed(
+      online: machine.online,
+      lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt),
+      sleepState: machine.sleepState,
+      sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt)
+    ) == .asleep
+    connectAttemptBudget = .forAttempt(wakingMachine: connectAttemptIsWakingMachine)
     defer { accountConnectStageLabel = nil }
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7097,7 +7305,15 @@ final class SyncService: ObservableObject {
       let reconnected = isAttached
       ProductAnalytics.shared.captureMachineAdoptionOutcome(reconnected ? .reconnected : .failed)
       if !reconnected {
-        lastConnectAttemptFailure = SyncConnectAttemptFailure(message: lastError ?? "ADE could not reach \(machine.displayName).")
+        lastConnectAttemptFailure = SyncConnectAttemptFailure(
+          message: syncConnectFailureMessage(
+            wasWakingMachine: connectAttemptIsWakingMachine,
+            transportMessage: lastError ?? "ADE could not reach \(machine.displayName)."
+          ),
+          machineName: machine.displayName,
+          machineIdentity: expectedHostIdentity,
+          machineWasAsleep: connectAttemptIsWakingMachine
+        )
         if let previousProfile,
            syncNonEmpty(previousProfile.hostIdentity ?? previousProfile.lastHostDeviceId)
              != expectedHostIdentity {
@@ -7191,7 +7407,14 @@ final class SyncService: ObservableObject {
       connectionState = .connecting
 
       markConnectAttemptStarted(generation)
-      publishAccountConnectStage("Connecting to \(machine.displayName)…")
+      // Waking is what is actually happening, and it is slower than connecting.
+      // Saying "connecting" for 16 seconds is how a correct wait came to look
+      // like a stuck one.
+      publishAccountConnectStage(
+        connectAttemptIsWakingMachine
+          ? "Waking \(machine.displayName)…"
+          : "Connecting to \(machine.displayName)…"
+      )
       let routesByEndpoint = Dictionary(
         routes.map { ($0.endpoint, $0) },
         uniquingKeysWith: { first, _ in first }
@@ -7231,7 +7454,7 @@ final class SyncService: ObservableObject {
       teardownSocket(closeCode: .goingAway)
       socket = winner.task
       if syncIsFullWebSocketRoute(route.endpoint.address) {
-        relayTransportNegotiations[winner.task.taskIdentifier] = SyncRelayReadyNegotiation()
+        relayTransportNegotiations[winner.task.taskIdentifier] = SyncRelayReadyNegotiation(budget: connectAttemptBudget)
       }
       receiveLoop(for: winner.task)
       _ = try await performAuthorizedAccountPairingCommit(
@@ -7314,7 +7537,23 @@ final class SyncService: ObservableObject {
           || pairingGeneration.map({ !isCurrentConnectAttempt($0) }) == true {
         return false
       }
-      let message = SyncUserFacingError.message(for: error)
+      let wasWakingMachine = connectAttemptIsWakingMachine
+      // The host's own error code, if it named one. `pin_not_set`/`invalid_pin`
+      // and friends describe a wire that worked and a machine that refused, so
+      // they must not be dressed up as a wake that timed out — especially not
+      // while `accountPairingPinFallbackHost` below is offering the PIN sheet.
+      let pairingFailure = SyncPairingFailureCode(
+        hostCode: (error as NSError).userInfo["ADEErrorCode"] as? String
+      )
+      let message = syncConnectFailureMessage(
+        wasWakingMachine: wasWakingMachine,
+        transportMessage: SyncUserFacingError.message(for: error),
+        pairingFailure: pairingFailure
+      )
+      let blamesSleep = syncConnectFailureBlamesSleep(
+        wasWakingMachine: wasWakingMachine,
+        pairingFailure: pairingFailure
+      )
       resetAndCancelReconnectLoop()
       // `allowAutoReconnect` stops THIS attempt from retrying. Persisting a
       // pause here would outlive the relaunch and the network that caused it.
@@ -7327,7 +7566,14 @@ final class SyncService: ObservableObject {
       accountPairingPinFallbackHost = signingPublicKey == nil && relayRouteFailed
         ? pinFallbackHost(for: machine)
         : nil
-      lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
+      // Carries the machine and its sleep so the connection card can still lead
+      // with the outcome after the restore below clears the attempt target.
+      lastConnectAttemptFailure = SyncConnectAttemptFailure(
+        message: message,
+        machineName: machine.displayName,
+        machineIdentity: expectedHostIdentity,
+        machineWasAsleep: blamesSleep
+      )
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       ProductAnalytics.shared.captureError(.pairing)
       lastError = message
@@ -7362,11 +7608,18 @@ final class SyncService: ObservableObject {
     // Re-point the attempt at the machine we are actually dialling now.
     // Leaving it on the machine that just failed would make the connecting copy
     // name the wrong Mac for the whole restore — precisely the bug this type
-    // was introduced to kill, inverted.
+    // was introduced to kill, inverted. `setConnectAttemptTarget` retires the
+    // failed attempt's stage label along with its target: the two are one
+    // attempt's copy and can only stay honest if they move together.
     setConnectAttemptTarget(
       machineName: profile.hostName,
       machineIdentity: profile.hostIdentity ?? profile.lastHostDeviceId
     )
+    // A restore is a plain redial of a machine that was awake a moment ago, so
+    // it must not inherit the wake budget of the attempt it is cleaning up
+    // after — nobody should wait 25s to find out the fallback failed too.
+    connectAttemptIsWakingMachine = false
+    connectAttemptBudget = .standard
     allowAutoReconnect = true
     setAutoReconnectPausedByUser(false)
     // The failed attempt marked every domain `.failed`, and `reconnectIfPossible`
@@ -7426,8 +7679,53 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func ensureAccountMachineForNavigation(_ rawMachineKey: String?) async -> Bool {
-    guard let machineKey = syncNonEmpty(rawMachineKey) else { return true }
+  /// Live wake prompt, or nil. The app root presents it; the only writer is
+  /// `SyncService+MachineWake.swift`, which is why the setter is internal
+  /// rather than `private(set)` — Swift's access control cannot scope a setter
+  /// to one extension file.
+  @Published var pendingMachineWake: SyncMachineWakeRequest?
+  /// The tap the prompt above is waiting for. At most one exists at a time.
+  /// Internal for the same reason as the property above; nothing outside the
+  /// wake extension touches it.
+  var machineWakeDecision: CheckedContinuation<Bool, Never>?
+
+  /// Owner resolution for a Work-session request, with the origin rule applied
+  /// once rather than at every call site.
+  ///
+  /// Two screens answer the same request — the app root and Work's own handler
+  /// — and the second one kept passing `request.sessionId` after the first was
+  /// corrected, which put owner resolution back on the cold-launch restore.
+  /// Taking the request instead of a loose session id leaves nothing for a
+  /// third caller to get wrong.
+  func ensureAccountMachineForNavigation(
+    for request: WorkSessionNavigationRequest
+  ) async -> Bool {
+    await ensureAccountMachineForNavigation(
+      request.accountMachineKey,
+      sessionId: request.ownerResolutionSessionId
+    )
+  }
+
+  /// - Parameters:
+  ///   - rawMachineKey: the machine the link named, if it named one.
+  ///   - sessionId: the session the link opens, used to recover the owning
+  ///     machine of a link minted before links carried one. Callers holding a
+  ///     `WorkSessionNavigationRequest` must use the overload above rather than
+  ///     reading a session id off it here.
+  func ensureAccountMachineForNavigation(
+    _ rawMachineKey: String?,
+    sessionId: String? = nil
+  ) async -> Bool {
+    // "The link named no machine" is not "the current machine is fine". It used
+    // to be, and that is how a lock-screen tap opened a MacBook chat against a
+    // Mac Studio and called it Connected. Ask the local feeds who owns the
+    // session before assuming; only a genuinely unknown owner falls through to
+    // the attached machine, which is what keeps links from already-installed
+    // builds working.
+    guard let machineKey = navigationMachineKey(
+      rawMachineKey: rawMachineKey,
+      sessionId: sessionId
+    ) else { return true }
     if let current = accountNavigationInFlight {
       let result = await current.task.value
       if accountNavigationInFlight?.id == current.id {
@@ -7489,7 +7787,37 @@ final class SyncService: ObservableObject {
       lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
       return false
     }
-    return await pairWithAccountMachine(machine, authorization: authorization)
+
+    // A machine that is asleep or out of reach gets one confirm, not an error.
+    // Dialling it is what wakes it, so "Wake & open" is a literal description
+    // of the button rather than a promise the transport can't keep.
+    guard let need = syncMachineWakeNeed(
+      online: machine.online,
+      lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt),
+      sleepState: machine.sleepState,
+      sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt)
+    ) else {
+      return await pairWithAccountMachine(machine, authorization: authorization)
+    }
+    // Loops so a failed wake retries from the same card. Every pass ends in a
+    // definite state: opened, declined, or a named failure holding a retry.
+    var stage = SyncMachineWakeRequest.Stage.confirm
+    while true {
+      let wake = await awaitMachineWakeDecision(
+        machineName: machine.displayName,
+        need: need,
+        stage: stage
+      )
+      guard wake else { return false }
+      if await pairWithAccountMachine(machine, authorization: authorization) {
+        pendingMachineWake = nil
+        return true
+      }
+      stage = .failed(syncWakeRetryFailureMessage(
+        attemptFailure: lastConnectAttemptFailure,
+        lastError: lastError
+      ))
+    }
   }
 
   /// Adds directory-verified relay metadata to already-paired Macs without
@@ -7500,6 +7828,10 @@ final class SyncService: ObservableObject {
     from machines: [AccountMachine],
     ownerId: String?
   ) {
+    // Every successful directory refresh passes through here, which makes it
+    // the one place that learns a sleeping machine woke up. See
+    // `retireStaleSleepFailure`.
+    retireStaleSleepFailure(machines: machines)
     adoptVerifiedAccountRelayMetadata(
       from: machines,
       ownerId: ownerId,
@@ -8486,8 +8818,12 @@ final class SyncService: ObservableObject {
     beginConnectAttempt()
     clearConnectTimingMetrics()
     // The attempt is over. Leaving its target set would let a later background
-    // reconnect to a DIFFERENT machine be labelled with this one's name.
+    // reconnect to a DIFFERENT machine be labelled with this one's name — and
+    // leaving its wake set would give that reconnect this attempt's copy and
+    // its budget too.
     connectAttemptTarget = nil
+    connectAttemptIsWakingMachine = false
+    connectAttemptBudget = .standard
     pendingHubTransitionBaselineHostIdentity = nil
     autoReconnectAwaitingLiveDiscovery = false
     if suspendAutoReconnect {
@@ -14981,7 +15317,7 @@ final class SyncService: ObservableObject {
     teardownSocket(closeCode: .goingAway)
     socket = connectedCandidate.task
     if syncIsFullWebSocketRoute(connectedEndpoint.address) {
-      relayTransportNegotiations[connectedCandidate.task.taskIdentifier] = SyncRelayReadyNegotiation()
+      relayTransportNegotiations[connectedCandidate.task.taskIdentifier] = SyncRelayReadyNegotiation(budget: connectAttemptBudget)
     }
     receiveLoop(for: connectedCandidate.task)
     try applyHelloPayload(
@@ -15011,6 +15347,9 @@ final class SyncService: ObservableObject {
     guard !candidates.isEmpty else { throw noConnectableAddressError() }
     raceFailedEndpoints = (connectAttemptGeneration, [])
     let connectionAttempt = makeConnectionAttemptMetadata()
+    // Captured before the group so the detached budget task reads the attempt's
+    // deadline rather than reaching back into the actor for it.
+    let budget = connectAttemptBudget
     return try await withThrowingTaskGroup(of: AuthenticatedConnectionRaceEvent.self) { group in
       var scheduler = SyncConnectionRaceWaveScheduler(candidates: candidates)
       for candidate in scheduler.startInitialCandidates() {
@@ -15027,7 +15366,7 @@ final class SyncService: ObservableObject {
       }
       group.addTask {
         do {
-          try await Task.sleep(nanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds)
+          try await Task.sleep(nanoseconds: budget.overallNanoseconds)
           return .budgetExpired
         } catch {
           return .failed(candidateId: -1, error: error)
@@ -15378,7 +15717,7 @@ final class SyncService: ObservableObject {
   private func awaitRelayCandidateReady(
     mailbox: SyncConnectionRaceTextMailbox
   ) async throws -> SyncRelayReadyNegotiation {
-    var negotiation = SyncRelayReadyNegotiation()
+    var negotiation = SyncRelayReadyNegotiation(budget: connectAttemptBudget)
     var deadlineUptime = ProcessInfo.processInfo.systemUptime
       + TimeInterval(negotiation.phaseBudgetNanoseconds) / 1_000_000_000
 
@@ -15738,7 +16077,9 @@ final class SyncService: ObservableObject {
     return next
   }
 
-  private func syncNonEmpty(_ value: String?) -> String? {
+  /// Internal rather than private because the wake extension lives in its own
+  /// file, and `private` on a member is same-file only.
+  func syncNonEmpty(_ value: String?) -> String? {
     guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
       return nil
     }
@@ -16042,7 +16383,7 @@ final class SyncService: ObservableObject {
       task.maximumMessageSize = 32 * 1024 * 1024
       socket = task
       if socketAttempt.awaitsRelayReadyV2 {
-        relayTransportNegotiations[task.taskIdentifier] = SyncRelayReadyNegotiation()
+        relayTransportNegotiations[task.taskIdentifier] = SyncRelayReadyNegotiation(budget: connectAttemptBudget)
       }
       do {
         try await awaitSocketOpen(task)
@@ -16453,6 +16794,22 @@ final class SyncService: ObservableObject {
     for sessionId: String
   ) -> UInt64 {
     beginPendingSessionSettle(intent, for: sessionId)
+  }
+
+  /// Drives the two halves of one attempt's copy — the target and the stage
+  /// label — so a test can prove they move together across a handoff.
+  func publishAccountConnectStageForTesting(_ label: String) {
+    publishAccountConnectStage(label)
+  }
+
+  func setConnectAttemptTargetForTesting(machineName: String?, machineIdentity: String?) {
+    setConnectAttemptTarget(machineName: machineName, machineIdentity: machineIdentity)
+  }
+
+  /// Seeds the failure a directory refresh is then asked to retire, so a test
+  /// can drive `retireStaleSleepFailure` end to end rather than re-deriving it.
+  func setLastConnectAttemptFailureForTesting(_ failure: SyncConnectAttemptFailure?) {
+    lastConnectAttemptFailure = failure
   }
 
   func seedRemoteProjectCatalogForTesting(_ catalog: [MobileProjectSummary]) {
@@ -18282,8 +18639,9 @@ final class SyncService: ObservableObject {
         )
       }
       relayTransportOverallTimeoutTasks[taskIdentifier]?.cancel()
+      let budget = connectAttemptBudget
       relayTransportOverallTimeoutTasks[taskIdentifier] = Task { @MainActor [weak self] in
-        try? await Task.sleep(nanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds)
+        try? await Task.sleep(nanoseconds: budget.overallNanoseconds)
         guard !Task.isCancelled, let self else { return }
         self.resolveRelayTransportReady(
           taskIdentifier: taskIdentifier,

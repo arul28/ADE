@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { CaretDown, CaretUp, Check, Cloud, PencilSimple, PlugsConnected, X } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  CaretUp,
+  Check,
+  CheckCircle,
+  Cloud,
+  PencilSimple,
+  PlugsConnected,
+  X,
+} from "@phosphor-icons/react";
 import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
@@ -8,6 +17,12 @@ import {
   accountMachineConnectionState,
   accountMachineDisplayName,
 } from "../../../shared/accountDirectory";
+import type { MachinePresence } from "../../../shared/types/power";
+import {
+  accountMachinePresence,
+  machineActionLabel,
+  machineStatusLine,
+} from "../../../shared/machinePresence";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
@@ -32,6 +47,15 @@ type AccountMachineRowProps = {
   section: MachineSection;
   busy: boolean;
   connecting: boolean;
+  /**
+   * This computer holds a live runtime channel to the machine right now.
+   *
+   * Resolved from the connection snapshot rather than from the row's section:
+   * a machine usually folds into its saved target's row once connected, but a
+   * target that predates its account pairing does not fold, and that row must
+   * not describe a machine we are talking to as one we have only heard from.
+   */
+  connected?: boolean;
   error?: string | null;
   /** Structured failure for the machine's saved target, when one exists. Feeds
    * the collapsed route list; the headline stays the plain-language `error`. */
@@ -50,14 +74,34 @@ function relativeLastSeen(lastSeenAt: number | null): string {
   return phrase ? `Last seen ${phrase}` : "Never seen";
 }
 
+/**
+ * The row's one status line.
+ *
+ * Presence and power come first when the machine reported them — "Asleep · 82%
+ * battery" is the answer to the question someone scanning a list of computers
+ * actually has. The older sentences stay for the cases presence cannot
+ * explain: a machine that is online but has no route we can dial, and one that
+ * has been silent long enough that the fix is to open ADE over there.
+ */
 function accountMachineStatusLabel(
   machine: AdeAccountMachine,
   connectionState: ReturnType<typeof accountMachineConnectionState>,
+  presence: MachinePresence,
 ): string {
+  if (presence === "asleep") {
+    return machineStatusLine(machine, { presence }) ?? "Asleep";
+  }
+  if (presence === "connected") {
+    // The check beside the name already says connected, so the line spends
+    // itself on the power reading instead of repeating the word.
+    return machineStatusLine(machine, { presence }) ?? "Connected";
+  }
   if (connectionState === "unreachable") {
     return "Can't reach this computer right now — make sure it's online and up to date.";
   }
-  if (machine.online) return "Ready to connect";
+  if (machine.online) {
+    return machineStatusLine(machine, { presence }) ?? "Ready to connect";
+  }
   return `${relativeLastSeen(machine.lastSeenAt)} · Open ADE on that computer`;
 }
 
@@ -66,6 +110,7 @@ export function AccountMachineRow({
   section,
   busy,
   connecting,
+  connected = false,
   error = null,
   errorInfo = null,
   stageLabel = null,
@@ -86,6 +131,10 @@ export function AccountMachineRow({
     if (!renaming) setRenameValue(displayName);
   }, [displayName, renaming]);
   const connectionState = accountMachineConnectionState(machine);
+  // Presence is resolved once, here, and passed down. Never re-derive it from
+  // `online` / `lastSeenAt` further in — that is the disagreement this helper
+  // exists to prevent.
+  const presence = accountMachinePresence(machine, { connected });
   const available = connectionState === "available";
   const trulyOffline = !machine.online;
   const needsSetup = connectionState === "unreachable";
@@ -181,13 +230,24 @@ export function AccountMachineRow({
               ) : (
                 <span style={nameStyle}>{displayName}</span>
               )}
+              {/* The same mark a connected saved row wears, for the same
+                  reason: the status line below says only the power. */}
+              {!renaming && presence === "connected" ? (
+                <CheckCircle
+                  size={15}
+                  weight="fill"
+                  color={COLORS.success}
+                  aria-label="Connected"
+                  style={{ flexShrink: 0 }}
+                />
+              ) : null}
             </div>
             <div style={{ ...subTextStyle, display: "flex", alignItems: "center", gap: 5 }}>
               <Cloud size={12} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
               Connected to your ADE account
             </div>
             <div style={helperTextStyle}>
-              {accountMachineStatusLabel(machine, connectionState)}
+              {accountMachineStatusLabel(machine, connectionState, presence)}
             </div>
           </div>
 
@@ -222,7 +282,7 @@ export function AccountMachineRow({
                 style={primaryButton({ height: 30, padding: "0 10px", fontSize: 11 })}
               >
                 <PlugsConnected size={14} weight="bold" />
-                {connecting ? "Connecting…" : "Connect"}
+                {connecting ? "Connecting…" : machineActionLabel(presence)}
               </button>
             ) : null}
             {canExplain ? (

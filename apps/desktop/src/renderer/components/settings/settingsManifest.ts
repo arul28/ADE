@@ -140,6 +140,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Updates",
   },
   {
+    id: "general.keep-awake",
+    label: "Keep this computer awake",
+    keywords: ["sleep", "awake", "lid", "idle", "power", "battery", "caffeinate", "pmset"],
+    tab: "general",
+    anchor: "keep-awake",
+    scope: "machine",
+    // A browser holds no power lock and cannot read the machine's sleep
+    // settings, so the write would resolve against nothing.
+    web: "hidden",
+    group: "Sleep",
+  },
+  {
     id: "general.analytics",
     label: "Product analytics",
     keywords: ["telemetry", "posthog", "tracking", "privacy", "opt out"],

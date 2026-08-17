@@ -24,6 +24,10 @@ import {
   normalizeContextCompactEvent,
   toContextCompactChatEvent,
 } from "../../../shared/contextCompaction";
+import {
+  hostSleepNoticeMergeKey,
+  isHostSleepNoticeEvent,
+} from "../../../shared/hostSleepNotice";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
@@ -2321,6 +2325,32 @@ export function appendCollapsedChatTranscriptEvent(
       key: `context-compact:${mergeKey}:${sequence}`,
       timestamp: envelope.timestamp,
       event: toContextCompactChatEvent(incoming),
+    });
+    return;
+  }
+
+  // ── Host sleep: ONE chip per sleep ──
+  // The paused half pushes a row; the resumed half replaces that same row
+  // instead of appending under it, so a machine that slept mid-turn never
+  // leaves two artifacts behind and never pushes the transcript around. The
+  // sleep id is the identity, so a second sleep in the same turn still gets its
+  // own chip rather than overwriting the first sleep's resolved one.
+  if (isHostSleepNoticeEvent(event)) {
+    const mergeKey = hostSleepNoticeMergeKey(event);
+    const rowKey = `host-sleep:${mergeKey}`;
+    const existingIndex = rows.findIndex((candidate) => candidate.key === rowKey);
+    if (existingIndex >= 0) {
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event: event as ChatTranscriptVisibleEvent,
+      };
+      return;
+    }
+    rows.push({
+      key: rowKey,
+      timestamp: envelope.timestamp,
+      event: event as ChatTranscriptVisibleEvent,
     });
     return;
   }

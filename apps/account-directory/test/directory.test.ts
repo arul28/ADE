@@ -21,6 +21,9 @@ type StoredMachine = {
   device_type: string | null;
   pubkey: string | null;
   reachable_endpoints: string | null;
+  power: string | null;
+  sleep_state: string | null;
+  sleep_state_at: number | null;
   last_seen_at: number | null;
   created_at: number | null;
 };
@@ -247,7 +250,7 @@ class FakeD1Database {
       return before - this.revocations.length;
     }
     if (normalized.includes("insert into machines")) {
-      const retainRelayEndpoints = values[10] === 1;
+      const retainRelayEndpoints = values[13] === 1;
       const row: StoredMachine = {
         user_id: String(values[0]),
         machine_key: String(values[1]),
@@ -258,8 +261,11 @@ class FakeD1Database {
         device_type: values[5] == null ? null : String(values[5]),
         pubkey: values[6] == null ? null : String(values[6]),
         reachable_endpoints: values[7] == null ? null : String(values[7]),
-        last_seen_at: values[8] == null ? null : Number(values[8]),
-        created_at: values[9] == null ? null : Number(values[9]),
+        power: values[8] == null ? null : String(values[8]),
+        sleep_state: values[9] == null ? null : String(values[9]),
+        sleep_state_at: values[10] == null ? null : Number(values[10]),
+        last_seen_at: values[11] == null ? null : Number(values[11]),
+        created_at: values[12] == null ? null : Number(values[12]),
       };
       const existing = this.rows.find((entry) =>
         entry.user_id === row.user_id && entry.machine_key === row.machine_key
@@ -283,6 +289,12 @@ class FakeD1Database {
         Object.assign(existing, row, {
           created_at: existing.created_at,
           custom_name: existing.custom_name,
+          // Mirror the source's `coalesce(excluded.x, machines.x)` exactly, so
+          // a revert to a bare overwrite fails the old-host test here rather
+          // than being absorbed by the fake.
+          power: row.power ?? existing.power,
+          sleep_state: row.sleep_state ?? existing.sleep_state,
+          sleep_state_at: row.sleep_state_at ?? existing.sleep_state_at,
         });
       } else {
         this.rows.push(row);
@@ -1563,6 +1575,9 @@ describe("machine directory", () => {
       device_type: "desktop",
       pubkey: null,
       reachable_endpoints: "[]",
+      power: null,
+      sleep_state: null,
+      sleep_state_at: null,
       last_seen_at: index,
       created_at: index,
     }));
@@ -2213,5 +2228,166 @@ describe("device-login pairing grants", () => {
 
     await expect(cleanupExpiredPairingGrants(env, now)).resolves.toBe(1);
     expect(env.DB.pairingGrants.map((row) => row.machine_key)).toEqual(["machine-live"]);
+  });
+});
+
+describe("machine power and sleep state", () => {
+  async function registerWithPower(
+    env: Env & { DB: FakeD1Database },
+    token: string,
+    machineKey: string,
+    extra: Record<string, unknown>,
+  ): Promise<Response> {
+    return handleRequest(
+      request("POST", "/account/machines/register", token, {
+        ...registerBody(machineKey),
+        ...extra,
+      }),
+      env,
+    );
+  }
+
+  it("stores and returns a laptop's battery and announced sleep state", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const response = await registerWithPower(env, token, "laptop", {
+      power: { batteryPercent: 63, charging: false, onExternalPower: false },
+      sleepState: "asleep",
+      sleepStateAt: 1_700_000_000_000,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      power: { batteryPercent: 63, charging: false, onExternalPower: false },
+      sleepState: "asleep",
+      sleepStateAt: 1_700_000_000_000,
+    }));
+  });
+
+  it("keeps a battery-less desktop battery-less rather than reporting 0%", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const response = await registerWithPower(env, token, "studio", {
+      power: { batteryPercent: null, charging: null, onExternalPower: true },
+      sleepState: "awake",
+    });
+
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      power: { batteryPercent: null, charging: null, onExternalPower: true },
+      sleepState: "awake",
+    }));
+  });
+
+  it("accepts a host that reports no power at all", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const response = await register(env, token, "old-host");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      power: null,
+      sleepState: null,
+      sleepStateAt: null,
+    }));
+  });
+
+  it("degrades malformed power fields to null instead of rejecting the machine", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const response = await registerWithPower(env, token, "confused", {
+      power: { batteryPercent: 240, charging: "yes", onExternalPower: true },
+      sleepState: "hibernating",
+      sleepStateAt: "recently",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      // The machine stays reachable; only the unusable values are dropped.
+      power: { batteryPercent: null, charging: null, onExternalPower: true },
+      sleepState: null,
+      sleepStateAt: null,
+    }));
+  });
+
+  it("drops a power object with nothing usable in it", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const response = await registerWithPower(env, token, "garbage", {
+      power: { batteryPercent: "full", charging: 1, onExternalPower: "yes" },
+    });
+
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({ power: null }));
+  });
+
+  it("timestamps a sleep state the host reported without one", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    const response = await registerWithPower(env, token, "untimed", { sleepState: "asleep" });
+
+    const body = await response.json() as { sleepStateAt: number | null };
+    expect(body.sleepStateAt).toEqual(expect.any(Number));
+  });
+
+  it("does not let an older host's heartbeat erase a stored power state", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await registerWithPower(env, token, "laptop", {
+      power: { batteryPercent: 41, charging: true, onExternalPower: true },
+      sleepState: "asleep",
+      sleepStateAt: 1_700_000_000_000,
+    });
+
+    // A second brain on the same machine, built before power existed.
+    const response = await register(env, token, "laptop");
+
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      power: { batteryPercent: 41, charging: true, onExternalPower: true },
+      sleepState: "asleep",
+      sleepStateAt: 1_700_000_000_000,
+    }));
+  });
+
+  it("publishes the wake that follows a sleep", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await registerWithPower(env, token, "laptop", {
+      sleepState: "asleep",
+      sleepStateAt: 1_700_000_000_000,
+    });
+
+    const response = await registerWithPower(env, token, "laptop", {
+      sleepState: "awake",
+      sleepStateAt: 1_700_000_060_000,
+    });
+
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      sleepState: "awake",
+      sleepStateAt: 1_700_000_060_000,
+    }));
+  });
+
+  it("lists power alongside the machines it belongs to", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await registerWithPower(env, token, "laptop", {
+      power: { batteryPercent: 12, charging: false, onExternalPower: false },
+      sleepState: "asleep",
+      sleepStateAt: 1_700_000_000_000,
+    });
+
+    const response = await handleRequest(request("GET", "/account/machines", token), env);
+    const body = await response.json() as { machines: Array<Record<string, unknown>> };
+
+    expect(body.machines[0]).toEqual(expect.objectContaining({
+      machineKey: "laptop",
+      power: { batteryPercent: 12, charging: false, onExternalPower: false },
+      sleepState: "asleep",
+    }));
   });
 });
