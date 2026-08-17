@@ -9,7 +9,11 @@ import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
-import type { ExternalSessionImportResult, ExternalSessionSummary } from "./importSessions/contract";
+import type {
+  ExternalSessionImportResult,
+  ExternalSessionSource,
+  ExternalSessionSummary,
+} from "./importSessions/contract";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -20,8 +24,15 @@ type WorkStartSurfaceProps = {
   lanes: LaneSummary[];
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
-  onImportedSession?: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
-  onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
+  onImportedSession?: (
+    summary: ExternalSessionSummary,
+    result: ExternalSessionImportResult,
+    source?: ExternalSessionSource,
+  ) => void;
+  onOpenExistingImportedSession?: (
+    ref: { kind: "chat" | "cli"; sessionId: string },
+    source?: ExternalSessionSource,
+  ) => void;
   onDraftLaneChange?: (laneId: string) => void;
   onDraftMachineChange?: (machineId: string | null) => void;
   initialLinearIssueContext?: LaneLinearIssue | null;

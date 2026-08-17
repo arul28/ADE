@@ -88,7 +88,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
-import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -168,6 +168,7 @@ import {
   readImportedFrom,
   providerDisplayName as externalProviderDisplayName,
   type ExternalSessionImportResult,
+  type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "../terminals/importSessions/contract";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
@@ -3262,9 +3263,13 @@ export function AgentChatPane({
   onImportedSession?: (
     summary: ExternalSessionSummary,
     result: ExternalSessionImportResult,
+    source?: ExternalSessionSource,
   ) => void;
   /** Work draft surface: focus an already-imported ADE session instead of re-importing. */
-  onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
+  onOpenExistingImportedSession?: (
+    ref: { kind: "chat" | "cli"; sessionId: string },
+    source?: ExternalSessionSource,
+  ) => void;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
@@ -11414,6 +11419,70 @@ export function AgentChatPane({
     setDraftLaunchTargetId,
     setError,
   });
+  const importSources = useMemo<ExternalSessionSource[]>(() => {
+    const activeLanes = (availableLanes?.length ? availableLanes : lanes).map((lane) => ({
+      id: lane.id,
+      name: lane.name,
+      color: lane.color,
+      branchRef: lane.branchRef,
+      laneType: lane.laneType,
+    }));
+    const sources: ExternalSessionSource[] = [];
+    const seenMachineIds = new Set<string>();
+    const addSource = (source: ExternalSessionSource) => {
+      if (!source.lanes.length || seenMachineIds.has(source.machineId)) return;
+      seenMachineIds.add(source.machineId);
+      sources.push(source);
+    };
+
+    addSource({
+      machineId: boundLaneMachineId,
+      machineName: boundLaneMachineId === THIS_MACHINE_ID
+        ? THIS_MACHINE_NAME
+        : projectBinding?.kind === "remote"
+          ? projectBinding.runtimeName
+          : projectBinding?.displayName ?? boundLaneMachineId,
+      lanes: activeLanes,
+      binding: projectBinding,
+      runtimePin: projectBinding?.kind === "remote" ? projectBinding : null,
+      online: true,
+    });
+
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      if (!machine.binding) continue;
+      addSource({
+        machineId: machine.machineId,
+        machineName: machine.machineName,
+        lanes: machine.lanes.map((lane) => ({
+          id: lane.id,
+          name: lane.name,
+          color: lane.color,
+          branchRef: lane.branchRef,
+          laneType: lane.laneType,
+        })),
+        binding: machine.binding,
+        runtimePin: machine.binding.key === projectBinding?.key ? null : machine.binding,
+        online: machine.online,
+      });
+    }
+
+    sources.sort((left, right) => {
+      const localRank = Number(left.machineId !== THIS_MACHINE_ID) - Number(right.machineId !== THIS_MACHINE_ID);
+      if (localRank !== 0) return localRank;
+      const activeRank = Number(left.binding?.key !== projectBinding?.key) - Number(right.binding?.key !== projectBinding?.key);
+      return activeRank || left.machineName.localeCompare(right.machineName);
+    });
+    return sources;
+  }, [availableLanes, boundLaneMachineId, crossMachineLanesByMachineId, lanes, projectBinding]);
+  const importTargetSource = importSources.find((source) => source.machineId === THIS_MACHINE_ID)
+    ?? importSources[0]
+    ?? null;
+  const importTargetLanes = importTargetSource?.lanes ?? [];
+  const importTargetLane = importTargetLanes.find((lane) => lane.id === laneId)
+    ?? importTargetLanes.find((lane) => lane.laneType === "primary")
+    ?? importTargetLanes.find((lane) => lane.name.trim().toLowerCase() === "primary")
+    ?? importTargetLanes[0]
+    ?? null;
   // The shelf picks the machine separately, so its lane list is already scoped
   // to one machine — a flat list of bare lane ids rather than the grouped,
   // machine-qualified option ids the combined selector needed.
@@ -13958,14 +14027,14 @@ export function AgentChatPane({
                                       content={{
                                         label: "Import session",
                                         description: draftLaunchTargetIsAutoCreate
-                                          ? "Select a lane first — imports need a lane folder."
+                                          ? "Choose the destination lane after opening the importer."
                                           : "Continue a Claude, Codex, Cursor, Droid, OpenCode, or Pi chat here.",
                                       }}
                                     >
                                       <button
                                         type="button"
                                         className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
-                                        disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                                        disabled={!importTargetLane}
                                         data-draft-import-session
                                         aria-label="Import an external CLI session"
                                         onClick={() => setImportBrowserOpen(true)}
@@ -14023,7 +14092,7 @@ export function AgentChatPane({
                         {onImportedSession && !appPanelOpen ? (
                           <ImportFloatingBadge
                             projectRoot={projectRoot}
-                            disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                            disabled={!importTargetLane}
                             onOpen={() => setImportBrowserOpen(true)}
                           />
                         ) : null}
@@ -14082,15 +14151,14 @@ export function AgentChatPane({
         />
       ) : null}
       <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
-      {onImportedSession && laneId ? (
+      {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser
           open={importBrowserOpen}
           onOpenChange={setImportBrowserOpen}
-          laneId={laneId}
-          laneName={
-            availableLanes?.find((lane) => lane.id === laneId)?.name ?? laneDisplayLabel ?? laneId
-          }
-          lanes={availableLanes ?? lanes}
+          laneId={importTargetLane.id}
+          laneName={importTargetLane.name}
+          lanes={importTargetLanes}
+          sources={importSources}
           onImported={onImportedSession}
           onOpenExisting={onOpenExistingImportedSession}
         />

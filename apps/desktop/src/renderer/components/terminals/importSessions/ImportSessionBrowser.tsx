@@ -7,11 +7,14 @@ import {
   MagnifyingGlass,
   Warning,
 } from "@phosphor-icons/react";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
+import type { OpenProjectBinding } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
+import { DraftMachinePicker } from "../../chat/DraftMachinePicker";
 import { ToolLogo } from "../ToolLogos";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
 import {
@@ -24,6 +27,7 @@ import {
   type ExternalSessionDetail,
   type ExternalSessionImportResult,
   type ExternalSessionProvider,
+  type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "./contract";
 import {
@@ -75,6 +79,16 @@ function hasPrompts(summary: ExternalSessionSummary): boolean {
   return summary.messageCount == null || summary.messageCount > 0;
 }
 
+function externalSessionScanFailureMessage(
+  providers: readonly ExternalSessionProvider[],
+  machineName: string,
+): string {
+  const source = providers.length === 1
+    ? providerDisplayName(providers[0]) + " chats"
+    : "external chats";
+  return `ADE couldn't scan ${source} on ${machineName}. Check that this computer has the project open, then try again.`;
+}
+
 function ScrollPort({ children }: { children: React.ReactNode }) {
   return (
     <div
@@ -93,8 +107,13 @@ export type ImportSessionBrowserProps = {
   laneId: string;
   laneName: string;
   lanes?: LaneComboboxLane[];
-  onImported: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
-  onOpenExisting?: (ref: ImportedSessionRef) => void;
+  sources?: ExternalSessionSource[];
+  onImported: (
+    summary: ExternalSessionSummary,
+    result: ExternalSessionImportResult,
+    source?: ExternalSessionSource,
+  ) => void;
+  onOpenExisting?: (ref: ImportedSessionRef, source?: ExternalSessionSource) => void;
 };
 
 export function ImportSessionBrowser({
@@ -103,6 +122,7 @@ export function ImportSessionBrowser({
   laneId,
   laneName,
   lanes = [],
+  sources,
   onImported,
   onOpenExisting,
 }: ImportSessionBrowserProps) {
@@ -116,15 +136,96 @@ export function ImportSessionBrowser({
   const [importError, setImportError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedSession, setSelectedSession] = useState<ExternalSessionSummary | null>(null);
-  const [targetLaneId, setTargetLaneId] = useState(laneId);
-  const requestSeq = useRef(0);
-
-  const availableLanes = useMemo<LaneComboboxLane[]>(
+  const fallbackLanes = useMemo<LaneComboboxLane[]>(
     () => lanes.length ? lanes : [{ id: laneId, name: laneName }],
     [laneId, laneName, lanes],
   );
+  const fallbackSource = useMemo<ExternalSessionSource>(
+    () => ({
+      machineId: THIS_MACHINE_ID,
+      machineName: THIS_MACHINE_NAME,
+      lanes: fallbackLanes,
+      binding: null,
+      runtimePin: null,
+      online: true,
+    }),
+    [fallbackLanes],
+  );
+  const sourceOptions = useMemo<ExternalSessionSource[]>(
+    () => sources?.length ? sources : [fallbackSource],
+    [fallbackSource, sources],
+  );
+  const defaultSource = sourceOptions.find((source) => source.machineId === THIS_MACHINE_ID)
+    ?? sourceOptions[0]
+    ?? null;
+  const defaultSourceId = defaultSource?.machineId ?? null;
+  const defaultLane = defaultSource?.lanes.find((lane) => lane.id === laneId)
+    ?? defaultSource?.lanes.find((lane) => lane.laneType === "primary")
+    ?? defaultSource?.lanes.find((lane) => lane.name.trim().toLowerCase() === "primary")
+    ?? defaultSource?.lanes[0]
+    ?? null;
+  const defaultLaneId = defaultLane?.id ?? laneId;
+  const [selectedSourceId, setSelectedSourceId] = useState(defaultSourceId);
+  const [sourceSelectionTouched, setSourceSelectionTouched] = useState(false);
+  const [targetLaneId, setTargetLaneId] = useState(defaultLaneId);
+  const requestSeq = useRef(0);
+  const selectedSource = sourceOptions.find((source) => source.machineId === selectedSourceId)
+    ?? defaultSource;
+
+  const availableLanes = useMemo<LaneComboboxLane[]>(
+    () => selectedSource?.lanes.length ? selectedSource.lanes : fallbackLanes,
+    [fallbackLanes, selectedSource],
+  );
   const targetLaneName = availableLanes.find((lane) => lane.id === targetLaneId)?.name ?? targetLaneId;
   const loading = pendingProviders.length > 0;
+
+  // Closing the dialog always returns the next open to the local computer. A
+  // deliberate choice remains in force for the current browse, but it should
+  // never become a surprising default the next time the importer opens.
+  useEffect(() => {
+    if (open) return;
+    setSelectedSourceId((current) => current === defaultSourceId ? current : defaultSourceId);
+    setSourceSelectionTouched(false);
+    setTargetLaneId((current) => current === defaultLaneId ? current : defaultLaneId);
+  }, [defaultLaneId, defaultSourceId, open]);
+
+  // A disconnected source can disappear from the live catalog while the
+  // dialog is open. Fall back to the local source and its primary lane rather
+  // than leaving a stale lane id driving the next scan.
+  useEffect(() => {
+    const sourceStillExists = selectedSourceId != null
+      && sourceOptions.some((source) => source.machineId === selectedSourceId);
+    const shouldUseDefault = !sourceStillExists
+      || (!sourceSelectionTouched && selectedSourceId !== defaultSourceId);
+    if (shouldUseDefault) {
+      setSelectedSourceId((current) => current === defaultSourceId ? current : defaultSourceId);
+      setSourceSelectionTouched(false);
+      setTargetLaneId((current) => current === defaultLaneId ? current : defaultLaneId);
+      return;
+    }
+    if (!availableLanes.some((lane) => lane.id === targetLaneId)) {
+      setTargetLaneId(defaultLaneId);
+    }
+  }, [availableLanes, defaultLaneId, defaultSourceId, selectedSourceId, sourceOptions, sourceSelectionTouched, targetLaneId]);
+
+  const handleSourceChange = useCallback((nextSourceId: string) => {
+    const nextSource = sourceOptions.find((source) => source.machineId === nextSourceId);
+    if (!nextSource || !nextSource.online) return;
+    const nextLane = nextSource.lanes.find((lane) => lane.laneType === "primary")
+      ?? nextSource.lanes.find((lane) => lane.name.trim().toLowerCase() === "primary")
+      ?? nextSource.lanes[0]
+      ?? null;
+    setSelectedSourceId(nextSourceId);
+    setSourceSelectionTouched(true);
+    setTargetLaneId(nextLane?.id ?? laneId);
+    setSessions([]);
+    setLoadError(null);
+    setProviderNotices({});
+    setImportError(null);
+    setSelectedSession(null);
+    setActiveIndex(0);
+    setQuery("");
+  }, [laneId, sourceOptions]);
 
   const load = useCallback(async () => {
     const api = getExternalSessionsApi();
@@ -141,15 +242,19 @@ export function ImportSessionBrowser({
     setProviderNotices({});
     setPendingProviders(providers);
     let failures = 0;
+    const runtimePin = selectedSource?.runtimePin ?? null;
     await Promise.all(
       providers.map(async (provider) => {
         try {
-          const result = await api.list({
+          const request = {
             providers: [provider],
-            scope: "project",
+            scope: "project" as const,
             laneId: targetLaneId,
             limit: BROWSE_LIMIT,
-          });
+          };
+          const result = runtimePin
+            ? await api.list(request, runtimePin)
+            : await api.list(request);
           if (seq !== requestSeq.current) return;
           const rows = normalizeListResult(result).filter(hasPrompts);
           setSessions((prev) => mergeSessions(prev, rows));
@@ -157,15 +262,12 @@ export function ImportSessionBrowser({
             if (!current) return null;
             return rows.find((row) => row.provider === current.provider && row.id === current.id) ?? current;
           });
-        } catch (error) {
+        } catch {
           if (seq !== requestSeq.current) return;
           failures += 1;
-          const detail = error instanceof Error ? error.message.trim() : "";
           setProviderNotices((prev) => ({
             ...prev,
-            [provider]: detail
-              ? `${providerDisplayName(provider)}: ${detail}`
-              : `${providerDisplayName(provider)} sessions couldn't be scanned.`,
+            [provider]: `${providerDisplayName(provider)} couldn't be scanned on ${selectedSource?.machineName ?? THIS_MACHINE_NAME}.`,
           }));
         } finally {
           if (seq === requestSeq.current) {
@@ -176,9 +278,12 @@ export function ImportSessionBrowser({
     );
     if (seq !== requestSeq.current) return;
     if (failures === providers.length) {
-      setLoadError("Couldn't load external sessions.");
+      setLoadError(externalSessionScanFailureMessage(
+        providers,
+        selectedSource?.machineName ?? THIS_MACHINE_NAME,
+      ));
     }
-  }, [providerFilter, targetLaneId]);
+  }, [providerFilter, selectedSource?.machineName, selectedSource?.runtimePin, targetLaneId]);
 
   useEffect(() => {
     if (!open) return;
@@ -191,8 +296,8 @@ export function ImportSessionBrowser({
     setImportError(null);
     setActiveIndex(0);
     setSelectedSession(null);
-    setTargetLaneId(laneId);
-  }, [laneId, open]);
+    setTargetLaneId(defaultLaneId);
+  }, [defaultLaneId, laneId, open]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -225,10 +330,9 @@ export function ImportSessionBrowser({
   }, [visible.length]);
 
   const noticeText = useMemo(() => {
-    if (loadError) return null;
     const messages = Object.values(providerNotices).filter((message): message is string => Boolean(message));
     return messages.length ? messages.join(" ") : null;
-  }, [loadError, providerNotices]);
+  }, [providerNotices]);
 
   const runImport = useCallback(
     async (summary: ExternalSessionSummary, affordance: ImportAffordance, model?: string) => {
@@ -242,33 +346,35 @@ export function ImportSessionBrowser({
       setImporting(key);
       setImportError(null);
       try {
-        const result = await api.import({
+        const request = {
           provider: summary.provider,
           sessionId: summary.id,
           laneId: targetLaneId,
           target: affordance.target,
           mode: affordance.mode,
           ...(model ? { model } : {}),
-        });
-        onImported(summary, result);
+        };
+        const runtimePin = selectedSource?.runtimePin ?? null;
+        const result = runtimePin
+          ? await api.import(request, runtimePin)
+          : await api.import(request);
+        onImported(summary, result, selectedSource ?? undefined);
         onOpenChange(false);
-      } catch (err) {
-        setImportError(
-          err instanceof Error ? err.message : `Couldn't ${affordance.label.toLowerCase()}.`,
-        );
+      } catch {
+        setImportError(`Couldn't ${affordance.label.toLowerCase()} on ${selectedSource?.machineName ?? THIS_MACHINE_NAME}.`);
       } finally {
         setImporting(null);
       }
     },
-    [importing, loading, onImported, onOpenChange, targetLaneId],
+    [importing, loading, onImported, onOpenChange, selectedSource, targetLaneId],
   );
 
   const handleOpenExisting = useCallback(
     (ref: ImportedSessionRef) => {
-      onOpenExisting?.(ref);
+      onOpenExisting?.(ref, selectedSource ?? undefined);
       onOpenChange(false);
     },
-    [onOpenExisting, onOpenChange],
+    [onOpenExisting, onOpenChange, selectedSource],
   );
 
   const onListKeyDown = useCallback(
@@ -340,6 +446,21 @@ export function ImportSessionBrowser({
                 </button>
               );
             })}
+            <DraftMachinePicker
+              machines={sourceOptions.map((source) => ({
+                id: source.machineId,
+                name: source.machineName,
+                unavailableReason: source.online
+                  ? null
+                  : "This computer is offline. Reconnect it to scan chats.",
+              }))}
+              selectedMachineId={selectedSourceId}
+              onChange={handleSourceChange}
+              disabled={Boolean(importing)}
+              tooltipLabel="Import from"
+              triggerLabel="Choose import source"
+              tooltipDescription="Choose which connected computer to scan. The session list and import actions follow this computer."
+            />
             <div className="ml-auto flex items-center gap-2">
               {loading && sessions.length ? (
                 <span className="inline-flex items-center gap-1.5 text-[10.5px] text-muted-fg/60">
@@ -374,7 +495,7 @@ export function ImportSessionBrowser({
           </div>
         </div> : null}
 
-        {!selectedSession && noticeText ? (
+        {!selectedSession && noticeText && !loadError ? (
           <div className="flex shrink-0 items-start gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-[11px] text-muted-fg/70">
             <Warning size={13} className="mt-px shrink-0 text-muted-fg/60" />
             <span>{noticeText}</span>
@@ -400,27 +521,42 @@ export function ImportSessionBrowser({
             onTargetLaneChange={setTargetLaneId}
             onImport={(affordance, model) => void runImport(selectedSession, affordance, model)}
             onOpenExisting={onOpenExisting ? handleOpenExisting : undefined}
+            runtimePin={selectedSource?.runtimePin ?? null}
           />
         ) : loading && !sessions.length ? (
           <ScrollPort>
-            <ul className="flex flex-col gap-2">
-              {Array.from({ length: 6 }, (_, index) => (
-                <li key={index} className="h-[72px] animate-pulse rounded-xl border border-white/[0.05] bg-white/[0.03]" />
-              ))}
-            </ul>
+            <div className="flex min-h-full flex-col items-center justify-center gap-4 px-6 py-8 text-center">
+              <div
+                className="inline-flex items-center gap-2 text-[12px] font-medium text-fg"
+                role="status"
+                aria-live="polite"
+              >
+                <CircleNotch size={16} className="animate-spin text-violet-300" />
+                Scanning external chats…
+              </div>
+              <p className="max-w-sm text-[11px] leading-relaxed text-muted-fg/65">
+                Checking {pendingProviders.map(providerDisplayName).join(", ")} on {selectedSource?.machineName ?? THIS_MACHINE_NAME}.
+              </p>
+              <ul className="w-full max-w-2xl space-y-2 opacity-60" aria-hidden="true">
+                {Array.from({ length: 3 }, (_, index) => (
+                  <li key={index} className="h-[62px] animate-pulse rounded-xl border border-white/[0.05] bg-white/[0.03]" />
+                ))}
+              </ul>
+            </div>
           </ScrollPort>
         ) : loadError ? (
           <CenterState
             icon={<Warning size={18} className="text-amber-400" />}
-            title="Couldn't load sessions"
+            title="External chats couldn't be loaded"
             detail={loadError}
             action={
               <button
                 type="button"
                 onClick={() => void load()}
-                className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-full border border-white/[0.1] px-3 text-[11px] text-fg hover:bg-white/[0.05]"
+                disabled={loading}
+                className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-full border border-white/[0.1] px-3 text-[11px] text-fg hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <ArrowClockwise size={12} /> Retry
+                <ArrowClockwise size={12} className={loading ? "animate-spin" : undefined} /> Retry scan
               </button>
             }
           />
@@ -569,6 +705,7 @@ function ImportSessionDetail({
   onTargetLaneChange,
   onImport,
   onOpenExisting,
+  runtimePin,
 }: {
   summary: ExternalSessionSummary;
   lanes: LaneComboboxLane[];
@@ -580,6 +717,7 @@ function ImportSessionDetail({
   onTargetLaneChange: (laneId: string) => void;
   onImport: (affordance: ImportAffordance, model?: string) => void;
   onOpenExisting?: (ref: ImportedSessionRef) => void;
+  runtimePin: OpenProjectBinding | null;
 }) {
   const importedRef = summary.alreadyImported ? readImportedSessionRef(summary) : null;
   const allAffordances = importAffordancesFor(summary);
@@ -611,27 +749,33 @@ function ImportSessionDetail({
       if (!cancelled) setDetail(next);
     };
     setDetailError(null);
+    const localWatch = runtimePin?.kind !== "remote" && api.watchDetail ? api.watchDetail : null;
     void (async () => {
       try {
-        const loaded = api.watchDetail
-          ? await api.watchDetail({ provider: summary.provider, sessionId: summary.id, watchId })
-          : await api.getDetail?.({ provider: summary.provider, sessionId: summary.id });
+        const loaded = localWatch
+          ? await localWatch({ provider: summary.provider, sessionId: summary.id, watchId })
+          : await api.getDetail?.(
+            { provider: summary.provider, sessionId: summary.id },
+            runtimePin,
+          );
         if (loaded) apply(loaded);
-      } catch (error) {
+      } catch {
         if (!cancelled) {
-          setDetailError(error instanceof Error ? error.message : "Couldn't load this conversation.");
+          setDetailError("Couldn't load this conversation from the selected computer.");
         }
       }
     })();
-    const unsubscribe = api.onDetailUpdated?.((event) => {
-      if (event.watchId === watchId) apply(event.detail);
-    });
+    const unsubscribe = localWatch
+      ? api.onDetailUpdated?.((event) => {
+        if (event.watchId === watchId) apply(event.detail);
+      })
+      : undefined;
     return () => {
       cancelled = true;
       unsubscribe?.();
-      void api.unwatchDetail?.({ watchId });
+      if (localWatch) void api.unwatchDetail?.({ watchId });
     };
-  }, [summary.id, summary.provider]);
+  }, [runtimePin, summary.id, summary.provider]);
 
   const messages = detail?.messages?.length ? detail.messages : (summary.messages ?? []);
   const modelLabel = detail?.model ?? summary.launch?.model ?? null;

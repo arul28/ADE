@@ -665,5 +665,19 @@ export function detachedDevRuntimeEnv(
   // as soon as that unrelated parent exits or its idle timer fires.
   delete env.ADE_RUNTIME_PARENT_PID;
   delete env.ADE_RUNTIME_IDLE_EXIT_MS;
+  // The shared dev brain is the desktop/operator runtime, not the agent shell
+  // that happened to launch it. If an ADE chat launches this script, carrying
+  // its session identity into the daemon makes every desktop RPC connection
+  // session-bound and clamps the requested CTO role back to an agent. That
+  // breaks project-wide desktop actions such as importing external sessions.
+  for (const key of [
+    "ADE_CHAT_SESSION_ID",
+    "ADE_RUN_ID",
+    "ADE_STEP_ID",
+    "ADE_ATTEMPT_ID",
+    "ADE_OWNER_ID",
+  ]) {
+    delete env[key];
+  }
   return env;
 }

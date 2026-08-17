@@ -1205,6 +1205,7 @@ function renderAutoCreateDraftPane(args?: {
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   onDraftMachineChange?: React.ComponentProps<typeof AgentChatPane>["onDraftMachineChange"];
+  onImportedSession?: React.ComponentProps<typeof AgentChatPane>["onImportedSession"];
   initialDraftMachineId?: string | null;
   lanes?: any[];
   project?: { rootPath: string; displayName?: string };
@@ -1253,6 +1254,7 @@ function renderAutoCreateDraftPane(args?: {
                 initialDraftMachineId={args?.initialDraftMachineId}
                 onSessionCreated={args?.onSessionCreated}
                 onLaunchCliSession={args?.onLaunchCliSession}
+                onImportedSession={args?.onImportedSession}
               />
               <LocationProbe />
             </>
@@ -5866,6 +5868,26 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
+  });
+
+  it("keeps external import available when Auto-create is selected", async () => {
+    installAdeMocks({ sessions: [] });
+    const list = vi.fn().mockResolvedValue([]);
+    (window.ade as any).externalSessions = {
+      list,
+      import: vi.fn(),
+    };
+    renderAutoCreateDraftPane({
+      onImportedSession: vi.fn(),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import an external CLI session" }));
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(await screen.findByText("No chats found")).toBeTruthy();
+    expect(list.mock.calls.every(([args]) => args.laneId === "lane-1")).toBe(true);
   });
 
   it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {

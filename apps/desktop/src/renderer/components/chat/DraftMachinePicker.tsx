@@ -51,6 +51,9 @@ export function DraftMachinePicker({
   onChange,
   disabled = false,
   onOpen,
+  tooltipLabel = "Where it runs",
+  tooltipDescription,
+  triggerLabel = "Choose machine",
 }: {
   machines: readonly DraftMachineOption[];
   selectedMachineId: string | null;
@@ -58,6 +61,9 @@ export function DraftMachinePicker({
   disabled?: boolean;
   /** Fires when the menu opens so callers can retry a failed catalog probe. */
   onOpen?: () => void;
+  tooltipLabel?: string;
+  tooltipDescription?: string;
+  triggerLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -161,11 +167,11 @@ export function DraftMachinePicker({
   const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
   const displayed = selected ?? machines[0];
   if (!displayed) return null;
-  const triggerLabel = selected
-    ? `Choose machine, currently ${selected.name}`
-    : `Choose machine, current machine unavailable; fallback ${displayed.name}`;
+  const triggerAriaLabel = selected
+    ? `${triggerLabel}, currently ${selected.name}`
+    : `${triggerLabel}, current machine unavailable; fallback ${displayed.name}`;
   const hasCloudOption = machines.some((machine) => machine.kind === "cloud");
-  const triggerDescription = hasCloudOption
+  const defaultTriggerDescription = hasCloudOption
     ? "Pick this computer, another paired computer, or Cursor Cloud. The lane list beside it follows your choice."
     : "Pick this computer or another paired computer. The lane list beside it follows your choice.";
 
@@ -174,8 +180,8 @@ export function DraftMachinePicker({
       <SmartTooltip
         forceEnabled
         content={{
-          label: "Where it runs",
-          description: triggerDescription,
+          label: tooltipLabel,
+          description: tooltipDescription ?? defaultTriggerDescription,
         }}
       >
         <button
@@ -184,7 +190,7 @@ export function DraftMachinePicker({
           data-draft-machine-picker
           aria-haspopup="menu"
           aria-expanded={open}
-          aria-label={triggerLabel}
+          aria-label={triggerAriaLabel}
           disabled={disabled}
           onClick={() => setOpen((current) => {
             const next = !current;
