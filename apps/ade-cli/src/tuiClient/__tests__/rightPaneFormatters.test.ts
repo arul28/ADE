@@ -345,6 +345,33 @@ describe("rightPaneFormatters", () => {
     expect(body).not.toContain("\"reviewThreads\"");
   });
 
+  it("names a failed review-thread read instead of reporting nothing to action", () => {
+    // The aggregate preserves a thread-read failure rather than flattening it
+    // to `[]`. Rendering that as "No actionable PR comments." tells an agent a
+    // PR is clean on the strength of a read that never happened.
+    const body = formatPrComments({
+      summary: { checksStatus: "passing", actionableComments: 0 },
+      reviewThreads: [],
+      comments: [],
+      reviewThreadsUnavailable: "GitHub API request failed (HTTP 503)",
+    });
+
+    expect(body).toContain("Could not be read");
+    expect(body).toContain("review threads: GitHub API request failed (HTTP 503)");
+    expect(body).not.toContain("No actionable PR comments.");
+  });
+
+  it("still reports a genuinely empty comment set as empty", () => {
+    const body = formatPrComments({
+      summary: { checksStatus: "passing", actionableComments: 0 },
+      reviewThreads: [],
+      comments: [],
+    });
+
+    expect(body).toContain("No actionable PR comments.");
+    expect(body).not.toContain("Could not be read");
+  });
+
   it("summarizes full PR review data", () => {
     const body = formatPrReview({
       reviews: [{ reviewer: "maintainer", state: "changes_requested", body: "Needs a test." }],

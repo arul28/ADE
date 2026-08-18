@@ -281,6 +281,51 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("times out a response body that stalls after headers arrive", async () => {
+    // The header timer is cleared the moment headers land, so a body that
+    // stalls mid-stream used to leave the read pending forever: the transport
+    // failure was never recorded and the poller tick that awaited it never
+    // completed. The desktop owner has always bounded this phase.
+    vi.useFakeTimers();
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-body-timeout-", {
+      emptyGhConfig: true,
+    });
+    const previousFetch = globalThis.fetch;
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      // Headers arrive; the body never does, until the request is aborted.
+      const signal = init?.signal;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: () => new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            const error = new Error("The operation was aborted");
+            error.name = "AbortError";
+            reject(error);
+          }, { once: true });
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+    try {
+      githubService.setToken("ghp_body_timeout_token");
+      const pending = githubService.apiRequest({ method: "GET", path: "/user" });
+      const settled = pending.then(() => "resolved").catch((error: unknown) => String(error));
+      await vi.advanceTimersByTimeAsync(120_000);
+      await expect(settled).resolves.toContain("response body timed out");
+    } finally {
+      globalThis.fetch = previousFetch;
+      vi.useRealTimers();
+      environment.restore?.();
+    }
+  });
+
   it("clears only changed PAT health when headless credentials change", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-pat-health-", {
       emptyGhConfig: true,

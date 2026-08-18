@@ -500,6 +500,10 @@ export function formatPrComments(value: unknown): string {
     summary ? checksStatusWord(pickString(summary, ["checksStatus"])) : null,
     summary ? `${asString(summary.actionableComments) ?? "0"} actionable` : null,
   ].filter(Boolean);
+  // The aggregate reports a failed thread read rather than flattening it to an
+  // empty list, so a partial answer is normal here: name the source that failed
+  // instead of letting "GitHub refused" read as "nothing to action".
+  const threadsUnavailable = isRecord(root) ? asString(root.reviewThreadsUnavailable) : null;
   const lines = [`PR comments${headerParts.length ? ` · ${headerParts.join(" · ")}` : ""}`];
   if (threads.length) {
     lines.push("", "Review threads");
@@ -516,7 +520,11 @@ export function formatPrComments(value: unknown): string {
       lines.push(`- ${commentPreview(comment)}`);
     }
   }
-  if (!threads.length && !comments.length) lines.push("", "No actionable PR comments.");
+  if (threadsUnavailable) {
+    lines.push("", "Could not be read", `  ✗ review threads: ${threadsUnavailable}`);
+  } else if (!threads.length && !comments.length) {
+    lines.push("", "No actionable PR comments.");
+  }
   return lines.join("\n");
 }
 

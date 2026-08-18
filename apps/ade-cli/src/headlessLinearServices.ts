@@ -618,6 +618,51 @@ function parseNextGitHubLink(linkHeader: string | null): string | null {
 }
 
 const GITHUB_API_TIMEOUT_MS = 20_000;
+const GITHUB_API_BODY_TIMEOUT_MS = 30_000;
+
+function githubTimeoutError(phase: "request" | "response body"): Error {
+  return new Error(
+    `GitHub API ${phase} timed out. Check network access on this machine.`,
+  );
+}
+
+/**
+ * Bound the body read on the same controller that owns the stream.
+ *
+ * The header timer is cleared the moment headers arrive, so without this a
+ * response whose body stalls mid-stream never settles: the caller's
+ * transport-failure record never runs, and the poller tick that awaited it
+ * never completes either. The desktop owner has always bounded this phase; the
+ * two owners have to agree, because the daemon is the one that actually polls
+ * in a packaged build.
+ */
+function boundGitHubResponseBody(
+  response: Response,
+  controller: AbortController,
+  release: () => void,
+): Response {
+  const readText = response.text.bind(response);
+  let bodyTimedOut = false;
+  Object.defineProperty(response, "text", {
+    configurable: true,
+    value: async (): Promise<string> => {
+      const timer = setTimeout(() => {
+        bodyTimedOut = true;
+        controller.abort();
+      }, GITHUB_API_BODY_TIMEOUT_MS);
+      try {
+        return await readText();
+      } catch (error) {
+        if (bodyTimedOut) throw githubTimeoutError("response body");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        release();
+      }
+    },
+  });
+  return response;
+}
 
 async function fetchGitHub(
   input: string | URL,
@@ -629,20 +674,25 @@ async function fetchGitHub(
   const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);
   if (upstreamSignal?.aborted) abortFromUpstream();
   else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
+  const release = (): void => {
+    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
+  };
   const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  let response: Response;
   try {
-    return await fetchImpl(input, { ...init, signal: controller.signal });
+    response = await fetchImpl(input, { ...init, signal: controller.signal });
   } catch (error) {
+    release();
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(
-        "GitHub API request timed out. Check network access on this machine.",
-      );
+      throw githubTimeoutError("request");
     }
     throw error;
   } finally {
     clearTimeout(timer);
-    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
   }
+  // `release` now runs when the body settles, not here — the upstream abort has
+  // to stay wired through the body phase for it to be cancellable at all.
+  return boundGitHubResponseBody(response, controller, release);
 }
 
 export function createHeadlessGitHubService(
