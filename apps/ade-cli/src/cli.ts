@@ -1933,7 +1933,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Omit --dispatch to stage for the next turn.
                                                     Claude takes inline and interrupt; Cursor takes
                                                     interrupt (cancel + resend on the same thread).
-                                                    Other providers reject it and the message stays staged.
+                                                    Other providers reject the flag outright and nothing
+                                                    is sent; omit --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge

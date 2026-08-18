@@ -1458,10 +1458,11 @@ struct WorkSessionDestinationView: View {
     // Also host-gated: a brain that predates `chat.dispatchSteer` cannot
     // promote a staged row at all, so the buttons would only ever produce an
     // error toast.
-    let manualDispatchModes = syncService.supportsChatRemoteAction(
+    let activeSendModesAvailable = syncService.supportsChatRemoteAction(
       "chat.dispatchSteer",
       sessionId: session.id
-    ) ? manualSteerDispatchModes : []
+    )
+    let manualDispatchModes = activeSendModesAvailable ? manualSteerDispatchModes : []
     let dispatchSteerInlineAction: (@MainActor (String) async -> Void)?
     if manualDispatchModes.contains(.inline) {
       dispatchSteerInlineAction = { steerId in await dispatchSteerInline(steerId) }
@@ -1499,10 +1500,6 @@ struct WorkSessionDestinationView: View {
     )
     let queueAwareStopAvailable = syncService.supportsChatRemoteAction(
       "chat.interruptWithQueueMode",
-      sessionId: session.id
-    )
-    let activeSendModesAvailable = syncService.supportsChatRemoteAction(
-      "chat.dispatchSteer",
       sessionId: session.id
     )
     let canWriteSpawnKind = !viewingSubagent && syncService.supportsSpawnKindUpdate

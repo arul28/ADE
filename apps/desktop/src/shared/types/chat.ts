@@ -2612,7 +2612,7 @@ export function unsupportedActiveTurnDispatchModeMessage(
   const accepted = activeTurnDispatchModes(provider).filter((entry) => entry !== "queue");
   const name = providerDisplayLabel(provider, "These");
   if (!accepted.length) {
-    return `${name} sessions don't support the "${mode}" active-turn dispatch mode; the message stays staged instead.`;
+    return `${name} sessions don't support the "${mode}" active-turn dispatch mode; it can only be staged for the next turn.`;
   }
   return `${name} sessions support only the ${
     accepted.map((entry) => `"${entry}"`).join(" and ")
