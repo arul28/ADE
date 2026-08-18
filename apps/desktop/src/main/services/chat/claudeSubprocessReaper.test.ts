@@ -369,6 +369,44 @@ describe("createClaudeSubprocessReaper", () => {
     );
   });
 
+  it("refuses to signal its own pid on Windows too", () => {
+    // The guard sits before the platform split on purpose: `taskkill /T /F` on
+    // our own pid takes down ADE's whole tree, which is worse than the POSIX
+    // group kill it also prevents.
+    const logger = createLogger();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-claude-reaper-self-win-"));
+    const registryPath = path.join(dir, "registry.json");
+    fs.writeFileSync(registryPath, JSON.stringify([
+      {
+        pid: process.pid,
+        ownerPid: 999_008,
+        sessionId: "chat-self-win",
+        laneId: "lane-orphan",
+        cwd: "C:\\lane",
+        command: "claude.exe",
+        args: [],
+        createdAt: new Date().toISOString(),
+      },
+    ]));
+    const processKill = vi.fn((pid: number, signal?: NodeJS.Signals | 0) => {
+      if (signal === 0 && pid === 999_008) throw new Error("missing");
+      return true;
+    });
+
+    createClaudeSubprocessReaper({
+      logger,
+      platform: "win32",
+      registryPath,
+      processKill,
+    });
+
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "agent_chat.claude_subprocess_terminate",
+      expect.objectContaining({ pid: process.pid }),
+    );
+    expect(JSON.parse(fs.readFileSync(registryPath, "utf8"))).toEqual([]);
+  });
+
   it("refuses a stale registry pid that started AFTER the record was written", () => {
     // The command line can match by coincidence — the user's own `claude` CLI
     // is the likeliest collider on an ADE machine — so identity also has to

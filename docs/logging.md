@@ -70,6 +70,15 @@ precedent cuts the same way: the settle-with-residue event exists because a
 human pressed Settle and the stop could not be confirmed. If a future change
 ever makes this reclaim user-initiated, revisit the decision then.
 
+The Claude subprocess reaper writes its own local lines around process
+teardown: `agent_chat.claude_subprocess_terminate` (with `pid`, `sessionId`,
+`reason`, and on POSIX a `groupLeader` flag recording whether the whole process
+group was signalled), `agent_chat.claude_subprocess_kill` for the SIGKILL
+escalation, `agent_chat.claude_subprocess_pid_reused` when an identity probe
+refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
+Windows. They carry pids and session ids and no command lines, and none is a
+PostHog event.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map

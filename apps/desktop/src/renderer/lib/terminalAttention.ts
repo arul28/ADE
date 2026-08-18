@@ -222,7 +222,13 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
  */
 export function sessionIsMidFlight(session: SessionCanonicalUiInput): boolean {
   const state = sessionCanonicalUiState(session);
-  if (state.phase === "stale") return true;
+  // `starting` is currently unreachable — `canonicalSessionState` never returns
+  // it — but it stays in the list because this is meant to be an exact
+  // statement of "mid-flight", not of "what the derivation happens to emit
+  // today". Both call sites carried it before this was hoisted, and iOS's
+  // mirror still does; dropping it would make the predicate quietly wrong the
+  // day something starts producing it.
+  if (state.phase === "starting" || state.phase === "stale") return true;
   return state.phase === "running" && (state.liveness ?? "turn") === "turn";
 }
 

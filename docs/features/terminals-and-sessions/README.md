@@ -342,11 +342,22 @@ Shared types and IPC:
   non-empty, so the promoted row's elapsed counts from when the work started
   rather than from a `lastActivityAt` that every provider frame refreshes. See
   [ui-surfaces](ui-surfaces.md) for the three anchors and the shared
-  `sessionElapsedAnchor` helper. The promotion is presentation only: the runtime
-  behind it is not immortal: once a background-only Claude runtime has been
-  silent long enough for this module to call it `stale`, the idle sweep
-  reclaims it — the backstop uses `SESSION_STALE_AFTER_MS` precisely so the two
-  cannot disagree (see [chat](../chat/README.md)).
+  `sessionElapsedAnchor` helper. The promotion does not make the runtime behind
+  it immortal: once a background-only Claude runtime has been silent for
+  `SESSION_STALE_AFTER_MS` — the same threshold at which this module stops
+  calling the session live and starts calling it `stale` — the idle sweep
+  reclaims it anyway. The backstop reuses this constant on purpose so the two
+  cannot be set to different bars (each still reads its own clock: this module
+  the persisted `lastActivityAt`, the sweep the runtime's in-memory activity
+  stamp). See [chat](../chat/README.md).
+  Separately, `runtimeProcesses` (`RuntimeProcessSummary[]` — `pid` plus the ISO
+  `startedAt`) reports the agent SDK processes a session currently owns, sourced
+  from `claudeSubprocessReaper.recordsForSession` and projected by
+  `chatSessionProjection`. It is in-memory and host-local — empty after a
+  restart, never a liveness claim about work that escaped ADE's process tree —
+  and it carries no command lines or environments. `ade session show` is its
+  consumer; it exists so "this chat is holding a warm agent process open" is
+  answerable without dropping to `ps`.
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
   `"settled"` behaves like a declared settle, and `"active"` is an explicit

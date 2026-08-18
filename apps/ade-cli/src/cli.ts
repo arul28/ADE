@@ -1876,7 +1876,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   way to quiet a row you are waiting on — it hides the row without claiming
   the work is done, and a hand-raise wakes it early.
 
-    $ ade session show <id> --text                  Print settle/snooze state and the wake reason
+    $ ade session show <id> --text                  Print what the session is doing (status + elapsed), the agent
+                                                    processes it is holding open, settle/snooze state, and the wake reason
     $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
     $ ade session snooze <id> --until 2026-07-26T18:00:00Z
                                                     Snooze until an explicit ISO-8601 deadline

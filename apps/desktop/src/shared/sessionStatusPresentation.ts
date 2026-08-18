@@ -195,10 +195,12 @@ export function sessionStatusPresentation(
   // had already finished, and offered no elapsed to judge it by. Name the state
   // for what it is and let the row show its elapsed.
   //
-  // That elapsed is time since the session's last activity (the caller supplies
-  // the anchor — see `SessionStatusSlot`), NOT the job's own runtime, which is
-  // not in the session summary. It is a proxy: a job launched early in a long
-  // turn reads ~0s at turn end. `showsElapsed` also re-enables the breathing
+  // That elapsed counts from `backgroundWorkSince` — when this session's live
+  // background set last went from empty to non-empty — via
+  // `sessionElapsedAnchor` below, falling back to last activity for a provider
+  // that reports no background level. It is a session-level anchor, NOT any
+  // single job's runtime: a second job joining a live set counts from the
+  // first one's start. `showsElapsed` also re-enables the breathing
   // animation, which is intended — background work genuinely is a live state.
   if (phase === "running" && liveness !== "turn") {
     const work = activity.backgroundWork;
