@@ -1550,7 +1550,7 @@ function GovernorHarness() {
   );
 }
 
-async function renderHarness(options: Parameters<typeof installAde>[0]) {
+async function renderHarness(options: Parameters<typeof installGovernorAde>[0]) {
   installGovernorAde(options);
   render(
     <PrsProvider>
@@ -1562,14 +1562,14 @@ async function renderHarness(options: Parameters<typeof installAde>[0]) {
   });
 }
 
-afterEach(() => {
-  cleanup();
-  globalThis.window.ade = originalAde;
-  window.location.hash = "";
-  window.history.replaceState(null, "", "/");
-});
-
 describe("PrsContext GitHub poll governor", () => {
+  afterEach(() => {
+    cleanup();
+    globalThis.window.ade = originalAde;
+    window.location.hash = "";
+    window.history.replaceState(null, "", "/");
+  });
+
   it("does not hold the fast checks cadence open when the checks read fails", async () => {
     // The regression: `getChecks` rejecting during the GitHub outage left the
     // pane looking like CI had not started, so the 5s loop kept running at

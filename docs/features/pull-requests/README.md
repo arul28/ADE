@@ -1163,8 +1163,8 @@ recovery is automatic.
   kind's, not one number: 60 s for a definite answer a fast retry cannot change
   (`service_unavailable` / `invalid_token` / `permission_denied`), 30 s for
   `network` and `unknown`, and `rate_limited` skips the ladder entirely — it
-  goes straight to the ceiling, or to the reset instant GitHub named when it
-  supplied one.
+  goes straight to the ceiling, or to the reset instant GitHub named when that
+  is further out still.
 
   The failure ladder and the **quota reserve** are tracked as two independent
   stand-downs; an elapsed reserve is dropped rather than carried — by the budget

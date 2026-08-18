@@ -418,6 +418,9 @@ export function formatPrChecks(value: unknown): string {
   ].join("\n");
 }
 
+/** reviews + threads + comments — the three independent reads behind `/pr review`. */
+const PR_REVIEW_SOURCES = 3;
+
 export function formatPrReview(value: unknown): string {
   const root = unwrapStructured(value);
   const reviews = firstRecordArray(root, ["reviews"]);
@@ -437,7 +440,7 @@ export function formatPrReview(value: unknown): string {
   }
   const rootFailure = prReadFailure(root);
   if (rootFailure) return `PR review · could not be read — ${rootFailure}`;
-  if (failures.length > 0 && !reviews.length && !threads.length && !comments.length) {
+  if (failures.length === PR_REVIEW_SOURCES) {
     return [
       "PR review · could not be read",
       ...failures.map(([label, message]) => `  ✗ ${label}: ${message}`),
