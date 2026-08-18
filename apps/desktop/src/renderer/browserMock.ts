@@ -5972,6 +5972,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         checkedAt: new Date().toISOString(),
         error: null,
       }),
+      getRequestBudget: resolved({
+        pausedUntil: null,
+        failureKind: null,
+        retryAt: null,
+        remaining: 4_900,
+        limit: 5_000,
+        resource: "core",
+      }),
       detectRepo: resolved({ owner: "arul28", name: "ADE" }),
       getAppInstallationStatus: resolved({
         repo: { owner: "arul28", name: "ADE" },

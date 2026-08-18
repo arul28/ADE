@@ -16,6 +16,7 @@ import type {
   GitHubCredentialVerification,
   GitHubRateLimitState,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubStatus,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -60,6 +61,7 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubRequestBudget,
   githubCredentialNonRateLimitCooldown,
   githubCredentialRateLimitCooldown,
   githubCredentialInventoryKey,
@@ -2363,6 +2365,24 @@ export function createGithubService({
         Date.now(),
         githubOperationCredentialCandidates(inventory.candidates, "read"),
       );
+    },
+
+    /**
+     * Zero-network read of the reserve + last classified failure, for automatic
+     * GitHub readers that must decide their cadence *before* spending a
+     * request. Callers poll this on a slow timer, so it must never reach
+     * GitHub — it only inspects in-memory credential health.
+     *
+     * Scoped to this project's read credentials when the (TTL-cached)
+     * credential inventory is available, and to every known credential when it
+     * is not: a safety read that fails closed to "no idea" would hand the
+     * caller back the unthrottled behaviour it exists to prevent.
+     */
+    async getRequestBudget(): Promise<GitHubRequestBudget> {
+      const candidates = await readCredentialInventory()
+        .then((inventory) => githubOperationCredentialCandidates(inventory.candidates, "read"))
+        .catch(() => undefined);
+      return githubRequestBudget(Date.now(), candidates);
     },
 
     getAppUserAuthStatus(): GitHubAppUserAuthStatus {

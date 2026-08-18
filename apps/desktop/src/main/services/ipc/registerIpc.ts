@@ -257,6 +257,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -9651,6 +9652,14 @@ export function registerIpc({
   ipcMain.handle(IPC.githubClearAppUserAuth, async (): Promise<GitHubAppUserAuthStatus> => {
     const ctx = getCtx();
     return ctx.githubService.clearAppUserAuth();
+  });
+
+  // Zero-network read: it inspects in-memory credential health only, so the
+  // renderer's automatic GitHub pollers can consult the 500-request reserve on
+  // a timer without the check itself costing quota.
+  ipcMain.handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRequestBudget();
   });
 
   const resolveGithubRepoRef = async (

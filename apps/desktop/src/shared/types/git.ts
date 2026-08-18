@@ -325,6 +325,49 @@ export type GitHubAuthFailure = {
   retryAt: string | null;
 };
 
+export type GitHubAuthFailureKind = GitHubAuthFailure["kind"];
+
+/**
+ * What every *automatic* GitHub reader needs to know before it spends a
+ * request, delivered as data rather than as an error message.
+ *
+ * ADE used to decide "should I keep polling GitHub?" by substring-matching the
+ * message of a rejected request (`msg.includes("rate limit")`). That reading is
+ * both too narrow and unreachable in the case that matters most: during the
+ * 2026-08-17 GitHub outage every response was a 5xx, which matches neither
+ * substring, so the PR detail pane's 5-second checks poll never backed off and
+ * burned the account's entire 5,000/hour core quota in one hour.
+ *
+ * The budget is a *zero-network* read of the same in-memory credential health
+ * the background PR poller already consults, so a client can honour the 500
+ * request reserve and the classified failure kind without asking GitHub
+ * anything. Every field is optional-by-nullability: an older runtime that does
+ * not implement the read leaves clients on their own local backoff rather than
+ * breaking them.
+ */
+export type GitHubRequestBudget = {
+  /**
+   * ISO time until which automatic GitHub requests must stand down, or null
+   * when they may proceed. Set when an available credential's core/GraphQL
+   * quota has reached {@link GITHUB_BACKGROUND_RATE_LIMIT_RESERVE}; the value
+   * is the quota reset instant, so callers resume by themselves.
+   */
+  pausedUntil: string | null;
+  /**
+   * The last classified failure on a PR-read resource, or null when the most
+   * recent request on it succeeded. `service_unavailable` deliberately carries
+   * no pause — a GitHub 5xx must never park a credential — but it is the signal
+   * that tells a poller to lengthen its own cadence.
+   */
+  failureKind: GitHubAuthFailureKind | null;
+  /** Retry instant GitHub supplied for {@link failureKind}, when it gave one. */
+  retryAt: string | null;
+  /** Remaining primary-quota requests on the tightest PR-read resource. */
+  remaining: number | null;
+  limit: number | null;
+  resource: string | null;
+};
+
 export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat";
 
 export type GitHubCredentialCapability = "read" | "write";

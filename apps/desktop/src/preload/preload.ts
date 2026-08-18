@@ -277,6 +277,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -9135,6 +9136,14 @@ const adeBridge = {
             : githubStatusCache.get(),
       );
     },
+    // Automatic GitHub readers consult this before spending a request. It is a
+    // zero-network read of the runtime's in-memory credential health, so it is
+    // deliberately NOT cached here: a stale "you may proceed" is exactly the
+    // answer that burned the quota during the 2026-08-17 outage.
+    getRequestBudget: async (): Promise<GitHubRequestBudget> =>
+      callProjectRuntimeActionOr("github", "getRequestBudget", {}, () =>
+        ipcRenderer.invoke(IPC.githubGetRequestBudget),
+      ),
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;
     }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {

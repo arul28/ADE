@@ -818,6 +818,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getAppUserAuthStatus",
     "getRepoOrThrow",
     "getRemoteStatus",
+    "getRequestBudget",
     "getStatus",
     "createRepoAutolink",
     "listRepoAutolinks",

@@ -33,6 +33,7 @@ import type {
   GitHubCredentialVerification,
   GitHubRepoRef,
   GitHubRateLimitState,
+  GitHubRequestBudget,
   GitHubStatus,
   CtoAttentionState,
 } from "../../desktop/src/shared/types";
@@ -89,6 +90,7 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubRequestBudget,
   githubCredentialNonRateLimitCooldown,
   githubCredentialRateLimitCooldown,
   githubCredentialInventoryKey,
@@ -1921,6 +1923,18 @@ export function createHeadlessGitHubService(
         Date.now(),
         githubOperationCredentialCandidates(inventory.candidates, "read"),
       );
+    },
+    /**
+     * Runtime-owned twin of the desktop service's budget read. The daemon owns
+     * GitHub access for packaged/runtime-bound windows, so a budget implemented
+     * only on the desktop side would answer `undefined` in the shipping build
+     * and leave the renderer's poll governor permanently un-gated.
+     */
+    async getRequestBudget(): Promise<GitHubRequestBudget> {
+      const candidates = await readCredentialInventoryAsync()
+        .then((inventory) => githubOperationCredentialCandidates(inventory.candidates, "read"))
+        .catch(() => undefined);
+      return githubRequestBudget(Date.now(), candidates);
     },
     async getRemoteStatus() {
       const origin = await readGitOriginAsync(projectRoot);

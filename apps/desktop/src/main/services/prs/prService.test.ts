@@ -4034,6 +4034,38 @@ describe("prService.refresh", () => {
     });
   });
 
+  it("reports a background sweep in which GitHub answered for nothing", async () => {
+    // The poller derives its exponential backoff from whether a tick threw.
+    // `refreshRowsBestEffort` used to swallow every per-row failure, so a sweep
+    // where GitHub refused all of them still read as a clean tick and the
+    // poller kept its normal cadence for the whole outage.
+    const firstRow = makePrRow({ id: "pr-bad-1", github_pr_number: 91 });
+    const secondRow = makePrRow({ id: "pr-bad-2", github_pr_number: 92 });
+    const { service } = buildService({
+      db: makeRefreshDb([firstRow, secondRow]),
+      githubService: makeRefreshGithubService(new Set([91, 92])),
+    });
+
+    await expect(service.refresh()).rejects.toThrow("refresh failed for #91");
+  });
+
+  it("keeps a background sweep successful when GitHub answered for any row", async () => {
+    // Per-row tolerance is still right: one deleted or inaccessible PR must not
+    // stop the sweep or put the poller on a backoff.
+    const okRow = makePrRow({ id: "pr-ok", github_pr_number: 90 });
+    const badRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
+    const { service, logger } = buildService({
+      db: makeRefreshDb([okRow, badRow]),
+      githubService: makeRefreshGithubService(new Set([91])),
+    });
+
+    await expect(service.refresh()).resolves.toEqual(expect.any(Array));
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad",
+      error: "refresh failed for #91",
+    });
+  });
+
   it("still rejects explicit single-PR refresh failures", async () => {
     const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
     const { service, logger } = buildService({
@@ -4106,6 +4138,66 @@ describe("prService.linkToLane", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("prService.getChecks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeChecksGithubService(fail: { status?: boolean; checkRuns?: boolean }) {
+    return makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+          if (fail.status) throw new Error("GitHub API request failed (HTTP 503)");
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+          if (fail.checkRuns) throw new Error("GitHub API request failed (HTTP 502)");
+          return { data: { check_runs: [] } };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+  }
+
+  function buildChecksService(fail: { status?: boolean; checkRuns?: boolean }) {
+    const row = makePrRow({ id: "pr-checks", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => (
+      String(sql).includes("from pull_requests") && String(sql).includes("where id = ?")
+        ? (params[0] === row.id ? row : null)
+        : null
+    ));
+    db.all.mockImplementation(() => []);
+    return buildService({ db, githubService: makeChecksGithubService(fail) });
+  }
+
+  it("rejects when neither checks source could be read", async () => {
+    // A failed fetch used to collapse to `[]`, which is byte-identical to "this
+    // commit has no checks yet". The PR detail pane reads exactly that
+    // distinction to decide whether CI has settled, so a swallowed failure held
+    // its 5-second poll open for the whole 2026-08-17 GitHub outage and burned
+    // the account's entire hourly quota. A total failure must be visible.
+    const { service } = buildChecksService({ status: true, checkRuns: true });
+    await expect(service.getChecks("pr-checks")).rejects.toThrow(/HTTP 50\d/);
+  });
+
+  it("returns what it could read when only one source failed", async () => {
+    // Partial degradation still answers: one working source is more than
+    // nothing, and blanking the Checks tab because half of GitHub is unhappy
+    // would remove capability the user still has.
+    const { service } = buildChecksService({ checkRuns: true });
+    await expect(service.getChecks("pr-checks")).resolves.toEqual([]);
+  });
+
+  it("reports an authoritatively empty commit as empty, not as a failure", async () => {
+    const { service } = buildChecksService({});
+    await expect(service.getChecks("pr-checks")).resolves.toEqual([]);
   });
 });
 

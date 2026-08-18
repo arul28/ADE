@@ -5415,22 +5415,41 @@ export function createPrService({
     return refreshed;
   };
 
-  const refreshRowsBestEffort = async (rows: PullRequestRow[]): Promise<void> => {
+  /**
+   * Refresh rows without letting one bad row abort the sweep, and report
+   * whether GitHub answered for any of them.
+   *
+   * The caller (`prPollingService`) derives its exponential backoff from
+   * whether a tick threw. This helper used to swallow every per-row failure and
+   * return void, so a sweep in which GitHub refused every single row still read
+   * as a clean tick: `consecutiveFailures` stayed at zero and the poller kept
+   * its normal cadence for the entire outage. Per-row tolerance is still right
+   * — one deleted PR must not stop the others — but "every row failed" is a
+   * fact about GitHub, not about a row, and the caller has to see it.
+   */
+  const refreshRowsBestEffort = async (
+    rows: PullRequestRow[],
+  ): Promise<{ attempted: number; refreshed: number; firstError: unknown }> => {
     const seen = new Set<string>();
     const uniqueRows = rows.filter((row) => {
       if (seen.has(row.id)) return false;
       seen.add(row.id);
       return true;
     });
+    let refreshed = 0;
+    let firstError: unknown = null;
     for (let i = 0; i < uniqueRows.length; i += REFRESH_CONCURRENCY) {
       await Promise.all(uniqueRows.slice(i, i + REFRESH_CONCURRENCY).map(async (row) => {
         try {
           await refreshOne(row.id);
+          refreshed += 1;
         } catch (error) {
+          if (firstError == null) firstError = error;
           logger.warn("prs.refresh_failed", { prId: row.id, error: getErrorMessage(error) });
         }
       }));
     }
+    return { attempted: uniqueRows.length, refreshed, firstError };
   };
 
   /**
@@ -5704,16 +5723,47 @@ export function createPrService({
     return status;
   };
 
+  /**
+   * A commit's checks, as GitHub reports them right now.
+   *
+   * A total failure here is reported as a rejection, never as `[]`. The two are
+   * indistinguishable to every caller — an empty array is also the honest
+   * answer for "this commit has no checks yet" — and the renderer's CI poll
+   * uses exactly that distinction to decide whether the pipeline has settled.
+   * Folding a failure into an empty list made a broken fetch look like CI that
+   * had not started, which held the pane's 5-second poll open indefinitely; on
+   * 2026-08-17 that consumed the account's whole hourly GitHub quota. Callers
+   * that would rather show stale checks than nothing catch this and keep what
+   * they had, which is the correct behaviour and now an explicit choice at each
+   * call site instead of a silent default here.
+   *
+   * A *partial* failure still returns: one working source is more than nothing,
+   * and `computeStatus` — not this function — owns the rollup verdict that must
+   * not be recomputed from an incomplete picture.
+   */
   const getChecksByCoords = async (coords: PrGithubCoords): Promise<PrCheck[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prNumber = Number(coords.githubPrNumber);
     const pr = await fetchPr(repo, prNumber);
     const headSha = asString(pr?.head?.sha);
     if (!headSha) return rememberActivityInput("checks", repo, prNumber, [] as PrCheck[]);
+    let combinedStatusError: unknown = null;
+    let checkRunsError: unknown = null;
     const [combinedStatus, checkRuns] = await Promise.all([
-      bestEffort("getChecks.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }),
-      bestEffort("getChecks.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]),
+      bestEffort(
+        "getChecks.fetchCombinedStatus",
+        fetchCombinedStatus(repo, headSha),
+        { state: "", statuses: [] },
+        (error) => { combinedStatusError = error; },
+      ),
+      bestEffort(
+        "getChecks.fetchCheckRuns",
+        fetchCheckRuns(repo, headSha),
+        [] as any[],
+        (error) => { checkRunsError = error; },
+      ),
     ]);
+    if (combinedStatusError && checkRunsError) throw checkRunsError;
 
     const out: PrCheck[] = [];
     const seen = new Set<string>();
@@ -11188,7 +11238,12 @@ export function createPrService({
         .filter((row) => hotPrIds.has(row.id))
         .sort(compareBackgroundRefreshPriority);
       const candidates = [...hotCandidates, ...staleCandidates];
-      await refreshRowsBestEffort(candidates);
+      const outcome = await refreshRowsBestEffort(candidates);
+      // Same rule `refreshPrIds` already applies: a sweep where every attempted
+      // row failed is a GitHub failure and must surface, so the poller's
+      // backoff engages instead of retrying at full cadence. A partial success
+      // is still a success — GitHub answered.
+      if (outcome.attempted > 0 && outcome.refreshed === 0) throw outcome.firstError;
 
       return withGithubStackMemberships(listRows().map(rowToSummary));
     },

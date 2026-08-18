@@ -516,6 +516,9 @@ export function PrDetailPane({
     regeneratePrAiSummary,
     isGithubRateLimited,
     noteGithubRateLimit,
+    noteGithubRequestSuccess,
+    githubPollPeriodMs,
+    githubPollGeneration,
   } = usePrs();
   const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
   const initialPaneWarmCache = readDetailPaneWarmCache(pr.id);
@@ -1079,6 +1082,16 @@ export function PrDetailPane({
   // the CI tab once everything is terminal — there is nothing left to observe.
   // `getChecks` is included: it used to be missing, so third-party checks
   // (CodeRabbit, Vercel, …) never refreshed while the tab was open.
+  //
+  // The 5s rung is the most expensive loop in the app: each tick costs roughly
+  // seven to ten GitHub REST requests, which is the entire 5,000/hour quota if
+  // it runs for an hour. It normally cannot, because CI settles in ~10 minutes
+  // and `checksTerminal` stops it — but a *failed* checks fetch used to look
+  // exactly like "CI has not started yet", so during the 2026-08-17 GitHub
+  // outage it ran the full hour and exhausted the account. Two things now
+  // prevent that: `getChecks` reports a total failure as a rejection instead of
+  // an empty list, and the shared governor turns any rejection (and the
+  // 500-request quota reserve) into a longer period for this very timer.
   const [windowVisible, setWindowVisible] = React.useState(
     () => (typeof document === "undefined" ? true : document.visibilityState !== "hidden"),
   );
@@ -1093,12 +1106,16 @@ export function PrDetailPane({
     if (!windowVisible) return undefined;
     const checksTabOpen = activeTab === "checks";
     if (checksTabOpen && checksTerminal) return undefined;
-    const periodMs = checksTabOpen && !checksTerminal ? checksPollPeriodMs() : 60_000;
+    const basePeriodMs = checksTabOpen && !checksTerminal ? checksPollPeriodMs() : 60_000;
+    // Stretch the timer itself rather than waking every 5s to return early: a
+    // guard that has to be re-checked on every tick is one refactor away from
+    // being missed, and a slower interval cannot be.
+    const periodMs = githubPollPeriodMs(basePeriodMs);
 
     let cancelled = false;
     const id = window.setInterval(() => {
-      // Honour PrsContext's shared GitHub rate-limit backoff rather than
-      // hammering the API alongside it.
+      // Second line of defence — the period above already reflects the
+      // stand-down, but a pause armed between ticks lands here.
       if (isGithubRateLimited()) return;
       const activityPromise = activeTab === "overview"
         ? fetchActivity()
@@ -1110,14 +1127,17 @@ export function PrDetailPane({
         fetchChecks(),
       ]).then(([arResult, thrResult, actResult, checksResult]) => {
         if (cancelled) return;
-        for (const result of [arResult, thrResult, actResult, checksResult]) {
-          if (result.status !== "rejected") continue;
-          const message = String((result.reason as Error | undefined)?.message ?? result.reason);
-          if (message.includes("rate limit") || message.includes("API rate")) {
-            noteGithubRateLimit();
-            return;
-          }
+        const results = [arResult, thrResult, actResult, checksResult];
+        // ANY rejection stands the loop down. The previous message-substring
+        // test matched neither the 5xx responses of a GitHub outage nor a 403
+        // rate-limit body, so the brake never armed while the quota drained.
+        if (results.some((result) => result.status === "rejected")) {
+          noteGithubRateLimit();
+        } else {
+          noteGithubRequestSuccess();
         }
+        // Whatever DID resolve is still applied: a partial answer keeps the
+        // pane current instead of freezing it on the last complete one.
         if (arResult.status === "fulfilled") {
           setActionRuns(arResult.value);
           updateDetailPaneWarmCache({ actionRuns: arResult.value });
@@ -1142,7 +1162,8 @@ export function PrDetailPane({
     };
   }, [
     activeTab, checksTerminal, fetchActionRuns, fetchActivity, fetchChecks, fetchReviewThreadsApi,
-    isGithubRateLimited, noteGithubRateLimit, pr.id, updateDetailPaneWarmCache, windowVisible,
+    githubPollGeneration, githubPollPeriodMs, isGithubRateLimited, noteGithubRateLimit,
+    noteGithubRequestSuccess, pr.id, updateDetailPaneWarmCache, windowVisible,
   ]);
 
   // While GitHub is still computing mergeability for the selected PR, re-poll
@@ -1174,9 +1195,14 @@ export function PrDetailPane({
         window.clearInterval(id);
         return;
       }
+      // This is an automatic loop too, and at 2.5s the densest one in the pane.
+      // Attempts spent while the governor is standing down would be attempts
+      // burned against a GitHub that is not answering, so they do not count.
+      if (isGithubRateLimited()) return;
       attempts += 1;
       pollStatus()
         .then((next) => {
+          noteGithubRequestSuccess();
           // Drop if cancelled, empty, or a newer detail load superseded us.
           if (cancelled || !next || seqAtStart !== detailLoadSeqRef.current) return;
           setPolledStatus(next);
@@ -1185,13 +1211,18 @@ export function PrDetailPane({
             window.clearInterval(id);
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          noteGithubRateLimit();
+        });
     }, pollPeriodMs);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [mergeabilityComputing, isUnmapped, pr.id, updateDetailPaneWarmCache]);
+  }, [
+    mergeabilityComputing, isUnmapped, isGithubRateLimited, noteGithubRateLimit,
+    noteGithubRequestSuccess, pr.id, updateDetailPaneWarmCache,
+  ]);
 
   // ---- Action helper to reduce repetitive try/catch/finally ----
   const runAction = async (fn: () => Promise<void>) => {

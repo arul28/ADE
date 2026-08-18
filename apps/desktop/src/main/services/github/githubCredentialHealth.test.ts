@@ -10,6 +10,8 @@ import {
   recordGithubOperationFailure,
   recordGithubCredentialSuccess,
   registerGithubCredentialIdentity,
+  githubRequestBudget,
+  GITHUB_BACKGROUND_RATE_LIMIT_RESERVE,
   type GithubCredentialCandidate,
 } from "./githubCredentialHealth";
 
@@ -169,6 +171,118 @@ describe("githubCredentialHealth", () => {
     clearGithubCredentialHealth();
     recordGithubOperationFailure(appCandidate, permissionDenied, null);
     expect(githubCredentialCooldown(appCandidate)).toBeNull();
+  });
+
+  describe("githubRequestBudget", () => {
+    // The budget is what lets a *foreground* poller honour the same reserve the
+    // background PR poller already respects. Before it existed the reserve was
+    // enforced in exactly one place, so the renderer's 5s checks loop drained
+    // the quota to zero while a 500-request reserve nominally protected it.
+    const RESET_AT = "2026-08-17T13:00:00.000Z";
+
+    function recordCoreQuota(remaining: number): void {
+      recordGithubCredentialSuccess(ghCandidate, new Headers({
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-remaining": String(remaining),
+        "x-ratelimit-used": String(5000 - remaining),
+        "x-ratelimit-reset": String(Date.parse(RESET_AT) / 1_000),
+        "x-ratelimit-resource": "core",
+      }));
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-17T12:00:00.000Z"));
+    });
+
+    it("gates automatic requests once the core quota reaches the reserve", () => {
+      recordCoreQuota(GITHUB_BACKGROUND_RATE_LIMIT_RESERVE);
+      const budget = githubRequestBudget(Date.now(), [ghCandidate]);
+      expect(budget.pausedUntil).toBe(new Date(Date.parse(RESET_AT)).toISOString());
+      expect(budget.remaining).toBe(GITHUB_BACKGROUND_RATE_LIMIT_RESERVE);
+      expect(budget.limit).toBe(5000);
+      expect(budget.resource).toBe("core");
+    });
+
+    it("leaves automatic requests running while quota is above the reserve", () => {
+      recordCoreQuota(GITHUB_BACKGROUND_RATE_LIMIT_RESERVE + 1);
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).pausedUntil).toBeNull();
+    });
+
+    it("reports a GitHub outage as a typed kind without parking the credential", () => {
+      // `service_unavailable` deliberately carries no cooldown — a 5xx is not
+      // the credential's fault — but the kind still has to reach the caller, or
+      // an outage looks identical to a healthy GitHub that returned nothing.
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "service_unavailable",
+        message: "No server is currently available to service your request.",
+        retryAt: null,
+      }, {
+        limit: 5000,
+        remaining: 4321,
+        used: 679,
+        resetAt: RESET_AT,
+        resource: "core",
+      });
+
+      const budget = githubRequestBudget(Date.now(), [ghCandidate]);
+      expect(budget.failureKind).toBe("service_unavailable");
+      expect(budget.pausedUntil).toBeNull();
+      expect(githubCredentialCooldown(ghCandidate)).toBeNull();
+    });
+
+    it("reports the failure asking for the longest stand-down", () => {
+      recordGithubOperationFailure(appCandidate, {
+        kind: "permission_denied",
+        message: "Resource not accessible",
+        retryAt: null,
+      }, { limit: 5000, remaining: 4000, used: 1000, resetAt: null, resource: "core" });
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "rate_limited",
+        message: "API rate limit exceeded",
+        retryAt: RESET_AT,
+      }, { limit: 5000, remaining: 0, used: 5000, resetAt: RESET_AT, resource: "core" });
+
+      const budget = githubRequestBudget(Date.now(), [appCandidate, ghCandidate]);
+      expect(budget.failureKind).toBe("rate_limited");
+      expect(budget.retryAt).toBe(RESET_AT);
+    });
+
+    it("ignores the search bucket, which PR reads do not spend", () => {
+      recordGithubCredentialSuccess(ghCandidate, new Headers({
+        "x-ratelimit-limit": "30",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(Date.parse(RESET_AT) / 1_000),
+        "x-ratelimit-resource": "search",
+      }));
+      const budget = githubRequestBudget(Date.now(), [ghCandidate]);
+      expect(budget.pausedUntil).toBeNull();
+      expect(budget.resource).toBeNull();
+    });
+
+    it("clears the reported failure once GitHub answers again", () => {
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "service_unavailable",
+        message: "Bad gateway",
+        retryAt: null,
+      }, { limit: 5000, remaining: 4321, used: 679, resetAt: RESET_AT, resource: "core" });
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind)
+        .toBe("service_unavailable");
+
+      recordCoreQuota(4320);
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
+    });
+
+    it("answers with an unknown budget when nothing has been recorded", () => {
+      expect(githubRequestBudget(Date.now(), [ghCandidate])).toEqual({
+        pausedUntil: null,
+        failureKind: null,
+        retryAt: null,
+        remaining: null,
+        limit: null,
+        resource: null,
+      });
+    });
   });
 
   it.each(["graphql", "search"])(

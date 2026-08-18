@@ -6,6 +6,7 @@ import type {
   GitHubCredentialState,
   GitHubRateLimitState,
   GitHubRepoRef,
+  GitHubRequestBudget,
 } from "../../../shared/types";
 import {
   githubRateLimitRetryAtMs,
@@ -361,22 +362,39 @@ export function githubCredentialStates(args: {
   });
 }
 
+/**
+ * Whether a quota bucket is one PR reads actually spend from. Search has its
+ * own small independent bucket and must never pause PR refresh; `unknown` only
+ * counts when the reported limit is large enough to be a primary bucket.
+ */
+function protectsPullRequestReads(
+  resource: string,
+  rateLimit: GitHubRateLimitState | null,
+): boolean {
+  return resource === "core"
+    || resource === "graphql"
+    || (resource === "unknown" && (rateLimit?.limit ?? 0) >= 1_000);
+}
+
+function healthEntriesFor(
+  candidates?: readonly GithubCredentialCandidate[],
+): CredentialHealth[] {
+  return candidates
+    ? candidates
+        .map((candidate) => healthFor(candidate))
+        .filter((health): health is CredentialHealth => health != null)
+    : [...healthByTokenDigest.values()];
+}
+
 export function githubBackgroundRequestPauseUntilMs(
   nowMs = Date.now(),
   candidates?: readonly GithubCredentialCandidate[],
 ): number | null {
   let pauseUntilMs: number | null = null;
-  const healthEntries = candidates
-    ? candidates.map((candidate) => healthFor(candidate)).filter(Boolean)
-    : [...healthByTokenDigest.values()];
-  for (const health of healthEntries) {
-    if (!health) continue;
+  for (const health of healthEntriesFor(candidates)) {
     for (const [resource, resourceHealth] of health.resources) {
       const rateLimit = resourceHealth.rateLimit;
-      const protectsPullRequestReads = resource === "core"
-        || resource === "graphql"
-        || (resource === "unknown" && (rateLimit?.limit ?? 0) >= 1_000);
-      if (!protectsPullRequestReads) continue;
+      if (!protectsPullRequestReads(resource, rateLimit)) continue;
       const remaining = rateLimit?.remaining;
       const resetAt = rateLimit?.resetAt ? Date.parse(rateLimit.resetAt) : NaN;
       if (remaining == null || remaining > GITHUB_BACKGROUND_RATE_LIMIT_RESERVE) continue;
@@ -385,4 +403,65 @@ export function githubBackgroundRequestPauseUntilMs(
     }
   }
   return pauseUntilMs;
+}
+
+/**
+ * The reserve and the classified failure kind that automatic GitHub readers
+ * need, computed from in-memory health only — this function must never issue a
+ * request, because its whole purpose is to be safe to call while GitHub is
+ * refusing or exhausted.
+ *
+ * The reported failure kind is the worst one currently recorded on a PR-read
+ * resource. Worst-first ordering matters: with several credentials in the
+ * chain, "GitHub is down" and "this one token is out of quota" can be recorded
+ * at the same time, and the caller's cadence must be driven by the one that
+ * asks for the longest stand-down.
+ */
+const REQUEST_BUDGET_FAILURE_SEVERITY: Record<GitHubAuthFailure["kind"], number> = {
+  rate_limited: 5,
+  service_unavailable: 4,
+  network: 3,
+  invalid_token: 2,
+  permission_denied: 1,
+  unknown: 0,
+};
+
+export function githubRequestBudget(
+  nowMs = Date.now(),
+  candidates?: readonly GithubCredentialCandidate[],
+): GitHubRequestBudget {
+  const pauseUntilMs = githubBackgroundRequestPauseUntilMs(nowMs, candidates);
+  let failure: GitHubAuthFailure | null = null;
+  let tightest: { rateLimit: GitHubRateLimitState; resource: string } | null = null;
+  for (const health of healthEntriesFor(candidates)) {
+    for (const [resource, resourceHealth] of health.resources) {
+      const rateLimit = resourceHealth.rateLimit;
+      if (!protectsPullRequestReads(resource, rateLimit)) continue;
+      const current = resourceHealth.failure;
+      if (
+        current
+        && (
+          !failure
+          || REQUEST_BUDGET_FAILURE_SEVERITY[current.kind]
+            > REQUEST_BUDGET_FAILURE_SEVERITY[failure.kind]
+        )
+      ) {
+        failure = current;
+      }
+      if (
+        rateLimit?.remaining != null
+        && (tightest == null || rateLimit.remaining < (tightest.rateLimit.remaining ?? Infinity))
+      ) {
+        tightest = { rateLimit, resource };
+      }
+    }
+  }
+  return {
+    pausedUntil: pauseUntilMs == null ? null : new Date(pauseUntilMs).toISOString(),
+    failureKind: failure?.kind ?? null,
+    retryAt: failure?.retryAt ?? null,
+    remaining: tightest?.rateLimit.remaining ?? null,
+    limit: tightest?.rateLimit.limit ?? null,
+    resource: tightest?.resource ?? null,
+  };
 }

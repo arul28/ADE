@@ -562,6 +562,17 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     startAppUserDeviceAuth: async () => ({ ok: false, error: "unsupported" }),
     pollAppUserDeviceAuth: async () => ({ status: "expired" }),
     clearAppUserAuth: async () => ({ authenticated: false, user: null }),
+    // Routed to the host: the paired machine makes the GitHub requests, so its
+    // quota reserve is the one the web client's pollers have to respect. The
+    // fallback is an unknown budget, never a fabricated healthy one.
+    getRequestBudget: (opts?: unknown) => call("github.getRequestBudget", opts, {
+      pausedUntil: null,
+      failureKind: null,
+      retryAt: null,
+      remaining: null,
+      limit: null,
+      resource: null,
+    }),
     detectRepo: async () => null,
     listRepoAutolinks: async () => [],
     getAppInstallationStatus: async () => ({ installed: false, state: "unknown" }),
