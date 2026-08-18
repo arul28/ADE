@@ -247,8 +247,8 @@ Inline (acts immediately in the TUI):
 | `/quit` | Exit `ade code`. |
 | `/steer cancel` | Remove the latest staged steer message from the local queue. |
 | `/steer edit <text>` | Edit the latest staged steer message. |
-| `/steer send` | Claude only: deliver the latest staged steer inline into the active turn (SDK `dispatchSteer mode: "inline"`). |
-| `/steer interrupt` | Claude only: interrupt the active turn and run the latest staged steer next (`dispatchSteer mode: "interrupt"`). |
+| `/steer send` | Deliver the latest staged steer inline into the active turn (`dispatchSteer mode: "inline"`). Offered only on providers whose `ACTIVE_TURN_DISPATCH_MODES` entry includes `inline` — Claude today; the command list is derived from that table, not restated. |
+| `/steer interrupt` | Interrupt the active turn and run the latest staged steer (`dispatchSteer mode: "interrupt"`). Offered on providers whose table entry includes `interrupt` — Claude and Cursor. On Cursor the notice reads "Interrupting Cursor and continuing with the staged message.", because its redirect cancels the run and resends on the same agent thread (`activeTurnInterruptContinues`) instead of folding into a live query; Claude's reads "Interrupting Claude to run the staged message." A mode the session's provider cannot honor is refused with the shared `unsupportedActiveTurnDispatchModeMessage` text rather than TUI-local copy. |
 
 Right pane (open contextual content):
 

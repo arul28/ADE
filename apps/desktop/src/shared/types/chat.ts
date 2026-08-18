@@ -12,6 +12,7 @@ import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { RuntimeProcessSummary } from "./sessions";
 import type { SubagentCapability } from "../subagentCapabilities";
+import { providerDisplayLabel } from "../pendingInputLabels";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {});
 
@@ -2188,10 +2189,10 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  *
  * Cursor is the odd one out: `@cursor/sdk` has no fork/clone surface at all and
  * a thread cannot be resumed twice, so ADE forks it at the ADE layer instead —
- * the new chat starts on a fresh Cursor agent seeded with the source
- * conversation's context (the same seeding used when an agent rotates). Fork
- * requires source and target on the same provider; the model may still change
- * within that provider.
+ * the new chat starts on a fresh Cursor agent with the source conversation
+ * replayed into it verbatim (bounded by the target model's context window),
+ * the same replay used when an agent rotates. Fork requires source and target
+ * on the same provider; the model may still change within that provider.
  */
 export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor"] as const;
 
@@ -2200,24 +2201,26 @@ export function providerSupportsHandoffFork(provider: AgentChatProvider | null |
 }
 
 /**
- * True when a provider's fork is ADE-side context seeding rather than a native
- * provider fork, so the UI must not promise a copied thread. Cursor is the only
- * one today: its SDK has no fork surface and a thread cannot be resumed twice.
+ * True when a provider's fork is an ADE-side transcript replay onto a fresh
+ * provider thread rather than a native provider fork, so the UI must not
+ * promise a copied provider thread. Cursor is the only one today: its SDK has
+ * no fork surface and a thread cannot be resumed twice, so the forked chat
+ * starts on a new agent with the whole conversation replayed into it.
  */
-export function providerForkIsContextSeeded(provider: AgentChatProvider | null | undefined): boolean {
+export function providerForkReplaysTranscript(provider: AgentChatProvider | null | undefined): boolean {
   return provider === "cursor";
 }
 
 /**
  * Droid can fork locally, but its session index is machine-local, so the
  * relocated-file resume path is not portable across ADE machines yet. Cursor's
- * fork is ADE-side context seeding with no transportable provider artifact at
- * all, so there is nothing to package for another machine. Derived from the
+ * fork is an ADE-side transcript replay with no transportable provider artifact
+ * at all, so there is nothing to package for another machine. Derived from the
  * local set rather than restated, so adding a provider to one list cannot
  * silently leave the other behind.
  */
 export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS
-  .filter((provider) => provider !== "droid" && !providerForkIsContextSeeded(provider));
+  .filter((provider) => provider !== "droid" && !providerForkReplaysTranscript(provider));
 
 export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
   return provider != null
@@ -2262,8 +2265,8 @@ export type AgentChatHandoffResult = {
   usedFallbackSummary: boolean;
   /**
    * Present when the fork seeded the target via full-transcript replay
-   * (cross-provider, or a provider without a native fork) and oldest turns
-   * were dropped to fit the target context window.
+   * (cross-provider, or a provider without a native fork such as Cursor) and
+   * oldest turns were dropped to fit the target context window.
    */
   replayFork?: AgentChatReplayForkDisclosure;
 };
@@ -2540,6 +2543,82 @@ export type AgentChatSendArgs = {
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";
 
+/**
+ * How a message typed during a live turn reaches the agent. "queue" stages it
+ * for the next turn (every provider can do that); the other two are the atomic
+ * active-turn dispatch modes and map 1:1 to `AgentChatDispatchSteerMode`.
+ */
+export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
+
+/**
+ * THE canonical per-provider active-turn delivery matrix, in menu order (the
+ * first entry is the provider's default). Every surface reads this rather than
+ * restating the rules: the composer's split send button, the chat pane's
+ * dispatch wiring, the main service's steer/dispatch guards, and the `ade code`
+ * TUI. iOS mirrors it by hand (it cannot import TS) — keep the two in step.
+ *
+ * Claude folds a message into the live query, so it has all three. Cursor's SDK
+ * has no mid-run message API: its interrupt cancels the run and resends on the
+ * same agent thread, so it has no "inline". Everything else is queue-only.
+ */
+export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
+  claude: ["inline", "queue", "interrupt"],
+  cursor: ["interrupt", "queue"],
+};
+
+const QUEUE_ONLY_ACTIVE_TURN_MODES: readonly ActiveTurnSendMode[] = ["queue"];
+
+/** Modes `provider` can honor during a live turn, in menu order. */
+export function activeTurnDispatchModes(
+  provider: AgentChatProvider | null | undefined,
+): readonly ActiveTurnSendMode[] {
+  return ACTIVE_TURN_DISPATCH_MODES[provider ?? ""] ?? QUEUE_ONLY_ACTIVE_TURN_MODES;
+}
+
+/** Pre-selected mode for a fresh session on `provider`. */
+export function defaultActiveTurnDispatchMode(
+  provider: AgentChatProvider | null | undefined,
+): ActiveTurnSendMode {
+  return activeTurnDispatchModes(provider)[0] ?? "queue";
+}
+
+/** True when `provider` accepts this atomic active-turn dispatch mode. */
+export function supportsActiveTurnDispatchMode(
+  provider: AgentChatProvider | null | undefined,
+  mode: AgentChatDispatchSteerMode,
+): boolean {
+  return activeTurnDispatchModes(provider).includes(mode);
+}
+
+/**
+ * True when the provider's "interrupt" cancels the live run and resends on the
+ * same thread (so the turn continues from the new message) rather than folding
+ * the message into the running query. Lives beside the table because it is the
+ * same per-provider fact, and every surface that labels the interrupt affordance
+ * needs it. iOS mirrors it by hand alongside the table.
+ */
+export function activeTurnInterruptContinues(provider: AgentChatProvider | null | undefined): boolean {
+  return provider === "cursor";
+}
+
+/**
+ * The one rejection message for a mode the provider cannot honor, templated off
+ * the table so adding a provider never leaves prose behind that contradicts it.
+ */
+export function unsupportedActiveTurnDispatchModeMessage(
+  provider: AgentChatProvider | null | undefined,
+  mode: string,
+): string {
+  const accepted = activeTurnDispatchModes(provider).filter((entry) => entry !== "queue");
+  const name = providerDisplayLabel(provider, "These");
+  if (!accepted.length) {
+    return `${name} sessions don't support the "${mode}" active-turn dispatch mode; it can only be staged for the next turn.`;
+  }
+  return `${name} sessions support only the ${
+    accepted.map((entry) => `"${entry}"`).join(" and ")
+  } active-turn dispatch mode${accepted.length > 1 ? "s" : ""}.`;
+}
+
 export type AgentChatSteerArgs = {
   sessionId: string;
   text: string;
@@ -2551,9 +2630,11 @@ export type AgentChatSteerArgs = {
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
   /**
-   * Claude-only atomic active-turn delivery. Omit to stage the message for the
-   * next turn; "inline" maps to SDK priority "next" and "interrupt" maps to
-   * SDK priority "now".
+   * Atomic active-turn delivery. Omit to stage the message for the next turn.
+   * Claude: "inline" maps to SDK priority "next" and "interrupt" to "now".
+   * Cursor: only "interrupt" is accepted — the Cursor SDK has no mid-run
+   * message API, so the redirect is cancel + resend on the same agent thread.
+   * Every other provider rejects the field.
    */
   dispatchMode?: AgentChatDispatchSteerMode;
 };

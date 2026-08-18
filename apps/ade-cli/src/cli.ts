@@ -57,6 +57,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
 import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import {
   formatWorkingDuration,
@@ -1927,6 +1928,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
+    $ ade chat steer <session> --text "context" --dispatch interrupt
+                                                    Deliver into the running turn: inline | interrupt.
+                                                    Omit --dispatch to stage for the next turn.
+                                                    Claude takes inline and interrupt; Cursor takes
+                                                    interrupt (cancel + resend on the same thread).
+                                                    Other providers reject the flag outright and nothing
+                                                    is sent; omit --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
@@ -2012,8 +2020,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     fork stays on the source provider and in the source lane; brief summarizes
     the chat, can switch provider, and accepts --target-lane.
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
-    Cursor has no fork surface, so ADE forks it by seeding a fresh Cursor agent
-    with this conversation's context instead of copying a provider thread.
+    Cursor has no fork surface, so ADE forks it by replaying this conversation
+    into a fresh Cursor agent instead of copying a provider thread; the oldest
+    turns drop if the transcript exceeds the target model's context window.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same
@@ -3471,6 +3480,28 @@ function normalizeChatMessageKind(value: string | null): "auto" | "queue" | "wak
   throw new CliUsageError(
     "chat message --kind must be auto, queue, wake, or interrupt-replace.",
   );
+}
+
+/**
+ * `chat steer --dispatch` asks for atomic delivery into the turn that is
+ * already running instead of staging the message for the next one. Which
+ * providers honor which mode is the host's call — the canonical table lives in
+ * desktop `shared/types/chat.ts` (`ACTIVE_TURN_DISPATCH_MODES`) and the chat
+ * service rejects an unsupported mode with a templated message — so the CLI
+ * only validates the shape and never restates the per-provider rules.
+ */
+function normalizeChatSteerDispatchMode(value: string | null): AgentChatDispatchSteerMode | null {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) return null;
+  if (normalized === "inline" || normalized === "now" || normalized === "send") return "inline";
+  if (normalized === "interrupt" || normalized === "replace") return "interrupt";
+  if (normalized === "queue" || normalized === "stage" || normalized === "next") {
+    throw new CliUsageError(
+      "chat steer stages the message for the next turn by default; omit --dispatch instead of passing 'queue'.",
+    );
+  }
+  throw new CliUsageError("chat steer --dispatch must be inline or interrupt.");
 }
 
 function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
@@ -7652,6 +7683,9 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "steer") {
     const imageUrl = readValue(args, ["--image-url"]);
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const steerText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
@@ -7667,6 +7701,7 @@ function buildChatPlan(args: string[]): CliPlan {
           withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: steerText,
+            ...(dispatchMode ? { dispatchMode } : {}),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
           }),
         ),
@@ -8346,6 +8381,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
   if (sub === "steer") {
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const text = requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text");
     const imageUrl = readValue(args, ["--image-url"]);
     return {
@@ -8354,6 +8392,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
         sessionId,
         text,
+        ...(dispatchMode ? { dispatchMode } : {}),
         ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
       }))],
     };
@@ -12224,6 +12263,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--depth",
   "--desc",
   "--device",
+  "--dispatch",
+  "--dispatch-mode",
   "--disk",
   "--disk-size",
   "--display",

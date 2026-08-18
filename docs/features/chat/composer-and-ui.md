@@ -15,7 +15,7 @@ subagents, computer use). The pane derives all visible state from the
 | `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts` | Draft machine selection and machine-safe attachment movement. Routing reconciles the machine restored by the current project/tab before the composer becomes sendable, resolves its `OpenProjectBinding`, and keeps lane selection scoped to that machine. On a user-requested machine change within one composer scope, `useDraftAttachmentTransfer` preserves portable image URLs and copies local/pasted image bytes from the attachment-owning runtime to the target runtime via pinned `getImageDataUrl` and `saveTempAttachment` calls. It removes non-image files and linked iOS/App Control/built-in-browser context because those machine-owned references are not portable. Pending transfer disables send. If copying fails, the source image references remain visible and sending stays blocked until the user returns to the source machine or removes the images. A project/tab scope change resets ownership only after machine selection has reconciled, so restoring a remote draft cannot be mistaken for an explicit local-to-remote switch. |
 | `apps/desktop/src/renderer/components/usage/ActivityModule.tsx`, `ActivityHeatmap.tsx`, `activityIntensity.ts` | Tabbed cross-client activity/tokens/code/clients module. `AgentChatPane` mounts the self-fetching `WorkActivityModule` (compact variant) beneath the empty Work draft composer when no app panel is open; the component persists the chosen tab and day/week/month/year range under `ade.activity.module.v1`. `ActivityHeatmap` owns the responsive seven-row grid, viewport fitting, and the intensity ramp, while `activityIntensity` provides the shared daily activity score, non-zero quartile buckets, and leading-inactive-day trimming used by the grid and summary counts. The score (`scoreActivityDays`) is series-relative: each of seven dimensions — tokens, sessions, interactions, commits, PRs, changed lines, changed files, with local and GitHub counterparts summed — is scaled against its own maximum across the visible series before the weighted sum, because the dimensions are not in the same units. A raw sum made every non-token term smaller than the rounding noise of daily token counts, so the "activity" heatmap was a token heatmap under another name. `isActiveDay` stays unweighted so one commit still colours a day. `describeActivityInsight` derives the single sentence rendered above the grid from the same scores — busiest-day record, week-over-week trend, or peak day, in that priority — so the callout and the grid can never disagree. Buckets are quartiles over the non-zero days only, GitHub-contribution-graph style: a linear value/max ramp is useless when one 35.9B-token day is normal, because that outlier flattens every other day into the same near-floor tone. The ramp itself is explicit light/dark pairs rather than one hue at five opacities — an opacity ramp of a single hue is only a lightness ramp, which inverts its ordering between a dark and a light card — so hue and saturation both climb with the level and the scale reads in either theme. It deliberately avoids `--color-accent`, which is violet in dark and green in light. Under `prefers-contrast: more` (`renderer/hooks/usePrefersMoreContrast.ts`) every tile also gains a hairline border so the steps stay separable on a forced-contrast display. A "Less → More" key renders alongside the grid so the ramp explains itself. |
 | `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
-| `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The local handoff surface offers a brief summarized handoff or a fork whenever the source provider is fork-capable (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, Droid, Cursor). Fork keeps the new chat on the same provider and lane while allowing the target model to change; Claude forks the SDK session pointer, Codex the app-server thread (`thread/fork`), OpenCode `session.fork`, and Droid `forkSession()`. Cursor has no fork surface, so ADE seeds a new Cursor chat with the source conversation's context and `providerForkIsContextSeeded` selects the matching panel copy. |
+| `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The local handoff surface offers a brief summarized handoff or a fork whenever the source provider is fork-capable (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, Droid, Cursor). Fork keeps the new chat on the same provider and lane while allowing the target model to change; Claude forks the SDK session pointer, Codex the app-server thread (`thread/fork`), OpenCode `session.fork`, and Droid `forkSession()`. Cursor has no fork surface, so ADE starts a new Cursor agent and replays the full source transcript into it; `providerForkReplaysTranscript` selects the matching panel copy. |
 | `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Runtime-binding-scoped AI integration-status and provider-model cache shared across renderer surfaces. Local and remote checkouts with the same project identity cannot share model/auth state. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
 | `CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | Modal state and user flow for **Send to machine**. It takes a `runtimePin` naming the machine the *source* chat runs on (`null` = this tab's bound machine), and every source-side call is pinned to it: the lane list, `git.getSyncStatus`, `git.getOriginRemote`, `git.push`, `git.pull`, `agentChat.prepareCrossMachineHandoff`, `validateCrossMachineSource`, and `markCrossMachineHandoff`. Destination dispatch already routes by target id and is unaffected. The pin is held in a ref and **frozen once per operation** so every await inside one handoff reaches the same runtime — reading it fresh after an await could cross a lane-index change and split one handoff across two machines. It verifies the source lane on the pinned machine, follows live remote connection snapshots, lets the user pick brief or full-history fork (fork defaults on for fork-capable providers and constrains the model picker to the same provider), lets the user set the destination chat's model, reasoning effort, fast mode, and permission mode with the same shared pills the composer uses, handles existing-project versus confirmed-clone setup, offers a destination-run fast-forward when the target lane is clean and strictly behind the source commit, decodes destination responses at the renderer boundary, pins acceptance to the reviewed route kind, and exposes retryable source-marker failures after destination success. Source blockers render through `BlockedReasons` / `BlockedActionButton` instead of silently disabling Continue. The pure half — stage/mode types, `SourceCheck`, branch/route/repo-readiness copy, permission tone and icon maps, send-step labels, `CheckRow` — lives in `crossMachineHandoffPresentation.tsx` so it is assertable without mounting the stateful modal. Once destination acceptance is dispatched, a runtime timeout or connection interruption produces an amber unknown-outcome notice: the destination chat may still appear, the user should check that machine before retrying, and the modal never reports a truthful cancellation that the runtime did not perform. A fork that the destination can't accept (older ADE with no `forkHandoffSupport`, oversize history, or an unforkable provider file) surfaces a plain reason and a one-click **send as brief** that re-runs prepare + preflight; the insecure-route consent line is fork-aware (a fork discloses that the full history is sent exactly as recorded, a brief that only the summary is sent). |
 | `ChatRuntimeScope.tsx` | Which machine THIS chat is on, and what its lane looks like there — the single derivation every chat-scoped panel reads instead of a global store selector. `useChatRuntimeScope()` returns `{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote, machineName, online }` from context, `useChatRuntimeScopeForPin(pin, laneId, bindingOverride?)` derives the same from a pin passed as a prop (for surfaces mounted outside a chat pane), `useChatScopeDerivation({...})` answers it from a *session* for `AgentChatPane`, and `ChatRuntimeScopeProvider` carries the resolved scope down the panel/drawer subtree. `pin === null` means, and only means, "this chat lives on the tab's binding". ESLint bans `useAppStore` / `useRootAppStore` reads of `projectBinding` / `lanes`, `project.rootPath` reads, and `selectActiveProjectRoot` imports inside `components/chat/**` so no panel can quietly go back to reading the tab's machine. Full contract in the chat [README](README.md#source-file-map). |
@@ -475,12 +475,12 @@ that could not work without it.
   active lane in the project (via `targetLaneId`) or a freshly created
   lane. Claude forks the SDK session pointer, Codex the app-server thread
   (`thread/fork`), OpenCode `session.fork`, and Droid `forkSession()`.
-  Cursor's fork is ADE-side context seeding rather than a provider fork,
-  so `providerForkIsContextSeeded` swaps the panel's three copy slots
-  (subtitle, body, footnote) for wording that says the conversation is
-  carried into a new Cursor chat instead of promising a copied thread —
-  the claim has to match what actually happens, because a Cursor thread
-  cannot be resumed twice. The
+  Cursor's fork is an ADE-side transcript replay rather than a provider
+  fork, so `providerForkReplaysTranscript` swaps the panel's three copy
+  slots (subtitle, body, footnote) for wording that says the whole
+  conversation is replayed into a new Cursor agent instead of promising a
+  copied provider thread — the claim has to match what actually happens,
+  because a Cursor thread cannot be resumed twice. The
   surface also includes an optional handoff note textarea; blank notes
   are ignored, brief handoffs append non-empty notes to the hidden handoff
   prompt, and forks send the note as the first user turn. Codex handoff
@@ -688,27 +688,55 @@ that could not work without it.
   entry: edit (guard-cancel the queued entry with `requireQueued: true`, then
   merge its text, file attachments, and structured context attachments into the
   main composer so the user can revise it and choose a delivery mode again),
-  cancel (`ade.agentChat.cancelSteer`), and — for Claude SDK sessions only —
-  **send during turn** (`ArrowBendDownRight`) and **interrupt & send**
-  (`Lightning`). **Send during turn** dispatches the queued message into the
-  active turn via `ade.agentChat.dispatchSteer({ mode: "inline" })`;
-  the user message then appears in-transcript with
-  `deliveryState: "inline"`; the service pushes an SDK message with
-  `priority: "next"` and `shouldQuery: true`. **Interrupt & send** calls
-  `dispatchSteer({ mode: "interrupt" })`, which uses SDK priority `now` to
-  redirect the current model step without tearing down the Claude query. Both buttons are
-  hidden for non-Claude providers (Codex, OpenCode, Cursor) which only
-  support post-turn delivery.
-- **Mid-turn split Send button.** While a Claude turn is active, the
+  cancel (`ade.agentChat.cancelSteer`), and the immediate-dispatch actions the
+  session's provider accepts per `ACTIVE_TURN_DISPATCH_MODES`: **send during
+  turn** (`ArrowBendDownRight`) and **interrupt** (`Lightning`). **Send during
+  turn** dispatches the queued message into the active turn via
+  `ade.agentChat.dispatchSteer({ mode: "inline" })`; the user message then
+  appears in-transcript with `deliveryState: "inline"`; the service pushes an
+  SDK message with `priority: "next"` and `shouldQuery: true`. Claude's
+  **Interrupt & send** calls `dispatchSteer({ mode: "interrupt" })`, which uses
+  SDK priority `now` to redirect the current model step without tearing down the
+  Claude query. Cursor sessions get the interrupt action only, labelled
+  **Interrupt & continue** — `dispatchSteer({ mode: "interrupt" })` there
+  promotes the staged row to the cancel-and-resend redirect, and `"inline"` is
+  rejected. The tooltips and the hover hint above the staged list follow the
+  same table and name the real provider, so a Cursor session reads "Hover to
+  interrupt with this message, edit, or remove." rather than promising an inline
+  send. Both buttons are hidden for the remaining providers (Codex, OpenCode,
+  Droid, Pi), which only support post-turn delivery.
+- **Mid-turn split Send button.** While a Claude or Cursor turn is active, the
   composer's primary send control is a split button
-  (`ActiveTurnSendButton`, Claude Code parity). The caret selects **Send during
-  turn**, **Send after turn**, or **Interrupt & send** without sending; the
-  primary click and Enter execute the selected mode, and the icon, tooltip,
-  and accessible label follow it. Immediate modes are a single atomic
+  (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery
+  mode without sending; the primary click and Enter execute the selected mode,
+  and the icon, tooltip, and accessible label follow it. Which modes appear is
+  the canonical per-provider table `ACTIVE_TURN_DISPATCH_MODES` in
+  `apps/desktop/src/shared/types/chat.ts` (read through
+  `activeTurnDispatchModes` / `defaultActiveTurnDispatchMode`; the composer's
+  `activeTurnSendModesForProvider` only layers the copy on top, and the chat
+  pane, the main service's steer/dispatch guards, the `ade code` TUI and the
+  iOS `WorkActiveSendCapability` mirror all read the same table):
+  Claude offers **Send during turn** / **Send after turn** / **Interrupt &
+  send** and defaults to *Send during turn*; Cursor offers **Interrupt &
+  continue** / **Send after turn** and defaults to *Interrupt & continue*.
+  Cursor has no *Send during turn* because its SDK exposes no mid-run message
+  API — the redirect cancels the run and resends on the same agent thread, so
+  the label says "continue" (that per-provider fact is
+  `activeTurnInterruptContinues`, beside the table, which the composer, the TUI
+  and the iOS mirror all read). Mode descriptions name the actual provider
+  ("Stop and redirect Cursor now."). The selection is held for the session and
+  re-normalized when the provider changes, so a mode the new provider cannot
+  honor can never stay selected. A mode this pane has no wired handler for —
+  reachable while a model for another provider is picked mid-turn, since the
+  menu follows the picked provider and the handlers follow the live session —
+  downgrades to queueing rather than dead-ending, so Enter and the primary
+  button always deliver the draft somewhere. Immediate modes are a single atomic
   `steer({ dispatchMode })` call rather than queue-then-dispatch. The primary
   action disables on an empty draft, while the caret remains available so the
-  user can inspect or change the delivery mode. Providers without inline-steer dispatch
-  (Codex, OpenCode, Cursor) keep the single queue-on-send affordance.
+  user can inspect or change the delivery mode. Providers with no atomic
+  active-turn dispatch (Codex, OpenCode, Droid, Pi) keep the single
+  queue-on-send affordance, and a queued Cursor message still gets the plain
+  "Message queued — will be sent when the current turn completes." notice.
 - **Queue-aware Stop button.** In an active Claude chat, Stop becomes a compact
   split control. **Stop & clear queue** is the
   backward-compatible default and uses a trash icon; **Stop only** keeps queued

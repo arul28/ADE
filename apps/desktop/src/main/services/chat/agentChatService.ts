@@ -364,9 +364,13 @@ import {
   isPtySendPreDeliveryError,
   isTrackedAgentCliToolType,
   providerSupportsCrossMachineHandoffFork,
-  providerForkIsContextSeeded,
+  providerForkReplaysTranscript,
   providerSupportsHandoffFork,
 } from "../../../shared/types";
+import {
+  supportsActiveTurnDispatchMode,
+  unsupportedActiveTurnDispatchModeMessage,
+} from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   flattenAnswerForSingleStringProvider,
@@ -661,7 +665,11 @@ import {
   resolveCursorSdkPolicy,
 } from "./cursorSdkPolicy";
 import {
+  CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
   classifyCursorSdkErrorText,
+  isCursorSdkStaleAccessTokenText,
+  readCursorSdkStaleTokenFailure,
+  type CursorSdkStaleTokenFailure,
   type CursorSdkErrorKind,
   type CursorSdkAgentMode,
   type CursorSdkCloudArtifactDescriptor,
@@ -1866,6 +1874,23 @@ type CursorRuntime = {
   availableModelIds: string[];
   /** Set when the user switches Cursor models during a live run; flushed when idle. */
   pendingModelSwitchReset?: boolean;
+  /**
+   * Armed only for the "interrupt & continue" redirect. That stop exists purely
+   * to resend on the same thread, so the user's other queued messages must
+   * survive it; every other interrupt still clears the queue.
+   *
+   * A runtime flag rather than an `interrupt()` parameter because the cancel it
+   * suppresses runs later, in the interrupted turn's own tail, not inside
+   * `interrupt()`. Armed until consumed: `cancelQueuedSteers` clears it when it
+   * honors it, so a settle that outlives the redirect call is still covered.
+   */
+  preserveQueuedSteersOnInterrupt?: boolean;
+  /**
+   * Steer ids whose explicit dispatch is mid-flight. Same contract as
+   * ClaudeRuntime's: while one is promoted, the turn boundary must not
+   * auto-deliver another row underneath it (see deliverNextQueuedSteer).
+   */
+  dispatchingSteerIds: Set<string>;
   pendingSteers: QueuedSteer[];
   permissionWaiters: Map<string, CursorPermissionWaiter>;
   modeConfigId: string | null;
@@ -1880,6 +1905,12 @@ type CursorRuntime = {
   pendingDispatchAck?: { turnId: string; resolve: () => void };
   /** First-event watchdog bookkeeping for the in-flight local turn. */
   sdkSilenceWatch: CursorSdkSilenceWatch | null;
+  /**
+   * Set when the bridge swallows a terminal stale-access-token error for the
+   * in-flight turn. The turn body owns what the user sees from there: a silent
+   * recycle-and-resume, or the terminal copy if recovery is already spent.
+   */
+  sdkStaleTokenFailure?: CursorSdkStaleTokenFailure | null;
 };
 
 /**
@@ -1891,6 +1922,13 @@ type CursorSdkSilenceWatch = {
   /** Bound when the run starts; scopes late events from an abandoned run out. */
   runId: string | null;
   seen: boolean;
+  /**
+   * Narrower than `seen`: flips only when the run produced something the model
+   * actually did — assistant text, reasoning, a tool call or its result. Status
+   * and activity frames do not count. This is what decides whether a resumed
+   * turn is asked to *continue* rather than to redo the request.
+   */
+  sawVisibleOutput: boolean;
   disarm: (() => void) | null;
 };
 
@@ -4873,8 +4911,15 @@ function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
  */
 const CURSOR_SDK_SILENT_RUN_ERROR_NAME = "CursorSdkSilentRunError";
 
-/** Why ADE decided a Cursor agent thread had to be thrown away. */
-type CursorSdkRecycleReason = "silent_run" | "transport_error";
+/**
+ * Why ADE decided a Cursor agent thread had to be thrown away.
+ *
+ * `stale_token` is the odd one out: the *worker* is dead (its access token
+ * expired and the SDK never re-exchanges it) but the *thread* is perfectly
+ * healthy, so that recycle keeps the agent id and resumes it in the fresh
+ * worker instead of rotating to a new one.
+ */
+type CursorSdkRecycleReason = "silent_run" | "transport_error" | "stale_token";
 
 /**
  * Steer ids that have already had a resolution notice emitted — delivered or
@@ -4976,7 +5021,7 @@ function armCursorSdkSilenceWatch(
   // A previous turn's watch on this runtime (settlement can leave one behind)
   // must not keep a live timer once it can no longer be reached.
   runtime.sdkSilenceWatch?.disarm?.();
-  const watch: CursorSdkSilenceWatch = { turnId, runId: null, seen: false, disarm: null };
+  const watch: CursorSdkSilenceWatch = { turnId, runId: null, seen: false, sawVisibleOutput: false, disarm: null };
   runtime.sdkSilenceWatch = watch;
   const guard = new Promise<never>((_resolve, reject) => {
     let timer: NodeJS.Timeout | null = setTimeout(() => {
@@ -5022,6 +5067,41 @@ function noteCursorSdkStreamActivity(
 }
 
 /**
+ * Chat events that prove the model did visible work on this turn, as opposed to
+ * the run merely existing. Status, activity, token and lifecycle frames are
+ * deliberately excluded: after those alone there is nothing for a resumed turn
+ * to "pick up from".
+ */
+const CURSOR_SDK_VISIBLE_OUTPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "text",
+  "reasoning",
+  "tool_call",
+  "tool_result",
+  "command",
+  "subagent_started",
+  "subagent_result",
+]);
+
+/**
+ * Narrower companion to `noteCursorSdkStreamActivity`; see `sawVisibleOutput`.
+ * Run-scoped for the same reason its sibling is: a late frame from a run the
+ * turn already abandoned must not be credited to the turn now in flight.
+ */
+function noteCursorSdkVisibleOutput(
+  runtime: CursorRuntime,
+  turnId: string | null,
+  runId: string | null,
+  eventType: string,
+): void {
+  const watch = runtime.sdkSilenceWatch;
+  if (!watch || watch.sawVisibleOutput) return;
+  if (turnId && watch.turnId !== turnId) return;
+  if (watch.runId && runId && watch.runId !== runId) return;
+  if (!CURSOR_SDK_VISIBLE_OUTPUT_EVENT_TYPES.has(eventType)) return;
+  watch.sawVisibleOutput = true;
+}
+
+/**
  * True when a thrown Cursor SDK error is a transport failure — the signal the
  * automatic recycle-and-resend recovery keys on.
  */
@@ -5044,6 +5124,75 @@ function isCursorSdkTransportErrorResult(result: unknown): boolean {
   return isCursorSdkTransportError(asRecord(record.error));
 }
 
+/**
+ * User-facing copy for the only stale-token failure that ever reaches the
+ * transcript: the silent reconnect already happened and Cursor rejected the
+ * retry too, so the key itself has to be re-authorized.
+ */
+const CURSOR_SDK_STALE_TOKEN_MESSAGE =
+  "Cursor's session expired. ADE reconnected and retried, but Cursor rejected the request again — "
+  + "sign in to Cursor again in Settings, then resend.";
+
+/**
+ * Prompt for the recovery re-send when the token expired *after* the run had
+ * started working. The thread is resumed, so the original request is already in
+ * the model's context; repeating it would restart finished work.
+ */
+const CURSOR_SDK_STALE_TOKEN_CONTINUATION =
+  "Continue where you left off; the previous run was cut off by a Cursor session refresh. "
+  + "Do not start over — pick up from the last step you completed.";
+
+/**
+ * True when a thrown Cursor SDK error is the expired-access-token signature —
+ * the worker's token aged out mid-session and the SDK will never refresh it.
+ * See `isCursorSdkStaleAccessTokenText` for why this is matched exactly rather
+ * than folded into the generic `auth` kind.
+ */
+function isCursorSdkStaleTokenError(error: unknown): boolean {
+  return isCursorSdkStaleAccessTokenText(
+    readErrorMessage(error),
+    readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error),
+    readErrorCodeString(error),
+  );
+}
+
+/** Same check against a settled run result that reports `status: "error"`. */
+function isCursorSdkStaleTokenResult(result: unknown): boolean {
+  const record = asRecord(result);
+  if (record?.status !== "error") return false;
+  return isCursorSdkStaleTokenError(asRecord(record.error));
+}
+
+/**
+ * Reads and clears the stale-token failure the bridge parked for this turn.
+ * A function rather than an inline read, so the turn body's own
+ * `sdkStaleTokenFailure = null` reset cannot narrow the property to `never`.
+ */
+function takeCursorSdkStaleTokenFailure(
+  runtime: CursorRuntime,
+  turnId: string,
+): CursorSdkStaleTokenFailure | null {
+  const failure = runtime.sdkStaleTokenFailure;
+  if (!failure || failure.turnId !== turnId) return null;
+  runtime.sdkStaleTokenFailure = null;
+  return failure;
+}
+
+/**
+ * Rebuilds the suppressed stale-token failure as a throwable error, so the one
+ * path that has to surface it (recovery already spent) goes through the same
+ * classifier as every other Cursor turn failure and keeps the request id.
+ */
+function cursorSdkStaleTokenError(detail: CursorSdkStaleTokenFailure): Error {
+  const error = new Error(detail.message) as Error & { cursorSdk?: Record<string, unknown> };
+  error.cursorSdk = {
+    message: detail.message,
+    ...(detail.code ? { code: detail.code } : {}),
+    ...(detail.requestId ? { requestId: detail.requestId } : {}),
+  };
+  return error;
+}
+
 function clearCursorSdkSilenceWatch(runtime: CursorRuntime, turnId?: string): void {
   const watch = runtime.sdkSilenceWatch;
   if (!watch) return;
@@ -5059,7 +5208,26 @@ function classifyCursorSdkChatError(
   message: string;
   detail?: string;
   errorInfo: { category: ChatErrorCategory; provider?: string; model?: string };
+  /**
+   * Machine-readable marker for the expired-access-token failure. The category
+   * stays `auth` so renderers keep treating it like any other auth error; this
+   * flag is what the recycle-and-resume recovery keys on.
+   */
+  cursorSdkStaleToken?: true;
 } {
+  if (isCursorSdkStaleTokenError(error)) {
+    const detail = readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error);
+    return {
+      message: CURSOR_SDK_STALE_TOKEN_MESSAGE,
+      ...(detail ? { detail } : {}),
+      errorInfo: {
+        category: "auth",
+        provider: args.cloud ? "Cursor Cloud" : "Cursor",
+        ...(args.modelDisplayName ? { model: args.modelDisplayName } : {}),
+      },
+      cursorSdkStaleToken: true,
+    };
+  }
   if (isCursorSdkAgentBusyError(error)) {
     const raw = readErrorMessage(error);
     return {
@@ -10905,37 +11073,23 @@ export function createAgentChatService(args: {
    * on an agent that has never seen it: an agent rotation (target === source)
    * and an ADE-side fork (target is the new chat).
    *
-   * The continuity summary is passed in rather than read off `target`, so each
-   * caller states where it came from instead of depending on having copied it
-   * onto the target first.
+   * Only the short header lands here. The conversation itself travels as the
+   * full fitted transcript replay (`pendingTranscriptReplay`), so nothing here
+   * repeats a conversation tail — that produced a doubled, and much thinner,
+   * view of the same chat.
    *
-   * Skips staging entirely when there is nothing to carry — a header that
-   * announces restored context with no context attached just lies to the model.
    * The lane directive key is cleared regardless, because the agent is new and
    * must receive the lane execution directive rather than have it deduped away.
    */
-  const stageCursorSdkContinuityContext = (
+  const stageCursorSdkContinuityHeader = (
     target: ManagedChatSession,
-    source: ManagedChatSession,
     headerSection: string,
-    continuitySummary: string | null,
   ): void => {
-    const summary = continuitySummary?.trim() ?? "";
-    const recentConversation = buildRecentConversationContext(source);
-    if (summary.length || recentConversation.length) {
-      const sections = [headerSection];
-      if (summary.length) sections.push(["Continuity Summary", summary].join("\n"));
-      if (recentConversation.length) {
-        sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
-      }
-      const existing = target.pendingReconstructionContext?.trim();
-      if (existing) sections.push(existing);
-      const nextContext = sections
-        .map((section) => section.trim())
-        .filter((section) => section.length > 0)
-        .join("\n\n");
-      target.pendingReconstructionContext = nextContext.length ? nextContext : null;
-    }
+    const existing = target.pendingReconstructionContext?.trim() ?? "";
+    const nextContext = [headerSection.trim(), existing]
+      .filter((section) => section.length > 0)
+      .join("\n\n");
+    target.pendingReconstructionContext = nextContext.length ? nextContext : null;
     clearLaneDirectiveKey(target);
   };
 
@@ -10989,28 +11143,69 @@ export function createAgentChatService(args: {
     };
   };
 
+  /**
+   * Agent rotation recovery. The Cursor SDK opened a different agent than the
+   * one ADE asked to resume, so the new agent has none of the thread. It is
+   * seeded with the full fitted transcript replay (bounded by the session
+   * model's context window) rather than a 20-line tail, so the turn that
+   * triggered the rotation continues with the conversation intact.
+   */
   const stageCursorSdkAgentRotationRecovery = (
     managed: ManagedChatSession,
     previousAgentId: string,
     nextAgentId: string,
   ): void => {
-    stageCursorSdkContinuityContext(managed, managed, [
+    const fit = buildFittedTranscriptReplay(
+      readTranscriptEnvelopes(managed, { includeBuffered: true }),
+      resolveSessionModelDescriptor(managed.session)?.contextWindow ?? null,
+    );
+    if (!fit.turnCount || !fit.text.trim().length) {
+      // Nothing to carry: a header that announces restored context with no
+      // context attached just lies to the model.
+      clearLaneDirectiveKey(managed);
+      return;
+    }
+    stageCursorSdkContinuityHeader(managed, [
       "Cursor SDK continuity recovery",
       `ADE attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
+      "The conversation so far was replayed into this agent in full.",
       CURSOR_CONTINUITY_DISCLAIMER,
-    ].join("\n"), managed.continuitySummary);
+    ].join("\n"));
+    // Same guard as the recycle restage: a replay already staged (a fork seed,
+    // or a previous rotation the turn has not consumed yet) is not overwritten.
+    // Both fits derive from the same transcript, so the incumbent is never
+    // thinner — and clobbering it would drop a fork's disclosure staging.
+    if (!managed.pendingTranscriptReplay) {
+      managed.pendingTranscriptReplay = fit.text;
+    }
+    persistChatState(managed);
+    if (fit.truncated) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Replayed the full prior transcript onto a new Cursor agent. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the context window.`,
+      });
+    }
+    logger.info("agent_chat.cursor_sdk_rotation_transcript_replay_staged", {
+      sessionId: managed.session.id,
+      keptTurnCount: fit.keptTurnCount,
+      truncatedTurnCount: fit.truncatedTurnCount,
+    });
   };
 
   /**
-   * Cursor's ADE-side fork. `@cursor/sdk` 1.0.23 exposes no fork/clone/branch
+   * Cursor's ADE-side fork. `@cursor/sdk` exposes no fork/clone/branch
    * operation on an agent, and a Cursor thread cannot be resumed twice, so the
-   * forked chat necessarily starts on a fresh agent. Rather than starting cold,
-   * it inherits the source conversation the same way an agent rotation does.
+   * forked chat necessarily starts on a fresh agent. It is seeded with the same
+   * full fitted transcript replay the cross-provider fork uses, staged by the
+   * caller right after the transcript is copied into the new chat.
    *
-   * Only the continuity summary is copied across: the shared fork path replays
-   * the source transcript into the new session via `appendImportedChatEvents`,
-   * which rebuilds `recentConversationEntries` on its own. Copying them here as
-   * well produced a doubled conversation tail.
+   * Only the header and the continuity summary fields are handled here. The
+   * summary is carried over for the forked chat's own identity-continuity
+   * reconstruction (`refreshReconstructionContext`, identity-keyed chats only);
+   * agent rotation no longer reads it, and it is deliberately not injected into
+   * the seeding context here: the verbatim transcript replay strictly contains
+   * everything the tail-derived summary would have said.
    *
    * The new session deliberately has no `cursorSdkAgentId`, so its first send
    * creates a brand-new Cursor agent instead of resuming the source's thread.
@@ -11023,11 +11218,11 @@ export function createAgentChatService(args: {
     created.continuitySummary = source.continuitySummary ?? persistedSource?.continuitySummary ?? null;
     created.continuitySummaryUpdatedAt =
       source.continuitySummaryUpdatedAt ?? persistedSource?.continuitySummaryUpdatedAt ?? null;
-    stageCursorSdkContinuityContext(created, source, [
+    stageCursorSdkContinuityHeader(created, [
       "Forked Cursor chat",
-      "This chat was forked from an earlier ADE chat. Cursor threads cannot be resumed twice, so this is a brand-new Cursor agent seeded with the previous conversation.",
+      "This chat was forked from an earlier ADE chat. Cursor threads cannot be resumed twice, so this is a brand-new Cursor agent and the earlier conversation was replayed into it in full.",
       CURSOR_CONTINUITY_DISCLAIMER,
-    ].join("\n"), created.continuitySummary);
+    ].join("\n"));
   };
 
   const detectAuth = async () => {
@@ -29108,9 +29303,24 @@ export function createAgentChatService(args: {
 
   const cancelQueuedSteers = (
     managed: ManagedChatSession,
-    runtime: Pick<ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime, "pendingSteers" | "activeTurnId">,
+    runtime: Pick<ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime, "pendingSteers" | "activeTurnId">
+      & { preserveQueuedSteersOnInterrupt?: boolean },
     reason: "interrupted" | "failed" | "disposed",
   ): void => {
+    // "Interrupt & continue" stops the run only so the redirect can be resent
+    // on the same thread. The user's other queued messages are not part of
+    // that stop, so they ride through and are delivered once the redirect turn
+    // finishes. Every other interrupt still clears them.
+    //
+    // Consume-once, and consumed on ANY terminal cancel: the flag covers
+    // exactly the one cancel the redirect's own stop produces, however long the
+    // turn takes to settle. Clearing it even when the turn ends as "failed"
+    // (the interrupt landed, but the turn tail reported a failure instead)
+    // stops a stale flag from silently preserving the queue on the user's next,
+    // unrelated Stop.
+    const preserveQueuedSteers = runtime.preserveQueuedSteersOnInterrupt === true;
+    runtime.preserveQueuedSteersOnInterrupt = false;
+    if (reason === "interrupted" && preserveQueuedSteers) return;
     const cancelled = runtime.pendingSteers.splice(0);
     if (!cancelled.length) return;
 
@@ -29476,7 +29686,10 @@ export function createAgentChatService(args: {
     // message is being built. Do not auto-deliver another row at the parent
     // turn boundary; the idle reader will consume the explicit dispatch, then
     // remaining staged rows can proceed in order.
-    if (runtime.kind === "claude" && runtime.dispatchingSteerIds.size > 0) return false;
+    if (
+      (runtime.kind === "claude" || runtime.kind === "cursor")
+      && runtime.dispatchingSteerIds.size > 0
+    ) return false;
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
@@ -31186,7 +31399,12 @@ export function createAgentChatService(args: {
     const nativeFork = handoffMode === "fork"
       && providerSupportsHandoffFork(sourceProvider)
       && targetProvider === sourceProvider;
-    const replayFork = handoffMode === "fork" && !nativeFork;
+    // Cursor's "native" fork is native only in the sense that it stays on the
+    // same provider — there is no SDK fork API, so the new chat starts on a
+    // fresh agent and needs the same full transcript replay a cross-provider
+    // fork gets.
+    const cursorReplayFork = nativeFork && sourceProvider === "cursor";
+    const replayFork = handoffMode === "fork" && (!nativeFork || cursorReplayFork);
     const sourceClaudeRuntime = nativeFork && managed.session.provider === "claude"
       ? ensureClaudeSessionRuntime(managed)
       : null;
@@ -31332,8 +31550,9 @@ export function createAgentChatService(args: {
         sessionService.setResumeCommand(created.id, `chat:droid:${created.id}`);
       }
       if (createdManaged.session.provider === "cursor") {
-        // No provider-side pointer to seed: the fork is context-only, on a
-        // fresh Cursor agent created by the new session's first send.
+        // No provider-side pointer to seed: a Cursor thread cannot be resumed
+        // twice, so the fork starts on a fresh agent and the source
+        // conversation reaches it as a full transcript replay.
         stageCursorSdkForkContinuity(managed, createdManaged);
       }
     }
@@ -31934,7 +32153,7 @@ export function createAgentChatService(args: {
         }
         // Cursor forks locally, so "can't fork history" would contradict the
         // Fork tab the user just used.
-        if (providerForkIsContextSeeded(managed.session.provider)) {
+        if (providerForkReplaysTranscript(managed.session.provider)) {
           throw new Error("Cursor forks can't move between machines. Use a brief handoff instead.");
         }
         throw new Error("This chat's provider can't fork history. Use a brief handoff instead.");
@@ -35240,6 +35459,25 @@ export function createAgentChatService(args: {
       const turnId = isCloud
         ? (runtime.cloudRuns.get(meta?.runId ?? "")?.turnId ?? runtime.activeTurnId ?? "")
         : (runtime.activeTurnId ?? "");
+      // An expired access token is ADE's problem, not the user's: swallow the
+      // raw "Cursor run failed: Authentication error …" card here and let the
+      // turn body either recover silently or surface the plain-English copy
+      // once. Recorded rather than dropped, because the settled run result does
+      // not always carry the same detail.
+      const staleTokenFailure = !isCloud && turnId && isCursorSdkTerminalErrorEvent(event)
+        ? readCursorSdkStaleTokenFailure(event, turnId)
+        : null;
+      if (staleTokenFailure) {
+        runtime.sdkStaleTokenFailure = staleTokenFailure;
+        logger.warn("agent_chat.cursor_sdk_stale_token_detected", {
+          sessionId: managed.session.id,
+          turnId,
+          agentId: runtime.sdkAgentId,
+          runId: meta?.runId ?? null,
+          requestId: staleTokenFailure.requestId ?? null,
+        });
+        return;
+      }
       const events = mapCursorSdkMessageToChatEvents(event, {
         turnId,
         cwd: managed.laneWorktreePath,
@@ -35247,6 +35485,7 @@ export function createAgentChatService(args: {
         ...(meta?.runId ? { runId: meta.runId } : {}),
       });
       for (const ev of events) {
+        if (!isCloud && turnId) noteCursorSdkVisibleOutput(runtime, turnId, meta?.runId ?? null, ev.type);
         emitCursorSdkMappedEvent(managed, runtime, ev);
       }
     };
@@ -35502,6 +35741,7 @@ export function createAgentChatService(args: {
       modelConfigId: null,
       currentModelId: launchModelSdkId,
       availableModelIds: [launchModelSdkId],
+      dispatchingSteerIds: new Set(),
       pendingSteers: [],
       permissionWaiters: new Map(),
       modeConfigId: null,
@@ -35533,11 +35773,16 @@ export function createAgentChatService(args: {
    * Recycle a wedged Cursor agent thread: stop whatever is still nominally
    * running, evict the pooled worker (its process is alive but useless), drop
    * the live runtime, and arm a forced rotation so the next
-   * `ensureCursorSdkRuntime` opens a brand-new agent seeded with the
-   * conversation tail via `stageCursorSdkAgentRotationRecovery`.
+   * `ensureCursorSdkRuntime` opens a brand-new agent seeded with the full
+   * transcript replay via `stageCursorSdkAgentRotationRecovery`.
    *
    * Silence-watch teardown and pending-approval cancellation are left to
    * `teardownRuntime`'s cursor branch rather than duplicated here.
+   *
+   * @param options.preserveAgentId keep the current `cursorSdkAgentId` so the
+   * fresh worker resumes the same thread instead of rotating to a new agent.
+   * Only correct when the thread itself is healthy and the worker is not — the
+   * expired-access-token case.
    *
    * @returns the queued steers lifted off the dying runtime. They are attached
    * to nothing once this resolves, so the caller must settle every one of them
@@ -35547,6 +35792,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CursorRuntime,
     reason: CursorSdkRecycleReason,
+    options: { preserveAgentId?: boolean } = {},
   ): Promise<QueuedSteer[]> => {
     // Bounded: the pool's `request()` only rejects once the worker is disposed,
     // which happens below — an unbounded await here would hang in exactly the
@@ -35574,8 +35820,14 @@ export function createAgentChatService(args: {
     // Arm the rotation only on the branch that actually tears the runtime down.
     // Otherwise the flag would sit unconsumed and later rotate a healthy agent
     // out from under an unrelated turn, with a bogus recovery preamble.
-    cursorSdkForcedAgentRotation.set(managed, { previousAgentId: runtime.sdkAgentId });
-    if (runtime.sdkAgentId) managed.cursorSdkPendingRotationPreviousAgentId = runtime.sdkAgentId;
+    //
+    // `preserveAgentId` skips it entirely: an expired access token kills the
+    // worker, not the thread, so the fresh worker resumes the same agent id and
+    // the conversation survives intact — no rotation, no continuity preamble.
+    if (options.preserveAgentId !== true) {
+      cursorSdkForcedAgentRotation.set(managed, { previousAgentId: runtime.sdkAgentId });
+      if (runtime.sdkAgentId) managed.cursorSdkPendingRotationPreviousAgentId = runtime.sdkAgentId;
+    }
     // Cursor steers live only on the runtime object and are not persisted, so
     // the rebuilt runtime starts empty. Lift them off before teardown and hand
     // them back, so a message the user typed during the outage is re-queued on
@@ -35641,6 +35893,16 @@ export function createAgentChatService(args: {
         turn: CursorTurnRef;
         consumedTurnContext: ConsumedTurnContextPrefix | null;
         resolveDispatch: (() => void) | null;
+        /**
+         * True when the failed attempt had already emitted visible output —
+         * assistant text, reasoning, a tool call — not merely any stream frame.
+         * Only `stale_token` can reach recovery in that state (a token can
+         * expire an hour into a working turn), and it changes what the re-send
+         * says: pick up where the run was cut off rather than repeat the whole
+         * prompt. Asking a run that produced nothing to "continue" would name a
+         * last completed step that does not exist.
+         */
+        sawVisibleOutput: boolean;
       };
 
   /** Identity of one Cursor turn, for the terminal-event emitters. */
@@ -35724,6 +35986,8 @@ export function createAgentChatService(args: {
     const turnModelId = managed.session.modelId;
     runtime.interrupted = false;
     runtime.busy = true;
+    // Never let a previous turn's swallowed auth failure decide this one.
+    runtime.sdkStaleTokenFailure = null;
     runtime.activeTurnId = turnId;
     runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
     setSessionActive(managed);
@@ -35825,12 +36089,16 @@ export function createAgentChatService(args: {
         && !managed.closed
         && !runtime.interrupted
         && managed.runtime === runtime;
-      const cursorRecoverySentinel = (reason: CursorSdkRecycleReason): CursorSdkTurnOutcome => {
+      const cursorRecoverySentinel = (
+        reason: CursorSdkRecycleReason,
+        sawVisibleOutput = false,
+      ): CursorSdkTurnOutcome => {
         const pendingAck = runtime.pendingDispatchAck?.turnId === turnId ? runtime.pendingDispatchAck : null;
         if (pendingAck) runtime.pendingDispatchAck = undefined;
         return {
           kind: "recover",
           reason,
+          sawVisibleOutput,
           runtime,
           turn: { turnId, turnModel, turnModelId },
           consumedTurnContext,
@@ -35857,7 +36125,21 @@ export function createAgentChatService(args: {
         // re-send, or a send after settlement dismissal). A normal send must
         // never do this — it would discard a turn still genuinely working.
         ...(forceExpireActiveRun ? { forceExpireActiveRun: true } : {}),
-        idempotencyKey: cursorLocalIdempotencyKey(managed, turnId),
+        // The recovery re-send is a distinct message to Cursor: on the
+        // stale-token path it lands on the *same* resumed agent, where reusing
+        // the first attempt's key could be deduped away into a silent no-op.
+        //
+        // Accepted trade-off of that distinctness: when the token died BEFORE
+        // any visible output, attempt 2 re-sends the prompt verbatim onto the
+        // resumed thread. `forceExpireActiveRun` expires the wedged run but
+        // does not unregister the message the first run already recorded in the
+        // SDK's local agent store, so the thread can hold the user prompt
+        // twice. Silent, correct recovery is worth one duplicated prompt line;
+        // the alternative (deduping) is the silent no-op that leaves the user
+        // with no answer at all.
+        idempotencyKey: args.cursorRecoveryAttempt === true
+          ? `${cursorLocalIdempotencyKey(managed, turnId)}:recovery`
+          : cursorLocalIdempotencyKey(managed, turnId),
         mode: cursorSdkModeForPolicy(policy),
       });
       let result: unknown;
@@ -35869,9 +36151,18 @@ export function createAgentChatService(args: {
         // The abandoned send rejects once the worker is disposed; swallow it so
         // it never lands as an unhandled rejection.
         if (silent) void sendPromise.catch(() => {});
-        const transport = !silent && !silenceWatch.seen && isCursorSdkTransportError(error);
-        if ((silent || transport) && canRecoverCursorThread()) {
-          return cursorRecoverySentinel(silent ? "silent_run" : "transport_error");
+        // Unlike the transport branch, a stale token recovers even after the
+        // run streamed output: the token ages out roughly an hour in, so the
+        // common shape is a turn cut off mid-work. Checked before `transport`
+        // because the two signatures are disjoint by construction (this text
+        // classifies as `auth`, never `network`) and this one is the narrower.
+        const staleToken = !silent && isCursorSdkStaleTokenError(error);
+        const transport = !silent && !staleToken && !silenceWatch.seen && isCursorSdkTransportError(error);
+        if ((silent || transport || staleToken) && canRecoverCursorThread()) {
+          return cursorRecoverySentinel(
+            silent ? "silent_run" : staleToken ? "stale_token" : "transport_error",
+            silenceWatch.sawVisibleOutput,
+          );
         }
         if (silent) {
           // Terminal silence: the rotated agent stopped answering too. Recycle
@@ -35886,6 +36177,21 @@ export function createAgentChatService(args: {
         throw error;
       }
       clearCursorSdkSilenceWatch(runtime, turnId);
+      // An expired token usually arrives as the run's own terminal error rather
+      // than a thrown send: the bridge swallowed the raw card and parked the
+      // detail here, and the settled result echoes it. Either way the worker is
+      // now permanently unauthenticated, so the turn cannot continue on it.
+      const staleTokenFailure = takeCursorSdkStaleTokenFailure(runtime, turnId);
+      if (staleTokenFailure || isCursorSdkStaleTokenResult(result)) {
+        if (canRecoverCursorThread()) return cursorRecoverySentinel("stale_token", silenceWatch.sawVisibleOutput);
+        // Recovery already spent (or the session went away): surface it once,
+        // in plain English, through the shared failure classifier.
+        throw cursorSdkStaleTokenError(staleTokenFailure ?? {
+          turnId,
+          message: readErrorMessage(asRecord(result)?.error)
+            || CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
+        });
+      }
       if (!silenceWatch.seen && isCursorSdkTransportErrorResult(result) && canRecoverCursorThread()) {
         // The run failed on the wire before emitting anything: recycling and
         // re-sending cannot duplicate visible output.
@@ -36035,17 +36341,28 @@ export function createAgentChatService(args: {
 
     const { runtime, turn } = first;
     const { turnId } = turn;
+    // The expired-token recovery keeps the thread: same agent id, resumed in a
+    // fresh worker. `resumedMidTurn` is the sub-case where the token died after
+    // real output — the prompt was delivered and partly executed, so attempt 2
+    // asks Cursor to continue rather than replaying the whole request.
+    const staleToken = first.reason === "stale_token";
+    const resumedMidTurn = staleToken && first.sawVisibleOutput;
     logger.warn("agent_chat.cursor_sdk_thread_recycling", {
       sessionId: managed.session.id,
       turnId,
       reason: first.reason,
       previousAgentId: runtime.sdkAgentId,
+      preservedAgentId: staleToken,
+      resumedMidTurn,
       watchdogMs: CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
     });
     // Restage each consumed bucket on the rotated agent. Flattening both into
     // pendingReconstructionContext would wrap the verbatim replay in a
     // continuity header and double-wrap the continuity half on the next consume.
-    if (first.consumedTurnContext) {
+    //
+    // Skipped for a mid-turn token refresh: the thread is resumed intact and the
+    // model already received this context, so restaging would replay it twice.
+    if (first.consumedTurnContext && !resumedMidTurn) {
       if (first.consumedTurnContext.replay && !managed.pendingTranscriptReplay) {
         managed.pendingTranscriptReplay = first.consumedTurnContext.replay;
       }
@@ -36055,7 +36372,9 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     }
 
-    const carriedSteers = await recycleCursorSdkAgentThread(managed, runtime, first.reason);
+    const carriedSteers = await recycleCursorSdkAgentThread(managed, runtime, first.reason, {
+      preserveAgentId: staleToken,
+    });
 
     // Re-checked after the recycle, not before it: cancelling the wedged run
     // and tearing the worker down is exactly when a user is most likely to hit
@@ -36074,14 +36393,35 @@ export function createAgentChatService(args: {
 
     // Emitted only once the re-send is actually going to happen — announcing it
     // before the interrupt re-check promised a resend that never came.
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      message: first.reason === "silent_run"
-        ? "Cursor stopped responding. ADE opened a fresh Cursor thread and is resending your message."
-        : "Cursor's connection dropped. ADE opened a fresh Cursor thread and is resending your message.",
-      turnId,
-    });
+    //
+    // A token refresh caught before any output is invisible by design: nothing
+    // reached the user, so there is nothing to explain. Only the mid-turn case
+    // says anything, because the reply visibly stopped and then continues.
+    if (staleToken) {
+      logger.info("agent_chat.cursor_sdk_stale_token_recovered", {
+        sessionId: managed.session.id,
+        turnId,
+        agentId: runtime.sdkAgentId,
+        resumedMidTurn,
+      });
+      if (resumedMidTurn) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Reconnected to Cursor and continued.",
+          turnId,
+        });
+      }
+    } else {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: first.reason === "silent_run"
+          ? "Cursor stopped responding. ADE opened a fresh Cursor thread and is resending your message."
+          : "Cursor's connection dropped. ADE opened a fresh Cursor thread and is resending your message.",
+        turnId,
+      });
+    }
 
     const { onDispatched: _dispatchedOnAttemptOne, onBackendDispatched: _ackOnAttemptOne, ...retryArgs } = args;
     let requeuedOn: CursorRuntime | null = null;
@@ -36095,6 +36435,20 @@ export function createAgentChatService(args: {
       }
       await runCursorSdkTurnOnce(managed, {
         ...retryArgs,
+        // Mid-turn token refresh: the resumed thread already holds the prompt
+        // and everything the model did with it, so re-sending it verbatim would
+        // make Cursor start the same work twice. Attachments rode along with
+        // the original message and are dropped for the same reason.
+        ...(resumedMidTurn
+          ? {
+              promptText: CURSOR_SDK_STALE_TOKEN_CONTINUATION,
+              displayText: CURSOR_SDK_STALE_TOKEN_CONTINUATION,
+              userText: CURSOR_SDK_STALE_TOKEN_CONTINUATION,
+              attachments: [],
+              contextAttachments: [],
+              resolvedAttachments: [],
+            }
+          : {}),
         turnId,
         // The user bubble, turn-started status, activity and before-SHA all
         // landed on attempt 1; the re-send must not duplicate them.
@@ -38604,7 +38958,7 @@ export function createAgentChatService(args: {
       dispatchMode,
     } = expandedArgs;
     if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
-      throw new Error(`Unsupported Claude steer dispatch mode: ${String(dispatchMode)}`);
+      throw new Error(`Unsupported steer dispatch mode: ${String(dispatchMode)}`);
     }
     const trimmed = text.trim();
     const steerId = randomUUID();
@@ -38616,8 +38970,10 @@ export function createAgentChatService(args: {
 
     const managed = ensureManagedSession(sessionId);
     assertContinuityDispatchAllowed(managed);
-    if (dispatchMode && managed.session.provider !== "claude") {
-      throw new Error("Atomic steer dispatch modes are only supported on Claude sessions.");
+    // One guard against the canonical per-provider table, rather than the rules
+    // restated here. Reject rather than silently downgrading the user's choice.
+    if (dispatchMode && !supportsActiveTurnDispatchMode(managed.session.provider, dispatchMode)) {
+      throw new Error(unsupportedActiveTurnDispatchModeMessage(managed.session.provider, dispatchMode));
     }
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !options?.allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
@@ -38727,6 +39083,26 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
         const rt = managed.runtime;
+        // Interrupt & continue: stop the live run, wait for it to settle, then
+        // resend on the same agent. Nothing is staged, so this never enters the
+        // pending-steer queue.
+        if (dispatchMode === "interrupt") {
+          await interruptAndContinueTurn(managed, {
+            sessionId,
+            text: trimmed,
+            ...(displayText != null && displayText !== trimmed ? { displayText } : {}),
+            attachments,
+            contextAttachments,
+            metadata,
+            // Per-message overrides ride the redirect, exactly as they would on
+            // a staged steer delivered at the turn boundary.
+            reasoningEffort,
+            executionMode,
+            interactionMode,
+            mentionsAlreadyExpanded: true,
+          });
+          return { steerId, queued: false };
+        }
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
@@ -39096,6 +39472,88 @@ export function createAgentChatService(args: {
     return result;
   };
 
+  /**
+   * Mid-turn redirect for the providers that have no inline steer channel
+   * (Cursor, Droid). The Cursor SDK exposes no way to push a message into a
+   * live run, so "interrupt & continue" is cancel + resend on the same agent:
+   * the SDK's local agent store keeps the thread, so the resend continues the
+   * same conversation with no context injection.
+   *
+   * Only Cursor's redirect softens the stop. Cursor uses `stop_only` and arms
+   * `preserveQueuedSteersOnInterrupt`, so anything the user had already queued
+   * survives and is delivered after the redirect turn completes. Every other
+   * provider keeps the pre-existing `stop_and_clear` contract for
+   * `interrupt-replace`, which clears the queue.
+   */
+  const interruptAndContinueTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      sessionId: string;
+      text: string;
+      displayText?: string;
+      attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
+      metadata?: AgentChatEventMetadata | null | undefined;
+      reasoningEffort?: string | null;
+      executionMode?: AgentChatExecutionMode | null;
+      interactionMode?: AgentChatInteractionMode | null;
+      /**
+       * Set by callers that already ran `applyChatMentionExpansion` on `text`
+       * (steerWithOptions, and the staged rows dispatchSteer promotes). Without
+       * it `sendMessage` expands a second time, and expanded file content that
+       * itself contains chip syntax would be expanded again.
+       */
+      mentionsAlreadyExpanded?: boolean;
+    },
+  ): Promise<void> => {
+    const runtime = managed.runtime;
+    const preserveQueuedSteers = managed.session.provider === "cursor";
+    const queueOwner = preserveQueuedSteers && runtime?.kind === "cursor" ? runtime : null;
+    // Armed until consumed, not for the duration of this call: the cancel this
+    // protects against happens later, inside the interrupted turn's own tail
+    // (`cancelQueuedSteers`), not inside `interrupt()` — which is why it is a
+    // runtime flag rather than an `interrupt()` parameter. A blanket `finally`
+    // would disarm it while the turn is still stopping (the settle wait can
+    // time out with the run still live) and the user's other queued messages
+    // would then be wiped by exactly the stop this call issued.
+    const armedHere = Boolean(queueOwner && !queueOwner.preserveQueuedSteersOnInterrupt);
+    if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = true;
+    try {
+      await interrupt({ sessionId: args.sessionId, mode: preserveQueuedSteers ? "stop_only" : "stop_and_clear" });
+    } catch (error) {
+      // The stop never reached the runtime, so no cancel will come for it.
+      // Disarm rather than leaving the flag to swallow an unrelated interrupt's
+      // cancel later.
+      if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = false;
+      throw error;
+    }
+    await waitForCursorDroidTurnToSettleAfterInterrupt(managed, args.sessionId);
+    // Settled, so the turn's tail has already run `cancelQueuedSteers` and
+    // consumed the flag; this is the no-op that closes the case where it did
+    // not (nothing queued, or a runtime that never reached its tail).
+    if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = false;
+    logger.info("agent_chat.interrupt_and_continue", {
+      sessionId: args.sessionId,
+      provider: managed.session.provider,
+      preservedQueuedSteers: queueOwner?.pendingSteers.length ?? 0,
+    });
+    const sendArgs: AgentChatSendArgs = {
+      sessionId: args.sessionId,
+      text: args.text,
+      ...(args.displayText != null ? { displayText: args.displayText } : {}),
+      attachments: args.attachments ?? [],
+      contextAttachments: args.contextAttachments ?? [],
+      metadata: args.metadata,
+      ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
+      ...(args.executionMode !== undefined ? { executionMode: args.executionMode } : {}),
+      ...(args.interactionMode !== undefined ? { interactionMode: args.interactionMode } : {}),
+    };
+    await sendMessage(
+      args.mentionsAlreadyExpanded ? markChatMentionsExpanded(sendArgs) : sendArgs,
+      { awaitDispatch: false },
+    );
+  };
+
   const normalizeMessageSessionKind = (
     kind: AgentChatMessageSessionArgs["kind"],
   ): AgentChatMessageSessionKind => {
@@ -39218,18 +39676,13 @@ export function createAgentChatService(args: {
 
     if (normalizedKind === "interrupt-replace") {
       if (managed.session.provider !== "claude") {
-        await interrupt({ sessionId });
-        await waitForCursorDroidTurnToSettleAfterInterrupt(managed, sessionId);
-        await sendMessage(
-          {
-            sessionId,
-            text,
-            attachments,
-            contextAttachments,
-            metadata,
-          },
-          { awaitDispatch: false },
-        );
+        await interruptAndContinueTurn(managed, {
+          sessionId,
+          text,
+          attachments,
+          contextAttachments,
+          metadata,
+        });
       } else if (statusBefore === "active") {
         await steer({
           sessionId,
@@ -39290,7 +39743,14 @@ export function createAgentChatService(args: {
     }
 
     const queue = runtime.pendingSteers;
-    if (requireQueued && runtime.kind === "claude" && runtime.dispatchingSteerIds.has(steerId)) {
+    // Both runtimes that track in-flight dispatches splice the row out of the
+    // queue before the dispatch completes, so without this the user would be
+    // told the message is "no longer queued" while it is in fact being sent.
+    if (
+      requireQueued
+      && (runtime.kind === "claude" || runtime.kind === "cursor")
+      && runtime.dispatchingSteerIds.has(steerId)
+    ) {
       throw new Error("This message is already being dispatched.");
     }
     const idx = queue.findIndex((s) => s.steerId === steerId);
@@ -39357,18 +39817,93 @@ export function createAgentChatService(args: {
     mode,
   }: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> => {
     if (mode !== "inline" && mode !== "interrupt") {
-      throw new Error(`Unsupported Claude steer dispatch mode: ${String(mode)}`);
+      throw new Error(`Unsupported steer dispatch mode: ${String(mode)}`);
     }
     const managed = ensureManagedSession(sessionId);
     assertContinuityDispatchAllowed(managed);
-    if (managed.session.provider === "codex") {
-      throw new Error("dispatchSteer is not supported on Codex sessions.");
+    // One guard against the canonical per-provider table (shared/types/chat.ts)
+    // instead of a per-provider ladder: Codex and every other queue-only
+    // provider reject here, and Cursor rejects "inline".
+    if (!supportsActiveTurnDispatchMode(managed.session.provider, mode)) {
+      throw new Error(unsupportedActiveTurnDispatchModeMessage(managed.session.provider, mode));
     }
     if (hasLivePendingInput(managed)) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const runtime = managed.runtime;
     if (!runtime) return { dispatchedAt: null };
+    // Cursor: a staged row can be promoted to the interrupt-and-continue
+    // redirect. There is no inline channel to promote it into.
+    if (runtime.kind === "cursor") {
+      const cursorQueue = runtime.pendingSteers;
+      const cursorIdx = cursorQueue.findIndex((s) => s.steerId === steerId);
+      if (cursorIdx === -1) return { dispatchedAt: null };
+      const [promoted] = cursorQueue.splice(cursorIdx, 1);
+      claimSteerSettlement(managed, steerId);
+      // The staged row is resolved by this notice; without it the chip would
+      // stay parked in the composer's staging area after the redirect.
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Delivering your queued message...",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      // Held across the whole redirect: the parent turn can complete on its own
+      // while the interrupt is settling, and its tail must not shift the NEXT
+      // staged row off the queue into a turn this redirect then cancels.
+      runtime.dispatchingSteerIds.add(steerId);
+      try {
+        await interruptAndContinueTurn(managed, {
+          sessionId,
+          text: promoted.text,
+          ...(promoted.displayText != null && promoted.displayText !== promoted.text
+            ? { displayText: promoted.displayText }
+            : {}),
+          attachments: promoted.attachments,
+          contextAttachments: promoted.contextAttachments,
+          ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
+          // The staged row's per-message overrides, the same ones
+          // deliverNextQueuedSteer would apply at the turn boundary.
+          reasoningEffort: promoted.reasoningEffort,
+          executionMode: promoted.executionMode,
+          interactionMode: promoted.interactionMode,
+          // Staged text was expanded when it entered the queue.
+          mentionsAlreadyExpanded: true,
+        });
+      } catch (error) {
+        // Put the row back so the user's message is never silently lost.
+        if (!cursorQueue.some((entry) => entry.steerId === steerId)) {
+          cursorQueue.splice(Math.min(cursorIdx, cursorQueue.length), 0, promoted);
+          reopenSteerSettlement(managed, steerId);
+          emitChatEvent(managed, {
+            type: "user_message",
+            text: promoted.text,
+            ...(promoted.displayText && promoted.displayText !== promoted.text
+              ? { displayText: promoted.displayText }
+              : {}),
+            ...(promoted.attachments.length ? { attachments: promoted.attachments } : {}),
+            ...(promoted.contextAttachments.length ? { contextAttachments: promoted.contextAttachments } : {}),
+            ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
+            steerId,
+            deliveryState: "queued",
+          });
+          persistChatState(managed);
+        }
+        logger.warn("agent_chat.dispatch_steer_failed", {
+          sessionId,
+          steerId,
+          mode,
+          provider: "cursor",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        runtime.dispatchingSteerIds.delete(steerId);
+      }
+      return { dispatchedAt: Date.now() };
+    }
     if (runtime.kind !== "claude") {
       throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);
     }

@@ -5085,7 +5085,7 @@ describe("createAgentChatService", () => {
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
 
-    it("forks a Cursor chat onto a fresh agent seeded with the source conversation", async () => {
+    it("forks a Cursor chat onto a fresh agent replaying the full source transcript", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service, aiIntegrationService } = createService();
       const source = await service.createSession({
@@ -5120,10 +5120,11 @@ describe("createAgentChatService", () => {
       // The tail is rebuilt by the shared fork path's transcript import, so the
       // Cursor seeding must not copy the entries as well — that doubled it.
       expect(persisted.recentConversationEntries ?? []).toEqual([]);
-      // Same-provider Cursor fork is ADE-side context seeding, not a replay.
-      // The field is persisted explicitly as null rather than omitted, so a
-      // restart cannot resurrect a stale replay.
-      expect(persisted.pendingTranscriptReplay).toBeNull();
+      // Cursor has no fork API, so the fork carries the whole conversation as a
+      // verbatim transcript replay rather than a 20-line tail.
+      expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
+      expect(persisted.pendingTranscriptReplay).toContain("Investigate the flaky migration test.");
+      expect(result.replayFork).toBeUndefined();
       // No brief was generated — fork carries the conversation, not a summary.
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
@@ -5219,12 +5220,90 @@ describe("createAgentChatService", () => {
 
       const forkedPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
       expect(forkedPrompt).toContain("Forked Cursor chat");
+      expect(forkedPrompt).toContain("verbatim replay");
       expect(forkedPrompt).toContain("Keep going.");
-      // Exactly once: copying recentConversationEntries on top of the transcript
-      // import used to repeat every line of the seeded tail.
+      // Exactly once: the replay and the seeding header must not both carry the
+      // conversation, or every line of it shows up twice.
       expect(forkedPrompt.split("Investigate the flaky migration test.").length - 1).toBe(1);
       // The fresh agent is created rather than resumed.
       expect(mockState.cursorSdkAcquireCalls.at(-1)?.agentId).toBeNull();
+    });
+
+    it("regression: replays a forked Cursor transcript exactly once, across a restart", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Replay this Cursor transcript exactly once.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "cursor/composer-2",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("Replay this Cursor transcript exactly once.");
+
+      mockState.cursorSdkSendCalls = [];
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: "Continue from there.",
+      }, { awaitDispatch: true });
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .toContain("Replay this Cursor transcript exactly once.");
+      // Consumption must be durable, not just in memory.
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
+
+      const restarted = createService().service;
+      mockState.cursorSdkSendCalls = [];
+      await restarted.sendMessage({
+        sessionId: result.session.id,
+        text: "Keep going.",
+      }, { awaitDispatch: true });
+      const secondPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(secondPrompt).not.toContain("verbatim replay");
+      expect(secondPrompt).not.toContain("Replay this Cursor transcript exactly once.");
+    });
+
+    it("discloses truncation when a forked Cursor transcript exceeds the context window", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      for (let index = 0; index < 6; index += 1) {
+        await service.sendMessage({
+          sessionId: source.id,
+          text: `Turn ${index}: ${"x".repeat(220_000)}`,
+        }, { awaitDispatch: true });
+        await vi.waitFor(() => {
+          expect(source.status).toBe("idle");
+        });
+      }
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "cursor/composer-2",
+        mode: "fork",
+      });
+
+      expect(result.replayFork?.truncated).toBe(true);
+      expect(result.replayFork?.truncatedTurnCount).toBeGreaterThan(0);
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("verbatim replay");
     });
 
     it("regression: does not replay the forked transcript again after a restart", async () => {
@@ -15361,6 +15440,278 @@ describe("createAgentChatService", () => {
       expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
     });
 
+    it("recovers a Cursor stale access token on the same agent thread, invisibly, before any output", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // The SDK exchanges the API key for a short-lived access token once per
+      // worker and never refreshes it, so ~60 min in every send dies instantly
+      // with this exact text. The key is fine; only the worker is spent.
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.onCursorSendPrompt = (pooled) => {
+        if (mockState.cursorSdkSendCalls.length > 1) {
+          mockState.cursorSendPromptResult = null;
+          return;
+        }
+        mockState.cursorSendPromptResult = {
+          id: "cursor-sdk-run-1",
+          status: "error",
+          error: { message: staleTokenMessage, code: staleTokenMessage },
+        };
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage, requestId: "req-stale-1" },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Send whose token just expired.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      // Exactly one recycle and one re-send...
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
+      // ...onto the SAME agent id, so the whole conversation survives. This is
+      // what separates it from the transport recycle, which rotates to a new
+      // agent and re-seeds it with a continuity summary.
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
+      expect(mockState.cursorSdkAcquireCalls[1]?.agentId).toBe("cursor-sdk-agent-1");
+      expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
+      // Nothing had streamed yet, so the original prompt is re-sent verbatim —
+      // byte-identical to attempt 1, not a "continue" instruction. Accepted
+      // trade-off: `forceExpireActiveRun` expires the wedged run but does not
+      // unregister the message it already recorded, so the resumed thread can
+      // hold this prompt twice. A silent, correct answer beats a deduped no-op.
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Send whose token just expired.");
+      expect(mockState.cursorSdkSendCalls[1]?.promptText)
+        .toBe(mockState.cursorSdkSendCalls[0]?.promptText);
+      // And the user sees none of it: no error card, no notice.
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+      expect(events.filter((event) => event.event.type === "system_notice")).toHaveLength(0);
+      expect(events.filter((event) => event.event.type === "done").at(-1)?.event)
+        .toMatchObject({ status: "completed" });
+    });
+
+    it("ignores visible output from an abandoned run when deciding to resume mid-turn", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // Same stale-token recovery, but the only "real output" belongs to a run
+      // this turn already walked away from. Crediting it would tell Cursor to
+      // continue from work that never happened on this turn, so the retry must
+      // be the verbatim replay instead.
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.onCursorSendPrompt = (pooled) => {
+        if (mockState.cursorSdkSendCalls.length > 1) {
+          mockState.cursorSendPromptResult = null;
+          return;
+        }
+        mockState.cursorSendPromptResult = {
+          id: "cursor-sdk-run-1",
+          status: "error",
+          error: { message: staleTokenMessage, code: staleTokenMessage },
+        };
+        // This turn's run, which scopes the watchdog...
+        pooled.bridge.onRunStarted?.({
+          agentId: "cursor-sdk-agent-1",
+          runId: "cursor-sdk-run-1",
+          modelSdkId: "composer-2",
+        }, { runtime: "local" });
+        // ...and a late frame from the previous, abandoned one.
+        pooled.bridge.onEvent?.(
+          { type: "assistant", message: { content: [{ type: "text", text: "Output from the old run." }] } },
+          { runtime: "local", runId: "cursor-sdk-run-0" },
+        );
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Refactor the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(retryPrompt).not.toContain("Continue where you left off");
+      expect(retryPrompt).toBe(String(mockState.cursorSdkSendCalls[0]?.promptText ?? ""));
+      // Nothing visible happened on this turn, so the recovery stays silent.
+      expect(events.filter((event) => event.event.type === "system_notice")).toHaveLength(0);
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+    });
+
+    it("continues the resumed Cursor thread when the access token expires mid-turn", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.onCursorSendPrompt = (pooled) => {
+        if (mockState.cursorSdkSendCalls.length > 1) {
+          mockState.cursorSendPromptResult = null;
+          return;
+        }
+        mockState.cursorSendPromptResult = {
+          id: "cursor-sdk-run-1",
+          status: "error",
+          error: { message: staleTokenMessage, code: staleTokenMessage },
+        };
+        // Real output first: the token ages out an hour into a working turn.
+        pooled.bridge.onEvent?.(
+          { type: "assistant", message: { content: [{ type: "text", text: "Started the refactor." }] } },
+          { runtime: "local", runId: "cursor-sdk-run-1" },
+        );
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Refactor the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      expect(mockState.cursorSdkAcquireCalls[1]?.agentId).toBe("cursor-sdk-agent-1");
+      // The thread was resumed, so re-sending the original prompt would restart
+      // work Cursor had already done — it is asked to continue instead.
+      const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(retryPrompt).toContain("Continue where you left off");
+      expect(retryPrompt).not.toContain("Refactor the composer.");
+      // The reply visibly stopped, so this one case says something — quietly.
+      const notices = events.filter((event) => event.event.type === "system_notice");
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.event).toMatchObject({
+        noticeKind: "info",
+        message: "Reconnected to Cursor and continued.",
+      });
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+    });
+
+    it("surfaces the Cursor stale-token failure once when the recovery re-send fails the same way", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.cursorSendPromptResult = {
+        id: "cursor-sdk-run-1",
+        status: "error",
+        error: { message: staleTokenMessage, code: staleTokenMessage },
+      };
+      mockState.onCursorSendPrompt = (pooled) => {
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage, requestId: "req-stale-2" },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Send that stays unauthenticated.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "error")).toBe(true);
+      });
+
+      // One recovery, no loop.
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      const errorEvents = events.filter((event) => event.event.type === "error");
+      expect(errorEvents).toHaveLength(1);
+      expect(errorEvents[0]?.event).toMatchObject({
+        message: "Cursor's session expired. ADE reconnected and retried, but Cursor rejected the request "
+          + "again — sign in to Cursor again in Settings, then resend.",
+        errorInfo: { category: "auth", provider: "Cursor" },
+      });
+      // The raw SDK text never reaches the transcript, but the request id does.
+      expect(String((errorEvents[0]?.event as { detail?: string }).detail ?? ""))
+        .toContain("req-stale-2");
+    });
+
+    it("does not recycle the Cursor worker for a genuinely bad API key", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // A fresh worker would fail identically: this is the user's problem to
+      // fix, so it must surface immediately rather than burn a recovery.
+      mockState.cursorSendPromptError = new Error("Authentication failed: Invalid API key");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Send with a bad key.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "error")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
+      const errorEvents = events.filter((event) => event.event.type === "error");
+      expect(errorEvents).toHaveLength(1);
+      expect(String((errorEvents[0]?.event as { message?: string }).message ?? ""))
+        .toContain("Check your Cursor credentials");
+    });
+
     it("carries a queued Cursor steer across a thread recycle and delivers it after recovery", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
@@ -15404,6 +15755,377 @@ describe("createAgentChatService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    /**
+     * Cursor "interrupt & continue". The Cursor SDK has no mid-run message
+     * API, so the redirect can only be cancel + resend on the same agent —
+     * these cover that the cancel happens, the resend lands on the same
+     * thread, and nothing the user already queued is thrown away.
+     */
+    const startBusyCursorSession = async (events: AgentChatEventEnvelope[]) => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      let releaseTurn: (() => void) | null = null;
+      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      void service.sendMessage({
+        sessionId: session.id,
+        text: "Original turn.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
+      });
+      // The worker's cancel is what actually settles the in-flight run.
+      mockState.onCursorCancel = () => {
+        mockState.onCursorCancel = null;
+        mockState.cursorSendPromptGate = null;
+        releaseTurn?.();
+      };
+      return { service, session };
+    };
+
+    it("dispatches a Cursor steer with dispatchMode interrupt by cancelling the run and resending on the same agent", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Actually, do the migration first.",
+        dispatchMode: "interrupt",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Actually, do the migration first.");
+      // The previous turn is reported as interrupted, not failed.
+      expect(events.some((event) =>
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+      // Same agent, same thread: no rotation and no new worker.
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
+      expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
+    });
+
+    it("keeps already-queued Cursor steers across an interrupt-and-continue", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({ sessionId: session.id, text: "Then update the docs." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Actually, do the migration first.",
+        dispatchMode: "interrupt",
+      });
+
+      // Redirect turn, then the message the user had already staged.
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(3);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Actually, do the migration first.");
+      expect(String(mockState.cursorSdkSendCalls[2]?.promptText ?? ""))
+        .toContain("Then update the docs.");
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && typeof event.event.steerId === "string"
+        && event.event.message.includes("cancelled"))).toBe(false);
+    });
+
+    it("routes messageSession kind interrupt-replace on Cursor through interrupt-and-continue", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Stop and take this instead.",
+        kind: "interrupt-replace",
+      });
+
+      expect(result.routedAction).toBe("interrupt-replace");
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Stop and take this instead.");
+      expect(events.some((event) =>
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+      expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
+    });
+
+    it("still clears queued Droid steers on interrupt-replace, unlike Cursor", async () => {
+      // The Cursor redirect softens the stop to `stop_only` so the user's other
+      // queued messages ride through. That is Cursor-only: every other provider
+      // keeps the pre-existing `interrupt-replace` contract, which clears.
+      const events: AgentChatEventEnvelope[] = [];
+      let finishTurn = () => {};
+      mockState.droidPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+      try {
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Original Droid turn.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await vi.waitFor(() => {
+          expect(mockState.droidPromptCalls.length).toBeGreaterThanOrEqual(1);
+        });
+        // The cancel is what settles the in-flight prompt, as on the real SDK.
+        mockState.droidPooled?.cancel.mockImplementation(async () => {
+          mockState.droidPromptGate = null;
+          finishTurn();
+        });
+
+        await service.steer({ sessionId: session.id, text: "Then update the docs." });
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+        });
+
+        await service.messageSession({
+          sessionId: session.id,
+          text: "Stop and take this instead.",
+          kind: "interrupt-replace",
+        });
+
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "system_notice"
+            && typeof event.event.steerId === "string"
+            && event.event.message.includes("cancelled"))).toBe(true);
+        });
+        await vi.waitFor(() => {
+          expect(mockState.droidPromptCalls.some((call) =>
+            String(call.prompt ?? call.promptText ?? "").includes("Stop and take this instead."))).toBe(true);
+        });
+      } finally {
+        mockState.droidPromptGate = null;
+        finishTurn();
+      }
+    });
+
+    it("promotes a staged Cursor steer to interrupt-and-continue through dispatchSteer", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({ sessionId: session.id, text: "Run this one instead." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      await expect(service.dispatchSteer({
+        sessionId: session.id,
+        steerId: staged.steerId,
+        mode: "inline",
+      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Run this one instead.");
+      // The staged chip has to be resolved, or it stays parked in the composer.
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.steerId === staged.steerId
+        && event.event.message.includes("Delivering"))).toBe(true);
+    });
+
+    it("rejects an inline steer dispatch on Cursor instead of silently downgrading it", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService({ onEvent: () => {} });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await expect(service.steer({
+        sessionId: session.id,
+        text: "Fold this into the live run.",
+        dispatchMode: "inline",
+      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
+    });
+
+    // Regression (quality A2): the redirect rebuilds the send from scratch, so
+    // the per-message overrides the user picked for THIS message have to be
+    // carried across it. Before the fix they were dropped and the redirect ran
+    // on whatever the session already had.
+    it("carries per-message reasoning and execution overrides through the Cursor interrupt redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+      const before = await service.getSessionSummary(session.id);
+      expect(before?.reasoningEffort ?? null).toBeNull();
+      expect(before?.executionMode).toBe("focused");
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Actually, do the migration first.",
+        dispatchMode: "interrupt",
+        reasoningEffort: "high",
+        executionMode: "parallel",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const after = await service.getSessionSummary(session.id);
+      expect(after?.reasoningEffort).toBe("high");
+      expect(after?.executionMode).toBe("parallel");
+      expect(readPersistedChatState(session.id).reasoningEffort).toBe("high");
+    });
+
+    // Regression (quality A2): the same three overrides ride the staged row
+    // when the user promotes it, exactly as `deliverNextQueuedSteer` applies
+    // them at a natural turn boundary.
+    it("carries a staged Cursor steer's overrides through the promotion redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({
+        sessionId: session.id,
+        text: "Run this one instead.",
+        reasoningEffort: "high",
+        executionMode: "subagents",
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+      // Staging must not apply them: they belong to the message, not the session.
+      expect((await service.getSessionSummary(session.id))?.executionMode).toBe("focused");
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const after = await service.getSessionSummary(session.id);
+      expect(after?.reasoningEffort).toBe("high");
+      expect(after?.executionMode).toBe("subagents");
+    });
+
+    // Regression (quality A8): `steerWithOptions` already expanded the chips,
+    // so the redirect's `sendMessage` must not expand them a second time —
+    // expanded file content can itself contain chip syntax.
+    it("expands @-mention chips exactly once on the Cursor interrupt redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({
+        sessionId: session.id,
+        text: "apply the fix from @chat:other-session-id",
+        dispatchMode: "interrupt",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const promptText = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(promptText).toContain("<ade-mention");
+      expect(promptText.match(/<ade-mention/g) ?? []).toHaveLength(1);
+      expect(promptText).toContain("other-session-id");
+    });
+
+    // Regression (quality A4/B7): the settle wait can time out with the run
+    // still live. The old blanket `finally` disarmed the preserve flag on the
+    // way out, so the late cancel — issued by exactly the stop this redirect
+    // asked for — wiped the messages the user had already queued.
+    it("keeps queued Cursor steers when the interrupt's settle wait times out", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({ sessionId: session.id, text: "Then update the docs." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      // The stop reaches the worker, but the run does not settle: the redirect
+      // gives up after its 30 s wait and reports that, instead of hanging.
+      const releaseTurn = mockState.onCursorCancel;
+      mockState.onCursorCancel = () => {};
+      vi.useFakeTimers();
+      try {
+        const redirect = service.steer({
+          sessionId: session.id,
+          text: "Actually, do the migration first.",
+          dispatchMode: "interrupt",
+        }).then(() => "resolved", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+        await vi.advanceTimersByTimeAsync(31_000);
+        await expect(redirect).resolves.toMatch(/still stopping/);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      // The run settles late, and its tail runs the cancel the stop earned.
+      // The flag is still armed, so the user's other message survives it.
+      releaseTurn?.();
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && typeof event.event.steerId === "string"
+        && event.event.message.includes("cancelled"))).toBe(false);
+    });
+
+    // Regression (quality R6): the promotion splices the row out of the queue
+    // before the redirect completes, so a cancel arriving in that window must
+    // say the message is going out, not that it was never queued.
+    it("tells the user a promoted Cursor steer is already being dispatched, not that it is gone", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({ sessionId: session.id, text: "Run this one instead." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      // The worker's cancel runs inside the redirect, while the row is spliced
+      // out but the dispatch has not landed yet.
+      let cancelDuringDispatch: Promise<unknown> | null = null;
+      const releaseTurn = mockState.onCursorCancel;
+      mockState.onCursorCancel = () => {
+        cancelDuringDispatch = service
+          .cancelSteer({ sessionId: session.id, steerId: staged.steerId, requireQueued: true })
+          .then(() => "resolved", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+        releaseTurn?.();
+      };
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      expect(cancelDuringDispatch, "the cancel must land inside the dispatch window").toBeTruthy();
+      await expect(cancelDuringDispatch!).resolves.toBe("This message is already being dispatched.");
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Run this one instead.");
     });
 
     it("settles a re-queued Cursor steer exactly once when the recovery re-send also goes silent", async () => {
@@ -16079,7 +16801,7 @@ describe("createAgentChatService", () => {
       expect(secondAcquire.stateKey).toBe(firstAcquire.stateKey);
     });
 
-    it("injects recent ADE context when Cursor SDK resume opens a new agent", async () => {
+    it("replays the full transcript when Cursor SDK resume opens a new agent", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service } = createService();
       const session = await service.createSession({
@@ -16110,8 +16832,11 @@ describe("createAgentChatService", () => {
       expect(promptText).toContain("Cursor SDK continuity recovery");
       expect(promptText).toContain("cursor-sdk-agent-1");
       expect(promptText).toContain("cursor-sdk-agent-2");
-      expect(promptText).toContain("Recent Conversation Tail");
-      expect(promptText).toContain("User: Inspect the mobile files tab parity work.");
+      // The rotated agent gets the whole conversation replayed verbatim, not a
+      // 20-line tail.
+      expect(promptText).toContain("verbatim replay");
+      expect(promptText).not.toContain("Recent Conversation Tail");
+      expect(promptText).toContain("Inspect the mobile files tab parity work.");
       expect(promptText).toContain("Did you finish the prior work?");
       // Prompts are prepared before the runtime is acquired, so the rotation
       // turn itself stays deduped — but the rotated agent is brand new, so the
@@ -16124,6 +16849,10 @@ describe("createAgentChatService", () => {
       });
       const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
       expect(postRotationPrompt).toContain("[ADE launch directive]");
+      // One staged replay, consumed exactly once: the rotation stage is durable,
+      // so a turn that did not trigger a rotation must not replay it again.
+      expect(postRotationPrompt).not.toContain("verbatim replay");
+      expect(postRotationPrompt).not.toContain("Cursor SDK continuity recovery");
     });
 
     it("recreates the Cursor SDK agent with recovery context when resume state is missing", async () => {
@@ -16174,8 +16903,9 @@ describe("createAgentChatService", () => {
       expect(promptText).toContain("Cursor SDK continuity recovery");
       expect(promptText).toContain("cursor-sdk-agent-1");
       expect(promptText).toContain("cursor-sdk-agent-2");
-      expect(promptText).toContain("Recent Conversation Tail");
-      expect(promptText).toContain("User: Inspect the runtime compaction lane crash.");
+      expect(promptText).toContain("verbatim replay");
+      expect(promptText).not.toContain("Recent Conversation Tail");
+      expect(promptText).toContain("Inspect the runtime compaction lane crash.");
       expect(promptText).toContain("Did the SDK resume bug come back?");
     });
 
@@ -35494,9 +36224,11 @@ describe("createAgentChatService", () => {
       const { service } = createService({ onEvent: () => {} });
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5-codex" });
 
+      // Rejection now comes from the canonical per-provider table, so the copy
+      // names the provider and the mode instead of the method.
       await expect(
         service.dispatchSteer({ sessionId: session.id, steerId: "any", mode: "inline" }),
-      ).rejects.toThrow(/not supported on Codex/i);
+      ).rejects.toThrow(/Codex sessions don't support the "inline" active-turn dispatch mode/i);
     });
 
     it("cancelDispatchedSteer cancels an SDK-queued Claude steer by its command UUID", async () => {

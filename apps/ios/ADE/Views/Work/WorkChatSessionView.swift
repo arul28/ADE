@@ -2425,6 +2425,54 @@ private struct WorkChatComposerDraftInput: View {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
   }
 
+  /// One capability lookup for the whole active-turn send affordance. See
+  /// `WorkActiveSendCapability` for the table it mirrors.
+  private var activeSendCapability: WorkActiveSendCapability {
+    WorkActiveSendCapability.forProvider(chatSummary.provider)
+  }
+
+  /// Derived rather than stored, so switching providers can never leave a mode
+  /// selected that the new provider cannot honor.
+  private var effectiveActiveSendMode: WorkActiveSendMode {
+    activeSendCapability.modes.contains(activeSendMode)
+      ? activeSendMode
+      : activeSendCapability.defaultMode
+  }
+
+  /// A single mode is not a choice: queue-only providers get the plain send
+  /// button, matching the desktop composer.
+  private var activeSendModePickerVisible: Bool {
+    activeSendModesAvailable && activeSendCapability.modes.count > 1
+  }
+
+  private var activeSendAgentLabel: String { activeSendCapability.agentLabel }
+
+  private var activeSendInterruptContinues: Bool { activeSendCapability.interruptContinues }
+
+  private func activeSendModeTitle(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "Send after turn"
+    case .interrupt: return activeSendInterruptContinues ? "Interrupt & continue" : "Interrupt & send"
+    case .inline: return "Send during turn"
+    }
+  }
+
+  private func activeSendModeDetail(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "Keep this message staged until the turn finishes."
+    case .interrupt: return "Stop and redirect \(activeSendAgentLabel) now."
+    case .inline: return "\(activeSendAgentLabel) picks this up after the current tool step."
+    }
+  }
+
+  private func activeSendModeIcon(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "clock"
+    case .interrupt: return "bolt.fill"
+    case .inline: return "arrow.turn.down.right"
+    }
+  }
+
   private var stashAvailable: Bool {
     !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
   }
@@ -2520,7 +2568,7 @@ private struct WorkChatComposerDraftInput: View {
       stopMode = UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") == AgentChatStopMode.stopOnly.rawValue
         ? .stopOnly
         : .stopAndClear
-      activeSendMode = .inline
+      activeSendMode = activeSendCapability.defaultMode
       sendOptionsPresented = false
       stopOptionsPresented = false
       draftState.bind(persistenceKey: draftPersistenceKey)
@@ -2532,12 +2580,12 @@ private struct WorkChatComposerDraftInput: View {
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
     .onChange(of: showInterrupt) { _, _ in
-      activeSendMode = .inline
+      activeSendMode = activeSendCapability.defaultMode
       sendOptionsPresented = false
       stopOptionsPresented = false
     }
     .onChange(of: chatSummary.provider) { _, _ in
-      activeSendMode = .inline
+      activeSendMode = activeSendCapability.defaultMode
       sendOptionsPresented = false
       stopOptionsPresented = false
       configureSuggestionController()
@@ -2583,7 +2631,7 @@ private struct WorkChatComposerDraftInput: View {
     if showInterrupt {
       if hasSendableDraftOrAttachment {
         stopButton()
-        if chatSummary.provider.lowercased() == "claude" && activeSendModesAvailable {
+        if activeSendModePickerVisible {
           activeTurnSendButton()
         } else {
           WorkChatComposerSendButton(
@@ -2626,11 +2674,11 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
-        accessibilityLabelText: activeSendModeTitle,
-        systemImageName: activeSendModeIcon,
+        accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
+        systemImageName: activeSendModeIcon(effectiveActiveSendMode),
         minimumTapTargetSize: 32,
         onSend: { text, attachments in
-          await onSend(text, attachments, activeSendMode)
+          await onSend(text, attachments, effectiveActiveSendMode)
         },
         onSent: onSent
       )
@@ -2646,30 +2694,19 @@ private struct WorkChatComposerDraftInput: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel("More send options")
-      .accessibilityValue(activeSendModeTitle)
-      .accessibilityHint("Choose whether this message sends during, after, or by interrupting the active Claude turn")
+      .accessibilityValue(activeSendModeTitle(effectiveActiveSendMode))
+      .accessibilityHint("Choose how this message reaches the active \(activeSendAgentLabel) turn")
       .popover(isPresented: $sendOptionsPresented, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: 0) {
-          activeSendOption(
-            mode: .inline,
-            title: "Send during turn",
-            detail: "Claude picks this up after the current tool step.",
-            systemImage: "arrow.turn.down.right"
-          )
-          Divider()
-          activeSendOption(
-            mode: .queue,
-            title: "Send after turn",
-            detail: "Keep this message staged until the turn finishes.",
-            systemImage: "clock"
-          )
-          Divider()
-          activeSendOption(
-            mode: .interrupt,
-            title: "Interrupt & send",
-            detail: "Stop the current model step and redirect Claude now.",
-            systemImage: "bolt.fill"
-          )
+          ForEach(Array(activeSendCapability.modes.enumerated()), id: \.element) { index, mode in
+            if index > 0 { Divider() }
+            activeSendOption(
+              mode: mode,
+              title: activeSendModeTitle(mode),
+              detail: activeSendModeDetail(mode),
+              systemImage: activeSendModeIcon(mode)
+            )
+          }
         }
         .frame(width: 270)
         .presentationCompactAdaptation(.popover)
@@ -2678,30 +2715,14 @@ private struct WorkChatComposerDraftInput: View {
     .clipShape(Capsule())
   }
 
-  private var activeSendModeTitle: String {
-    switch activeSendMode {
-    case .queue: return "Send after turn"
-    case .interrupt: return "Interrupt and send"
-    default: return "Send during turn"
-    }
-  }
-
-  private var activeSendModeIcon: String {
-    switch activeSendMode {
-    case .queue: return "clock"
-    case .interrupt: return "bolt.fill"
-    default: return "arrow.turn.down.right"
-    }
-  }
-
   private var activeTurnSendHint: String {
-    guard chatSummary.provider.lowercased() == "claude", activeSendModesAvailable else {
+    guard activeSendModePickerVisible else {
       return "Message will stage behind the active turn."
     }
-    switch activeSendMode {
+    switch effectiveActiveSendMode {
     case .queue: return "Message will send after the active turn."
-    case .interrupt: return "Message will interrupt and redirect Claude."
-    default: return "Message will reach Claude during the active turn."
+    case .interrupt: return "Message will interrupt and redirect \(activeSendAgentLabel)."
+    case .inline: return "Message will reach \(activeSendAgentLabel) during the active turn."
     }
   }
 
@@ -2725,7 +2746,7 @@ private struct WorkChatComposerDraftInput: View {
             .foregroundStyle(ADEColor.textSecondary)
         }
         Spacer(minLength: 4)
-        if activeSendMode == mode {
+        if effectiveActiveSendMode == mode {
           Image(systemName: "checkmark")
             .font(.caption.weight(.bold))
             .foregroundStyle(ADEColor.accent)

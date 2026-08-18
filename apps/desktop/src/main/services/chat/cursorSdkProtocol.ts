@@ -378,6 +378,88 @@ export function isCursorSdkBackoffErrorText(text: string | null | undefined): bo
     || lower.includes("429");
 }
 
+/**
+ * The exact text the Cursor SDK surfaces for an expired short-lived access
+ * token. Kept here so the matcher, the bridge's fallback and the terminal
+ * copy all read one greppable literal.
+ */
+export const CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT =
+  "Authentication error If you are logged in, try logging out and back in.";
+
+/**
+ * The two halves of that sentence, split around the clause the SDK sometimes
+ * reflows and stripped of the trailing period — matching both independently is
+ * what keeps the check robust to the request-id suffix and to casing, without
+ * widening it to "authentication error" alone.
+ */
+const STALE_ACCESS_TOKEN_FRAGMENTS = CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT
+  .toLowerCase()
+  .replace(/\.$/, "")
+  .split(" if you are ");
+
+/**
+ * True for the one auth failure ADE can fix on its own: the SDK's short-lived
+ * access token (exchanged once per executor from the user API key) expired
+ * mid-session, and the SDK only re-exchanges on a Connect `Unauthenticated`
+ * fault — never on this in-stream shape. Every later send on the same worker
+ * then fails instantly with the identical text until the worker is replaced.
+ *
+ * Deliberately narrow: it must not match a genuinely bad API key ("Invalid API
+ * key", 401/403), where retrying on a fresh worker would fail the same way.
+ * The SDK spells this one exactly, as the error message and often again as the
+ * structured `code`:
+ *   "Authentication error If you are logged in, try logging out and back in."
+ */
+export function isCursorSdkStaleAccessTokenText(
+  ...texts: Array<string | null | undefined>
+): boolean {
+  const joined = texts.filter(Boolean).join("\n").toLowerCase();
+  if (!joined) return false;
+  return STALE_ACCESS_TOKEN_FRAGMENTS.every((fragment) => joined.includes(fragment));
+}
+
+/** One turn's suppressed stale-token failure, kept so it can be re-thrown. */
+export type CursorSdkStaleTokenFailure = {
+  turnId: string;
+  message: string;
+  code?: string;
+  requestId?: string;
+};
+
+/**
+ * Reads the worker's synthetic terminal `status: ERROR` event as a stale-token
+ * failure, or returns null when it is any other error. One pass over
+ * `adeErrorCode` / `adeErrorDetail` yields both the decision and the payload,
+ * so the caller never re-reads the same four fields to build one.
+ */
+export function readCursorSdkStaleTokenFailure(
+  event: unknown,
+  turnId: string,
+): CursorSdkStaleTokenFailure | null {
+  const record = (event && typeof event === "object" ? event : null) as Record<string, unknown> | null;
+  if (!record) return null;
+  const detail = (record.adeErrorDetail && typeof record.adeErrorDetail === "object"
+    ? record.adeErrorDetail
+    : null) as Record<string, unknown> | null;
+  const readString = (value: unknown): string | null => (
+    typeof value === "string" && value.trim().length ? value.trim() : null
+  );
+  const errorCode = readString(record.adeErrorCode);
+  const eventMessage = readString(record.message);
+  const detailMessage = readString(detail?.message);
+  const detailCode = readString(detail?.code);
+  const requestId = readString(detail?.requestId);
+  if (!isCursorSdkStaleAccessTokenText(errorCode, eventMessage, detailMessage, detailCode)) {
+    return null;
+  }
+  return {
+    turnId,
+    message: detailMessage ?? errorCode ?? CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
+    ...(detailCode ? { code: detailCode } : {}),
+    ...(requestId ? { requestId } : {}),
+  };
+}
+
 export function classifyCursorSdkErrorText(
   ...texts: Array<string | null | undefined>
 ): CursorSdkErrorKind {

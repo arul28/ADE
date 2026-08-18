@@ -371,6 +371,22 @@ describe("commands", () => {
     ]);
   });
 
+  it("offers each /steer dispatch command exactly where the provider accepts that mode", () => {
+    // Gating is derived from ACTIVE_TURN_DISPATCH_MODES, not restated: Claude
+    // takes inline + interrupt, Cursor only interrupt, everything else stages.
+    const steerRows = (provider: string) => paletteCommands("/steer", [], { provider })
+      .map((row) => row.name);
+    expect(steerRows("claude")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
+    expect(steerRows("cursor")).toContain("/steer interrupt");
+    expect(steerRows("cursor")).not.toContain("/steer send");
+    for (const provider of ["codex", "droid", "opencode"]) {
+      expect(steerRows(provider)).not.toContain("/steer send");
+      expect(steerRows(provider)).not.toContain("/steer interrupt");
+      // The provider-agnostic staging commands stay available everywhere.
+      expect(steerRows(provider)).toEqual(expect.arrayContaining(["/steer edit", "/steer cancel"]));
+    }
+  });
+
   it("filters provider-specific ADE commands outside supported chats", () => {
     expect(paletteCommands("/context", [], { provider: "codex" })).toContainEqual(
       expect.objectContaining({ name: "/context" }),

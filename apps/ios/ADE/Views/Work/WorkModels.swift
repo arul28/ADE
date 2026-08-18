@@ -371,6 +371,42 @@ enum WorkActiveSendMode: String, Equatable {
   case interrupt
 }
 
+/// Hand-mirrored copy of `ACTIVE_TURN_DISPATCH_MODES` in the desktop's
+/// `src/shared/types/chat.ts` — iOS cannot import the TS table, so the two are
+/// kept in step by hand. Modes are in menu order; the first is the default.
+///
+/// Claude folds a message into the live query, so it has all three. Cursor's
+/// SDK has no mid-run message API: its interrupt cancels the run and resends on
+/// the same agent thread, so it has no "send during turn" and its button says
+/// "continue". Everything else is queue-only, which leaves nothing to pick
+/// between, so the picker stays hidden.
+struct WorkActiveSendCapability: Equatable {
+  let modes: [WorkActiveSendMode]
+  let agentLabel: String
+  let interruptContinues: Bool
+
+  var defaultMode: WorkActiveSendMode { modes.first ?? .queue }
+
+  /// The atomic active-turn dispatch modes — everything except plain staging.
+  /// These are the ones `chat.dispatchSteer` accepts, so they are also the set
+  /// the staged-message strip can offer as buttons.
+  var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
+
+  static func forProvider(_ provider: String) -> WorkActiveSendCapability {
+    // Normalized through the same family collapse the rest of Work uses, so a
+    // session labelled "claude-code" or "cursor-agent" is not silently demoted
+    // to the queue-only default.
+    switch providerFamilyKey(provider) {
+    case "claude":
+      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
+    case "cursor":
+      return WorkActiveSendCapability(modes: [.interrupt, .queue], agentLabel: "Cursor", interruptContinues: true)
+    default:
+      return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
+    }
+  }
+}
+
 struct WorkQueueRecoveryModel: Equatable {
   let recoveryId: String
   let messageCount: Int

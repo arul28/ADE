@@ -4164,6 +4164,57 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("passes chat steer --dispatch through without restating provider rules", () => {
+    // The host owns which providers honor which active-turn dispatch mode
+    // (`ACTIVE_TURN_DISPATCH_MODES`), so the CLI forwards the mode verbatim for
+    // every provider — Cursor's "interrupt" must not be filtered out here.
+    const interrupt = expectExecutePlan(buildCliPlan([
+      "chat",
+      "steer",
+      "chat-1",
+      "--text",
+      "switch to the other repro",
+      "--dispatch",
+      "interrupt",
+    ]));
+    expect(interrupt.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "steer",
+        args: { sessionId: "chat-1", text: "switch to the other repro", dispatchMode: "interrupt" },
+      },
+    });
+
+    const inline = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch-mode", "inline",
+    ]));
+    expect(inline.steps[0]?.params).toMatchObject({
+      arguments: { args: { dispatchMode: "inline" } },
+    });
+
+    const personal = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "personal-1", "--personal", "--text", "context", "--dispatch", "interrupt",
+    ]));
+    expect(personal.steps[0]).toMatchObject({
+      params: { action: "steer", args: { sessionId: "personal-1", text: "context", dispatchMode: "interrupt" } },
+    });
+
+    // Omitting the flag stages the message, so no mode reaches the host.
+    const staged = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context",
+    ]));
+    expect(
+      (staged.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })?.arguments?.args,
+    ).not.toHaveProperty("dispatchMode");
+
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "queue",
+    ])).toThrow(/stages the message for the next turn/);
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "later",
+    ])).toThrow(/must be inline or interrupt/);
+  });
+
   it("routes queue-aware interruption and recovery for project and personal chats", () => {
     const stopOnly = expectExecutePlan(buildCliPlan([
       "chat",

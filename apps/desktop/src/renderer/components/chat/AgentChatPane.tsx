@@ -58,7 +58,8 @@ import {
 } from "../../../shared/types";
 import {
   isUnsupportedAgentChatRecoveryActionError,
-  providerForkIsContextSeeded,
+  providerForkReplaysTranscript,
+  supportsActiveTurnDispatchMode,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
@@ -3934,6 +3935,13 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  // Which atomic active-turn dispatch modes this session's backend accepts,
+  // read off the canonical table in shared/types/chat.ts rather than restated
+  // here.
+  const activeTurnInterruptSupported =
+    supportsActiveTurnDispatchMode(selectedSession?.provider, "interrupt");
+  const activeTurnInlineSupported =
+    supportsActiveTurnDispatchMode(selectedSession?.provider, "inline");
   // Which machine is THIS chat on, and what does its lane look like there. One
   // derivation, shared with the panel/drawer subtree through
   // `ChatRuntimeScopeProvider` below, so the pane and its tools cannot disagree.
@@ -5731,7 +5739,7 @@ export function AgentChatPane({
   // Cursor's same-family fork reseeds context rather than copying a provider
   // thread, so the panel must not promise the whole conversation comes along
   // verbatim on that path. Cross-family targets still get the full replay.
-  const handoffForkIsContextSeeded = providerForkIsContextSeeded(selectedSession?.provider);
+  const handoffForkReplaysTranscript = providerForkReplaysTranscript(selectedSession?.provider);
   const handoffForkModelFilter = useCallback((_descriptor: ModelDescriptor) => true, []);
   const handoffForkAvailableModelIds = handoffAvailableModelIds;
   const handoffNativeControlState = useMemo((): NativeControlState => ({
@@ -10816,7 +10824,15 @@ export function AgentChatPane({
           displayText: finalDisplayText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
-          ...(sessionProvider === "claude" && activeTurnDispatchMode ? { dispatchMode: activeTurnDispatchMode } : {}),
+          // Only send a dispatch mode the session's own backend accepts (see
+          // the canonical table in shared/types/chat.ts); otherwise this
+          // stages. The gate reads selectedSession.provider — the provider that
+          // actually receives the IPC call — not the picked model's provider,
+          // which diverges while a different model is selected mid-turn.
+          ...(activeTurnDispatchMode
+            && supportsActiveTurnDispatchMode(selectedSession?.provider, activeTurnDispatchMode)
+            ? { dispatchMode: activeTurnDispatchMode }
+            : {}),
         }, chatRuntimePinRef.current);
       };
 
@@ -11711,10 +11727,10 @@ export function AgentChatPane({
 
   const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
   const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
-  const handoffForkCopy = useMemo(() => (handoffForkIsContextSeeded
+  const handoffForkCopy = useMemo(() => (handoffForkReplaysTranscript
     ? {
-        subtitle: "Fork carries this conversation into a new chat. Brief summarizes it and starts fresh.",
-        body: <>{handoffSourceProviderLabel} models start a new chat seeded with this conversation&rsquo;s context — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
+        subtitle: "Fork carries this whole conversation into a new chat. Brief summarizes it and starts fresh.",
+        body: <>{handoffSourceProviderLabel} models start a new {handoffSourceProviderLabel} agent — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice — with the full transcript replayed verbatim. Any other model does the same{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
         footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
       }
     : {
@@ -11722,7 +11738,7 @@ export function AgentChatPane({
         body: <>Same-family models use {handoffSourceProviderLabel}&rsquo;s native fork. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
         footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
       }
-  ), [handoffForkIsContextSeeded, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
+  ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
 
   if (!laneId) {
     return (
@@ -13088,20 +13104,20 @@ export function AgentChatPane({
                 setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
               });
             }}
-            onDispatchSteerInline={selectedSession?.provider === "claude" ? (steerId) => {
+            onDispatchSteerInline={activeTurnInlineSupported ? (steerId) => {
               if (selectedSessionId) {
                 dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "inline" });
               }
             } : undefined}
-            onDispatchSteerInterrupt={selectedSession?.provider === "claude" ? (steerId) => {
+            onDispatchSteerInterrupt={activeTurnInterruptSupported ? (steerId) => {
               if (selectedSessionId) {
                 dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
               }
             } : undefined}
-            onSendSteerNow={selectedSession?.provider === "claude" ? () => {
+            onSendSteerNow={activeTurnInlineSupported ? () => {
               void submit("inline");
             } : undefined}
-            onSendSteerInterrupt={selectedSession?.provider === "claude" ? () => {
+            onSendSteerInterrupt={activeTurnInterruptSupported ? () => {
               void submit("interrupt");
             } : undefined}
             sessionId={composerSessionId}

@@ -15,6 +15,12 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  activeTurnInterruptContinues,
+  supportsActiveTurnDispatchMode,
+  unsupportedActiveTurnDispatchModeMessage,
+} from "../../../desktop/src/shared/types/chat";
+import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
+import {
   composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerHasConfirmedPrefix,
@@ -10336,8 +10342,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // A full steer queue drops the message server-side. Surface it the same way
       // the primary messageSession path does — throw so submitPrompt restores the
       // typed text and shows an error — instead of falsely implying it was sent.
+      // Every queue-bearing runtime can hit this (Claude, Cursor, Droid,
+      // OpenCode), so the message names the session's own agent.
       if (result.reason === "queue_full") {
-        throw new Error("The Claude steer queue is full; the message was not queued.");
+        const agentLabel = providerDisplayLabel(
+          sessions.find((session) => session.sessionId === sessionId)?.provider,
+          "agent",
+        );
+        throw new Error(`The ${agentLabel} steer queue is full; the message was not queued.`);
       }
       if (result.queued) {
         addNotice("Staged message — sends after the current turn.", "info");
@@ -10862,10 +10874,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/steer") {
+      // Which dispatch commands this pane advertises comes off the canonical
+      // per-provider table (desktop shared/types/chat.ts), the same source the
+      // /steer commands and the desktop staged strip read — Claude offers both,
+      // Cursor only the interrupt, everything else stages until the turn ends.
+      const steerProvider = activeSession?.provider;
+      const dispatchHint = [
+        supportsActiveTurnDispatchMode(steerProvider, "inline") ? "/steer send" : null,
+        supportsActiveTurnDispatchMode(steerProvider, "interrupt") ? "/steer interrupt" : null,
+      ].filter((entry): entry is string => entry != null);
+      const hintLine = pendingSteers.length
+        ? dispatchHint.length
+          ? `${dispatchHint.join(" · ")} · /steer edit · /steer cancel`
+          : "Sends when the current turn finishes · /steer edit · /steer cancel"
+        : null;
       const body = pendingSteers.length
-        ? pendingSteers
-            .map((steer, index) => `${index + 1}. ${steer.text}`)
-            .join("\n")
+        ? [
+            pendingSteers.map((steer, index) => `${index + 1}. ${steer.text}`).join("\n"),
+            ...(hintLine ? ["", hintLine] : []),
+          ].join("\n")
         : "No staged steer messages are waiting.";
       setRightPane({ kind: "details", title: "Staged messages", body });
       return;
@@ -12183,12 +12210,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (name === "/steer send" || name === "/steer interrupt") {
-        if (activeSession?.provider !== "claude") {
-          addNotice("Only Claude staged messages support send-now and interrupt dispatch.", "error");
+        // Which modes each provider honors lives in one table (desktop
+        // shared/types/chat.ts); this branch only maps commands onto it.
+        const provider = activeSession?.provider;
+        const mode = name === "/steer send" ? "inline" : "interrupt";
+        if (!supportsActiveTurnDispatchMode(provider, mode)) {
+          addNotice(unsupportedActiveTurnDispatchModeMessage(provider, mode), "error");
           return;
         }
-        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, name === "/steer send" ? "inline" : "interrupt");
-        addNotice(name === "/steer send" ? "Sent staged message into the active Claude turn." : "Interrupting Claude to run the staged message.", "info");
+        const agentLabel = providerDisplayLabel(provider, "the agent");
+        // Cursor's interrupt cancels the run and resends on the same thread, so
+        // it continues rather than starting something new — same wording the
+        // desktop composer and iOS use, off the same shared fact.
+        const interruptContinues = activeTurnInterruptContinues(provider);
+        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
+        addNotice(
+          mode === "inline"
+            ? `Sent staged message into the active ${agentLabel} turn.`
+            : interruptContinues
+              ? `Interrupting ${agentLabel} and continuing with the staged message.`
+              : `Interrupting ${agentLabel} to run the staged message.`,
+          "info",
+        );
         await refreshState();
         return;
       }

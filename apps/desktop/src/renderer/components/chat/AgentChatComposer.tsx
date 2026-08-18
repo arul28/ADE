@@ -58,6 +58,12 @@ import {
   parseChatMentions,
 } from "../../../shared/chatMentions";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
+import {
+  activeTurnDispatchModes,
+  activeTurnInterruptContinues,
+  defaultActiveTurnDispatchMode,
+  type ActiveTurnSendMode,
+} from "../../../shared/types/chat";
 import { cn } from "../ui/cn";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
@@ -104,7 +110,7 @@ import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputConte
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
+import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
@@ -1079,6 +1085,7 @@ function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | 
 /** Inline display of a single pending (queued) steer message with cancel and edit controls. */
 function PendingSteerItem({
   steer,
+  capability,
   onCancel,
   onEdit,
   onSendNow,
@@ -1090,11 +1097,13 @@ function PendingSteerItem({
     attachments: AgentChatFileRef[];
     contextAttachments: AgentChatContextAttachment[];
   };
+  capability: ActiveTurnSendCapability;
   onCancel: () => void;
   onEdit: () => void;
   onSendNow?: () => void;
   onInterrupt?: () => void;
 }) {
+  const interruptCopy = activeTurnSendCopy("interrupt", capability);
   return (
     <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
       <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
@@ -1108,7 +1117,7 @@ function PendingSteerItem({
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           {onSendNow ? (
-            <SmartTooltip forceEnabled content={{ label: "Send during turn", description: "Claude picks this up after the current tool step, before continuing." }}>
+            <SmartTooltip forceEnabled content={{ label: "Send during turn", description: `${capability.agentLabel} picks this up after the current tool step, before continuing.` }}>
               <button
                 type="button"
                 onClick={onSendNow}
@@ -1120,12 +1129,20 @@ function PendingSteerItem({
             </SmartTooltip>
           ) : null}
           {onInterrupt ? (
-            <SmartTooltip forceEnabled content={{ label: "Interrupt & send", description: "Stop Claude's current model step and redirect it to this message now." }}>
+            <SmartTooltip
+              forceEnabled
+              content={{
+                label: interruptCopy.label,
+                description: capability.interruptContinues
+                  ? `Stop the current ${capability.agentLabel} turn and continue this thread with this message.`
+                  : `Stop ${capability.agentLabel}'s current model step and redirect it to this message now.`,
+              }}
+            >
               <button
                 type="button"
                 onClick={onInterrupt}
                 className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-amber-500/12 hover:text-amber-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
-                aria-label="Interrupt and send"
+                aria-label={interruptCopy.label}
               >
                 <Lightning size={11} weight="fill" />
               </button>
@@ -1161,22 +1178,51 @@ function PendingSteerItem({
  * delivery mode, while the primary button and Enter execute that mode. All
  * controls carry force-enabled tooltips so hover explains the action.
  */
-type ActiveTurnSendMode = "inline" | "queue" | "interrupt";
-
-const ACTIVE_TURN_SEND_COPY: Record<ActiveTurnSendMode, { label: string; description: string }> = {
-  inline: {
-    label: "Send during turn",
-    description: "After the current tool step.",
-  },
-  queue: {
-    label: "Send after turn",
-    description: "When this turn finishes.",
-  },
-  interrupt: {
-    label: "Interrupt & send",
-    description: "Stop and redirect Claude now.",
-  },
+export type ActiveTurnSendCapability = {
+  /** Modes this provider can honor, in menu order. */
+  modes: readonly ActiveTurnSendMode[];
+  /** Pre-selected mode for a fresh session on this provider. */
+  defaultMode: ActiveTurnSendMode;
+  /** Agent name used in the mode descriptions. */
+  agentLabel: string;
+  /**
+   * True when interrupting continues the same thread rather than injecting
+   * into the live turn — the label says "continue" instead of "send".
+   */
+  interruptContinues: boolean;
 };
+
+/**
+ * The copy layer over the canonical `ACTIVE_TURN_DISPATCH_MODES` table in
+ * `shared/types/chat.ts`. Modes and default come from there; only the labels
+ * are decided here. Cursor's interrupt continues the same thread (cancel +
+ * resend on the same agent) rather than injecting into the live run, so its
+ * button says "continue".
+ */
+export function activeTurnSendModesForProvider(provider: string | undefined): ActiveTurnSendCapability {
+  return {
+    modes: activeTurnDispatchModes(provider),
+    defaultMode: defaultActiveTurnDispatchMode(provider),
+    agentLabel: providerDisplayLabel(provider, "the agent"),
+    interruptContinues: activeTurnInterruptContinues(provider),
+  };
+}
+
+function activeTurnSendCopy(
+  mode: ActiveTurnSendMode,
+  capability: ActiveTurnSendCapability,
+): { label: string; description: string } {
+  if (mode === "inline") {
+    return { label: "Send during turn", description: "After the current tool step." };
+  }
+  if (mode === "queue") {
+    return { label: "Send after turn", description: "When this turn finishes." };
+  }
+  return {
+    label: capability.interruptContinues ? "Interrupt & continue" : "Interrupt & send",
+    description: `Stop and redirect ${capability.agentLabel} now.`,
+  };
+}
 
 function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; size?: number }) {
   if (mode === "interrupt") return <Lightning size={size} weight="fill" />;
@@ -1221,18 +1267,30 @@ function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperti
 function ActiveTurnSendButton({
   enabled,
   mode,
+  capability,
+  allowInline,
   allowInterrupt,
   onModeChange,
   onSend,
 }: {
   enabled: boolean;
   mode: ActiveTurnSendMode;
+  capability: ActiveTurnSendCapability;
+  allowInline: boolean;
   allowInterrupt: boolean;
   onModeChange: (mode: ActiveTurnSendMode) => void;
   onSend: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-send-menu]");
-  const selectedCopy = ACTIVE_TURN_SEND_COPY[mode];
+  const selectedCopy = activeTurnSendCopy(mode, capability);
+  // The table says what the provider can do; the wired handlers say what this
+  // pane can dispatch right now (they follow the *session's* provider, which
+  // differs from `capability` while a model for another provider is picked
+  // mid-turn). Only offer a mode both agree on, so the menu can never select a
+  // dispatch that has nowhere to go.
+  const offeredModes = capability.modes.filter((option) => (
+    (option !== "interrupt" || allowInterrupt) && (option !== "inline" || allowInline)
+  ));
 
   return (
     <div className="relative inline-flex items-center">
@@ -1263,7 +1321,7 @@ function ActiveTurnSendButton({
           forceEnabled
           content={{
             label: "More send options",
-            description: "Choose how the next message should reach Claude during this turn.",
+            description: `Choose how the next message should reach ${capability.agentLabel} during this turn.`,
           }}
         >
           <button
@@ -1297,8 +1355,8 @@ function ActiveTurnSendButton({
                   className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={composerSplitMenuPosition(caretRef.current)}
                 >
-                  {(["inline", "queue", ...(allowInterrupt ? ["interrupt" as const] : [])] as const).map((option, index) => {
-                    const copy = ACTIVE_TURN_SEND_COPY[option];
+                  {offeredModes.map((option, index) => {
+                    const copy = activeTurnSendCopy(option, capability);
                     const selected = option === mode;
                     return (
                       <button
@@ -1753,7 +1811,12 @@ export function AgentChatComposer({
    * providers whose runtime can dispatch a queued steer into a live turn.
    */
   onSendSteerNow?: () => void;
-  /** Active-turn split-button option: submit the draft, then stop the current turn and run it. */
+  /**
+   * Active-turn split-button option: submit the draft, then stop the current
+   * turn and run it. On Cursor this is the default mode — the SDK has no
+   * mid-run message API, so stopping and resending on the same thread is the
+   * only way to redirect a live turn.
+   */
   onSendSteerInterrupt?: () => void;
   onOpenAiSettings?: (family?: ProviderFamily) => void;
   onOpenLinearSettings?: () => void;
@@ -1836,11 +1899,35 @@ export function AgentChatComposer({
     () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft),
   );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
-  const [activeTurnSendMode, setActiveTurnSendMode] = useState<ActiveTurnSendMode>("inline");
+  const activeTurnSendCapability = useMemo(
+    () => activeTurnSendModesForProvider(sessionProvider),
+    [sessionProvider],
+  );
+  // Only the user's explicit pick is state; the effective mode is derived, so
+  // it is never stale for a render. A pick the current provider cannot honor
+  // (Cursor has no "send during turn") reads back as that provider's default,
+  // and until the user picks anything the mode simply follows the provider.
+  const [activeTurnSendModePick, setActiveTurnSendMode] = useState<ActiveTurnSendMode | null>(null);
   const [activeTurnStopMode, setActiveTurnStopMode] = useState<AgentChatStopMode>("stop_and_clear");
-  const effectiveActiveTurnSendMode = activeTurnSendMode === "interrupt" && !onSendSteerInterrupt
-    ? "inline"
-    : activeTurnSendMode;
+  const selectedActiveTurnSendMode = activeTurnSendModePick
+    && activeTurnSendCapability.modes.includes(activeTurnSendModePick)
+    ? activeTurnSendModePick
+    : activeTurnSendCapability.defaultMode;
+  // A dispatch mode with no wired handler downgrades rather than dead-ending:
+  // interrupt prefers inline and falls back to queue, inline falls back to
+  // queue. Reachable whenever the picked model's provider (which drives
+  // `activeTurnSendCapability`) differs from the live session's provider (which
+  // drives the handlers).
+  const effectiveActiveTurnSendMode: ActiveTurnSendMode =
+    selectedActiveTurnSendMode === "interrupt" && !onSendSteerInterrupt
+      ? (activeTurnSendCapability.modes.includes("inline") && onSendSteerNow ? "inline" : "queue")
+      : selectedActiveTurnSendMode === "inline" && !onSendSteerNow
+        ? "queue"
+        : selectedActiveTurnSendMode;
+  // The split send affordance appears for any provider with at least one
+  // atomic active-turn delivery mode (Claude: inline + interrupt; Cursor:
+  // interrupt only). Everything else keeps the single queue button.
+  const activeTurnSendMenuEnabled = Boolean(onSendSteerNow || onSendSteerInterrupt);
 
   useEffect(() => {
     if (hasChatOutputContext(draft)) setSmartLinkEditorEnabled(true);
@@ -4200,9 +4287,9 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    // During a Claude turn, Enter follows the delivery mode selected from the
-    // split send button. Other providers keep their queue-on-Enter behavior.
-    if (turnActive && onSendSteerNow) {
+    // During a Claude or Cursor turn, Enter follows the delivery mode selected
+    // from the split send button. Other providers keep queue-on-Enter.
+    if (turnActive && activeTurnSendMenuEnabled) {
       if (activeSteerEnabled) submitActiveTurnDraft();
       return;
     }
@@ -4454,10 +4541,12 @@ export function AgentChatComposer({
       return;
     }
     if (effectiveActiveTurnSendMode === "interrupt") {
-      onSendSteerInterrupt?.();
+      if (onSendSteerInterrupt) onSendSteerInterrupt();
+      else submitComposerDraft();
       return;
     }
-    onSendSteerNow?.();
+    if (onSendSteerNow) onSendSteerNow();
+    else submitComposerDraft();
   }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
 
   /**
@@ -5541,12 +5630,14 @@ export function AgentChatComposer({
                   </SmartTooltip>
                 ) : null}
                 {!composerInputLocked ? (
-                  onSendSteerNow ? (
+                  activeTurnSendMenuEnabled ? (
                     // Claude Code parity: the caret selects delivery behavior;
                     // the primary button and Enter execute that selection.
                     <ActiveTurnSendButton
                       enabled={activeSteerEnabled}
                       mode={effectiveActiveTurnSendMode}
+                      capability={activeTurnSendCapability}
+                      allowInline={Boolean(onSendSteerNow)}
                       allowInterrupt={Boolean(onSendSteerInterrupt)}
                       onModeChange={setActiveTurnSendMode}
                       onSend={submitActiveTurnDraft}
@@ -5663,15 +5754,18 @@ export function AgentChatComposer({
               Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
             </span>
             <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
-              {onDispatchSteerInline || onDispatchSteerInterrupt
+              {onDispatchSteerInline
                 ? "Hover to send during the turn, interrupt, edit, or remove."
-                : "Hover to edit or remove."}
+                : onDispatchSteerInterrupt
+                  ? "Hover to interrupt with this message, edit, or remove."
+                  : "Hover to edit or remove."}
             </span>
           </div>
           {pendingSteers.map((steer) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
+              capability={activeTurnSendCapability}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={() => onEditSteer?.(
                 steer.steerId,

@@ -13323,7 +13323,7 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testWorkChatActiveTurnUsesSteerAndClaudeOnlyManualDispatch() {
+  func testWorkChatActiveTurnUsesSteerAndPerProviderManualDispatch() {
     let activeSummary = makeAgentChatSessionSummary(provider: "codex", status: "active")
     XCTAssertTrue(workChatShouldSteerActiveTurn(session: nil, summary: activeSummary))
 
@@ -13333,11 +13333,50 @@ final class ADETests: XCTestCase {
     let runningTerminal = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
     XCTAssertTrue(workChatShouldSteerActiveTurn(session: runningTerminal, summary: nil))
 
+    // Claude can promote a staged row either way; Cursor's SDK has no mid-run
+    // message API, so it gets interrupt only; Codex has neither.
     let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
-    XCTAssertTrue(workChatSupportsManualSteerDispatch(session: nil, summary: claudeSummary))
-    XCTAssertTrue(workChatSupportsManualSteerDispatch(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil))
-    XCTAssertFalse(workChatSupportsManualSteerDispatch(session: nil, summary: activeSummary))
-    XCTAssertFalse(workChatSupportsManualSteerDispatch(session: makeTerminalSessionSummary(toolType: "cursor"), summary: nil))
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary), [.inline, .interrupt])
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil),
+      [.inline, .interrupt]
+    )
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary), [])
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(
+        session: makeTerminalSessionSummary(toolType: "cursor"),
+        summary: nil
+      ),
+      [.interrupt]
+    )
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
+  }
+
+  /// Guards the hand mirror of the desktop's `ACTIVE_TURN_DISPATCH_MODES` table
+  /// in `shared/types/chat.ts`. Menu order is load-bearing: the first entry is
+  /// the provider's default, and a queue-only provider hides the picker.
+  func testWorkActiveSendCapabilityMirrorsDesktopDispatchTable() {
+    let claude = WorkActiveSendCapability.forProvider("claude")
+    XCTAssertEqual(claude.modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(claude.defaultMode, .inline)
+    XCTAssertFalse(claude.interruptContinues)
+
+    let cursor = WorkActiveSendCapability.forProvider("cursor")
+    XCTAssertEqual(cursor.modes, [.interrupt, .queue])
+    XCTAssertEqual(cursor.defaultMode, .interrupt)
+    XCTAssertTrue(cursor.interruptContinues)
+    XCTAssertEqual(cursor.agentLabel, "Cursor")
+
+    // Family collapse: a labelled variant must not fall through to queue-only.
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("claude-code").modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("anthropic").modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("cursor-agent").modes, [.interrupt, .queue])
+
+    for provider in ["codex", "droid", "opencode", "pi", ""] {
+      let capability = WorkActiveSendCapability.forProvider(provider)
+      XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
+      XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
+    }
   }
 
   func testSyncChatMessageDeliveryParsesQueuedSteerResult() {
