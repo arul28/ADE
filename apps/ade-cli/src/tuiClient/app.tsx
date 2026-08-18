@@ -15,6 +15,12 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  activeTurnInterruptContinues,
+  supportsActiveTurnDispatchMode,
+  unsupportedActiveTurnDispatchModeMessage,
+} from "../../../desktop/src/shared/types/chat";
+import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
+import {
   composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerHasConfirmedPrefix,
@@ -12183,12 +12189,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (name === "/steer send" || name === "/steer interrupt") {
-        if (activeSession?.provider !== "claude") {
-          addNotice("Only Claude staged messages support send-now and interrupt dispatch.", "error");
+        // Which modes each provider honors lives in one table (desktop
+        // shared/types/chat.ts); this branch only maps commands onto it.
+        const provider = activeSession?.provider;
+        const mode = name === "/steer send" ? "inline" : "interrupt";
+        if (!supportsActiveTurnDispatchMode(provider, mode)) {
+          addNotice(unsupportedActiveTurnDispatchModeMessage(provider, mode), "error");
           return;
         }
-        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, name === "/steer send" ? "inline" : "interrupt");
-        addNotice(name === "/steer send" ? "Sent staged message into the active Claude turn." : "Interrupting Claude to run the staged message.", "info");
+        const agentLabel = providerDisplayLabel(provider, "the agent");
+        // Cursor's interrupt cancels the run and resends on the same thread, so
+        // it continues rather than starting something new — same wording the
+        // desktop composer and iOS use, off the same shared fact.
+        const interruptContinues = activeTurnInterruptContinues(provider);
+        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
+        addNotice(
+          mode === "inline"
+            ? `Sent staged message into the active ${agentLabel} turn.`
+            : interruptContinues
+              ? `Interrupting ${agentLabel} and continuing with the staged message.`
+              : `Interrupting ${agentLabel} to run the staged message.`,
+          "info",
+        );
         await refreshState();
         return;
       }

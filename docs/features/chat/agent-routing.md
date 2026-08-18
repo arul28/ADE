@@ -530,10 +530,11 @@ discard a turn that was still working.
 
 Cursor is also the one provider whose local fork is not a provider fork.
 `@cursor/sdk` exposes no fork/clone/branch operation and a Cursor thread cannot
-be resumed twice, so ADE's fork opens a fresh Cursor agent seeded with the
-source conversation's context — the same seeding path used when a wedged thread
-is recycled. `providerForkIsContextSeeded` marks it so the handoff UI describes
-what actually happens, and so cross-machine fork excludes it (there is no
+be resumed twice, so ADE's fork opens a fresh Cursor agent and replays the
+whole source transcript into it verbatim (bounded by the target model's context
+window) — the same replay staged when a wedged thread is recycled.
+`providerForkReplaysTranscript` marks it so the handoff UI describes what
+actually happens, and so cross-machine fork excludes it (there is no provider
 artifact to transport).
 
 ### Abstract-to-native mapping

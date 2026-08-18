@@ -574,6 +574,80 @@ describe("AgentChatComposer", () => {
     expect(menu.textContent).toContain("Stop and redirect Claude now.");
   });
 
+  const CURSOR_STEER_OVERRIDES = {
+    sessionProvider: "cursor" as const,
+    modelId: "cursor/composer-2",
+    availableModelIds: ["cursor/composer-2"],
+  };
+
+  it("offers Cursor only interrupt-and-continue plus queue, with interrupt selected by default", () => {
+    const onSendSteerInterrupt = vi.fn();
+    renderComposer({
+      ...CURSOR_STEER_OVERRIDES,
+      // Cursor has no inline dispatch: the host would reject it.
+      onSendSteerNow: undefined,
+      onSendSteerInterrupt,
+    });
+
+    // The default mode is the redirect, so it is what the primary button runs.
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt & continue" }));
+    expect(onSendSteerInterrupt).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
+    expect(options).toHaveLength(2);
+    expect(options[0]).toContain("Interrupt & continue");
+    expect(options[1]).toContain("Send after turn");
+    expect(screen.queryByRole("menuitemradio", { name: /Send during turn/ })).toBeNull();
+    expect(screen.getByRole("menu", { name: "Send options" }).textContent)
+      .toContain("Stop and redirect Cursor now.");
+  });
+
+  it("falls back to queueing when the picked model's provider offers a mode the live session cannot dispatch", () => {
+    // A Cursor session with a Claude model picked mid-turn: the composer's
+    // capability follows the *picked* provider (Claude, whose default is
+    // "send during turn") while the wired handlers follow the *session*
+    // (Cursor, which has no inline dispatch). The draft must still go
+    // somewhere — it queues rather than silently disappearing.
+    const onSubmit = vi.fn();
+    const onSendSteerInterrupt = vi.fn();
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      onSubmit,
+      onSendSteerNow: undefined,
+      onSendSteerInterrupt,
+    });
+
+    // No dead "Send during turn" affordance: the mode downgraded to queue.
+    expect(screen.queryByRole("button", { name: "Send during turn" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send after turn" }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSendSteerInterrupt).not.toHaveBeenCalled();
+
+    // Enter takes the same route.
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+
+    // And the menu never offers the mode that has nowhere to go.
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    expect(screen.queryByRole("menuitemradio", { name: /Send during turn/ })).toBeNull();
+  });
+
+  it("keeps all three delivery modes on Claude", () => {
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      onSendSteerNow: vi.fn(),
+      onSendSteerInterrupt: vi.fn(),
+    });
+
+    expect(screen.getByRole("button", { name: "Send during turn" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More send options" }));
+    const options = screen.getAllByRole("menuitemradio").map((item) => item.textContent ?? "");
+    expect(options).toHaveLength(3);
+    expect(options[0]).toContain("Send during turn");
+    expect(options[2]).toContain("Interrupt & send");
+  });
+
   it("disables the active-turn send actions when the draft is whitespace-only", () => {
     const onSendSteerNow = vi.fn();
     renderComposer({
