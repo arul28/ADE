@@ -672,6 +672,61 @@ Runtime support files outside `services/sync/`:
   `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
   hatch. Source-checkout runtimes and non-development custom issuers keep their
   existing override behavior.
+- `apps/ade-cli/src/services/power/` — the machine's own power and sleep truth,
+  shared by the brain, the desktop main process, and tests.
+  `machinePowerReader.ts` reads battery/wall power per platform (macOS
+  `pmset -g batt`; Windows one PowerShell call over `root/wmi BatteryStatus`
+  with a `Win32_Battery` fallback, resolved through `resolveTrustedWindowsTool`
+  and spawned `windowsHide: true`; Linux by reading `/sys/class/power_supply`
+  with no process spawn at all). A machine with no battery reports `battery`
+  **absent** — never `0%` — and an unreadable read returns `null`, which
+  overwrites nothing; the constant used to be "plugged in", and one `pmset`
+  timeout then republished a 20%-on-battery laptop as on wall power.
+  `suspendGapDetector.ts` is the universal fallback: a 15-second tick that
+  declares a suspend when it fires more than 60 seconds late, reports the whole
+  absence (`overdueBy + tickMs`), and needs zero platform-specific code — which
+  is what gives Linux and any headless brain sleep detection at all.
+  `machinePowerMonitor.ts` combines the two into a `MachinePowerSource`
+  (`getPower`, `getSleepState`, `getSleepStateAt`, `getSuspendGapMs`,
+  `subscribe`) emitting `suspend` / `resume` / `power-change` events, each
+  carrying `announced` so a precise host hook is distinguishable from an
+  inferred gap; the poll is 60 seconds and an announced suspend is anchored
+  separately from the gap detector so a 40-second nap does not replay last
+  night's four-hour gap. `sharedMachinePowerMonitor.ts` keeps one monitor per
+  brain process — `getSharedMachinePowerMonitor()` owns the lifecycle and
+  `borrowSharedMachinePowerSource()` hands out a read/subscribe-only wrapper so
+  a borrower cannot dispose an instance others are subscribed to. Its three
+  consumers are the account-directory publisher, the chat service, and the RPC
+  method the desktop uses to forward its pre-suspend beat.
+- `apps/desktop/src/main/services/power/` — the desktop half.
+  `powerStateService.ts` wraps the shared monitor with Electron's
+  `powerMonitor` (`suspend` / `resume` / `on-ac` / `on-battery`) and is a
+  process singleton via `getPowerStateService()`. `machinePowerBrainBridge.ts`
+  forwards only `suspend` and `resume` to the brain as
+  `machine.reportPowerTransition` inside a 2-second budget: suspend gets exactly
+  one attempt because the machine is already going dark, resume retries four
+  times with 750 ms backoff, and a generation counter supersedes an in-flight
+  resume loop so a stale `resume` can never land after a newer `suspend`.
+  Battery changes are deliberately not forwarded — they ride the brain's own
+  poll. `keepAwakeService.ts` and `systemSleepConfig.ts` back the opt-in
+  keep-awake setting; see
+  [onboarding and settings](../onboarding-and-settings/README.md#keeping-the-machine-awake).
+- `apps/desktop/src/shared/types/power.ts` and
+  `apps/desktop/src/shared/machinePresence.ts` — the shared vocabulary every
+  client renders from. `MachinePower` is `{ battery?: { percent, charging };
+  onExternalPower }`, wire-flattened through `toMachinePowerRecord` /
+  `fromMachinePowerRecord`. `resolveMachinePresence` is the single decision:
+  a fresh `asleep` announcement outranks `connected` (a channel to a sleeping
+  machine does not report itself closed), then `connected`, then `online`, then
+  a heartbeat inside `MACHINE_SLEEP_INFERENCE_WINDOW_MS` (10 minutes) is
+  inferred `asleep`, otherwise `offline`. `machinePresence.ts` adds
+  `connectedMachineIds` (two sets — `machineKey` and `deviceId` — because only
+  `machine_key` is unique, and merging them renders two rows Connected off one
+  channel), `machinePowerPhrase` (`"82% battery"` → `"plugged in"` → `"on
+  battery"`, battery always winning), and `machineStatusLine` /
+  `machineActionLabel` (`"Wake"` when asleep, else `"Connect"`). The Swift twin
+  is `apps/ios/ADE/Services/SyncMachineWake.swift`, which must agree down to the
+  inclusive staleness boundary and the wording of the power phrase.
 - `apps/ade-cli/src/services/credentials/credentialStore.ts` — the per-machine
   credential store behind the account session. Two implementations share one
   interface. `EncryptedFileCredentialStore` owns the AES-GCM
@@ -2220,6 +2275,40 @@ secure Relay endpoint is still worth an authenticated dial. Machine-selection
 surfaces therefore distinguish "no current heartbeat" from "no usable endpoint" and
 keep a row connectable while at least one directory-verified secure route
 remains. The authenticated hello is the final availability and identity check.
+
+Sleep is a **stated fact**, not an inference from silence. A closed laptop lid
+and a healthy laptop look identical from the directory's side — both stop
+heartbeating, and `last_seen_at` is equally recent for a few minutes either way
+— which is how a phone kept reporting "Connected" to an unconscious Mac.
+Migration `0006_machine_power.sql` adds three nullable columns to `machines`:
+
+- `power` — JSON `{"batteryPercent": 0-100 | null, "charging": bool | null,
+  "onExternalPower": bool | null}`. `batteryPercent` is null, never `0`, on a
+  machine with no battery.
+- `sleep_state` — `'awake' | 'asleep'`, as last announced by the machine itself.
+- `sleep_state_at` — epoch ms at which `sleep_state` last changed, deliberately
+  distinct from `last_seen_at`.
+
+All three are optional on the wire and the register upsert **coalesces** rather
+than overwrites them, so an old host heartbeating alongside a new one cannot
+blank what the new one stored, and one dropped field cannot erase known state.
+Power is advisory: a malformed value degrades to unknown and never rejects the
+machine registration. Because `sleep_state` coalesces forward it has no path
+back to NULL, which is why clients age the announcement rather than trusting it
+forever (`resolveMachinePresence`, above).
+
+The announcement happens in the beat *before* the machine goes dark. On a
+desktop host, Electron's `suspend` event reaches `machinePowerBrainBridge`,
+which calls the brain's `machine.reportPowerTransition` RPC (`cto` role
+required; `kind: "suspend" | "resume"`, optional `budgetMs` clamped to at least
+250 ms) inside a 2-second budget; the brain notes the announced suspend and
+awaits one bounded `publishPowerStateNow()` HTTPS write, coalesced so a single
+suspend produces a single write. On resume the brain notes the wake and lets
+the publisher's own subscription push an immediate "awake" rather than waiting
+out the 30-second heartbeat. A host with no wiring for this (a headless brain,
+a Linux box) answers `{accepted: false, reason: "unsupported"}` and falls back
+to the heartbeat-gap detector, which infers the same transition with no
+platform-specific code.
 
 Directory list, delete, rename, and publish operations retry one 401 with a
 forced access-token refresh. Only a repeated 401/403 is classified as

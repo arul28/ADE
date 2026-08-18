@@ -46,6 +46,7 @@ struct MachineRowView: View {
   /// The trailing edge control that signals what a tap does.
   enum Affordance {
     case connect     // "Connect" + chevron
+    case wake        // "Wake" + chevron — asleep, and dialling is what wakes it
     case chevron     // chevron only
     case connecting  // progress spinner
     case connected   // success checkmark (already the active machine)
@@ -125,9 +126,12 @@ struct MachineRowView: View {
   @ViewBuilder
   private var trailing: some View {
     switch affordance {
-    case .connect:
+    case .connect, .wake:
+      // Same shape either way: the word is the only thing that changes, because
+      // the tap is the same tap — a machine that is asleep wakes because it was
+      // dialled, not through a separate button.
       HStack(spacing: 4) {
-        Text("Connect")
+        Text(affordance == .wake ? "Wake" : "Connect")
           .font(.caption.weight(.semibold))
         Image(systemName: "chevron.right")
           .font(.system(size: 11, weight: .bold))

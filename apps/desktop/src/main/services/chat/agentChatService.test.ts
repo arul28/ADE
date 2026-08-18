@@ -40988,3 +40988,237 @@ describe("orchestrator-lead MCP isolation", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Host sleep
+//
+// The incident: a MacBook slept mid-turn, the in-flight API call died, and the
+// transcript reported `Claude API retry 1/10: unknown` — while ADE already knew
+// the machine was suspending. These cover the three things that must now hold:
+// one chip per sleep that resolves itself, retries held rather than burned, and
+// a genuine API failure left completely alone.
+// ---------------------------------------------------------------------------
+describe("host sleep narration", () => {
+  /** A power source the test drives by hand, standing in for Electron's. */
+  function fakeHostPowerSource() {
+    const listeners = new Set<(event: any) => void>();
+    let sleepState: "awake" | "asleep" = "awake";
+    // Stamped from the same clock the tracker reads, exactly as a real monitor
+    // does: `asleep` is age-bounded against this, and a stamp frozen at a fake
+    // epoch would read as a stuck, long-stale announcement.
+    let sleepStateAt = Date.now();
+    return {
+      source: {
+        getPower: () => null,
+        getSleepState: () => sleepState,
+        getSleepStateAt: () => sleepStateAt,
+        getSuspendGapMs: () => null,
+        subscribe: (listener: (event: any) => void) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      } as any,
+      suspend(at = 1_000, stateAt = Date.now()) {
+        sleepState = "asleep";
+        sleepStateAt = stateAt;
+        for (const listener of [...listeners]) listener({ kind: "suspend", at, announced: true });
+      },
+      resume(at = 241_000, gapMs: number | null = 240_000, stateAt = Date.now()) {
+        sleepState = "awake";
+        sleepStateAt = stateAt;
+        for (const listener of [...listeners]) listener({ kind: "resume", at, gapMs, announced: true });
+      },
+    };
+  }
+
+  /**
+   * A Claude stream that parks mid-turn so the test can suspend the host at a
+   * moment when a turn is genuinely in flight, then parks again so it can wake
+   * it before the turn finishes.
+   */
+  function installParkedClaudeStream(retry: Record<string, unknown>) {
+    let releaseBeforeRetry = (): void => {};
+    let releaseBeforeResult = (): void => {};
+    const beforeRetry = new Promise<void>((resolve) => {
+      releaseBeforeRetry = resolve;
+    });
+    const beforeResult = new Promise<void>((resolve) => {
+      releaseBeforeResult = resolve;
+    });
+    const reached = { retry: false, result: false };
+
+    const send = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn();
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        return;
+      }
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Running tests…" }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      await beforeRetry;
+      yield { type: "system", subtype: "api_retry", session_id: "sdk-session-sleep", ...retry };
+      reached.retry = true;
+      await beforeResult;
+      reached.result = true;
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close,
+      sessionId: "sdk-session-sleep",
+    } as any);
+    vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close,
+      sessionId: "sdk-session-sleep",
+    } as any);
+
+    return { releaseBeforeRetry, releaseBeforeResult, reached };
+  }
+
+  const noticesOf = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
+    .map((call) => call[0])
+    .filter((envelope: any) => envelope?.event?.type === "system_notice")
+    .map((envelope: any) => envelope.event);
+
+  const turnStarted = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
+    .some((call) => {
+      const event = (call[0] as any)?.event;
+      return event?.type === "status" && event.turnStatus === "started";
+    });
+
+  it("shows one chip that resolves in place, and holds the retry the sleep caused", async () => {
+    const power = fakeHostPowerSource();
+    const parked = installParkedClaudeStream({
+      error: "unknown",
+      attempt: 1,
+      max_retries: 10,
+    });
+
+    const onEvent = vi.fn();
+    const { service, logger } = createService({ onEvent, hostPowerSource: power.source });
+    try {
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "run the tests",
+        timeoutMs: 15_000,
+      });
+      await waitFor(() => turnStarted(onEvent));
+
+      power.suspend();
+      const paused = noticesOf(onEvent).filter((event: any) => event.status === "host_asleep");
+      expect(paused).toHaveLength(1);
+      expect(paused[0].message).toBe("Paused — computer asleep");
+
+      // Let the suspend-caused retry arrive while the machine is down.
+      parked.releaseBeforeRetry();
+      await waitFor(() => parked.reached.retry);
+
+      expect(noticesOf(onEvent).filter((event: any) =>
+        typeof event.message === "string" && event.message.startsWith("Claude API retry"),
+      )).toHaveLength(0);
+      expect(onEvent.mock.calls.filter((call) => (call[0] as any)?.event?.type === "api_retry"))
+        .toHaveLength(0);
+      // The retry really did arrive and really was held — without this the
+      // two assertions above would also pass on a stream that never retried.
+      expect(logger.info).toHaveBeenCalledWith(
+        "agent_chat.api_retry_held_for_host_suspend",
+        expect.objectContaining({ providerCause: "unknown", sleepState: "asleep" }),
+      );
+      // Still ONE chip — the held retry must not add a second artifact.
+      expect(noticesOf(onEvent).filter((event: any) => event.status === "host_asleep")).toHaveLength(1);
+
+      power.resume();
+      parked.releaseBeforeResult();
+      await turn;
+
+      const asleep = noticesOf(onEvent).filter((event: any) => event.status === "host_asleep");
+      const awake = noticesOf(onEvent).filter((event: any) => event.status === "host_awake");
+      expect(asleep).toHaveLength(1);
+      expect(awake).toHaveLength(1);
+      expect(awake[0].message).toBe("Resumed · paused 4m");
+      // Same identity is what folds the two halves onto one transcript row.
+      expect(awake[0].detail.hostSleep.sleepId).toBe(asleep[0].detail.hostSleep.sleepId);
+      // And the turn itself still finished after the wake.
+      expect(onEvent.mock.calls.some((call) => (call[0] as any)?.event?.type === "done")).toBe(true);
+    } finally {
+      await service.disposeAll();
+    }
+  });
+
+  it("leaves a genuine API failure retrying and reporting its real cause", async () => {
+    const power = fakeHostPowerSource();
+    const parked = installParkedClaudeStream({
+      error: "overloaded",
+      error_status: 529,
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: 2_000,
+    });
+
+    const onEvent = vi.fn();
+    const { service } = createService({ onEvent, hostPowerSource: power.source });
+    try {
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "run the tests",
+        timeoutMs: 15_000,
+      });
+      await waitFor(() => turnStarted(onEvent));
+
+      // Even with the host asleep, an error the API itself named is the truth.
+      power.suspend();
+      parked.releaseBeforeRetry();
+      await waitFor(() => parked.reached.retry);
+      parked.releaseBeforeResult();
+      await turn;
+
+      expect(noticesOf(onEvent).some((event: any) =>
+        event.message === "Claude API retry 1/10: overloaded" && event.status === "overloaded",
+      )).toBe(true);
+      expect(onEvent.mock.calls.filter((call) => (call[0] as any)?.event?.type === "api_retry"))
+        .toHaveLength(1);
+    } finally {
+      await service.disposeAll();
+    }
+  });
+
+  it("leaves an idle chat alone when the machine sleeps", async () => {
+    const power = fakeHostPowerSource();
+    const onEvent = vi.fn();
+    const { service } = createService({ onEvent, hostPowerSource: power.source });
+    try {
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      power.suspend();
+      power.resume();
+      expect(noticesOf(onEvent).filter((event: any) =>
+        event.status === "host_asleep" || event.status === "host_awake",
+      )).toHaveLength(0);
+    } finally {
+      await service.disposeAll();
+    }
+  });
+});

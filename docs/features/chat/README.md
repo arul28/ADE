@@ -35,6 +35,8 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/chat/externalChatHistoryImport.ts` | Converts external Claude JSONL and Codex thread-turn history into ADE `AgentChatEventEnvelope` rows. It reads at most the last 32 MB of source transcript bytes, keeps the newest 2,000 imported content events, emits system notices for provenance/truncation, drops metadata-only/provider-wrapper user rows without stripping user-authored JSX/XML, preserves failed Claude tool-result status, maps user/assistant text plus tool calls/results/file changes/commands/search/image events where available, and derives a fallback imported-chat title from the first user or assistant text. |
 | `apps/desktop/src/main/services/chat/runtimeEvents.ts` | Canonical cross-runtime event vocabulary (`turn.*`, `content.delta`, `tool.*`, `subagent.*`, teammate/task events, compaction boundaries) plus shims between legacy `AgentChatEvent` rows and the canonical runtime envelope. Claude emits canonical subagent events alongside the legacy rows while the other adapters migrate. |
 | `apps/desktop/src/main/services/chat/contextCompactionEmitter.ts` | Normalizes Claude, Codex, OpenCode, Cursor, and Droid compaction lifecycle events into provider-tagged `context_compact` rows. It pairs started/completed boundaries, preserves provider-reported pre/post token counts and duration, and maintains the per-session compaction count used by transcript surfaces. |
+| `apps/desktop/src/main/services/chat/hostSleepChipTracker.ts` | Bookkeeping for the **Paused — computer asleep** chip. Subscribes to the host `MachinePowerSource` (`hostPowerSource` on `createAgentChatService`; `getPowerStateService()` on desktop, `borrowSharedMachinePowerSource()` in the brain) and, on a suspend, emits one `system_notice` per session that actually has a turn in flight — an idle chat gets no chip. The chip is minted under a per-suspend `sleepId` and remembers the turn id it was born under, so the wake resolves it on the same row. It also owns `holdRetry`, the gate that decides whether a provider retry is attributable to the suspend. |
+| `apps/desktop/src/shared/hostSleepNotice.ts` | The pure half: the two notice statuses (`host_asleep` / `host_awake`), the message strings, `shouldAttributeRetryToHostSuspend`, and `hostSleepNoticeMergeKey`. Dependency-free so main, renderer, and tests share one rule. |
 | `apps/ade-cli/src/tuiClient/` | Terminal **Work** chat TUI (Ink + React): same action/RPC contracts as desktop, **attached** (socket) or **embedded** (headless runtime via `ade-cli`). See [ADE Code](../ade-code/README.md). |
 | `apps/ade-cli/src/adeRpcServer.ts` | Runtime action-policy boundary, including the narrow mixed-version kickoff shim. Modern launchers send a new chat's first prompt through `chat.messageSession`; an ADE ≤1.2.41 `chat.sendMessage` request may be normalized only when the target is provably the caller's still-blank direct child. Every other cross-session send remains denied. |
 | `apps/desktop/src/shared/modelRegistry.ts`, `apps/desktop/src/renderer/components/shared/ModelPicker/modelCatalog.ts` | Shared static model descriptors plus renderer merge of host-advertised catalogs. GPT-5.6 Sol/Terra/Luna stay first, Sol remains the Codex default, and runtime reasoning ladders pass through in provider order: Max precedes Ultra for Sol/Terra, while Luna ends at Max. |
@@ -1195,6 +1197,39 @@ resume per session before exposing manual recovery. After useful progress,
 10 minutes without further model/tool activity produces a non-destructive
 stall warning. Pending approvals and user input suspend reconciliation, and
 answering them re-arms the 10-minute progress window.
+
+### When the host machine sleeps
+
+A closed lid is not a provider failure, and the transcript says so. When the
+host announces a suspend, every session with a turn in flight gets one
+`system_notice` chip reading **Paused — computer asleep**; on wake the same row
+is replaced in place with **Resumed · paused 4m**. It is one row, not two
+banners: `appendCollapsedChatTranscriptEvent` keys the row on
+`host-sleep:<sleepId>` and overwrites it, so the chip self-resolves and the
+transcript does not grow. `AgentChatMessageList` renders it as a pill — a
+duotone moon while paused, a filled play glyph once resumed. Chips are only
+emitted for sessions that had work running; an idle chat is not paused by
+anything.
+
+The chip's more important job is suppressing a lie. A provider call that dies
+because the socket went dark would otherwise surface as **retry 3/10** and burn
+a retry the user paid for. `shouldAttributeRetryToHostSuspend` decides, in
+order: any finite HTTP status means a server answered and the socket was not
+dark, so it is a real failure; a cause outside the transport allowlist
+(`overloaded`, `rate_limit`, and `authentication_failed` are deliberately
+excluded) is a real failure; a fresh `asleep` announcement — inside the same
+10-minute window `resolveMachinePresence` uses — attributes it to sleep; and
+within `HOST_RESUME_RETRY_GRACE_MS` (30 s) of an **announced** resume a nameless
+transport failure is still attributable. Only an announced resume opens that
+window; an inferred heartbeat gap must not. When the rule fires, the retry is
+**held, not consumed**: no `api_retry` event, no warning notice, no increment of
+the retry counter, and one `agent_chat.api_retry_held_for_host_suspend` log
+line. A turn started after the wake is never handed a stray "Resumed" chip.
+
+Whether ADE may hold the machine awake in the first place is an opt-in setting
+— see
+[keeping the machine awake](../onboarding-and-settings/README.md#keeping-the-machine-awake).
+The default is that turns pause, which is why this chip exists.
 
 Moderation metadata is operational evidence, not a conversational response.
 Raw `codex_moderation_metadata` events are retained for compatibility but do

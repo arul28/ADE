@@ -162,6 +162,20 @@ export type ProjectlessSyncControls = {
   getCloudRelayStatus: () => SyncCloudRelayStatus;
 };
 
+/**
+ * What a power-transition report actually achieved.
+ *
+ * `accepted` means the brain both recorded the announcement AND had somewhere
+ * to publish it. A brain that recorded it locally but has no account-directory
+ * publisher answers `{accepted: false, reason: "unsupported"}` — the same shape
+ * an entirely unwired brain returns — so the desktop's hop can retry rather
+ * than counting an unpersisted beat as landed.
+ */
+export type MachinePowerTransitionOutcome = {
+  accepted: boolean;
+  reason?: string;
+};
+
 export type MultiProjectRpcHandlerOptions = {
   serverVersion: string;
   projectRegistry?: ProjectRegistry;
@@ -194,6 +208,23 @@ export type MultiProjectRpcHandlerOptions = {
    * pretending to have restarted something.
    */
   machineUpdateControls?: MachineUpdateAndRestartDeps;
+  /**
+   * Backs `machine.reportPowerTransition`: the desktop's OS-level pre-suspend
+   * beat, forwarded into the brain.
+   *
+   * The brain is plain Node and gets no such beat of its own — its only native
+   * signal is the heartbeat gap, which cannot be observed until the machine is
+   * already back. Forwarding is what lets the account directory learn "asleep"
+   * BEFORE the machine goes dark, so a phone says "Asleep" with confidence
+   * instead of inferring it from silence. Absent on hosts with no desktop app
+   * (every Linux machine), where the gap detector remains the whole story.
+   */
+  reportMachinePowerTransition?: (
+    input: { kind: "suspend" | "resume"; budgetMs?: number },
+  ) =>
+    | Promise<MachinePowerTransitionOutcome | void>
+    | MachinePowerTransitionOutcome
+    | void;
   getRuntimeStatus?: () => {
     syncPort: number | null;
     publishHealth: Pick<
@@ -256,6 +287,7 @@ const RUNTIME_METHODS = new Set([
   "personalChats.streamEvents",
   "machineInfo.get",
   "machine.updateAndRestart",
+  "machine.reportPowerTransition",
   "projects.list",
   "projects.add",
   "projects.setCatalogVisibility",
@@ -1524,6 +1556,43 @@ export function createMultiProjectRpcRequestHandler(
       } finally {
         if (machineUpdateAndRestartInFlight === run) machineUpdateAndRestartInFlight = null;
       }
+    }
+
+    // The desktop's pre-suspend beat, forwarded to the brain that publishes
+    // this machine to the account directory.
+    //
+    // The window before the OS takes the machine down is short, so this must
+    // stay bounded and must never be something the desktop waits on: the
+    // publish it triggers carries its own budget, and a brain with nothing
+    // wired answers immediately rather than hanging the caller.
+    if (method === "machine.reportPowerTransition") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "machine.reportPowerTransition requires the cto role.",
+        );
+      }
+      const kind = typeof params.kind === "string" ? params.kind.trim() : "";
+      if (kind !== "suspend" && kind !== "resume") {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "machine.reportPowerTransition requires kind 'suspend' or 'resume'.",
+        );
+      }
+      const report = options.reportMachinePowerTransition;
+      if (!report) return { accepted: false, reason: "unsupported" };
+      const budgetMs = typeof params.budgetMs === "number" && Number.isFinite(params.budgetMs)
+        ? Math.max(250, Math.floor(params.budgetMs))
+        : undefined;
+      const outcome = await report({ kind, ...(budgetMs === undefined ? {} : { budgetMs }) });
+      // A reporter that recorded the announcement but had nowhere to publish it
+      // says so, and that refusal is carried through verbatim: answering
+      // "accepted" for an unpersisted beat is what made the desktop's retry
+      // logic stand down on the one transition that needed it.
+      if (outcome && outcome.accepted === false) {
+        return { accepted: false, reason: outcome.reason ?? "unsupported" };
+      }
+      return { accepted: true };
     }
 
     if (method === "attention.call") {

@@ -35,7 +35,14 @@ resolution ladder" below.
 
 Links minted from an Activity item additionally carry **ownership** —
 `accountMachineKey` and `projectId` — so a receiver can route to the machine that
-owns the work instead of guessing. Two rules govern what goes in `projectId`:
+owns the work instead of guessing. On iOS this is also what makes a link
+openable against a sleeping Mac: the phone reads `accountMachineKey`, sees the
+machine announced sleep, and offers to wake it rather than failing the open (see
+[iOS companion → Waking a sleeping Mac](../sync-and-multi-device/ios-companion.md#waking-a-sleeping-mac)).
+A link that arrives without the key can have its owner recovered from local
+attention/workspace snapshots, but only when the link came from **outside** the
+app — resolving an owner during cold-launch restore would turn a plain relaunch
+into a machine transition. Two rules govern what goes in `projectId`:
 
 - Prefer the project's machine-independent canonical id
   (`deriveProjectId(rootPath)`, the `project_<hash>` form), because a link is

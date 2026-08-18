@@ -1,9 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export type TrustedWindowsTool = "powershell" | "reg" | "rundll32" | "schtasks" | "tar" | "taskkill";
+export type TrustedWindowsTool =
+  | "powercfg"
+  | "powershell"
+  | "reg"
+  | "rundll32"
+  | "schtasks"
+  | "tar"
+  | "taskkill";
 
 const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
+  powercfg: "powercfg.exe",
   powershell: path.win32.join("WindowsPowerShell", "v1.0", "powershell.exe"),
   reg: "reg.exe",
   rundll32: "rundll32.exe",

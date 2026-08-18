@@ -659,9 +659,12 @@ extension WorkRootScreen {
   @MainActor
   func handleRequestedWorkSessionNavigation() async {
     guard let request = syncService.requestedWorkSessionNavigation else { return }
-    guard await syncService.ensureAccountMachineForNavigation(
-      request.accountMachineKey
-    ),
+    // Same recovery ContentView does: an EXTERNAL link with no machine key
+    // still has a session id, and the session id knows which machine owns it.
+    // The request decides whether its session id may be used that way — this
+    // handler also runs for the cold-launch restore, where resolving an owner
+    // would turn a plain relaunch into a machine transition.
+    guard await syncService.ensureAccountMachineForNavigation(for: request),
     syncService.requestedWorkSessionNavigation?.id == request.id else { return }
     // Scoped links are machine-wide identities, not requests against whichever
     // project happens to own this mounted Work view. Leave the request intact

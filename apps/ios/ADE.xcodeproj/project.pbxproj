@@ -80,6 +80,8 @@
 		B7000000000000000000009D /* PendingSessionSettleStatesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7000000000000000000009C /* PendingSessionSettleStatesTests.swift */; };
 		B90000000000000000000002 /* SyncTransportSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* SyncTransportSelectionTests.swift */; };
 		B80000000000000000000002 /* SyncConnectionRace.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* SyncConnectionRace.swift */; };
+		B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000007 /* SyncService+MachineWake.swift */; };
+		B80000000000000000000006 /* SyncMachineWake.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000005 /* SyncMachineWake.swift */; };
 		B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* SyncTerminalInputQueue.swift */; };
 		A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11700000000000000000001 /* MobileUsageQuotaStore.swift */; };
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
@@ -496,6 +498,8 @@
 		B7000000000000000000009C /* PendingSessionSettleStatesTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PendingSessionSettleStatesTests.swift; path = ADETests/PendingSessionSettleStatesTests.swift; sourceTree = "<group>"; };
 		B90000000000000000000001 /* SyncTransportSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTransportSelectionTests.swift; path = ADETests/SyncTransportSelectionTests.swift; sourceTree = "<group>"; };
 		B80000000000000000000001 /* SyncConnectionRace.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncConnectionRace.swift; path = ADE/Services/SyncConnectionRace.swift; sourceTree = "<group>"; };
+		B80000000000000000000007 /* SyncService+MachineWake.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+MachineWake.swift"; path = "ADE/Services/SyncService+MachineWake.swift"; sourceTree = "<group>"; };
+		B80000000000000000000005 /* SyncMachineWake.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncMachineWake.swift"; path = "ADE/Services/SyncMachineWake.swift"; sourceTree = "<group>"; };
 		B80000000000000000000003 /* SyncTerminalInputQueue.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTerminalInputQueue.swift; path = ADE/Services/SyncTerminalInputQueue.swift; sourceTree = "<group>"; };
 		A11700000000000000000001 /* MobileUsageQuotaStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileUsageQuotaStore.swift; path = ADE/Services/MobileUsageQuotaStore.swift; sourceTree = "<group>"; };
 		73B17472FAC08845853BC6B4 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ADE/App/ContentView.swift; sourceTree = "<group>"; };
@@ -943,6 +947,8 @@
 				B70000000000000000000001 /* SyncRecoveryPolicy.swift */,
 				B7000000000000000000009A /* PendingSessionSettleStates.swift */,
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
+				B80000000000000000000007 /* SyncService+MachineWake.swift */,
+				B80000000000000000000005 /* SyncMachineWake.swift */,
 				B80000000000000000000003 /* SyncTerminalInputQueue.swift */,
 				A11700000000000000000001 /* MobileUsageQuotaStore.swift */,
 				AE00000000000000000000A2 /* PushNotificationService.swift */,
@@ -1457,6 +1463,8 @@
 				B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */,
 				B7000000000000000000009B /* PendingSessionSettleStates.swift in Sources */,
 				B80000000000000000000002 /* SyncConnectionRace.swift in Sources */,
+				B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */,
+				B80000000000000000000006 /* SyncMachineWake.swift in Sources */,
 				B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */,
 				A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */,
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,

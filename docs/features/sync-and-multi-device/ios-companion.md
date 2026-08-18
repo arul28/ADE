@@ -268,6 +268,12 @@ apps/ios/
 │   │   │                            # per-network route memory, endpoint
 │   │   │                            # failure memory, relay dial single-flight
 │   │   │                            # registry, and route truth
+│   │   ├── SyncMachineWake.swift    # sleep vocabulary shared with the desktop:
+│   │   │                            # syncMachinePresence, staleness window,
+│   │   │                            # wake need, wake-prompt request/stage
+│   │   ├── SyncService+MachineWake.swift # the confirm/waking/failed prompt
+│   │   │                            # state machine and its 90 s decision
+│   │   │                            # deadline
 │   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
 │   │   │                                # ACK timeout/retry, stable input ids
 │   │   ├── Dictation/               # SpeechDictationService,
@@ -742,6 +748,9 @@ header, and Hub pill refresh without reconnecting.
 
 Primary machine rows state only facts they can prove:
 
+- a machine that **announced** it was going to sleep, recently enough to still
+  be believed, is **Asleep** — and that outranks a held socket, because a
+  channel to a sleeping Mac does not report itself closed;
 - the active authenticated socket is **Connected**;
 - a current directory/discovery lease is **Online**;
 - otherwise the row says **Last seen just now**, **Last seen Nm/Nh/Nd ago**, or
@@ -751,6 +760,66 @@ The `online` heartbeat never earns connected styling, and an expired heartbeat
 never becomes a claim that the Mac is powered off. Route names stay out of these
 reachability lines; observed transport belongs in the connected badge and
 Connection details.
+
+Rows also carry the machine's own power reading when the directory heartbeat
+that delivered it is fresh — attachment is not evidence of freshness, since
+power rides the heartbeat rather than the socket. `accountMachinePowerClause`
+produces one phrase, battery always winning over wall power: `"82% battery"`,
+else `"plugged in"`, else `"on battery"`, else nothing at all. A Mac Studio gets
+no clause rather than `"0%"` — it has no battery to report. The full line is
+`"Asleep · 82% battery"`; a state word with no clause never emits an orphaned
+separator. The wording must match `machinePowerPhrase` in
+`apps/desktop/src/shared/machinePresence.ts` word for word, and the staleness
+rule in `SyncMachineWake.swift` must match `resolveMachinePresence` down to the
+inclusive boundary.
+
+### Waking a sleeping Mac
+
+`SyncMachineWake.swift` holds the whole vocabulary: `SyncMachineWakeNeed`
+(`.asleep` / `.unreachable`), `syncMachinePresence`, the 10-minute
+`syncMachineSleepInferenceWindow` that mirrors the desktop's, and the 24-hour
+`syncMachineRecentlySeenWindow` that decides whether a confirm prompt is allowed
+to say "asleep" at all.
+
+**Wake sends nothing.** There is no wake packet, push, or Wake-on-LAN frame —
+dialling *is* the wake. The Wake action runs the ordinary
+`pairWithAccountMachine` connect race (direct LAN/tailnet candidates plus the
+relay `/connect` WebSocket), and the traffic arriving at the Mac is what brings
+it back. Only the budget and the copy differ:
+
+- `SyncConnectionRaceTiming.wakeOverallBudgetNanoseconds` is **25 seconds**
+  against the standard 10, sized from a measured 16-second clamshell wake plus
+  headroom for a slower machine and a cold Durable Object.
+  `wakeRelayReadyAfterAcceptedNanoseconds` is 22 s (standard 7 s), kept strictly
+  under the overall budget so a failing candidate still records its endpoint
+  failure inside the race. Both live on `SyncConnectionRaceBudget`
+  (`.standard` / `.wakingMachine`), and a `restorePreviousConnection` resets to
+  `.standard` — a restore must not inherit the wake budget.
+- The stage label reads *"Waking <machine>…"* rather than *"Connecting to
+  <machine>…"*, and a wake that runs out of budget with no pairing-failure code
+  fails with *"It didn't wake up in time."* rather than a transport message.
+
+`MachineWakeCard` is presented from `ContentView` on `pendingMachineWake`, with
+a `confirm → waking → failed` stage machine driven by
+`SyncService+MachineWake.swift`. It is bound with `sheet(isPresented:)` rather
+than `sheet(item:)` so the stage can change under a stable id, is
+dismiss-disabled while waking, and arms a 90-second decision deadline that
+resolves to "don't wake". A failure keeps the card up with **Try again** rather
+than dropping the user back where they started. In Settings, a sleeping machine
+paints the status dot `ADEColor.warning` and offers a **Wake it** button — a
+sleeping machine is a tap, not a fault. `MachineRowView.Affordance` gains
+`.wake`, which is the `.connect` shape with a different word, because the tap is
+the same tap.
+
+Session and PR deeplinks are machine-scoped: `AccountAttentionDestination`
+appends `accountMachineKey=<key>` to `ade://session/<id>` and `ade://pr/...`
+(and to the `https://ade-app.dev/open` mirror), so opening a notification, a
+widget link, or a shared URL knows which Mac the work lives on and can wake that
+one. Widget links carry the key too. A link minted without one recovers the
+owner from the attention snapshot's items, then from the workspace snapshot's
+agent list. Only an **externally** minted link may have its owner resolved that
+way (`WorkSessionNavigationRequest.Origin.external`); the cold-launch restore
+must not, or a plain relaunch turns into a machine transition.
 
 ### Tailscale-off route hint
 

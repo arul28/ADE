@@ -34,6 +34,8 @@ import {
   Target,
   Clock,
   Cube,
+  Moon,
+  Play,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -89,6 +91,7 @@ import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
+import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
   ChatToolActivityDetails,
@@ -3454,6 +3457,32 @@ function renderEvent(
     }
     if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") {
       return null;
+    }
+    // ── Host sleep ──
+    // One quiet chip per sleep. The transcript fold hands the SAME row first
+    // the paused event and then the resumed one, so this renders whichever
+    // half is current — the row never doubles and never grows.
+    if (isHostSleepNoticeEvent(event)) {
+      const resumed = isHostResumedNoticeEvent(event);
+      const SleepIcon = resumed ? Play : Moon;
+      return (
+        <div
+          className={cn(
+            "inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-full border px-3 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] transition-colors",
+            resumed
+              ? "border-emerald-400/16 bg-emerald-400/[0.05] text-emerald-200/70"
+              : "border-sky-400/16 bg-sky-400/[0.05] text-sky-200/70",
+          )}
+        >
+          <SleepIcon
+            size={11}
+            weight={resumed ? "fill" : "duotone"}
+            className={cn("shrink-0", resumed ? "text-emerald-300/70" : "text-sky-300/70")}
+            aria-hidden
+          />
+          <span className="min-w-0 truncate">{event.message}</span>
+        </div>
+      );
     }
     // A chat whose provider thread couldn't be resumed after a disk-full incident
     // carries a persisted continuity-recovery detail — render the dedicated card

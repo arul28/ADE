@@ -1420,6 +1420,43 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByText(/ran 18m/)).toBeNull();
   });
 
+  it("renders the host-sleep chip once and swaps it for the resumed state in place", () => {
+    const paused: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "host_asleep",
+        message: "Paused — computer asleep",
+        detail: { hostSleep: { sleepId: "host-sleep-1" } },
+        turnId: "turn-1",
+      },
+    };
+    const resumed: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:04:00.000Z",
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "host_awake",
+        message: "Resumed · paused 4m",
+        detail: { hostSleep: { sleepId: "host-sleep-1", pausedMs: 240_000 } },
+        turnId: "turn-1",
+      },
+    };
+
+    renderMessageList([paused]);
+    expect(screen.getByText("Paused — computer asleep")).toBeTruthy();
+
+    cleanup();
+    renderMessageList([paused, resumed]);
+    // The resumed half replaces the paused one — the transcript keeps exactly
+    // one artifact for the sleep rather than stacking a second banner.
+    expect(screen.queryByText("Paused — computer asleep")).toBeNull();
+    expect(screen.getByText("Resumed · paused 4m")).toBeTruthy();
+  });
+
   it("renders provider health and thread error notices distinctly", () => {
     renderMessageList([
       {

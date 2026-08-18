@@ -14,7 +14,17 @@ import type {
   AdeAccountMachineRemovalResult,
 } from "../../../shared/types";
 import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "../../../shared/types/account";
+import type { MachinePresence } from "../../../shared/types/power";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
+import {
+  NO_CONNECTED_MACHINE_IDS,
+  accountMachinePresence,
+  connectedMachineIds,
+  isMachineConnected,
+  machineIsAwake,
+  machineStatusLine,
+  type ConnectedMachineIds,
+} from "../../../shared/machinePresence";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   COLORS,
@@ -332,30 +342,62 @@ type ComputerDisplayRow = {
   name: string;
   thisMac: boolean;
   rememberedOnly: boolean;
+  /** This computer holds a live runtime channel to it right now. */
+  connected: boolean;
+  /**
+   * Reachable right now. The lit dot, the status line's colour, and the card's
+   * "N online" count all read this one value, so no part of a row can call a
+   * machine awake while another part of it says "Asleep".
+   */
+  awake: boolean;
+  /** Null for a hosted web row, which has no directory presence to state. */
+  presence: MachinePresence | null;
   statusColor: string;
-  statusGlow: boolean;
   statusLine: string | null;
   accountMachine: AdeAccountMachine | null;
   environmentEnvId: string | null;
   catalogKeys: string[];
 };
 
+/**
+ * The row's second line, and the ONE place this list decides it.
+ *
+ * `machineStatusLine` answers for everything except an offline machine, where
+ * it can only say the word "Offline" — and "Last seen 3 days ago" answers the
+ * question a reader of that row actually has. The remote-targets list makes the
+ * same call (`AccountMachineRow`), and the two lists describing one machine
+ * differently is worse than either wording.
+ */
+function accountMachineStatusLine(
+  machine: AdeAccountMachine,
+  presence: MachinePresence,
+): string | null {
+  if (presence === "offline") return lastSeenLabel(machine.lastSeenAt);
+  // `connected` is the only presence whose word is empty, so this falls back to
+  // the route only for a connected machine that reported no power — never to a
+  // last-seen time we are in the middle of disproving.
+  return machineStatusLine(machine, { presence }) ?? machineRouteHint(machine);
+}
+
 function displayRowFromAccountMachine(
   machine: AdeAccountMachine,
   thisMac: boolean,
+  connected: boolean,
 ): ComputerDisplayRow {
+  // Presence, then power, then the route. A sleeping laptop says "Asleep · 82%
+  // battery" rather than a route hint that has not been dialable for an hour.
+  const presence = accountMachinePresence(machine, { connected });
+  const awake = machineIsAwake(presence);
   return {
     key: machine.machineKey,
     name: accountMachineDisplayName(machine) ?? "Unnamed computer",
     thisMac,
     rememberedOnly: false,
-    statusColor: machine.online ? COLORS.success : COLORS.textDim,
-    statusGlow: machine.online,
-    statusLine: thisMac
-      ? null
-      : machine.online
-        ? machineRouteHint(machine) ?? "Online"
-        : lastSeenLabel(machine.lastSeenAt),
+    connected: presence === "connected",
+    awake,
+    presence,
+    statusColor: awake ? COLORS.success : COLORS.textDim,
+    statusLine: thisMac ? null : accountMachineStatusLine(machine, presence),
     accountMachine: machine,
     environmentEnvId: null,
     catalogKeys: [],
@@ -368,8 +410,12 @@ function displayRowFromWebMachine(machine: WebMachineEntry): ComputerDisplayRow 
     name: machine.name,
     thisMac: false,
     rememberedOnly: machine.rememberedOnly,
+    // Hosted web rows keep their own vocabulary in `webMachineRowStatusLine`;
+    // they do not borrow the desktop's live-channel mark.
+    connected: false,
+    awake: machine.status === "live",
+    presence: null,
     statusColor: WEB_MACHINE_DOT_COLOR[machine.status],
-    statusGlow: machine.status === "live",
     statusLine: webMachineRowStatusLine(machine),
     accountMachine: machine.accountMachine,
     environmentEnvId: machine.environment?.envId ?? null,
@@ -387,6 +433,9 @@ export function YourMacsCard() {
   const [result, setResult] = useState<AdeAccountMachinesResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [localIdentity, setLocalIdentity] = useState<AdeAccountLocalMachineIdentity | null>(null);
+  const [connectedIds, setConnectedIds] = useState<ConnectedMachineIds>(
+    () => NO_CONNECTED_MACHINE_IDS,
+  );
   const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
@@ -488,6 +537,31 @@ export function YourMacsCard() {
     [localIdentity],
   );
 
+  // Which of these computers this one is actually talking to right now.
+  //
+  // Pushed by the main process rather than polled: a live channel is the one
+  // presence signal that changes the instant it changes, and a row that says
+  // "Online" about a machine we hold open is the same class of lie this branch
+  // exists to remove. Absent bridge (hosted web) means no channel, not unknown.
+  useEffect(() => {
+    const api = (window.ade as typeof window.ade | undefined)?.remoteRuntime;
+    if (!api?.getConnectionSnapshot) return;
+    let cancelled = false;
+    void api
+      .getConnectionSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) setConnectedIds(connectedMachineIds(snapshot.connections));
+      })
+      .catch(() => {});
+    const unsubscribe = api.onConnectionSnapshotChanged?.((snapshot) => {
+      if (!cancelled) setConnectedIds(connectedMachineIds(snapshot.connections));
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
   const machines = useMemo(() => {
     const list = [...(result?.machines ?? [])];
     // Pin this computer first; keep directory order otherwise.
@@ -496,10 +570,19 @@ export function YourMacsCard() {
 
   const rows = useMemo<ComputerDisplayRow[]>(() => {
     if (usingWorkspaceRoster) return webMachines.map(displayRowFromWebMachine);
-    return machines.map((machine) => displayRowFromAccountMachine(machine, isThisMac(machine)));
-  }, [isThisMac, machines, usingWorkspaceRoster, webMachines]);
+    return machines.map((machine) =>
+      displayRowFromAccountMachine(
+        machine,
+        isThisMac(machine),
+        isMachineConnected(machine, connectedIds),
+      ),
+    );
+  }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
-  const onlineCount = machines.filter((m) => m.online).length;
+  // Counted off the rows' own resolved presence, never the raw directory flag:
+  // a machine that announced a suspend is still inside the 90-second online
+  // window, so counting it here would put "2 online" above a row saying Asleep.
+  const onlineCount = rows.filter((row) => row.awake).length;
 
   /**
    * Is THIS computer missing from its own account directory?
@@ -857,15 +940,19 @@ export function YourMacsCard() {
                   borderTop: `1px solid ${COLORS.borderMuted}`,
                 }}
               >
+                {/* The dot states the SAME presence as the line beside it. The
+                    attribute is how a test pins that, since a CSS variable does
+                    not survive to a style assertion. */}
                 <span
                   aria-hidden
+                  data-machine-presence={row.presence ?? undefined}
                   style={{
                     width: 7,
                     height: 7,
                     borderRadius: "50%",
                     flexShrink: 0,
                     background: row.statusColor,
-                    boxShadow: row.statusGlow
+                    boxShadow: row.awake
                       ? `0 0 0 3px color-mix(in srgb, ${row.statusColor} 20%, transparent)`
                       : undefined,
                   }}
@@ -957,6 +1044,14 @@ export function YourMacsCard() {
                         This browser
                       </span>
                     ) : null}
+                    {/* Says the word the status line deliberately drops: with
+                        a live channel open, that line spends itself on the
+                        power reading instead. */}
+                    {row.connected ? (
+                      <span style={inlineBadge(COLORS.success, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                        Connected
+                      </span>
+                    ) : null}
                   </>
                 )}
                 <span style={{ flex: 1 }} />
@@ -965,7 +1060,7 @@ export function YourMacsCard() {
                     style={{
                       fontFamily: SANS_FONT,
                       fontSize: 11,
-                      color: row.statusGlow ? COLORS.success : COLORS.textMuted,
+                      color: row.awake ? COLORS.success : COLORS.textMuted,
                       flexShrink: 0,
                       whiteSpace: "nowrap",
                     }}

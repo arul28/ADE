@@ -5,6 +5,12 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
+import type {
+  KeepAwakeFixResult,
+  KeepAwakeSnapshot,
+} from "../../../shared/types/keepAwake";
+import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import {
   buildGithubReleaseUrl,
@@ -1046,6 +1052,7 @@ export type AppContext = {
   rpcSocketServer?: NetServer;
   rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  keepAwakeService?: KeepAwakeService | null;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
@@ -11204,6 +11211,35 @@ export function registerIpc({
     requireAppContextServices(ctx, ["onboardingService"] as const);
     const detection = await ctx.onboardingService.detectDefaults().catch(() => null);
     return { detection };
+  });
+
+  // A renderer running against a main process without the service must still
+  // get a well-formed snapshot — and one that says "off", because a missing
+  // service holds no lock. The shape lives with the type so the four surfaces
+  // that report "no lock held" cannot drift apart.
+  ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
+    const service = getCtx().keepAwakeService;
+    return service ? await service.getSnapshot() : INERT_KEEP_AWAKE_SNAPSHOT;
+  });
+
+  ipcMain.handle(
+    IPC.keepAwakeSetLevel,
+    async (_event, level: unknown): Promise<KeepAwakeSnapshot> => {
+      const service = getCtx().keepAwakeService;
+      return service ? await service.setLevel(level) : INERT_KEEP_AWAKE_SNAPSHOT;
+    },
+  );
+
+  ipcMain.handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
+    const service = getCtx().keepAwakeService;
+    if (!service) {
+      return {
+        ok: false,
+        error: "ADE can't change this right now.",
+        snapshot: INERT_KEEP_AWAKE_SNAPSHOT,
+      };
+    }
+    return await service.fixSystemSleep();
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, () => {

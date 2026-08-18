@@ -60,3 +60,60 @@ describe("accountMachineAdoptionRoutes", () => {
       ]);
   });
 });
+
+describe("parseAccountMachine power", () => {
+  it("carries battery, wall power, and a stated suspend through to the renderer", () => {
+    const machine = parseAccountMachine({
+      machineKey: "machine-laptop",
+      name: "MacBook Pro",
+      reachableEndpoints: [],
+      online: true,
+      power: { batteryPercent: 82, charging: false, onExternalPower: false },
+      sleepState: "asleep",
+      sleepStateAt: 1_800_000_000_000,
+    });
+    expect(machine?.power).toEqual({
+      battery: { percent: 82, charging: false },
+      onExternalPower: false,
+    });
+    expect(machine?.sleepState).toBe("asleep");
+    expect(machine?.sleepStateAt).toBe(1_800_000_000_000);
+  });
+
+  it("leaves a machine with no battery without one, rather than at zero", () => {
+    const machine = parseAccountMachine({
+      machineKey: "machine-studio",
+      name: "Mac Studio",
+      reachableEndpoints: [],
+      online: true,
+      power: { batteryPercent: null, charging: null, onExternalPower: true },
+    });
+    expect(machine?.power).toEqual({ onExternalPower: true });
+    expect(machine?.power?.battery).toBeUndefined();
+  });
+
+  it("omits power entirely for a host too old to report it, and drops malformed values", () => {
+    const legacy = parseAccountMachine({
+      machineKey: "machine-old",
+      name: "Old host",
+      reachableEndpoints: [],
+      online: true,
+    });
+    expect(legacy?.power).toBeUndefined();
+    expect(legacy?.sleepState).toBeUndefined();
+
+    const malformed = parseAccountMachine({
+      machineKey: "machine-bad",
+      name: "Bad host",
+      reachableEndpoints: [],
+      online: true,
+      power: { batteryPercent: "97", charging: "yes", onExternalPower: "no" },
+      sleepState: "dozing",
+      sleepStateAt: "soon",
+    });
+    // A malformed reading degrades to "unknown", never to a wrong number.
+    expect(malformed?.power).toEqual({ onExternalPower: true });
+    expect(malformed?.sleepState).toBeUndefined();
+    expect(malformed?.sleepStateAt).toBeUndefined();
+  });
+});

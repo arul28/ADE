@@ -333,6 +333,34 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(activity?.live).toBe(false);
   });
 
+  // ChatView renders these blocks, so the fold has to survive aggregation too:
+  // one sleep must leave one notice block, resolved in place.
+  it("leaves one notice block for a host sleep that paused and resumed", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        status: "host_asleep",
+        message: "Paused — computer asleep",
+        detail: { hostSleep: { sleepId: "host-sleep-1" } },
+      } as AgentChatEvent),
+      env("2026-01-01T12:04:00.000Z", {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        status: "host_awake",
+        message: "Resumed · paused 4m",
+        detail: { hostSleep: { sleepId: "host-sleep-1", pausedMs: 240_000 } },
+      } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const notices = blocks.filter((block) => block.kind === "notice");
+    expect(notices).toHaveLength(1);
+    expect((notices[0] as Extract<AggregatedBlock, { kind: "notice" }>).line.body)
+      .toBe("Resumed · paused 4m");
+  });
+
   it("collapses a context_compact begin→end into one block that flips live→done", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", state: "started", turnId: "turn-1" }),

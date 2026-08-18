@@ -503,6 +503,8 @@ import {
   deriveBackgroundItems,
   resolveScheduledWorkTiming,
 } from "../../../shared/chatScheduledWork";
+import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
+import { createHostSleepChipTracker } from "./hostSleepChipTracker";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
   readTranscriptHistoryPage,
@@ -7274,6 +7276,16 @@ export function createAgentChatService(args: {
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
+  /**
+   * This host's sleep state, so a turn interrupted by a suspending machine can
+   * say so instead of reporting a provider retry with cause `unknown`.
+   *
+   * Lifecycle is NOT owned here — the host that has the OS hook (the desktop
+   * main process) or the brain's shared monitor starts and disposes it. This
+   * service only subscribes, and works fine without one: absent, chats behave
+   * exactly as they did before sleep was tracked.
+   */
+  hostPowerSource?: MachinePowerSource | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: (
     Pick<
@@ -16403,6 +16415,25 @@ export function createAgentChatService(args: {
     return runtime.activeTurnId ?? null;
   };
 
+  // ── Host sleep ───────────────────────────────────────────────────────────
+  //
+  // A machine that suspends mid-turn kills the agent's in-flight API call. The
+  // chip that says so, and the retry hold that stops the transcript blaming the
+  // API for it, live in `hostSleepChipTracker`.
+  const hostSleepChips = createHostSleepChipTracker<ManagedChatSession>({
+    powerSource: args.hostPowerSource ?? null,
+    sessions: () => managedSessions.values(),
+    sessionById: (sessionId) => managedSessions.get(sessionId),
+    activeTurnIdFor: activeTurnIdForManaged,
+    emit: (managed, event) => emitChatEvent(managed, event),
+    logger,
+  });
+  const holdRetryForHostSuspend = (
+    managed: ManagedChatSession,
+    error: string,
+    errorStatus: number | null,
+  ): boolean => hostSleepChips.holdRetry(managed, error, errorStatus);
+
   const firstAnswerText = (
     answers: Record<string, string[]> | undefined,
     fallback?: string | null,
@@ -19086,8 +19117,12 @@ export function createAgentChatService(args: {
     }
 
     if (msg.type === "system" && record.subtype === "api_retry") {
-      emitClaudeApiRetry(managed, record);
       const error = compactString(record.error) ?? "transient_error";
+      // A suspending host is a cause the provider could not name. Hold the
+      // retry — the sleep chip already says why — instead of counting an
+      // attempt against a socket that cannot answer until the lid opens.
+      if (holdRetryForHostSuspend(managed, error, numberOrNull(record.error_status))) return;
+      emitClaudeApiRetry(managed, record);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: error === "rate_limit" || error === "overloaded" ? "rate_limit" : "warning",
@@ -20479,6 +20514,18 @@ export function createAgentChatService(args: {
         if (msg.type === "system" && (msg as any).subtype === "api_retry") {
           const retryMsg = msg as any;
           const error = typeof retryMsg.error === "string" ? retryMsg.error : "transient_error";
+          // A suspending host is a cause the provider could not name. Hold the
+          // retry — the sleep chip already says why — instead of counting an
+          // attempt against a socket that cannot answer until the lid opens.
+          if (
+            holdRetryForHostSuspend(
+              managed,
+              error,
+              typeof retryMsg.error_status === "number" ? retryMsg.error_status : null,
+            )
+          ) {
+            continue;
+          }
           // A logged-out/auth retry will never recover on its own. Stop the retry
           // storm on the first auth attempt instead of surfacing
           // "retry 1/10 … 10/10" — rate-limit/overloaded retries still proceed.
@@ -42996,6 +43043,7 @@ export function createAgentChatService(args: {
   };
 
   const disposeAll = async (): Promise<void> => {
+    hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
     cursorCloudHydrateInFlight.clear();
@@ -43015,6 +43063,7 @@ export function createAgentChatService(args: {
   };
 
   const forceDisposeAll = (): void => {
+    hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
     cursorCloudHydrateInFlight.clear();

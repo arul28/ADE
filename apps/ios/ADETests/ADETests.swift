@@ -16830,6 +16830,29 @@ final class ADETests: XCTestCase {
     settledChat.settledAt = "2026-04-20T00:02:55.000Z"
     settledChat.statusNote = "All checks passed"
 
+    // "awaiting" is NOT a persisted session status. `TerminalSessionStatus` is
+    // running | completed | failed | disposed | detached — the "awaiting-input"
+    // spelling belongs to the roster RUNTIME BUCKET vocabulary
+    // (`RemoteRosterModels`), which is a different axis. This fixture used to
+    // set `status: "awaiting_input"` with `runtimeState: "exited"`, a row the
+    // wire cannot produce, and it only ever passed because the drawer used to
+    // read the status word. A chat that is genuinely blocked on you is a LIVE
+    // chat carrying a structured ask, which is what this now models — and it
+    // exercises the pending-item tier, distinct from `explicitAttention`'s
+    // `attentionRequestedAt` tier, so the two awaiting paths stay covered.
+    var awaitingChat = makeTerminalSessionSummary(
+      id: "awaiting-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Mobile awaiting chat",
+      lastOutputPreview: "Approval needed",
+      startedAt: "2026-04-20T00:02:30.000Z"
+    )
+    awaitingChat.pendingInputItemId = "approval-1"
+
     var failedTurnChat = makeTerminalSessionSummary(
       id: "failed-turn-chat",
       laneId: "lane-1",
@@ -16886,17 +16909,6 @@ final class ADETests: XCTestCase {
         startedAt: "2026-04-20T00:02:15.000Z"
       ),
       makeTerminalSessionSummary(
-        id: "awaiting-chat",
-        laneId: "lane-1",
-        laneName: "Primary",
-        toolType: "codex-chat",
-        runtimeState: "exited",
-        status: "awaiting_input",
-        title: "Mobile awaiting chat",
-        lastOutputPreview: "Approval needed",
-        startedAt: "2026-04-20T00:02:30.000Z"
-      ),
-      makeTerminalSessionSummary(
         id: "failed-shell",
         laneId: "lane-1",
         laneName: "Primary",
@@ -16907,6 +16919,7 @@ final class ADETests: XCTestCase {
         startedAt: "2026-04-20T00:03:00.000Z"
       ),
       explicitAttention,
+      awaitingChat,
       settledChat,
       failedTurnChat,
     ])
@@ -16931,6 +16944,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(awaiting.status, "awaiting-input")
     XCTAssertEqual(awaiting.title, "Mobile awaiting chat")
     XCTAssertTrue(awaiting.awaitingInput)
+    XCTAssertEqual(awaiting.pendingInputItemId, "approval-1")
     let explicit = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "explicit-attention-chat" }))
     XCTAssertEqual(explicit.status, "awaiting-input")
     XCTAssertTrue(explicit.awaitingInput)
@@ -22760,6 +22774,218 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(summary.contains("142k → 38k"))
     XCTAssertTrue(summary.contains("duration:12000ms"))
     XCTAssertTrue(summary.contains("sessionCount:2"))
+  }
+
+  // MARK: - Host sleep chip (one sleep, one artifact)
+
+  /// The two halves of a host-sleep chip differ only by `status` on the wire.
+  /// iOS used to drop that field, so both arrived as plain `info` notices and
+  /// nothing could tell a pause from its resume.
+  func testHostSleepNoticeStatusBecomesNoticeKind() throws {
+    let paused = try JSONDecoder().decode(AgentChatEvent.self, from: Data("""
+    {
+      "type": "system_notice",
+      "noticeKind": "info",
+      "severity": "info",
+      "status": "host_asleep",
+      "message": "Paused — computer asleep",
+      "detail": { "hostSleep": { "sleepId": "host-sleep-1-1" } },
+      "turnId": "turn-1"
+    }
+    """.utf8))
+    guard case let .systemNotice(pausedKind, pausedMessage, _, _, _) = paused else {
+      return XCTFail("Expected a system notice")
+    }
+    XCTAssertEqual(pausedKind, .hostAsleep)
+    XCTAssertEqual(pausedMessage, "Paused — computer asleep")
+    // The kind is what carries the half all the way to the timeline.
+    guard case let .systemNotice(mappedKind, _, mappedDetail, _, _) = makeWorkChatEvent(from: paused) else {
+      return XCTFail("Expected a mapped system notice")
+    }
+    XCTAssertEqual(mappedKind, "host_asleep")
+    XCTAssertEqual(workHostSleepId(from: mappedDetail), "host-sleep-1-1")
+
+    let resumed = try JSONDecoder().decode(AgentChatEvent.self, from: Data("""
+    {
+      "type": "system_notice",
+      "noticeKind": "info",
+      "status": "host_awake",
+      "message": "Resumed · paused 4m",
+      "detail": { "hostSleep": { "sleepId": "host-sleep-1-1", "pausedMs": 240000 } }
+    }
+    """.utf8))
+    guard case let .systemNotice(resumedKind, _, _, _, _) = resumed else {
+      return XCTFail("Expected a system notice")
+    }
+    XCTAssertEqual(resumedKind, .hostAwake)
+
+    // Any other status is somebody else's business and must not be rewritten.
+    let other = try JSONDecoder().decode(AgentChatEvent.self, from: Data("""
+    {
+      "type": "system_notice",
+      "noticeKind": "warning",
+      "status": "subagent_spawned",
+      "message": "Subagent spawned"
+    }
+    """.utf8))
+    guard case let .systemNotice(otherKind, _, _, _, _) = other else {
+      return XCTFail("Expected a system notice")
+    }
+    XCTAssertEqual(otherKind, .warning)
+  }
+
+  /// Desktop's contract is "one sleep, one artifact": the resumed half replaces
+  /// the paused half on the same row instead of stacking under it.
+  func testHostSleepPausedAndResumedFoldIntoOneCard() throws {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:00:01.000Z",
+        sequence: 1,
+        event: .systemNotice(
+          kind: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: "{\n  \"hostSleep\" : {\n    \"sleepId\" : \"host-sleep-1-1\"\n  }\n}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:04:01.000Z",
+        sequence: 2,
+        event: .systemNotice(
+          kind: "host_awake",
+          message: "Resumed · paused 4m",
+          detail: "{\n  \"hostSleep\" : {\n    \"sleepId\" : \"host-sleep-1-1\",\n    \"pausedMs\" : 240000\n  }\n}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 1)
+    let card = try XCTUnwrap(cards.first)
+    XCTAssertEqual(card.id, "host-sleep:chat-1:host-sleep-1-1")
+    // The host writes the label; the chip never invents its own words.
+    XCTAssertEqual(card.title, "Resumed · paused 4m")
+    XCTAssertEqual(card.icon, "play.circle")
+    // The sleep id is plumbing — it must never reach the user as a JSON blob.
+    XCTAssertNil(card.body)
+    XCTAssertTrue(card.bullets.isEmpty)
+  }
+
+  /// A second sleep in the same chat is a second artifact, not an overwrite of
+  /// the first one's resolved chip.
+  func testHostSleepDistinctSleepIdsKeepSeparateCards() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:00:01.000Z",
+        sequence: 1,
+        event: .systemNotice(
+          kind: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\"}}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:04:01.000Z",
+        sequence: 2,
+        event: .systemNotice(
+          kind: "host_awake",
+          message: "Resumed · paused 4m",
+          detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\"}}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:09:01.000Z",
+        sequence: 3,
+        event: .systemNotice(
+          kind: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-2-2\"}}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript)
+
+    XCTAssertEqual(cards.map(\.id), [
+      "host-sleep:chat-1:host-sleep-1-1",
+      "host-sleep:chat-1:host-sleep-2-2",
+    ])
+    XCTAssertEqual(cards.last?.icon, "moon.zzz")
+  }
+
+  /// A chat reopened from persisted history must fold the same way a live one
+  /// does — the replay parser reads raw JSON and never sees `AgentChatEvent`.
+  func testHostSleepFoldsOnPersistedTranscriptReplay() throws {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-08-17T00:00:01.000Z","sequence":1,"event":{"type":"system_notice","noticeKind":"info","status":"host_asleep","message":"Paused — computer asleep","detail":{"hostSleep":{"sleepId":"host-sleep-9-1"}},"turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-08-17T00:00:41.000Z","sequence":2,"event":{"type":"system_notice","noticeKind":"info","status":"host_awake","message":"Resumed · paused 40s","detail":{"hostSleep":{"sleepId":"host-sleep-9-1","pausedMs":40000}},"turnId":"turn-1"}}
+    """
+
+    let cards = buildWorkEventCards(from: parseWorkChatTranscript(raw))
+
+    XCTAssertEqual(cards.count, 1)
+    let card = try XCTUnwrap(cards.first)
+    XCTAssertEqual(card.id, "host-sleep:chat-1:host-sleep-9-1")
+    XCTAssertEqual(card.title, "Resumed · paused 40s")
+  }
+
+  /// The fold is otherwise last-wins, and `buildWorkEventCards` does not sort
+  /// its input. If the paused half is folded in second — a replay whose
+  /// sequence numbering inverts the pair, or a clock corrected across the wake
+  /// — last-wins would leave "Paused — computer asleep" on a machine that is
+  /// demonstrably awake. Resumed outranks paused whatever the arrival order.
+  func testHostSleepResumedHalfWinsWhenPausedArrivesLast() throws {
+    let paused = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-08-17T00:00:01.000Z",
+      sequence: 2,
+      event: .systemNotice(
+        kind: "host_asleep",
+        message: "Paused — computer asleep",
+        detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\"}}",
+        turnId: "turn-1",
+        steerId: nil
+      )
+    )
+    let resumed = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-08-17T00:00:41.000Z",
+      sequence: 1,
+      event: .systemNotice(
+        kind: "host_awake",
+        message: "Resumed · paused 40s",
+        detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\",\"pausedMs\":40000}}",
+        turnId: "turn-1",
+        steerId: nil
+      )
+    )
+
+    let inverted = buildWorkEventCards(from: [resumed, paused])
+    XCTAssertEqual(inverted.count, 1)
+    XCTAssertEqual(inverted.first?.title, "Resumed · paused 40s")
+    XCTAssertEqual(inverted.first?.icon, "play.circle")
+    XCTAssertEqual(inverted.first?.isInProgress, false)
+
+    // And the ordered pair still resolves the same way.
+    let ordered = buildWorkEventCards(from: [paused, resumed])
+    XCTAssertEqual(ordered.count, 1)
+    XCTAssertEqual(ordered.first?.title, "Resumed · paused 40s")
+    XCTAssertEqual(ordered.first?.isInProgress, false)
   }
 
   // MARK: - Timeline dedup + ask_user regression tests

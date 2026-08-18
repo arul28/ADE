@@ -122,6 +122,24 @@ key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
+Choosing a keep-awake level records the same `ade_feature_used` event at the
+keep-awake service's persist boundary — after the choice is written, so a
+refused level (the lid-closed one whose password prompt was cancelled) is never
+counted as adopted. It carries `feature: "connections"`,
+`action: "preferences_changed"`, and one closed `outcome`:
+`keep_awake_never`, `keep_awake_while_away`, or `keep_awake_lid_closed`. The
+product question is only whether installations opt into ADE holding a machine
+awake, and how many go as far as the level that needs a password. It carries no
+machine name or identifier, no battery level, no power source, and nothing about
+what was running. A 24-hour deduplication key per level bounds this to at most
+three accepted events per installation per UTC day, inside the existing
+`ade_feature_used` ceiling.
+
+Host sleep and wake themselves are deliberately **not** analytics. They are
+OS-driven mechanics that can fire dozens of times a day on a laptop, which is
+exactly the high-frequency shape this document says to aggregate or leave
+untracked. They stay local operational logs.
+
 Settle teardown records two things at the session-service owner boundary, both
 on the existing `ade_feature_used` event with `feature: "work"`.
 

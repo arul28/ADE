@@ -53,6 +53,10 @@ import {
   type LocalPublishHealth,
   type MachineSection,
 } from "./remoteMachineModel";
+import {
+  connectedMachineIds,
+  isMachineConnected,
+} from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
@@ -314,6 +318,14 @@ export function RemoteTargetList({
     }
     return map;
   }, [connectionSnapshot]);
+
+  // Which account machines this computer is actually talking to right now.
+  // Presence is decided from this rather than from directory heartbeats alone,
+  // so a row cannot report a machine we hold a channel to as merely online.
+  const connectedIds = useMemo(
+    () => connectedMachineIds(connectionSnapshot?.connections),
+    [connectionSnapshot],
+  );
 
   const sections = useMemo(
     () =>
@@ -1143,6 +1155,7 @@ export function RemoteTargetList({
                 connecting={
                   accountConnectingMachineKey === row.machine.machineKey
                 }
+                connected={isMachineConnected(row.machine, connectedIds)}
                 error={accountRowErrors[row.machine.machineKey] ?? null}
                 errorInfo={
                   row.matchedTargetId

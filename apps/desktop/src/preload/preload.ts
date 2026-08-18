@@ -76,6 +76,9 @@ import type {
   AppNavigationRequest,
   AppZoomCommand,
   AutoUpdatePreferences,
+  KeepAwakeFixResult,
+  KeepAwakeLevel,
+  KeepAwakeSnapshot,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -10397,6 +10400,11 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.ctoGetAttention),
       ),
   },
+  keepAwakeGet: (): Promise<KeepAwakeSnapshot> => ipcRenderer.invoke(IPC.keepAwakeGet),
+  keepAwakeSetLevel: (level: KeepAwakeLevel): Promise<KeepAwakeSnapshot> =>
+    ipcRenderer.invoke(IPC.keepAwakeSetLevel, level),
+  keepAwakeFixSystemSleep: (): Promise<KeepAwakeFixResult> =>
+    ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep),
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),

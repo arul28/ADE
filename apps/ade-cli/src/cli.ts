@@ -52,6 +52,10 @@ import {
   accountMachineConnectionState,
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
+import {
+  accountMachinePresence,
+  machineStatusLine,
+} from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import {
   ADE_USAGE_RANGE_PRESETS,
@@ -17204,6 +17208,55 @@ async function runServe(
       "sync_disabled",
       "Account-directory publishing has not started.",
     );
+  /**
+   * The desktop's OS-level suspend/resume beat, arriving over RPC.
+   *
+   * The brain has no `powerMonitor` of its own — its native signal is the
+   * heartbeat gap, which is only observable AFTER the machine is back. This is
+   * the hop that makes "asleep" a stated fact: the shared monitor records the
+   * announcement (which the chat service and the publisher both read), and the
+   * suspend half then publishes it to the account directory inside a hard
+   * budget, because the window before the OS takes the machine down is short
+   * and nothing here may delay it.
+   *
+   * The answer is only `accepted` when there was a publisher to carry the
+   * announcement to the account directory. A brain whose publisher has not been
+   * built yet (or was released with its sync scope) still records the local
+   * announcement — the chat service reads it — but nothing reached the
+   * directory, and saying "accepted" for that is what let the desktop count an
+   * unpersisted beat as landed and skip its resume retry. It reuses the same
+   * `unsupported` reason the RPC already returns for an unwired brain rather
+   * than inventing a second vocabulary for "nowhere to publish".
+   */
+  const reportDesktopMachinePowerTransition = async (
+    input: { kind: "suspend" | "resume"; budgetMs?: number },
+  ): Promise<{ accepted: boolean; reason?: string }> => {
+    const { getSharedMachinePowerMonitor } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
+    const monitor = getSharedMachinePowerMonitor();
+    // Read once: the publisher can be released between the announcement and the
+    // write, and a null-check that disagrees with the call it guards is how a
+    // "published" answer gets returned for a publish that never ran.
+    const publisher = accountMachinePublisher;
+    if (input.kind === "resume") {
+      // A wake has all the time in the world, so it rides the publisher's own
+      // subscription (which republishes "awake" at once) rather than blocking
+      // the caller on a write.
+      monitor.noteAnnouncedResume();
+      // Retrying this is worth it: the publisher is built lazily when a sync
+      // scope appears, so a wake that lands a beat too early can still be
+      // delivered by the desktop's next attempt.
+      return publisher ? { accepted: true } : { accepted: false, reason: "unsupported" };
+    }
+    monitor.noteAnnouncedSuspend();
+    if (!publisher) return { accepted: false, reason: "unsupported" };
+    // The announcement above already asks the publisher for the pre-suspend
+    // write; awaiting the same coalesced attempt is what gives the desktop
+    // something real to bound its beat on instead of a fire-and-forget void.
+    await publisher.publishPowerStateNow(input.budgetMs);
+    return { accepted: true };
+  };
   // What this machine looks like when no project scope owns sync. Hosting is
   // the projectless lease AND a bound shared listener; the builder reports the
   // honest all-down shape otherwise.
@@ -17385,6 +17438,7 @@ async function runServe(
         logger: headlessProjectLogger,
         requestRestart: requestBrainServiceRestartFromServe,
       }),
+      reportMachinePowerTransition: reportDesktopMachinePowerTransition,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -17728,6 +17782,9 @@ async function runServe(
     const { createBrainAccountMachinePublisherService } = await import(
       "./services/account/accountMachinePublisherService"
     );
+    const { borrowSharedMachinePowerSource } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
     // Match the active sync-host/desktop project priority so a project Clerk
     // issuer cannot send the brain to a different directory Worker.
     const accountProjectRoots = () => {
@@ -17750,6 +17807,12 @@ async function runServe(
       accountMachinePublisher = createBrainAccountMachinePublisherService({
         secretsDir: layout.secretsDir,
         projectRoots: accountProjectRoots,
+        // The one monitor this brain has, shared with the chat service and with
+        // the desktop's forwarded suspend beat. Borrowed rather than owned: the
+        // publisher is rebuilt on every sync-host handoff, and disposing the
+        // machine's power tracking along with it would leave chats blind to
+        // sleep until the next one started.
+        powerSource: borrowSharedMachinePowerSource(),
         isSyncEnabled: () => syncEnabled,
         logger: headlessProjectLogger,
         getSnapshot: async () => {
@@ -20539,8 +20602,16 @@ function formatAccountMachines(value: unknown): string {
         return machine ? [machine] : [];
       })
     : [];
+  // `status` answers "can this be dialled"; `presence` answers "is it awake,
+  // and on what power" — the same second line the desktop machine row and the
+  // iOS roster render, from the same shared helper, so the three cannot
+  // disagree about whether a Mac with a shut lid is asleep or merely quiet.
+  // `connected` is deliberately not passed: this table marks no row as holding
+  // a live channel, and a surface that renders no such mark must not claim one.
+  let anyAsleep = false;
   const rows = machines.map((machine) => {
     const connectionState = accountMachineConnectionState(machine);
+    if (accountMachinePresence(machine) === "asleep") anyAsleep = true;
     const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
       ? new Date(machine.lastSeenAt).toLocaleString()
       : "never";
@@ -20548,17 +20619,23 @@ function formatAccountMachines(value: unknown): string {
       asString(machine.machineKey) ?? "—",
       accountMachineDisplayName(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
       connectionState,
+      machineStatusLine(machine) ?? "—",
       lastSeenAt,
     ];
   });
   return [
     renderTable(
-      ["machine key", "name", "status", "last seen"],
+      ["machine key", "name", "status", "presence", "last seen"],
       rows,
       "No machines are registered to this ADE account.",
     ),
     "",
     "Connect with: ade machines connect <machine-key>",
+    // Connecting IS what wakes a sleeping machine — the same thing the desktop
+    // row and the phone say by labelling the button "Wake". Stated only when a
+    // machine on this account is actually asleep, so the hint never becomes
+    // noise on a list of awake machines.
+    ...(anyAsleep ? ["A machine listed asleep wakes when you connect to it."] : []),
   ].join("\n");
 }
 

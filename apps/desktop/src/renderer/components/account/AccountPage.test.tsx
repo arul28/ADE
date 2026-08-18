@@ -285,6 +285,115 @@ describe("AccountPage signed-in", () => {
     expect(screen.queryByText(/you're in/i)).toBeNull();
   });
 
+  it("marks a computer this one holds a live channel to, and drops the stale last-seen", async () => {
+    // Directory heartbeats alone said "Last seen 1h ago" about a machine this
+    // computer was actively talking to. The live channel outranks them, and
+    // the badge — not the status line — is what says the word.
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({
+          machineKey: "studio-key",
+          deviceId: "studio-dev",
+          name: "Studio",
+          online: false,
+          lastSeenAt: Date.now() - 3_600_000,
+          power: { onExternalPower: true },
+        }),
+      ],
+    });
+    const remoteRuntime = {
+      getConnectionSnapshot: vi.fn(async () => ({
+        connections: [
+          {
+            target: {
+              id: "t-1",
+              name: "Studio",
+              hostname: "studio.local",
+              pairedMachine: { hostIdentity: "studio-dev" },
+              sshUser: null,
+              port: null,
+              sshKeyPath: null,
+              lastSeenArch: null,
+              runtimeBinaryVersion: null,
+              lastConnectedAt: null,
+            },
+            state: "connected",
+            arch: null,
+            version: null,
+            projects: [],
+            lastError: null,
+            lastAttemptedAt: null,
+            connectedAt: Date.now(),
+          },
+        ],
+        connectedCount: 1,
+        updatedAt: Date.now(),
+      })),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    };
+    (window.ade as unknown as Record<string, unknown>).remoteRuntime = remoteRuntime;
+
+    renderPage();
+    await screen.findByText("Studio");
+    await waitFor(() => expect(screen.getByText("Connected")).toBeTruthy());
+    expect(screen.getByText("Plugged in")).toBeTruthy();
+    expect(screen.queryByText(/Last seen/)).toBeNull();
+  });
+
+  it("never counts a computer online while its own row says asleep", async () => {
+    // A Mac that announced its suspend is still inside the directory's
+    // 90-second online window. The header counted that raw flag while the row
+    // below rendered resolved presence, so one card said both things at once.
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({
+          machineKey: "studio-key",
+          deviceId: "studio-dev",
+          name: "Studio",
+          online: true,
+          lastSeenAt: Date.now() - 20_000,
+          sleepState: "asleep",
+          sleepStateAt: Date.now() - 60_000,
+          power: { onExternalPower: false, battery: { percent: 82, charging: false } },
+        }),
+        machine({
+          machineKey: "this-key",
+          deviceId: "this-dev",
+          name: "MacBook Pro",
+          online: true,
+          lastSeenAt: Date.now(),
+        }),
+      ],
+    });
+
+    renderPage();
+    const name = await screen.findByText("Studio");
+    const row = name.parentElement as HTMLElement;
+
+    expect(screen.getByText("Asleep · 82% battery")).toBeTruthy();
+    expect(row.querySelector("[data-machine-presence]")?.getAttribute("data-machine-presence"))
+      .toBe("asleep");
+    expect(within(row).queryByText("Connected")).toBeNull();
+    await waitFor(() => expect(screen.getByText("1 online · 2 connected")).toBeTruthy());
+  });
+
+  it("tells an offline computer's last-seen time rather than the bare word Offline", async () => {
+    // `machineStatusLine` only ever returns null for a CONNECTED machine, so
+    // the `?? lastSeenLabel(...)` arm this list used to rely on was dead and
+    // every offline row silently degraded to "Offline" — while the remote
+    // targets list, describing the same machine, kept saying "Last seen 1h
+    // ago". Two lists, one machine, two stories.
+    renderPage();
+    await screen.findByText("Studio");
+
+    expect(await screen.findByText(/Last seen/)).toBeTruthy();
+    expect(screen.queryByText("Offline")).toBeNull();
+  });
+
   it("pins this computer first with a badge and offers rename but never removal", async () => {
     renderPage();
     await screen.findByText("MacBook Pro");

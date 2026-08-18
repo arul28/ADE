@@ -2559,6 +2559,47 @@ private func workContextCompactCardId(
   return fallback
 }
 
+/// The sleep id both halves of a host-sleep chip carry, read out of the
+/// notice's detail JSON (`AgentChatNoticeDetail.hostSleep` in
+/// `apps/desktop/src/shared/types/chat.ts`). `detail` reaches iOS as the
+/// pretty-printed original object, so the id survives the trip intact.
+func workHostSleepId(from detail: String?) -> String? {
+  guard let detail,
+        let data = detail.data(using: .utf8),
+        let decoded = try? JSONSerialization.jsonObject(with: data),
+        let object = decoded as? [String: Any],
+        let hostSleep = object["hostSleep"] as? [String: Any],
+        let sleepId = hostSleep["sleepId"] as? String
+  else {
+    return nil
+  }
+  let trimmed = sleepId.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+/// Stable identity for ONE host sleep, shared by its paused and resumed halves
+/// so `buildWorkEventCards` folds them into a single chip that resolves in
+/// place — the host's "one sleep, one artifact" contract, and desktop parity
+/// with the `sleepId` fold in `chatTranscriptRows.ts`.
+///
+/// The id-less fallback is a single constant, matching `hostSleepNoticeMergeKey`
+/// in `shared/hostSleepNotice.ts` down to the trade it makes: with no id there
+/// is nothing to tell two sleeps apart, and a per-envelope key would stop a
+/// matched pair from merging at all, which is the worse of the two. Every
+/// notice ADE emits carries a `sleepId`, so only a foreign or pre-`sleepId`
+/// event ever reaches it.
+private func workHostSleepCardId(sessionId: String, detail: String?) -> String {
+  [workHostSleepCardIdPrefix, sessionId, workHostSleepId(from: detail) ?? "host-sleep"]
+    .joined(separator: ":")
+}
+
+private let workHostSleepCardIdPrefix = "host-sleep"
+
+/// True for either half of a host-sleep chip, which share one card id.
+private func workIsHostSleepCardId(_ id: String) -> Bool {
+  id.hasPrefix(workHostSleepCardIdPrefix + ":")
+}
+
 private func workPlanCardId(
   sessionId: String,
   turnId: String?,
@@ -2736,6 +2777,20 @@ private func normalizedWorkIntegrationFailures(
 
 private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: WorkEventCardModel) -> WorkEventCardModel? {
   guard existing.kind == incoming.kind else { return nil }
+  // ── Host sleep: a resolved chip never goes back to paused ──
+  // Both halves share one card id, so this fold is the only thing between a
+  // machine that woke up and a chip that still says it is asleep. The fold is
+  // otherwise last-wins, which is right only while the halves arrive in order:
+  // this builder is the one timeline builder that does NOT sort its input, and
+  // the two comparators that produce that input disagree on precedence
+  // (`workChatEnvelopeOrderedBefore` is sequence-first, `appendWorkChatTranscripts`
+  // is timestamp-first), so neither replay nor the live stream guarantees the
+  // paused half is seen first. Ordering the two states instead of trusting
+  // arrival order costs nothing and removes "Paused — computer asleep" from a
+  // Mac that is demonstrably awake.
+  if workIsHostSleepCardId(existing.id), !existing.isInProgress, incoming.isInProgress {
+    return existing
+  }
   if existing.kind == "turnDiagnostics" {
     let normalizedFailures = normalizedWorkIntegrationFailures(
       existing.diagnosticIntegrationFailures + incoming.diagnosticIntegrationFailures
@@ -2966,6 +3021,36 @@ private func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // ── Host sleep: ONE chip per sleep ──
+      // The paused half creates the row; the resumed half carries the same
+      // sleep id, so it lands on that row and replaces it rather than stacking
+      // a second card under it. The host writes both labels ("Paused —
+      // computer asleep", then "Resumed · paused 4m"), so the chip reads the
+      // same words on both platforms. `detail` is deliberately dropped: the
+      // sleep id is plumbing, not something to print at the user.
+      if let noticeKind = AgentChatNoticeKind(rawValue: kind),
+         noticeKind == .hostAsleep || noticeKind == .hostAwake {
+        let resumed = noticeKind == .hostAwake
+        return WorkEventCardModel(
+          id: workHostSleepCardId(sessionId: envelope.sessionId, detail: detail),
+          kind: "notice",
+          // The message IS the label. It lands in `title` with an empty body so
+          // the ribbon renders it once and VoiceOver reads it once. A host that
+          // sent no message still gets a chip that says something.
+          title: nonEmptyWorkTimelineText(message)
+            ?? (resumed ? "Resumed" : "Paused — computer asleep"),
+          icon: resumed ? "play.circle" : "moon.zzz",
+          tint: resumed ? .accent : .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: [],
+          // The paused half is the live state of a lifecycle chip; the resumed
+          // half is it settled. `mergedWorkEventCard` reads this so the settled
+          // chip wins no matter which half is folded in last.
+          isInProgress: !resumed
+        )
+      }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,

@@ -145,6 +145,16 @@ struct LockScreenPriorityStatus {
     }
 
     init(snapshot: WorkspaceSnapshot, hideDetails: Bool = false) {
+        // Every link this path mints belongs to ONE machine — the one the
+        // snapshot was written for — so it has to say which. The account-wide
+        // path above already scopes its links (`AccountAttentionItem.deepLinkURL`);
+        // this one shipped without a key, and an unscoped `ade://session/<id>`
+        // resolves against whichever machine the phone happens to be attached
+        // to. Tapping a widget after switching machines therefore opened a
+        // stranger's chat id on the wrong computer and reported "Connected".
+        // Nil on legacy snapshots written before the machine fields existed;
+        // the navigation guard resolves those by owner instead.
+        let owner = snapshot.machineId
         let running = snapshot.runningAgents.sorted { $0.lastActivityAt > $1.lastActivityAt }
         let awaiting = snapshot.agents.filter { agent in
             agent.awaitingInput || agent.status.lowercased() == "awaiting_input"
@@ -203,7 +213,7 @@ struct LockScreenPriorityStatus {
                 symbol: "bell.badge.fill",
                 shortLabel: "WAIT",
                 tint: ADESharedTheme.warningAmber,
-                destinationURL: Self.sessionURL(first?.sessionId),
+                destinationURL: Self.sessionURL(first?.sessionId, owner: owner),
                 metrics: metrics
             )
         } else if let first = failed.first {
@@ -216,7 +226,7 @@ struct LockScreenPriorityStatus {
                 symbol: "xmark.octagon.fill",
                 shortLabel: "FAIL",
                 tint: ADESharedTheme.statusFailed,
-                destinationURL: Self.sessionURL(first.sessionId),
+                destinationURL: Self.sessionURL(first.sessionId, owner: owner),
                 metrics: metrics
             )
         } else if let first = ciFailing.first {
@@ -229,7 +239,7 @@ struct LockScreenPriorityStatus {
                 symbol: "exclamationmark.triangle.fill",
                 shortLabel: "CI",
                 tint: ADESharedTheme.statusFailed,
-                destinationURL: Self.prURL(first),
+                destinationURL: Self.prURL(first, owner: owner),
                 metrics: metrics
             )
         } else if let first = reviewRequested.first {
@@ -246,7 +256,7 @@ struct LockScreenPriorityStatus {
                 symbol: "eye.fill",
                 shortLabel: "REV",
                 tint: changes > 0 ? ADESharedTheme.statusFailed : ADESharedTheme.statusReview,
-                destinationURL: Self.prURL(first),
+                destinationURL: Self.prURL(first, owner: owner),
                 metrics: metrics
             )
         } else if let first = mergeReady.first {
@@ -259,7 +269,7 @@ struct LockScreenPriorityStatus {
                 symbol: "checkmark.seal.fill",
                 shortLabel: "READY",
                 tint: ADESharedTheme.statusSuccess,
-                destinationURL: Self.prURL(first),
+                destinationURL: Self.prURL(first, owner: owner),
                 metrics: metrics
             )
         } else if let first = running.first {
@@ -272,7 +282,7 @@ struct LockScreenPriorityStatus {
                 symbol: "circle.dotted",
                 shortLabel: "WORK",
                 tint: ADESharedTheme.statusRunning,
-                destinationURL: Self.sessionURL(first.sessionId),
+                destinationURL: Self.sessionURL(first.sessionId, owner: owner),
                 metrics: metrics
             )
         } else if let first = openPrs.first {
@@ -285,7 +295,7 @@ struct LockScreenPriorityStatus {
                 symbol: "arrow.triangle.pull",
                 shortLabel: "PR",
                 tint: ADESharedTheme.statusRunning,
-                destinationURL: Self.prURL(first),
+                destinationURL: Self.prURL(first, owner: owner),
                 metrics: metrics
             )
         } else if snapshot.connection.lowercased() == "syncing" {
@@ -368,24 +378,34 @@ struct LockScreenPriorityStatus {
     }
 
     private static let workspaceURL = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
-    private static let deepLinkPathAllowed: CharacterSet = {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return allowed
-    }()
 
-    private static func sessionURL(_ sessionId: String?) -> URL {
+    /// Both builders go through `AccountAttentionDestination` rather than
+    /// assembling the URL by hand. Hand-rolling is how this path lost its
+    /// machine key in the first place: the account path gained the query item
+    /// and the second copy of the same string never did.
+    private static func sessionURL(_ sessionId: String?, owner: String?) -> URL {
         guard let sessionId = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionId.isEmpty,
-              let encoded = sessionId.addingPercentEncoding(withAllowedCharacters: deepLinkPathAllowed),
-              let url = URL(string: "ade://session/\(encoded)") else {
+              !sessionId.isEmpty else {
             return workspaceURL
         }
-        return url
+        let destination = AccountAttentionDestination.session(
+            sessionId: sessionId,
+            itemId: nil,
+            eventId: nil
+        )
+        return destination.deepLinkURL(accountMachineKey: owner) ?? workspaceURL
     }
 
-    private static func prURL(_ pr: PrSnapshot) -> URL {
-        URL(string: "ade://pr/\(pr.number)") ?? workspaceURL
+    private static func prURL(_ pr: PrSnapshot, owner: String?) -> URL {
+        let destination = AccountAttentionDestination.pullRequest(
+            prId: nil,
+            repoOwner: nil,
+            repoName: nil,
+            number: pr.number,
+            tab: "overview",
+            eventId: nil
+        )
+        return destination.deepLinkURL(accountMachineKey: owner) ?? workspaceURL
     }
 
     private static func agentTitle(_ agent: AgentSnapshot) -> String {

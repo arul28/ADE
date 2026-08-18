@@ -3,6 +3,19 @@ import Foundation
 enum SyncConnectionRaceTiming {
   static let candidateStaggerNanoseconds: UInt64 = 250_000_000
   static let overallBudgetNanoseconds: UInt64 = 10_000_000_000
+  /// Overall budget when the machine being dialled is asleep.
+  ///
+  /// Dialling IS the wake, so this clock starts before the Mac has begun to
+  /// bring its network stack back: a MacBook waking from clamshell sleep was
+  /// measured at 16s of wall time from the first dial to a usable relay bridge.
+  /// Under the standard 10s budget a sleeping Mac could essentially never be
+  /// reached on the first tap, and the attempt died blaming the relay for a
+  /// bridge that was still being built.
+  ///
+  /// 25s is that measured 16s plus headroom for a slower machine and a cold
+  /// Durable Object. It is deliberately a fixed number rather than an open
+  /// wait: the wake UI promises a bounded outcome, and this is the bound.
+  static let wakeOverallBudgetNanoseconds: UInt64 = 25_000_000_000
   static let maximumCandidateCount = 3
   /// Deadline for the relay's `{t:"accepted",v:2}` frame. The Worker sends it
   /// the moment `/connect` is served, before any host signaling, so this window
@@ -20,11 +33,41 @@ enum SyncConnectionRaceTiming {
   /// dial key are freed. If the race budget expired first, that endpoint would
   /// never accumulate a failure streak and would keep leading the plan.
   static let relayReadyAfterAcceptedNanoseconds: UInt64 = 7_000_000_000
+  /// The same window while a machine is waking. Held under
+  /// `wakeOverallBudgetNanoseconds` for exactly the reason above: the candidate
+  /// must fail inside the race so its endpoint records the failure.
+  static let wakeRelayReadyAfterAcceptedNanoseconds: UInt64 = 22_000_000_000
   /// How long a relay candidate holds back once a direct candidate is already
   /// dialing. Direct routes win outright on a LAN, so this is the whole cost of
   /// keeping relay in the same race; on cellular no direct candidate is
   /// plausible and relay is dialed essentially immediately.
   static let relayJoinDelayNanoseconds: UInt64 = 300_000_000
+}
+
+/// The two deadlines one connect attempt runs under, chosen once when the
+/// attempt starts and carried by everything it spawns.
+///
+/// A single global budget cannot serve both cases: 25s is far too long to spend
+/// discovering that a machine which is awake and simply unreachable will not
+/// answer, and 10s is not long enough for a machine that has to boot first.
+/// Which one applies is a property of the attempt, not of the app.
+struct SyncConnectionRaceBudget: Equatable, Sendable {
+  var overallNanoseconds: UInt64
+  var relayReadyAfterAcceptedNanoseconds: UInt64
+
+  static let standard = SyncConnectionRaceBudget(
+    overallNanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds,
+    relayReadyAfterAcceptedNanoseconds: SyncConnectionRaceTiming.relayReadyAfterAcceptedNanoseconds
+  )
+
+  static let wakingMachine = SyncConnectionRaceBudget(
+    overallNanoseconds: SyncConnectionRaceTiming.wakeOverallBudgetNanoseconds,
+    relayReadyAfterAcceptedNanoseconds: SyncConnectionRaceTiming.wakeRelayReadyAfterAcceptedNanoseconds
+  )
+
+  static func forAttempt(wakingMachine: Bool) -> SyncConnectionRaceBudget {
+    wakingMachine ? .wakingMachine : .standard
+  }
 }
 
 /// A route counts as failing when it has failed at least twice in a row and the
@@ -147,6 +190,13 @@ enum SyncRelayReadyNegotiationError: Error, Equatable {
 struct SyncRelayReadyNegotiation: Equatable {
   private(set) var acceptedV2 = false
   private(set) var ready = false
+  /// The attempt's budget, so a socket opened to wake a machine waits the wake
+  /// window rather than the standard one.
+  let budget: SyncConnectionRaceBudget
+
+  init(budget: SyncConnectionRaceBudget = .standard) {
+    self.budget = budget
+  }
 
   mutating func receive(_ control: SyncRelayTransportControl?) -> SyncRelayReadyNegotiationDecision {
     guard let control else { return .ignore }
@@ -167,7 +217,7 @@ struct SyncRelayReadyNegotiation: Equatable {
   /// gamble on a dead endpoint.
   var phaseBudgetNanoseconds: UInt64 {
     acceptedV2
-      ? SyncConnectionRaceTiming.relayReadyAfterAcceptedNanoseconds
+      ? budget.relayReadyAfterAcceptedNanoseconds
       : SyncConnectionRaceTiming.relayAcceptedNegotiationNanoseconds
   }
 

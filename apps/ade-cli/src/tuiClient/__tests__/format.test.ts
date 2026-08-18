@@ -1008,6 +1008,90 @@ describe("renderChatLines", () => {
     expect(lines[1]?.tone).toBe("assistant");
   });
 
+  // One sleep, one artifact — the same contract desktop's transcript holds.
+  // Both halves of the chip carry the same `sleepId`; the resumed half must
+  // replace the paused row in place rather than stack a second line under it.
+  it("folds a host sleep pause and resume onto one row", () => {
+    const sleep = (status: string, message: string, sleepId: string) => ({
+      type: "system_notice",
+      noticeKind: "info",
+      severity: "info",
+      status,
+      message,
+      detail: { hostSleep: { sleepId } },
+    });
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: sleep("host_asleep", "Paused — computer asleep", "host-sleep-1") as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "text", text: "after the pause" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: sleep("host_awake", "Resumed · paused 4m", "host-sleep-1") as never,
+        },
+      ],
+    });
+    expect(lines).toHaveLength(2);
+    // The row stays where the pause happened, carrying the resolved text.
+    expect(lines[0]).toEqual(expect.objectContaining({
+      tone: "notice",
+      body: "Resumed · paused 4m",
+    }));
+    expect(lines[1]?.tone).toBe("assistant");
+  });
+
+  it("gives a second sleep its own row", () => {
+    const sleep = (status: string, message: string, sleepId: string) => ({
+      type: "system_notice",
+      noticeKind: "info",
+      severity: "info",
+      status,
+      message,
+      detail: { hostSleep: { sleepId } },
+    });
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: sleep("host_asleep", "Paused — computer asleep", "host-sleep-1") as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: sleep("host_awake", "Resumed · paused 1m", "host-sleep-1") as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: sleep("host_asleep", "Paused — computer asleep", "host-sleep-2") as never,
+        },
+      ],
+    });
+    expect(lines.map((line) => line.body)).toEqual([
+      "Resumed · paused 1m",
+      "Paused — computer asleep",
+    ]);
+  });
+
   it("suppresses low-value startup system notices and keeps auth failures concise", () => {
     const lines = renderChatLines({
       activeSession: null,

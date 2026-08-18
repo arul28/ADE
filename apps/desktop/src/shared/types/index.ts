@@ -41,3 +41,5 @@ export * from "./recovery";
 export * from "./productAnalytics";
 export * from "./account";
 export * from "./attention";
+export * from "./power";
+export * from "./keepAwake";
