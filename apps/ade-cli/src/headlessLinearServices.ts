@@ -1931,10 +1931,7 @@ export function createHeadlessGitHubService(
      * and leave the renderer's poll governor permanently un-gated.
      */
     async getRequestBudget(): Promise<GitHubRequestBudget> {
-      const candidates = await readCredentialInventoryAsync()
-        .then((inventory) => githubOperationCredentialCandidates(inventory.candidates, "read"))
-        .catch(() => undefined);
-      return githubRequestBudget(Date.now(), candidates);
+      return githubRequestBudget();
     },
     async getRemoteStatus() {
       const origin = await readGitOriginAsync(projectRoot);

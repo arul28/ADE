@@ -165,6 +165,7 @@ import {
   isGithubRequestError,
   markGithubRequestError,
 } from "./githubReadBackoff";
+import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
@@ -5392,6 +5393,20 @@ export function createPrService({
     return updated;
   };
 
+  /**
+   * Whether an error means GitHub is unusable right now, as opposed to one row
+   * being unreachable. Duck-typed on the classified `authFailure` every GitHub
+   * request error carries rather than on an imported error class, so it keeps
+   * working across the desktop and headless service owners.
+   */
+  const isGithubWideFailure = (error: unknown): boolean => {
+    const kind = (error as { authFailure?: { kind?: unknown } } | null)?.authFailure?.kind;
+    if (kind === "rate_limited" || kind === "service_unavailable" || kind === "network") return true;
+    // `GitHubRateLimitError` carries the reset instant instead of an authFailure.
+    if ((error as { rateLimitResetAtMs?: unknown } | null)?.rateLimitResetAtMs !== undefined) return true;
+    return isGithubServiceUnavailable({ message: getErrorMessage(error) });
+  };
+
   const refreshPrIds = async (prIds: string[]): Promise<PrSummary[]> => {
     const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
     const refreshed: PrSummary[] = [];
@@ -5413,43 +5428,6 @@ export function createPrService({
       throw failures[0].reason;
     }
     return refreshed;
-  };
-
-  /**
-   * Refresh rows without letting one bad row abort the sweep, and report
-   * whether GitHub answered for any of them.
-   *
-   * The caller (`prPollingService`) derives its exponential backoff from
-   * whether a tick threw. This helper used to swallow every per-row failure and
-   * return void, so a sweep in which GitHub refused every single row still read
-   * as a clean tick: `consecutiveFailures` stayed at zero and the poller kept
-   * its normal cadence for the entire outage. Per-row tolerance is still right
-   * — one deleted PR must not stop the others — but "every row failed" is a
-   * fact about GitHub, not about a row, and the caller has to see it.
-   */
-  const refreshRowsBestEffort = async (
-    rows: PullRequestRow[],
-  ): Promise<{ attempted: number; refreshed: number; firstError: unknown }> => {
-    const seen = new Set<string>();
-    const uniqueRows = rows.filter((row) => {
-      if (seen.has(row.id)) return false;
-      seen.add(row.id);
-      return true;
-    });
-    let refreshed = 0;
-    let firstError: unknown = null;
-    for (let i = 0; i < uniqueRows.length; i += REFRESH_CONCURRENCY) {
-      await Promise.all(uniqueRows.slice(i, i + REFRESH_CONCURRENCY).map(async (row) => {
-        try {
-          await refreshOne(row.id);
-          refreshed += 1;
-        } catch (error) {
-          if (firstError == null) firstError = error;
-          logger.warn("prs.refresh_failed", { prId: row.id, error: getErrorMessage(error) });
-        }
-      }));
-    }
-    return { attempted: uniqueRows.length, refreshed, firstError };
   };
 
   /**
@@ -11238,12 +11216,23 @@ export function createPrService({
         .filter((row) => hotPrIds.has(row.id))
         .sort(compareBackgroundRefreshPriority);
       const candidates = [...hotCandidates, ...staleCandidates];
-      const outcome = await refreshRowsBestEffort(candidates);
-      // Same rule `refreshPrIds` already applies: a sweep where every attempted
-      // row failed is a GitHub failure and must surface, so the poller's
-      // backoff engages instead of retrying at full cadence. A partial success
-      // is still a success — GitHub answered.
-      if (outcome.attempted > 0 && outcome.refreshed === 0) throw outcome.firstError;
+      // Tolerate a row that fails, but let a GitHub-wide failure surface: the
+      // sweep used to run through a best-effort helper that swallowed
+      // everything, so an outage in which every row failed still read as a
+      // clean tick and `prPollingService` never engaged its backoff.
+      //
+      // "Every row failed" alone is NOT that evidence. Candidates are the rows
+      // whose `last_synced_at` is stale, and a row that permanently 404s (repo
+      // renamed, fork access lost, PR hard-deleted) never refreshes it — so it
+      // becomes the only candidate on every later sweep, and an unconditional
+      // rethrow would pin a perfectly healthy poller at max backoff forever.
+      // Only a failure that says GitHub itself is unusable counts.
+      try {
+        await refreshPrIds(candidates.map((row) => row.id));
+      } catch (error) {
+        if (isGithubWideFailure(error)) throw error;
+        logger.warn("prs.background_refresh_rows_failed", { error: getErrorMessage(error) });
+      }
 
       return withGithubStackMemberships(listRows().map(rowToSummary));
     },

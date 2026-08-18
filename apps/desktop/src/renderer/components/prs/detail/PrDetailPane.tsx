@@ -514,10 +514,10 @@ export function PrDetailPane({
     setTimelineFilters,
     setAiSummaryDismissed,
     regeneratePrAiSummary,
-    isGithubRateLimited,
-    noteGithubRateLimit,
-    noteGithubRequestSuccess,
-    githubPollPeriodMs,
+    isGithubPollStoodDown,
+    noteGithubReadFailure,
+    noteGithubReadSuccess,
+    githubPollPeriodFor,
     githubPollGeneration,
   } = usePrs();
   const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
@@ -1110,13 +1110,13 @@ export function PrDetailPane({
     // Stretch the timer itself rather than waking every 5s to return early: a
     // guard that has to be re-checked on every tick is one refactor away from
     // being missed, and a slower interval cannot be.
-    const periodMs = githubPollPeriodMs(basePeriodMs);
+    const periodMs = githubPollPeriodFor(basePeriodMs);
 
     let cancelled = false;
     const id = window.setInterval(() => {
       // Second line of defence — the period above already reflects the
       // stand-down, but a pause armed between ticks lands here.
-      if (isGithubRateLimited()) return;
+      if (isGithubPollStoodDown()) return;
       const activityPromise = activeTab === "overview"
         ? fetchActivity()
         : Promise.resolve(null);
@@ -1132,9 +1132,9 @@ export function PrDetailPane({
         // test matched neither the 5xx responses of a GitHub outage nor a 403
         // rate-limit body, so the brake never armed while the quota drained.
         if (results.some((result) => result.status === "rejected")) {
-          noteGithubRateLimit();
+          noteGithubReadFailure();
         } else {
-          noteGithubRequestSuccess();
+          noteGithubReadSuccess();
         }
         // Whatever DID resolve is still applied: a partial answer keeps the
         // pane current instead of freezing it on the last complete one.
@@ -1162,8 +1162,8 @@ export function PrDetailPane({
     };
   }, [
     activeTab, checksTerminal, fetchActionRuns, fetchActivity, fetchChecks, fetchReviewThreadsApi,
-    githubPollGeneration, githubPollPeriodMs, isGithubRateLimited, noteGithubRateLimit,
-    noteGithubRequestSuccess, pr.id, updateDetailPaneWarmCache, windowVisible,
+    githubPollGeneration, githubPollPeriodFor, isGithubPollStoodDown, noteGithubReadFailure,
+    noteGithubReadSuccess, pr.id, updateDetailPaneWarmCache, windowVisible,
   ]);
 
   // While GitHub is still computing mergeability for the selected PR, re-poll
@@ -1185,24 +1185,24 @@ export function PrDetailPane({
       return Promise.resolve(null);
     };
     let cancelled = false;
-    let attempts = 0;
-    // ~1 minute ceiling either way, then defer to the background poll.
     const pollPeriodMs = mergeabilityPollPeriodMs();
-    const MAX_ATTEMPTS = Math.round(60_000 / pollPeriodMs);
+    // A wall-clock ceiling, not an attempt count. This is an automatic loop
+    // too, so it stands down with the governor — and skipped attempts against a
+    // counter would have turned "~1 minute, then defer to the background poll"
+    // into hours of a live 2.5s timer during an outage. Making fewer attempts
+    // inside the same minute is the correct degradation: the background poller
+    // owns freshness after the deadline either way.
+    const deadlineAtMs = Date.now() + 60_000;
     const seqAtStart = detailLoadSeqRef.current;
     const id = window.setInterval(() => {
-      if (attempts >= MAX_ATTEMPTS) {
+      if (Date.now() >= deadlineAtMs) {
         window.clearInterval(id);
         return;
       }
-      // This is an automatic loop too, and at 2.5s the densest one in the pane.
-      // Attempts spent while the governor is standing down would be attempts
-      // burned against a GitHub that is not answering, so they do not count.
-      if (isGithubRateLimited()) return;
-      attempts += 1;
+      if (isGithubPollStoodDown()) return;
       pollStatus()
         .then((next) => {
-          noteGithubRequestSuccess();
+          noteGithubReadSuccess();
           // Drop if cancelled, empty, or a newer detail load superseded us.
           if (cancelled || !next || seqAtStart !== detailLoadSeqRef.current) return;
           setPolledStatus(next);
@@ -1212,7 +1212,7 @@ export function PrDetailPane({
           }
         })
         .catch(() => {
-          noteGithubRateLimit();
+          noteGithubReadFailure();
         });
     }, pollPeriodMs);
     return () => {
@@ -1220,8 +1220,8 @@ export function PrDetailPane({
       window.clearInterval(id);
     };
   }, [
-    mergeabilityComputing, isUnmapped, isGithubRateLimited, noteGithubRateLimit,
-    noteGithubRequestSuccess, pr.id, updateDetailPaneWarmCache,
+    mergeabilityComputing, isUnmapped, isGithubPollStoodDown, noteGithubReadFailure,
+    noteGithubReadSuccess, pr.id, updateDetailPaneWarmCache,
   ]);
 
   // ---- Action helper to reduce repetitive try/catch/finally ----

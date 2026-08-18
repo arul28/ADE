@@ -46,15 +46,7 @@ function makeFakePr(id: string) {
 }
 
 function budget(overrides: Partial<GitHubRequestBudget> = {}): GitHubRequestBudget {
-  return {
-    pausedUntil: null,
-    failureKind: null,
-    retryAt: null,
-    remaining: null,
-    limit: null,
-    resource: null,
-    ...overrides,
-  };
+  return { pausedUntil: null, failureKind: null, retryAt: null, ...overrides };
 }
 
 function installAde(options: {
@@ -64,7 +56,7 @@ function installAde(options: {
   globalThis.window.ade = {
     prs: {
       refresh: vi.fn().mockResolvedValue(undefined),
-      listWithConflicts: vi.fn().mockResolvedValue([makeFakePr("pr-1")]),
+      listWithConflicts: vi.fn().mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]),
       onEvent: vi.fn(() => () => {}),
       listSnapshots: vi.fn().mockResolvedValue([]),
       getStatus: vi.fn().mockResolvedValue({ state: "open" }),
@@ -101,16 +93,24 @@ function installAde(options: {
 }
 
 function GovernorHarness() {
-  const { isGithubRateLimited, githubPollPeriodMs, loading, setSelectedPrId, selectedPrId } = usePrs();
+  const {
+    isGithubPollStoodDown,
+    githubPollPeriodFor,
+    githubPollGeneration,
+    loading,
+    setSelectedPrId,
+    selectedPrId,
+  } = usePrs();
   return (
     <div>
-      <button type="button" onClick={() => setSelectedPrId("pr-1")}>
-        select pr-1
-      </button>
+      <button type="button" onClick={() => setSelectedPrId("pr-1")}>select pr-1</button>
+      <button type="button" onClick={() => setSelectedPrId("pr-2")}>select pr-2</button>
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
       <div data-testid="selected-pr-id">{selectedPrId ?? ""}</div>
-      <div data-testid="paused">{isGithubRateLimited() ? "paused" : "running"}</div>
-      <div data-testid="period">{githubPollPeriodMs(CHECKS_BASE_PERIOD_MS)}</div>
+      <div data-testid="paused">{isGithubPollStoodDown() ? "paused" : "running"}</div>
+      {/* Read through the render generation so the period reflects the latest
+          stand-down rather than whatever it was at first render. */}
+      <div data-testid="period">{githubPollGeneration >= 0 ? githubPollPeriodFor(CHECKS_BASE_PERIOD_MS) : 0}</div>
     </div>
   );
 }
@@ -168,11 +168,7 @@ describe("PrsContext GitHub poll governor", () => {
     // PR poller — while every foreground read went straight to
     // `githubService.apiRequest` with no gate at all.
     const pausedUntil = new Date(Date.now() + 30 * 60_000).toISOString();
-    await renderHarness({
-      getRequestBudget: vi.fn().mockResolvedValue(
-        budget({ pausedUntil, remaining: 500, limit: 5_000, resource: "core" }),
-      ),
-    });
+    await renderHarness({ getRequestBudget: vi.fn().mockResolvedValue(budget({ pausedUntil })) });
 
     await waitFor(() => {
       expect(screen.getByTestId("paused").textContent).toBe("paused");
@@ -182,14 +178,37 @@ describe("PrsContext GitHub poll governor", () => {
   });
 
   it("leaves foreground reads running while quota is healthy", async () => {
-    await renderHarness({
-      getRequestBudget: vi.fn().mockResolvedValue(
-        budget({ remaining: 4_900, limit: 5_000, resource: "core" }),
-      ),
-    });
+    const getRequestBudget = vi.fn().mockResolvedValue(budget());
+    await renderHarness({ getRequestBudget });
 
+    // Assert the budget was actually consulted: "running" is also the initial
+    // state, so without this the test would pass even if it were never read.
+    await waitFor(() => {
+      expect(getRequestBudget).toHaveBeenCalled();
+    });
     expect(screen.getByTestId("paused").textContent).toBe("running");
     expect(Number(screen.getByTestId("period").textContent)).toBe(CHECKS_BASE_PERIOD_MS);
+  });
+
+  it("keeps the quota reserve armed across a successful user-driven read", async () => {
+    // User actions are ungated on purpose, so their successes reach the
+    // governor. When the reserve shared one field with the failure ladder, a
+    // single PR open wiped it and handed the automatic loops their 5s cadence
+    // back with the quota still below the reserve.
+    const pausedUntil = new Date(Date.now() + 30 * 60_000).toISOString();
+    await renderHarness({
+      getRequestBudget: vi.fn().mockResolvedValue(budget({ pausedUntil })),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("paused").textContent).toBe("paused");
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-1");
+    });
+
+    expect(screen.getByTestId("paused").textContent).toBe("paused");
   });
 
   it("survives a runtime that cannot answer the budget read", async () => {
@@ -206,9 +225,10 @@ describe("PrsContext GitHub poll governor", () => {
   });
 
   it("keeps the stand-down when the user selects a different PR", async () => {
-    // The old backoff was reset on every PR selection and unmount, so clicking
-    // around a stuck tab — the natural reaction — disarmed the only brake.
-    // GitHub being down is account-wide, not per-PR.
+    // The old backoff was reset on every PR selection, so clicking around a
+    // stuck tab — the natural reaction — disarmed the only brake. GitHub being
+    // down is account-wide, not per-PR. Selecting a *different* PR is what
+    // re-runs the effect that used to clear it.
     const getChecks = vi.fn().mockRejectedValue(new Error("GitHub API request failed (HTTP 503)"));
     await renderHarness({ getChecks });
 
@@ -217,7 +237,10 @@ describe("PrsContext GitHub poll governor", () => {
       expect(screen.getByTestId("paused").textContent).toBe("paused");
     });
 
-    await userEvent.click(screen.getByRole("button", { name: "select pr-1" }));
+    await userEvent.click(screen.getByRole("button", { name: "select pr-2" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-2");
+    });
     expect(screen.getByTestId("paused").textContent).toBe("paused");
   });
 });

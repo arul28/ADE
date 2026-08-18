@@ -206,8 +206,9 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | File | Responsibility |
 |------|---------------|
 | `PRsPage.tsx` | Top-level tab shell (GitHub vs Workflows) with URL-driven state. Consumes create-PR handoff params from either router search or hash search (`create=1`, `sourceLaneId` / `laneId`, `target=primary`) and the `prs.create` dialog bus props, then opens `CreatePrModal` with matching initial values without persisting the one-shot route as the last PR route. |
-| `state/PrsContext.tsx` | PR data provider (list, selection, GitHub stacks, and rebase needs). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible whenever a live read fails, not only during rate limits. Owns the shared GitHub poll governor (`isGithubRateLimited`, `noteGithubRateLimit`, `noteGithubRequestSuccess`, `githubPollPeriodMs`) and the slow `ade.github.getRequestBudget` refresh that feeds it. |
-| `state/githubPollGovernor.ts` | Pure backoff state machine shared by every automatic PR read on the surface: an exponential stand-down armed by any rejection, a longer first rung for a GitHub-side failure, and the runtime's 500-request quota reserve. Returns a poll *period* so timers slow down rather than waking and returning early. See [Keeping automatic GitHub reads inside the quota](#keeping-automatic-github-reads-inside-the-quota). |
+| `state/PrsContext.tsx` | PR data provider (list, selection, GitHub stacks, and rebase needs). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible whenever a live read fails, not only during rate limits. Exposes the shared GitHub poll governor to the PR surface. |
+| `state/githubPollGovernor.ts` | Pure state machine shared by every automatic PR read on the surface: a stand-down armed by any rejection (one rung while unclassified, exponential once attributed to GitHub) plus the runtime's 500-request quota reserve, tracked as an independent stand-down that a success does not clear. Returns a poll *period* so timers slow down rather than waking and returning early. See [Keeping automatic GitHub reads inside the quota](#keeping-automatic-github-reads-inside-the-quota). |
+| `state/useGithubPollGovernor.ts` | The provider-side hook that drives it: holds the state in a ref (interval callbacks would otherwise read a stale closure), exposes `isGithubPollStoodDown` / `noteGithubReadFailure` / `noteGithubReadSuccess` / `githubPollPeriodFor`, bumps a render generation only when a stand-down actually changes, and refreshes `ade.github.getRequestBudget` on a slow timer and after every failure. |
 | `prsRouteState.ts` | URL ↔ page state mapping plus project-scoped last-route storage. When a project root is known, the PRs tab reads only that project's stored route and does not fall back to the legacy global route from another project. |
 | `CreatePrModal.tsx` | Single/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. Normal PRs default the title to `source lane -> target lane`; a `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
 | `tabs/NormalTab.tsx` | Normal PR list |
@@ -1136,13 +1137,27 @@ recovery is automatic.
   good cached snapshot with a fabricated empty one, and the mobile aggregate
   files checks under `unavailableParts` instead of reporting a false empty.
 - `renderer/components/prs/state/githubPollGovernor.ts` is one shared brake for
-  every automatic PR read on the surface. **Any** rejection arms an exponential
-  stand-down (30 s → … → 5 min, matching `prPollingService`'s `MAX_INTERVAL_MS`);
-  there is no substring test anywhere. The governor lengthens the timer's
-  *period* rather than skipping ticks, because a guard re-checked on every tick
-  is one refactor away from being missed. One success clears the whole ladder,
-  and the stand-down survives PR selection — a GitHub outage is account-wide,
-  not per-PR.
+  every automatic PR read on the surface, driven from the provider by
+  `useGithubPollGovernor`. **Any** rejection arms a stand-down; there is no
+  substring test anywhere. The governor lengthens the timer's *period* rather
+  than skipping ticks, because a guard re-checked on every tick is one refactor
+  away from being missed. One success clears the ladder, and the stand-down
+  survives PR selection — a GitHub outage is account-wide, not per-PR.
+
+  An **unclassified** failure buys one rung (30 s) and does not climb: a runtime
+  reconnect, an IPC blip, or a local `PR not found` all reach the governor as a
+  bare rejection, and letting those ride to the five-minute ceiling would cost
+  liveness on the one surface whose whole value is liveness. Once the budget
+  attributes the failure to GitHub the ladder is re-derived and climbs normally
+  (60 s → … → 5 min, matching `prPollingService`'s `MAX_INTERVAL_MS`).
+
+  The failure ladder and the **quota reserve** are tracked as two independent
+  stand-downs, and only the ladder is cleared by a success. They were one field
+  first, which quietly leaked the reserve: user actions are ungated on purpose,
+  so a single PR open or Refresh click reset the governor and handed every
+  automatic loop its 5-second cadence back with the quota still below 500. A
+  successful request does not refill the quota — only the reset does, and the
+  budget reports that instant.
 - The **typed** failure kind cannot ride on the rejection (Electron IPC and the
   runtime's JSON-RPC both flatten an error to its message), so it arrives as
   data: `ade.github.getRequestBudget` returns the `GitHubRequestBudget` — the
@@ -1153,13 +1168,27 @@ recovery is automatic.
   A kind meaning "GitHub itself is failing" starts the ladder at 60 s instead of
   30 s; a `rate_limited` kind waits for the reset instant GitHub named, which is
   GitHub's own documented guidance.
-- The budget read is **zero-network** — it inspects in-memory credential health
-  only — so consulting it costs nothing and stays correct while GitHub is
-  refusing. It is implemented in **both** GitHub service owners (desktop
-  `githubService` and the daemon's `createHeadlessGitHubService`), because the
-  runtime-bound production build reaches GitHub through the second one. It is
-  optional on the client: an older remote runtime that cannot answer leaves
-  callers on their local ladder rather than losing the brake entirely.
+- The budget read is **zero-network and zero-subprocess** — it inspects
+  in-memory credential health only — so consulting it costs nothing and stays
+  correct while GitHub is refusing. That is why it takes no credential
+  inventory: resolving one can shell out to `gh auth token`, decrypt the
+  credential store (a PowerShell subprocess under DPAPI on Windows), or refresh
+  an expired App user token *over the network*, and this read runs on a timer
+  and again on every failed poll group. Answering from every credential the
+  process knows rather than one project's is also the safe direction — the
+  primary quota is per-account, so over-throttling is conservative and
+  under-throttling is the bug — and it matches `prPollingService`, which calls
+  `githubBackgroundRequestPauseUntilMs()` unscoped for the same reason.
+
+  It is implemented in **both** GitHub service owners (desktop `githubService`
+  and the daemon's `createHeadlessGitHubService`), because the runtime-bound
+  production build reaches GitHub through the second one, and registered on the
+  **sync remote-command** surface as well — the hosted web client's timers run
+  in the browser but its GitHub requests are spent by the paired machine's
+  quota, so an unregistered command would have left the web client's 5-second
+  loop permanently un-gated. It is optional on the client: an older remote
+  runtime that cannot answer leaves callers on their local ladder rather than
+  losing the brake entirely.
 - **User-initiated work is deliberately exempt.** The Refresh button and
   post-mutation re-reads (`refreshSelectedPrDetail`) bypass the stand-down
   entirely — preserving quota for explicit user actions is what the reserve is
@@ -1169,13 +1198,18 @@ recovery is automatic.
 - A failed detail read now falls back to the cached snapshot for **every**
   failure, not only a recognised rate limit, so the pane keeps showing what ADE
   already knows instead of going empty and then polling for more of the same.
-- `prService.refresh()`'s background sweep reports a sweep in which GitHub
-  answered for **no** row, applying the same rule `refreshPrIds` already used.
-  `refreshRowsBestEffort` used to swallow every per-row failure and return void,
-  so a sweep where GitHub refused everything still read as a clean tick:
-  `prPollingService`'s `consecutiveFailures` stayed at zero and `computeBackoffMs`
-  never engaged. Per-row tolerance is still right — one deleted PR must not stop
-  the others — but "every row failed" is a fact about GitHub, not about a row.
+- `prService.refresh()`'s background sweep reports a failure that means **GitHub
+  itself is unusable** (`rate_limited`, `service_unavailable`, `network`). It
+  used to run through a best-effort helper that swallowed every per-row failure
+  and returned void, so a sweep where GitHub refused everything still read as a
+  clean tick: `prPollingService`'s `consecutiveFailures` stayed at zero and
+  `computeBackoffMs` never engaged.
+
+  "Every row failed" is deliberately **not** the test. Candidates are the rows
+  whose `last_synced_at` is stale, and a row that permanently 404s (repo
+  renamed, fork access lost, PR hard-deleted) never refreshes it — so it becomes
+  the only candidate on every later sweep, and an unconditional rethrow would
+  pin a perfectly healthy poller at max backoff forever.
 
 No new UI ships with this. A corroborated outage already collapses the GitHub
 banner family into one neutral incident notice
@@ -1811,8 +1845,8 @@ markdown layout cost for offscreen or folded content.
 - **Every foreground GitHub timer must consult the poll governor.** The
   500-request reserve was enforced only in `prPollingService`, so the renderer
   loops drained the quota the reserve was supposed to protect. When adding a new
-  automatic PR read, gate it on `isGithubRateLimited()` and derive its interval
-  from `githubPollPeriodMs(base)`; user-initiated actions stay exempt on purpose.
+  automatic PR read, gate it on `isGithubPollStoodDown()` and derive its interval
+  from `githubPollPeriodFor(base)`; user-initiated actions stay exempt on purpose.
 - **A lookup that falls back to cached data must not report success upstream.**
   A failed per-branch PR lookup returns `null`, not `[]`, so the snapshot can
   never fold "we could not ask" into a confirmed-empty result and drop a lane's

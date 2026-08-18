@@ -197,11 +197,18 @@ describe("githubCredentialHealth", () => {
 
     it("gates automatic requests once the core quota reaches the reserve", () => {
       recordCoreQuota(GITHUB_BACKGROUND_RATE_LIMIT_RESERVE);
-      const budget = githubRequestBudget(Date.now(), [ghCandidate]);
-      expect(budget.pausedUntil).toBe(new Date(Date.parse(RESET_AT)).toISOString());
-      expect(budget.remaining).toBe(GITHUB_BACKGROUND_RATE_LIMIT_RESERVE);
-      expect(budget.limit).toBe(5000);
-      expect(budget.resource).toBe("core");
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).pausedUntil)
+        .toBe(new Date(Date.parse(RESET_AT)).toISOString());
+    });
+
+    it("answers from every known credential when given none, without a network or subprocess call", () => {
+      // The unscoped form is what the IPC action calls. Resolving a credential
+      // inventory to scope it is NOT free — it can shell out to `gh auth token`,
+      // decrypt the credential store, or refresh an App user token over the
+      // network — and this read runs on a timer and on every failed poll group.
+      recordCoreQuota(GITHUB_BACKGROUND_RATE_LIMIT_RESERVE);
+      expect(githubRequestBudget().pausedUntil)
+        .toBe(new Date(Date.parse(RESET_AT)).toISOString());
     });
 
     it("leaves automatic requests running while quota is above the reserve", () => {
@@ -255,9 +262,28 @@ describe("githubCredentialHealth", () => {
         "x-ratelimit-reset": String(Date.parse(RESET_AT) / 1_000),
         "x-ratelimit-resource": "search",
       }));
-      const budget = githubRequestBudget(Date.now(), [ghCandidate]);
-      expect(budget.pausedUntil).toBeNull();
-      expect(budget.resource).toBeNull();
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).pausedUntil).toBeNull();
+    });
+
+    it("ranks a credential-scoped failure above a local network fault", () => {
+      // The severity order is a contract with `ladderBaseMs` in
+      // `renderer/components/prs/state/githubPollGovernor.ts`: it must report
+      // the kind that asks for the LONGER stand-down. `network` outranking
+      // `invalid_token` here would have handed the governor the 30s base when
+      // the other credential warranted 60s.
+      recordGithubOperationFailure(appCandidate, {
+        kind: "invalid_token",
+        message: "Bad credentials",
+        retryAt: null,
+      }, { limit: 5000, remaining: 4000, used: 1000, resetAt: null, resource: "core" });
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "network",
+        message: "fetch failed",
+        retryAt: null,
+      }, { limit: 5000, remaining: 3000, used: 2000, resetAt: null, resource: "core" });
+
+      expect(githubRequestBudget(Date.now(), [appCandidate, ghCandidate]).failureKind)
+        .toBe("invalid_token");
     });
 
     it("clears the reported failure once GitHub answers again", () => {
@@ -278,9 +304,6 @@ describe("githubCredentialHealth", () => {
         pausedUntil: null,
         failureKind: null,
         retryAt: null,
-        remaining: null,
-        limit: null,
-        resource: null,
       });
     });
   });

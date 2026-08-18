@@ -358,14 +358,13 @@ export type GitHubRequestBudget = {
    * recent request on it succeeded. `service_unavailable` deliberately carries
    * no pause — a GitHub 5xx must never park a credential — but it is the signal
    * that tells a poller to lengthen its own cadence.
+   *
+   * When several credentials have each recorded a failure this is the one that
+   * justifies the longest stand-down, so a caller can act on it directly.
    */
   failureKind: GitHubAuthFailureKind | null;
   /** Retry instant GitHub supplied for {@link failureKind}, when it gave one. */
   retryAt: string | null;
-  /** Remaining primary-quota requests on the tightest PR-read resource. */
-  remaining: number | null;
-  limit: number | null;
-  resource: string | null;
 };
 
 export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat";

@@ -406,37 +406,55 @@ export function githubBackgroundRequestPauseUntilMs(
 }
 
 /**
+ * Rank of a failure kind by how long a stand-down it justifies.
+ *
+ * Contract with `ladderBaseMs` in
+ * `renderer/components/prs/state/githubPollGovernor.ts`: the budget reports the
+ * worst kind currently recorded, and "worst" has to mean the same thing in both
+ * modules or a multi-credential chain reports the kind that asks for the
+ * *shorter* wait. Change one, change both.
+ */
+const REQUEST_BUDGET_FAILURE_SEVERITY: Record<GitHubAuthFailure["kind"], number> = {
+  rate_limited: 5,
+  service_unavailable: 4,
+  invalid_token: 3,
+  permission_denied: 2,
+  network: 1,
+  unknown: 0,
+};
+
+/**
  * The reserve and the classified failure kind that automatic GitHub readers
  * need, computed from in-memory health only — this function must never issue a
  * request, because its whole purpose is to be safe to call while GitHub is
  * refusing or exhausted.
  *
+ * "In-memory only" is load-bearing, and it is why this takes no credential
+ * inventory: resolving one can shell out to `gh auth token`, decrypt the
+ * credential store (a PowerShell subprocess under DPAPI on Windows), and even
+ * refresh an expired App user token over the network. A safety read consulted
+ * on a timer — and once per failing poll group during exactly the outage it
+ * exists to survive — must cost nothing. Reading every credential this process
+ * knows instead of this project's is also the safe direction: the primary quota
+ * is per-account, so over-throttling is conservative and under-throttling is
+ * the bug. It matches `prPollingService`, which calls
+ * `githubBackgroundRequestPauseUntilMs()` unscoped for the same reason.
+ *
  * The reported failure kind is the worst one currently recorded on a PR-read
- * resource. Worst-first ordering matters: with several credentials in the
- * chain, "GitHub is down" and "this one token is out of quota" can be recorded
- * at the same time, and the caller's cadence must be driven by the one that
- * asks for the longest stand-down.
+ * resource. Worst-first matters: with several credentials in the chain, "GitHub
+ * is down" and "this one token is out of quota" can be recorded at the same
+ * time, and the caller's cadence must be driven by the one that asks for the
+ * longest stand-down.
  */
-const REQUEST_BUDGET_FAILURE_SEVERITY: Record<GitHubAuthFailure["kind"], number> = {
-  rate_limited: 5,
-  service_unavailable: 4,
-  network: 3,
-  invalid_token: 2,
-  permission_denied: 1,
-  unknown: 0,
-};
-
 export function githubRequestBudget(
   nowMs = Date.now(),
   candidates?: readonly GithubCredentialCandidate[],
 ): GitHubRequestBudget {
   const pauseUntilMs = githubBackgroundRequestPauseUntilMs(nowMs, candidates);
   let failure: GitHubAuthFailure | null = null;
-  let tightest: { rateLimit: GitHubRateLimitState; resource: string } | null = null;
   for (const health of healthEntriesFor(candidates)) {
     for (const [resource, resourceHealth] of health.resources) {
-      const rateLimit = resourceHealth.rateLimit;
-      if (!protectsPullRequestReads(resource, rateLimit)) continue;
+      if (!protectsPullRequestReads(resource, resourceHealth.rateLimit)) continue;
       const current = resourceHealth.failure;
       if (
         current
@@ -448,20 +466,11 @@ export function githubRequestBudget(
       ) {
         failure = current;
       }
-      if (
-        rateLimit?.remaining != null
-        && (tightest == null || rateLimit.remaining < (tightest.rateLimit.remaining ?? Infinity))
-      ) {
-        tightest = { rateLimit, resource };
-      }
     }
   }
   return {
     pausedUntil: pauseUntilMs == null ? null : new Date(pauseUntilMs).toISOString(),
     failureKind: failure?.kind ?? null,
     retryAt: failure?.retryAt ?? null,
-    remaining: tightest?.rateLimit.remaining ?? null,
-    limit: tightest?.rateLimit.limit ?? null,
-    resource: tightest?.resource ?? null,
   };
 }

@@ -2370,19 +2370,13 @@ export function createGithubService({
     /**
      * Zero-network read of the reserve + last classified failure, for automatic
      * GitHub readers that must decide their cadence *before* spending a
-     * request. Callers poll this on a slow timer, so it must never reach
-     * GitHub — it only inspects in-memory credential health.
-     *
-     * Scoped to this project's read credentials when the (TTL-cached)
-     * credential inventory is available, and to every known credential when it
-     * is not: a safety read that fails closed to "no idea" would hand the
-     * caller back the unthrottled behaviour it exists to prevent.
+     * request. Callers poll this on a timer and on every failed poll group, so
+     * it deliberately does NOT resolve a credential inventory — see
+     * `githubRequestBudget` for why that is not free and why answering from
+     * every known credential is the safe direction.
      */
     async getRequestBudget(): Promise<GitHubRequestBudget> {
-      const candidates = await readCredentialInventory()
-        .then((inventory) => githubOperationCredentialCandidates(inventory.candidates, "read"))
-        .catch(() => undefined);
-      return githubRequestBudget(Date.now(), candidates);
+      return githubRequestBudget();
     },
 
     getAppUserAuthStatus(): GitHubAppUserAuthStatus {

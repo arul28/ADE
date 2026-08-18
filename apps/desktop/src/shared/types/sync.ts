@@ -1926,6 +1926,7 @@ export type SyncRemoteCommandAction =
   | "history.listOperations"
   | "github.getStatus"
   | "github.getRemoteStatus"
+  | "github.getRequestBudget"
   | "github.publishCurrentProject"
   | "projectConfig.get"
   | "projectConfig.save"
