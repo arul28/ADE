@@ -9136,6 +9136,109 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("emits a sticky session-quota card and reaps so the next send resumes the same UUID", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "rate_limit_event",
+            session_id: "sdk-session-quota",
+            rate_limit_info: {
+              status: "rejected",
+              utilization: 1,
+              resetsAt: 1_770_000_000,
+            },
+          };
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-quota",
+            message: {
+              content: [{ type: "text", text: "You've hit your session limit · resets 7pm (America/New_York)" }],
+            },
+          };
+          yield {
+            type: "result",
+            is_error: true,
+            errors: ["You've hit your session limit · resets 7pm (America/New_York)"],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-quota",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-quota",
+      } as any);
+
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "keep going",
+        timeoutMs: 15_000,
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "continue after limit",
+        timeoutMs: 15_000,
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "resumed after reset",
+        timeoutMs: 15_000,
+      });
+
+      const quotaCards = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "ade_card" && env.event.variant === "claude_session_quota")
+        .map((env: any) => env.event);
+      expect(quotaCards.length).toBeGreaterThan(1);
+      expect(quotaCards[0]).toMatchObject({
+        variant: "claude_session_quota",
+        state: "live",
+      });
+      expect(quotaCards[0].actions).toEqual([
+        { id: "fork-local", label: "Fork in this lane", kind: "primary" },
+      ]);
+      expect(quotaCards.at(-1)).toMatchObject({
+        variant: "claude_session_quota",
+        state: "terminal",
+        title: "Claude session resumed",
+      });
+      const limitNotices = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit" && env.event.severity === "error");
+      expect(limitNotices).toHaveLength(0);
+      expect(close.mock.calls.length).toBeGreaterThan(0);
+    });
+
     it("surfaces Claude SDK retry, refusal fallback, informational, memory, notification, mirror, and denial events", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);

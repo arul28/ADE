@@ -530,6 +530,7 @@ struct WorkAdeCardModel: Identifiable, Equatable {
     "pr_merged",
     "pr_merge_ready",
     "pr_conflict",
+    "claude_session_quota",
   ]
 
   let id: String
@@ -559,6 +560,11 @@ struct WorkAdeCardModel: Identifiable, Equatable {
 
   var isKnownVariant: Bool {
     Self.knownVariants.contains(variant.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
+  /// Keep in sync with `adeCardIsHiddenAfterDismiss` in `adeCard.ts`.
+  var isHiddenAfterDismiss: Bool {
+    variant == "claude_session_quota" && isTerminal
   }
 
   /// Later-wins merge for a repeat emit with the same `cardId`. Collections and

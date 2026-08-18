@@ -303,6 +303,11 @@ import {
   createHandoffLaunchJobId,
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
+import {
+  CLAUDE_SESSION_QUOTA_CARD_ACTION,
+  CLAUDE_SESSION_QUOTA_CARD_VARIANT,
+  CLAUDE_SESSION_QUOTA_FORK_NOTE,
+} from "../../../shared/claudeSessionQuota";
 import { summarizeNativeControls as summarizeNativeLaunchControls } from "../../lib/nativeLaunchControls";
 import {
   createAppControlContextInstanceId,
@@ -3807,6 +3812,7 @@ export function AgentChatPane({
     () => ({ ...initialNativeControls.cursorConfigValues }),
   );
   const [handoffNote, setHandoffNote] = useState("");
+  const pendingHandoffPrefillRef = useRef<{ note: string } | null>(null);
   // Two-view handoff tab: the landing menu (remote vs local) and the local
   // handoff surface (fork | brief). Both reset each time the tab is opened.
   const [handoffView, setHandoffView] = useState<"menu" | "local">("menu");
@@ -4620,12 +4626,52 @@ export function AgentChatPane({
   }, [chatActionsOpen, subagentView]);
 
   useEffect(() => {
+    const applyLocalForkPrefill = (note: string) => {
+      pendingHandoffPrefillRef.current = { note };
+      if (chatActionsOpen && chatActionsTab === "handoff") {
+        pendingHandoffPrefillRef.current = null;
+        setHandoffNote(note);
+        setHandoffView("local");
+        setHandoffLocalMode("fork");
+        return;
+      }
+      setIosSimulatorOpen(false);
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+      setChatActionsTab("handoff");
+      setChatActionsOpen(true);
+    };
+    const isLocalForkDetail = (detail: {
+      actionId?: string;
+      variant?: string;
+      tab?: string;
+      view?: string;
+      mode?: string;
+    }) => detail.actionId === CLAUDE_SESSION_QUOTA_CARD_ACTION
+      || (detail.tab === "handoff" && detail.view === "local" && detail.mode === "fork")
+      || detail.variant === CLAUDE_SESSION_QUOTA_CARD_VARIANT;
+
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{
         sessionId?: string | null;
         taskId?: string | null;
+        tab?: string;
+        view?: string;
+        mode?: string;
+        actionId?: string;
+        variant?: string;
+        note?: string;
       }>).detail ?? {};
       if (detail.sessionId && selectedSessionId && detail.sessionId !== selectedSessionId) return;
+      if (isLocalForkDetail(detail)) {
+        applyLocalForkPrefill(
+          typeof detail.note === "string" && detail.note.trim()
+            ? detail.note.trim()
+            : CLAUDE_SESSION_QUOTA_FORK_NOTE,
+        );
+        return;
+      }
+      if (event.type !== "ade:chat:open-info") return;
       setChatActionsTab("agents");
       setIosSimulatorOpen(false);
       setAppControlOpen(false);
@@ -4647,9 +4693,13 @@ export function AgentChatPane({
         background: snapshot.background ?? false,
       });
     };
+    window.addEventListener("ade:chat:card-action", handler);
     window.addEventListener("ade:chat:open-info", handler);
-    return () => window.removeEventListener("ade:chat:open-info", handler);
-  }, [selectedSessionId, selectedSubagentSnapshots]);
+    return () => {
+      window.removeEventListener("ade:chat:card-action", handler);
+      window.removeEventListener("ade:chat:open-info", handler);
+    };
+  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots]);
 
   // Cheap probe for the subagents panel: does this agent actually have a
   // pullable transcript? It runs the EXACT same fetch the takeover view uses
@@ -7005,10 +7055,13 @@ export function AgentChatPane({
       setHandoffDroidPermissionMode(droidPermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
-      setHandoffNote("");
-      // Land on the menu each open; default the local mode to fork when the
+      const prefill = pendingHandoffPrefillRef.current;
+      pendingHandoffPrefillRef.current = null;
+      setHandoffNote(prefill?.note ?? "");
+      // Land on the menu each open; skip straight to local fork when a quota
+      // card asked for that form. Default the local mode to fork when the
       // source provider can fork, else brief. Seed lane + remote model.
-      setHandoffView("menu");
+      setHandoffView(prefill ? "local" : "menu");
       setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
       setRemoteHandoffModelId(

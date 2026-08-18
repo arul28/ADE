@@ -1581,6 +1581,24 @@ struct WorkSessionDestinationView: View {
       // composer badge and header menu both open Chat Info — no separate drawer.
       onOpenSubagents: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
       onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
+      onForkChatInLane: {
+        let modelId = (composerChatSummary?.modelId ?? composerChatSummary?.model ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelId.isEmpty else {
+          errorMessage = "Choose a model before forking this chat."
+          return
+        }
+        do {
+          try await syncService.handoffChatSession(
+            sourceSessionId: session.id,
+            targetModelId: modelId,
+            mode: "fork",
+            handoffNote: "Continuing after Claude session limit"
+          )
+        } catch {
+          errorMessage = error.localizedDescription
+        }
+      },
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
       liveTurnActiveHint: liveTurnActiveHint,

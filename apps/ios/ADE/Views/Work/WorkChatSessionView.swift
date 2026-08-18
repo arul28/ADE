@@ -374,6 +374,8 @@ struct WorkChatSessionView: View {
   /// Tapping a subagent spawn/result timeline row opens the same detail surface
   /// the Chat Info roster row opens (full transcript takeover or expanded row).
   var onSelectSubagentRow: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Fork the current Claude thread in this lane (session-quota card).
+  var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
   /// Live "turn is running" signal from the sync layer (chat_subscribe ack +
@@ -417,6 +419,9 @@ struct WorkChatSessionView: View {
   /// Last blocking pending-input id we reacted to, so re-renders that keep the
   /// same gate open don't re-fire the haptic or re-scroll.
   @State var lastBlockingPendingInputId: String?
+  /// Light haptic when a Claude session-quota card first appears.
+  @State var quotaCardHapticToken = 0
+  @State var lastLiveQuotaCardId: String?
   /// Item ids of pending inputs the user just answered. They are hidden from the
   /// consolidated strip immediately (optimistic removal) so it advances to the
   /// next request without waiting for the host, and reconciled back out once the
@@ -628,6 +633,26 @@ struct WorkChatSessionView: View {
   var blockingPendingInputId: String? {
     guard isLive else { return nil }
     return primaryPendingInput?.id
+  }
+
+  var liveClaudeQuotaCardId: String? {
+    guard isLive else { return nil }
+    for entry in timelineSnapshot.timeline {
+      if case .adeCard(let card) = entry.payload,
+         card.variant == "claude_session_quota",
+         !card.isTerminal {
+        return card.id
+      }
+    }
+    return nil
+  }
+
+  @MainActor
+  func handleLiveQuotaCardChange(_ id: String?) {
+    guard id != lastLiveQuotaCardId else { return }
+    lastLiveQuotaCardId = id
+    guard id != nil else { return }
+    quotaCardHapticToken &+= 1
   }
 
   /// React to a newly-arrived blocking pending input: fire one light haptic.
@@ -1510,6 +1535,8 @@ struct WorkChatSessionView: View {
           pendingCodexFastMode = nil
           lastBlockingPendingInputId = nil
           blockingPendingHapticToken = 0
+          lastLiveQuotaCardId = nil
+          quotaCardHapticToken = 0
           optimisticallyAnsweredInputIds.removeAll()
           collapsedPendingInputId = nil
           assistantLineBudgets.removeAll()
@@ -1555,7 +1582,11 @@ struct WorkChatSessionView: View {
         .onChange(of: blockingPendingInputId) { _, newId in
           handleBlockingPendingInputChange(newId)
         }
+        .onChange(of: liveClaudeQuotaCardId) { _, newId in
+          handleLiveQuotaCardChange(newId)
+        }
         .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
+        .sensoryFeedback(.impact(weight: .light), trigger: quotaCardHapticToken)
         .sheet(isPresented: $artifactDrawerPresented) {
           WorkArtifactDrawerSheet(
             artifacts: artifacts,

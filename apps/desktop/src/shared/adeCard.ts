@@ -42,6 +42,7 @@ export type AdeCardVariant =
   | "pr_merged"
   | "pr_merge_ready"
   | "pr_conflict"
+  | "claude_session_quota"
   | (string & {});
 
 /** Semantic row glyph. Surfaces map these to their own icon vocabulary. */
@@ -140,11 +141,23 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_merged",
   "pr_merge_ready",
   "pr_conflict",
+  "claude_session_quota",
 ];
 
 export function isKnownAdeCardVariant(variant: string | null | undefined): boolean {
   if (!variant) return false;
   return KNOWN_ADE_CARD_VARIANTS.includes(variant.trim() as AdeCardVariant);
+}
+
+/**
+ * A successful Claude rebind dismisses the quota card instead of leaving a
+ * "resumed" chip. Desktop, TUI, and iOS all hide that terminal no-action row.
+ */
+export function adeCardIsHiddenAfterDismiss(card: {
+  variant?: string | null;
+  state?: string | null;
+}): boolean {
+  return card.variant === "claude_session_quota" && card.state === "terminal";
 }
 
 /**

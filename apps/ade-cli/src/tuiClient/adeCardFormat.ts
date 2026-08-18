@@ -136,6 +136,16 @@ export function renderAdeCardBody(card: AdeCardPayload): string {
     lines.push(adeCardBoxRow("[o] open"));
   }
 
+  const actions = card.variant === "claude_session_quota"
+    ? (card.actions ?? []).filter((action) => action.id !== "open")
+    : [];
+  if (actions.length) {
+    lines.push(adeCardBoxRow(""));
+    for (const action of actions) {
+      lines.push(adeCardBoxRow(`[fork] ${action.label}`));
+    }
+  }
+
   lines.push(`└${"─".repeat(ADE_CARD_INNER_WIDTH)}┘`);
   if (deeplink) lines.push(deeplink);
   return lines.join("\n");
