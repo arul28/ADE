@@ -1280,8 +1280,10 @@ export function createHeadlessGitHubService(
           body: args.body == null ? undefined : JSON.stringify(args.body),
         }).catch(recordTransportFailure);
       }
-      // The body has its own timeout, so a response that stalls mid-stream
-      // fails here rather than above — same shape, same record.
+      // The body is read after the header timer is cleared, so a socket error
+      // mid-body surfaces here rather than above — same shape, same record.
+      // (Unlike the desktop owner, this transport arms no body timeout, so a
+      // body that stalls without erroring simply never settles.)
       const text = await response.text().catch(recordTransportFailure);
       let data: unknown = text;
       try {

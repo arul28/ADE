@@ -1183,17 +1183,19 @@ export function PrDetailPane({
     const readById = typeof window.ade.prs.getStatus === "function"
       ? window.ade.prs.getStatus
       : null;
-    if (!readByCoords && !readById) return undefined;
+    if (!(isUnmapped ? readByCoords : readById)) return undefined;
     const pollStatus = (): Promise<PrStatus | null> | null => {
       // Re-read the ref at tick time: it is reassigned every render, and a tick
       // landing between the render that nulled it and the effect cleanup would
       // otherwise pass null straight to the host.
-      const coords = coordsRef.current;
       // An unmapped PR asks by coords or asks nothing: its `pr.id` is the
       // synthetic `gh:owner/repo#n`, which `getStatus` rejects locally. That
       // local rejection would arm the shared stand-down for every other loop on
       // the surface — a GitHub brake tripped by something GitHub never saw.
-      if (readByCoords) return coords ? readByCoords(coords) : null;
+      if (isUnmapped) {
+        const coords = coordsRef.current;
+        return readByCoords && coords ? readByCoords(coords) : null;
+      }
       return readById ? readById(pr.id) : null;
     };
     let cancelled = false;

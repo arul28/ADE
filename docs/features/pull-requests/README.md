@@ -1190,7 +1190,8 @@ recovery is automatic.
   A request that never gets an answer from GitHub — a hang, a timeout, a DNS or
   TLS failure, a response body that stalls mid-stream — is recorded as a failure
   by both owners before it is rethrown. The body phase matters as much as the
-  header phase: it has its own timeout, so a stalled response fails there. It
+  header phase: on desktop the body carries its own timeout, and on both owners
+  a socket error mid-body surfaces there rather than at the header read. It
   used to throw straight out of the request helper, recording nothing, so the
   budget reported no kind and the governor could not climb past its flat
   unclassified rung — inert for exactly the outage shape it targets. The kind

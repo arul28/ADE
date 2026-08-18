@@ -190,20 +190,31 @@ export function recordGithubCredentialProbeSuccess(
 }
 
 /**
- * A later failure must never *shorten* a cooldown that is still running. Kinds
- * differ in how long they park a credential — a rejected token gets five
- * minutes, a transport error deliberately gets none — and they share a resource
- * entry, so overwriting unconditionally let a transient network blip un-park a
- * credential ADE had already decided was broken, sending the next request
- * straight back at it.
+ * Reconcile a new failure with a cooldown that is still running.
+ *
+ * A later failure must never *shorten* one. Kinds differ in how long they park
+ * a credential — a rejected token gets five minutes, a transport error
+ * deliberately gets none — and they share a resource entry, so overwriting
+ * unconditionally let a transient network blip un-park a credential ADE had
+ * already decided was broken, sending the next request straight back at it.
+ *
+ * When the older cooldown wins, its *reason* is kept with it. The deadline and
+ * the reason describe the same decision, and splitting them produced an
+ * incoherent state: a rejected token parked for five minutes but reported as a
+ * network problem, which is precisely the misattribution that hides the
+ * reconnect the user actually needs.
  */
-function extendedCooldownUntilMs(
+function reconcileCooldown(
   current: CredentialResourceHealth | undefined,
+  failure: GitHubAuthFailure,
   cooldownUntilMs: number,
   nowMs: number,
-): number {
+): { failure: GitHubAuthFailure; cooldownUntilMs: number } {
   const live = (current?.cooldownUntilMs ?? 0) > nowMs ? current!.cooldownUntilMs : 0;
-  return Math.max(cooldownUntilMs, live);
+  if (live > cooldownUntilMs && current?.failure) {
+    return { failure: current.failure, cooldownUntilMs: live };
+  }
+  return { failure, cooldownUntilMs: Math.max(cooldownUntilMs, live) };
 }
 
 function recordGithubFailure(
@@ -218,9 +229,8 @@ function recordGithubFailure(
   const nowMs = Date.now();
   const next: CredentialHealth = {
     resources: updateResourceHealth(existing, rateLimit, (current) => ({
-      failure,
+      ...reconcileCooldown(current, failure, cooldownUntilMs, nowMs),
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      cooldownUntilMs: extendedCooldownUntilMs(current, cooldownUntilMs, nowMs),
       failureAtMs: nowMs,
     })),
     userLogin,
@@ -237,9 +247,8 @@ function recordGithubFailure(
     const resources = new Map(candidateHealth.resources);
     const current = resources.get(resource);
     resources.set(resource, {
-      failure,
+      ...reconcileCooldown(current, failure, cooldownUntilMs, nowMs),
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      cooldownUntilMs: extendedCooldownUntilMs(current, cooldownUntilMs, nowMs),
       failureAtMs: nowMs,
     });
     healthByTokenDigest.set(candidateDigest, {

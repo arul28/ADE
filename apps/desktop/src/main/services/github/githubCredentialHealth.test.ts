@@ -344,10 +344,14 @@ describe("githubCredentialHealth", () => {
         message: "fetch failed",
         retryAt: null,
       }, null);
-      expect(githubCredentialCooldown(ghCandidate)).not.toBeNull();
+      // The deadline AND the reason survive together. Keeping the park but
+      // relabelling it "network" would report a rejected token as a GitHub
+      // problem — exactly the misattribution that hides the reconnect the user
+      // actually needs.
+      expect(githubCredentialCooldown(ghCandidate)?.failure.kind).toBe("invalid_token");
     });
 
-    it("stops reporting a failure kind once it is no longer recent", () =>{
+    it("stops reporting a failure kind once it is no longer recent", () => {
       // A failure is otherwise cleared only by a success on the SAME credential
       // and resource, so a permanently-bad one (revoked PAT, stale
       // GITHUB_TOKEN) would keep its kind for the life of the process while
