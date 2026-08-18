@@ -1517,6 +1517,47 @@ describe("ade_card (TUI)", () => {
     expect(body).not.toContain("Do something");
   });
 
+  it("prints the local-fork hint on a Claude session-quota card", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          variant: "claude_session_quota",
+          state: "live",
+          title: "Claude session limit · resets 7:00 PM",
+          fallbackText: "Claude session limit",
+          actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+        })),
+      ],
+    });
+    const body = lines.at(-1)!.body;
+    expect(body).toContain("[fork] Fork in this lane");
+  });
+
+  it("hides a dismissed Claude session-quota card even if merge left the fork action", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          variant: "claude_session_quota",
+          state: "live",
+          title: "Claude session limit",
+          fallbackText: "Claude session limit",
+          actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+        })),
+        env("2026-07-27T12:00:01.000Z", 2, card({
+          variant: "claude_session_quota",
+          state: "terminal",
+          title: "Claude session resumed",
+          fallbackText: "Claude session resumed.",
+        })),
+      ],
+    });
+    expect(lines.some((line) => line.body.includes("Claude session"))).toBe(false);
+  });
+
   it("merges repeat emits of one cardId into a single row at its first position", () => {
     const lines = renderChatLines({
       activeSession: null,

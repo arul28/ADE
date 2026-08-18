@@ -3403,6 +3403,13 @@ struct AgentChatInterruptRequest: Codable, Equatable {
   var mode: AgentChatStopMode? = nil
 }
 
+struct AgentChatHandoffRequest: Codable, Equatable {
+  var sourceSessionId: String
+  var targetModelId: String
+  var mode: String
+  var handoffNote: String?
+}
+
 struct AgentChatRestoreCancelledQueueRequest: Codable, Equatable {
   var sessionId: String
   var recoveryId: String

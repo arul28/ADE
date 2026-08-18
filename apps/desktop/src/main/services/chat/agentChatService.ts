@@ -475,6 +475,15 @@ import {
   type AdeCardPayload,
   type AdeCardRow,
 } from "../../../shared/adeCard";
+import {
+  buildClaudeSessionQuotaCard,
+  classifyClaudeRateLimitInfo,
+  claudeSessionQuotaCardId,
+  isClaudeSessionQuotaText,
+  mergeClaudeSessionQuotaSnapshot,
+  snapshotFromClaudeSessionQuotaText,
+  type ClaudeSessionQuotaSnapshot,
+} from "../../../shared/claudeSessionQuota";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import {
@@ -2825,6 +2834,15 @@ type ManagedChatSession = {
   runtimeInvalidated: boolean;
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
+  /**
+   * In-memory only: this chat's Claude session UUID hit a hard plan/session
+   * quota. ADE restart clears it. The next send reaps (already done) and
+   * resumes the same UUID; a successful turn dismisses the quota card.
+   */
+  claudeSessionQuotaSnapshot: ClaudeSessionQuotaSnapshot | null;
+  /** One transcript scan per process so a restart can still dismiss a live card. */
+  claudeQuotaCardLiveChecked?: boolean;
+  claudeQuotaCardWasLive?: boolean;
   codexTerminalTurnIds: Set<string>;
   codexAutomaticRecoveryAttempted: boolean;
   unprocessedMessageResolutionReceipts: Map<string, PersistedUnprocessedMessageResolutionReceipt>;
@@ -17489,6 +17507,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
       unprocessedMessageResolutionReceipts: new Map(
@@ -19181,19 +19200,22 @@ export function createAgentChatService(args: {
 
     if (msg.type === "rate_limit_event") {
       const info = asRecord(record.rate_limit_info) ?? {};
-      const rawStatus = compactString(info.status) ?? "updated";
-      if (rawStatus === "allowed") return;
-      if (rawStatus === "allowed_warning") {
-        if (managed.claudeRateLimitWarningEmitted) return;
-        managed.claudeRateLimitWarningEmitted = true;
-        runtime.rateLimitWarningEmitted = true;
+      const classified = classifyClaudeRateLimitInfo(info);
+      if (classified.kind === "ignore") return;
+      if (classified.kind === "rejected") {
+        noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
+        void resetClaudeQuerySession(managed, runtime, "session_reset");
+        return;
       }
+      if (managed.claudeRateLimitWarningEmitted) return;
+      managed.claudeRateLimitWarningEmitted = true;
+      runtime.rateLimitWarningEmitted = true;
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "rate_limit",
-        severity: rawStatus === "allowed_warning" ? "info" : "error",
-        status: rawStatus,
-        message: rawStatus === "allowed_warning" ? "Approaching Claude plan limit" : `Claude rate limit ${rawStatus.replace(/_/g, " ")}`,
+        severity: "info",
+        status: classified.status,
+        message: "Approaching Claude plan limit",
         ...(state.turnId ? { turnId: state.turnId } : {}),
       });
       return;
@@ -19236,6 +19258,11 @@ export function createAgentChatService(args: {
         }
         if (block.type === "text") {
           const text = typeof block.text === "string" ? block.text : "";
+          if (isClaudeSessionQuotaText(text)) {
+            noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(text), turnId);
+            void resetClaudeQuerySession(managed, runtime, "session_reset");
+            continue;
+          }
           const emittedRecord = providerMessageId && !resumedFromIncompleteThinking
             ? claudeEmittedTextRecord(runtime, providerMessageId)
             : null;
@@ -19837,6 +19864,7 @@ export function createAgentChatService(args: {
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
+    let quotaTrippedThisTurn = false;
     let resultTerminalReason: string | undefined;
     let resultCanonicalModel: string | undefined;
     let resultModelProvider: string | undefined;
@@ -20463,47 +20491,29 @@ export function createAgentChatService(args: {
         if (msg.type === "rate_limit_event") {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
-          const rawStatus = typeof info.status === "string" ? info.status : "updated";
-          const isError = rawStatus !== "allowed" && rawStatus !== "allowed_warning";
-          // "allowed" = under threshold (no signal needed). "allowed_warning" = approaching limit;
-          // surface as an informational once-per-session notice. Anything else = real failure.
-          if (rawStatus === "allowed") continue;
-          if (rawStatus === "allowed_warning" && managed.claudeRateLimitWarningEmitted) continue;
-          if (rawStatus === "allowed_warning") {
-            managed.claudeRateLimitWarningEmitted = true;
-            runtime.rateLimitWarningEmitted = true;
+          const classified = classifyClaudeRateLimitInfo(info);
+          if (classified.kind === "ignore") continue;
+          if (classified.kind === "rejected") {
+            quotaTrippedThisTurn = true;
+            noteClaudeSessionQuota(managed, classified.snapshot, turnId);
+            continue;
           }
-          const severity: "info" | "warning" | "error" = isError ? "error" : "info";
+          if (managed.claudeRateLimitWarningEmitted) continue;
+          managed.claudeRateLimitWarningEmitted = true;
+          runtime.rateLimitWarningEmitted = true;
           const details: string[] = [];
-          if (typeof info.utilization === "number") {
-            const percent = info.utilization <= 1
-              ? Math.round(info.utilization * 100)
-              : Math.round(info.utilization);
-            details.push(`${percent}% utilized`);
+          if (classified.snapshot.utilizationPct != null) {
+            details.push(`${classified.snapshot.utilizationPct}% utilized`);
           }
-          if (typeof info.resetsAt === "number") {
-            const resetMs = info.resetsAt > 1_000_000_000_000 ? info.resetsAt : info.resetsAt * 1000;
-            const resetDate = new Date(resetMs);
-            if (!Number.isNaN(resetDate.getTime())) details.push(`resets ${resetDate.toISOString()}`);
+          if (classified.snapshot.resetsAtMs != null) {
+            details.push(`resets ${new Date(classified.snapshot.resetsAtMs).toISOString()}`);
           }
-          if (typeof info.errorCode === "string" && info.errorCode.trim().length > 0) {
-            details.push(`error: ${info.errorCode.replace(/_/g, " ")}`);
-          }
-          if (typeof info.canUserPurchaseCredits === "boolean") {
-            details.push(info.canUserPurchaseCredits ? "credits can be purchased" : "credits cannot be purchased here");
-          }
-          if (typeof info.hasChargeableSavedPaymentMethod === "boolean") {
-            details.push(info.hasChargeableSavedPaymentMethod ? "payment method available" : "no chargeable payment method");
-          }
-          const message = isError
-            ? `Claude rate limit ${rawStatus.replace(/_/g, " ")}`
-            : "Approaching Claude plan limit";
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "rate_limit",
-            severity,
-            status: rawStatus,
-            message,
+            severity: "info",
+            status: classified.status,
+            message: "Approaching Claude plan limit",
             detail: details.length ? details.join(" | ") : undefined,
             turnId,
           });
@@ -21307,6 +21317,11 @@ export function createAgentChatService(args: {
               }
               if (block.type === "text") {
                 const blockText = block.text ?? "";
+                if (isClaudeSessionQuotaText(blockText)) {
+                  quotaTrippedThisTurn = true;
+                  noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(blockText), turnId);
+                  continue;
+                }
                 // Check both the real-id key AND the id-less fallback key. When
                 // content_block_delta fires before message_start (or when the
                 // SDK omits message_start entirely), streamed deltas record
@@ -21720,7 +21735,17 @@ export function createAgentChatService(args: {
             if (isClaudeRuntimeAuthError(resultErrors.userFacing.join(" "))) {
               failClaudeTurnUnauthenticated();
             }
+            const quotaErrors = resultErrors.userFacing.filter((err) => isClaudeSessionQuotaText(err));
+            if (quotaErrors.length > 0) {
+              quotaTrippedThisTurn = true;
+              noteClaudeSessionQuota(
+                managed,
+                snapshotFromClaudeSessionQuotaText(quotaErrors.join(" ")),
+                turnId,
+              );
+            }
             for (const err of resultErrors.userFacing) {
+              if (isClaudeSessionQuotaText(err)) continue;
               emitChatEvent(managed, {
                 type: "error",
                 message: err,
@@ -21848,7 +21873,11 @@ export function createAgentChatService(args: {
       if (runtime.interrupted) {
         await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
       }
-      const finalStatus: ClaudeTerminalStatus = runtime.interrupted ? "interrupted" : resultTerminalStatus;
+      const finalStatus: ClaudeTerminalStatus = runtime.interrupted
+        ? "interrupted"
+        : quotaTrippedThisTurn
+          ? "failed"
+          : resultTerminalStatus;
       flushOpenClaudeToolUses(finalStatus);
       flushClaudeStructuredActivities(finalStatus);
       // Note: query is NOT closed here — it stays alive for the next turn.
@@ -21866,6 +21895,15 @@ export function createAgentChatService(args: {
         runtime.pendingSessionReset = false;
         runtime.pendingSessionResetClearSdkSessionId = false;
         await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId });
+      }
+
+      // Quota reject: reap once so the next send starts a fresh query with the
+      // same Claude UUID (current ~/.claude login). A successful later turn
+      // dismisses the card. Do not clear sdkSessionId.
+      if (runtimeStillCurrent && quotaTrippedThisTurn) {
+        await resetClaudeQuerySession(managed, runtime, "session_reset");
+      } else if (runtimeStillCurrent && finalStatus === "completed") {
+        dismissClaudeSessionQuota(managed);
       }
 
       const doneModel = buildDoneModelPayload();
@@ -29932,6 +29970,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
       codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
@@ -30848,6 +30887,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
       codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
@@ -32875,6 +32915,67 @@ export function createAgentChatService(args: {
     // after ENOSPC must not be mistaken for an already-persisted card.
     cache.set(cardId, { fingerprint, createdAt });
     persistChatState(managed);
+  };
+
+  const noteClaudeSessionQuota = (
+    managed: ManagedChatSession,
+    snapshot: ClaudeSessionQuotaSnapshot,
+    turnId?: string | null,
+  ): void => {
+    managed.claudeSessionQuotaSnapshot = mergeClaudeSessionQuotaSnapshot(
+      managed.claudeSessionQuotaSnapshot,
+      snapshot,
+    );
+    managed.claudeQuotaCardWasLive = true;
+    managed.claudeQuotaCardLiveChecked = true;
+    void emitAdeCard({
+      sessionId: managed.session.id,
+      card: buildClaudeSessionQuotaCard({
+        sessionId: managed.session.id,
+        turnId,
+        snapshot: managed.claudeSessionQuotaSnapshot,
+      }),
+    }).catch((error) => {
+      logger.warn("agent_chat.claude_session_quota_card_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const latestQuotaCardIsLive = (managed: ManagedChatSession): boolean => {
+    if (managed.claudeSessionQuotaSnapshot) return true;
+    if (managed.claudeQuotaCardLiveChecked) return managed.claudeQuotaCardWasLive === true;
+    managed.claudeQuotaCardLiveChecked = true;
+    const cardId = claudeSessionQuotaCardId(managed.session.id);
+    let live = false;
+    for (const entry of readTranscriptEnvelopes(managed)) {
+      if (entry.event.type !== "ade_card" || entry.event.cardId !== cardId) continue;
+      live = entry.event.state === "live";
+    }
+    managed.claudeQuotaCardWasLive = live;
+    return live;
+  };
+
+  const dismissClaudeSessionQuota = (managed: ManagedChatSession): void => {
+    if (!latestQuotaCardIsLive(managed)) return;
+    const snapshot = managed.claudeSessionQuotaSnapshot ?? { utilizationPct: null, resetsAtMs: null };
+    managed.claudeSessionQuotaSnapshot = null;
+    managed.claudeQuotaCardWasLive = false;
+    managed.claudeQuotaCardLiveChecked = true;
+    void emitAdeCard({
+      sessionId: managed.session.id,
+      card: buildClaudeSessionQuotaCard({
+        sessionId: managed.session.id,
+        snapshot,
+        dismissed: true,
+      }),
+    }).catch((error) => {
+      logger.warn("agent_chat.claude_session_quota_dismiss_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   type ExternalChatImportErrorCode =

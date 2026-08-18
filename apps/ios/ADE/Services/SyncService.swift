@@ -13234,6 +13234,28 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func handoffChatSession(
+    sourceSessionId: String,
+    targetModelId: String,
+    mode: String = "fork",
+    handoffNote: String? = nil
+  ) async throws {
+    let action = chatActionName("chat.handoff", sessionId: sourceSessionId)
+    try requireInvokableRemoteAction(action)
+    let scope = chatCommandScope(for: sourceSessionId)
+    _ = try await sendChatCommand(
+      action: action,
+      payload: AgentChatHandoffRequest(
+        sourceSessionId: sourceSessionId,
+        targetModelId: targetModelId,
+        mode: mode,
+        handoffNote: handoffNote
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
   func restoreCancelledChatQueue(
     sessionId: String,
     recoveryId: String

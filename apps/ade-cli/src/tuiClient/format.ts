@@ -2,7 +2,7 @@ import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
-import { adeCardProgressTotal, type AdeCardPayload } from "../../../desktop/src/shared/adeCard";
+import { adeCardIsHiddenAfterDismiss, adeCardProgressTotal, type AdeCardPayload } from "../../../desktop/src/shared/adeCard";
 import {
   hostSleepNoticeMergeKey,
   isHostSleepNoticeEvent,
@@ -1110,6 +1110,7 @@ export function renderChatLines(args: {
       // Only the first emit renders; it renders the merged payload.
       const merged = adeCardsById.get(cardId);
       if (!merged || merged.firstIndex !== index) continue;
+      if (adeCardIsHiddenAfterDismiss(merged.card)) continue;
       lines.push({ id, tone: "notice", body: renderAdeCardBody(merged.card) });
       continue;
     }

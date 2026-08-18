@@ -99,9 +99,20 @@ extension WorkChatSessionView {
     case .eventCard(let card):
       timelineEventCard(card)
     case .adeCard(let card):
-      // `WorkAdeCardView` handles the reserved `open` action through navTarget;
-      // host-specific action ids stay hidden until iOS has a dispatcher.
-      WorkAdeCardView(card: card)
+      if card.isHiddenAfterDismiss {
+        EmptyView()
+      } else {
+        WorkAdeCardView(
+          card: card,
+          onAction: card.variant == "claude_session_quota"
+            ? { action in
+              if action.id == "fork-local" {
+                Task { await onForkChatInLane?() }
+              }
+            }
+            : nil
+        )
+      }
     case .usageSummary(let summary):
       WorkTurnUsageSummaryBanner(
         summary: summary,
