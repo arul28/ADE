@@ -209,12 +209,26 @@ function reconcileCooldown(
   failure: GitHubAuthFailure,
   cooldownUntilMs: number,
   nowMs: number,
-): { failure: GitHubAuthFailure; cooldownUntilMs: number } {
+): Pick<CredentialResourceHealth, "failure" | "cooldownUntilMs" | "failureAtMs"> {
   const live = (current?.cooldownUntilMs ?? 0) > nowMs ? current!.cooldownUntilMs : 0;
   if (live > cooldownUntilMs && current?.failure) {
-    return { failure: current.failure, cooldownUntilMs: live };
+    // The preserved failure keeps its ORIGINAL timestamp. Restamping it to now
+    // would refresh a stale reason's clock on every later failure, so a
+    // long-dead `invalid_token` would stay inside
+    // `REQUEST_BUDGET_FAILURE_FRESHNESS_MS` indefinitely as long as transient
+    // blips kept arriving — and `githubRequestBudget` would keep reporting it
+    // process-wide, which is exactly what that bound exists to prevent.
+    return {
+      failure: current.failure,
+      cooldownUntilMs: live,
+      failureAtMs: current.failureAtMs,
+    };
   }
-  return { failure, cooldownUntilMs: Math.max(cooldownUntilMs, live) };
+  return {
+    failure,
+    cooldownUntilMs: Math.max(cooldownUntilMs, live),
+    failureAtMs: nowMs,
+  };
 }
 
 function recordGithubFailure(
@@ -231,7 +245,6 @@ function recordGithubFailure(
     resources: updateResourceHealth(existing, rateLimit, (current) => ({
       ...reconcileCooldown(current, failure, cooldownUntilMs, nowMs),
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      failureAtMs: nowMs,
     })),
     userLogin,
   };
@@ -249,7 +262,6 @@ function recordGithubFailure(
     resources.set(resource, {
       ...reconcileCooldown(current, failure, cooldownUntilMs, nowMs),
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      failureAtMs: nowMs,
     });
     healthByTokenDigest.set(candidateDigest, {
       ...candidateHealth,

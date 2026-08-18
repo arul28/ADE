@@ -351,6 +351,33 @@ describe("githubCredentialHealth", () => {
       expect(githubCredentialCooldown(ghCandidate)?.failure.kind).toBe("invalid_token");
     });
 
+    it("keeps the preserved cooldown failure stale after a later weaker failure", () => {
+      // Preserving the older reason must not restamp its clock. Otherwise a
+      // long-dead `invalid_token` stays inside the freshness window forever as
+      // long as transient blips keep arriving on the same credential, and the
+      // budget keeps reporting it process-wide — defeating the recency bound.
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "invalid_token",
+        message: "Bad credentials",
+        retryAt: null,
+      }, null);
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBe("invalid_token");
+
+      // Two minutes later — past the freshness window, still inside the
+      // five-minute cooldown the rejected token earned.
+      vi.setSystemTime(new Date(Date.now() + 2 * 60_000));
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "network",
+        message: "fetch failed",
+        retryAt: null,
+      }, null);
+
+      // The cooldown is still the one the rejected token earned...
+      expect(githubCredentialCooldown(ghCandidate)?.failure.kind).toBe("invalid_token");
+      // ...but it is no longer recent enough to drive anyone's poll cadence.
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
+    });
+
     it("stops reporting a failure kind once it is no longer recent", () => {
       // A failure is otherwise cleared only by a success on the SAME credential
       // and resource, so a permanently-bad one (revoked PAT, stale
