@@ -35,24 +35,24 @@ describe("adeCard", () => {
   });
 
   it("hides a dismissed Claude session-quota card on every surface", () => {
-    expect(adeCardIsHiddenAfterDismiss({
+    expect(adeCardIsHiddenAfterDismiss(card({
       variant: "claude_session_quota",
       state: "terminal",
-    })).toBe(true);
-    expect(adeCardIsHiddenAfterDismiss({
+    }))).toBe(true);
+    expect(adeCardIsHiddenAfterDismiss(card({
       variant: "claude_session_quota",
       state: "terminal",
       actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
-    })).toBe(true);
-    expect(adeCardIsHiddenAfterDismiss({
+    }))).toBe(true);
+    expect(adeCardIsHiddenAfterDismiss(card({
       variant: "claude_session_quota",
       state: "live",
       actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
-    })).toBe(false);
-    expect(adeCardIsHiddenAfterDismiss({
+    }))).toBe(false);
+    expect(adeCardIsHiddenAfterDismiss(card({
       variant: "pr_ci",
       state: "terminal",
-    })).toBe(false);
+    }))).toBe(false);
   });
 
   it("treats only shipped variants as known", () => {

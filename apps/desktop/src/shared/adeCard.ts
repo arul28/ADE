@@ -153,9 +153,10 @@ export function isKnownAdeCardVariant(variant: string | null | undefined): boole
  * A successful Claude rebind dismisses the quota card instead of leaving a
  * "resumed" chip. Desktop, TUI, and iOS all hide that terminal no-action row.
  */
-export function adeCardIsHiddenAfterDismiss(
-  card: Pick<AdeCardPayload, "variant" | "state">,
-): boolean {
+export function adeCardIsHiddenAfterDismiss(card: {
+  variant?: string | null;
+  state?: string | null;
+}): boolean {
   return card.variant === "claude_session_quota" && card.state === "terminal";
 }
 
