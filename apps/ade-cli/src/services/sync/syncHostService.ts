@@ -154,6 +154,10 @@ import {
   type PairFailureSubject,
 } from "./syncPairFailureTracker";
 import {
+  applyPairedDeviceRejectionThrottle,
+  createPairedDeviceRejectionLimiter,
+} from "./pairedDeviceRejectionLimiter";
+import {
   createSyncDpopNonceCache,
   evaluatePairedHelloDpop,
   syncDpopFailureMessage,
@@ -2058,6 +2062,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     filePath: pairingSecretsPath,
     pinStore: args.pinStore,
   });
+  const pairedDeviceRejectionLimiter = createPairedDeviceRejectionLimiter();
   const machineIdentitySigningStore =
     args.machineIdentitySigningStore
     ?? createMachineIdentitySigningStore({ logger: args.logger });
@@ -7230,10 +7235,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             // is and logs it below, but telling an UNAUTHENTICATED caller
             // whether a device id exists here turns this into an existence
             // oracle, and the user's next step is the same either way.
-            args.logger.warn("sync_host.paired_device_rejected", {
-              deviceId: pairedAuth.deviceId,
-              reason: knownRecord ? "secret_mismatch" : "unknown_device",
-            });
+            // Throttle is keyed only by device id — never by reason — so the
+            // delay and log cadence cannot leak existence either.
+            const throttle = pairedDeviceRejectionLimiter.record(pairedAuth.deviceId);
+            if (throttle.shouldLog) {
+              args.logger.warn("sync_host.paired_device_rejected", {
+                deviceId: pairedAuth.deviceId,
+                reason: knownRecord ? "secret_mismatch" : "unknown_device",
+                countInWindow: throttle.countInWindow,
+                delayMs: throttle.delayMs,
+              });
+            }
+            await applyPairedDeviceRejectionThrottle(throttle);
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             return authFail(SYNC_REPAIR_REQUIRED_MESSAGE, "repair_required");
           }
           authenticatedPairingRecord = pairingStore.getPairingRecordForSecret(

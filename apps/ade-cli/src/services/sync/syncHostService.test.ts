@@ -4945,6 +4945,14 @@ describe("sync host account authentication", () => {
           code: "repair_required",
           message: (stale.payload as { message: string }).message,
         });
+        const unknownAgain = await harness.pairedHello("unknown-device-hello-2", {
+          deviceId: "device-this-machine-never-paired",
+          secret: "still-not-the-secret",
+        });
+        expect(unknownAgain.payload).toMatchObject({
+          code: "repair_required",
+          message: (stale.payload as { message: string }).message,
+        });
       } finally {
         await harness.cleanup();
       }

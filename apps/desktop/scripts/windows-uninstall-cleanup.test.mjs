@@ -56,6 +56,38 @@ function shortWindowsPath(value) {
   return resolved;
 }
 
+// Node ignores maxRetries/retryDelay unless recursive is true. These teardowns
+// already rm a temp directory (ADE Beta.exe is a locked child), so retries
+// apply. 40 × 250ms matches windows-quirks.md §6 / removeCursorSdkRuntimePath.
+const WINDOWS_TEMP_CLEANUP_RM_OPTIONS = {
+  recursive: true,
+  force: true,
+  maxRetries: 40,
+  retryDelay: 250,
+};
+
+function removeTempRoot(tempRoot) {
+  fs.rmSync(tempRoot, WINDOWS_TEMP_CLEANUP_RM_OPTIONS);
+}
+
+test("Windows uninstall temp cleanup retries EBUSY via fs.rmSync options", (t) => {
+  const originalRmSync = fs.rmSync;
+  const seen = [];
+  t.after(() => {
+    fs.rmSync = originalRmSync;
+  });
+  fs.rmSync = (target, options) => {
+    seen.push({ target, options });
+  };
+  removeTempRoot("/tmp/ade-windows-uninstall-ebusy");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].target, "/tmp/ade-windows-uninstall-ebusy");
+  assert.deepEqual(seen[0].options, WINDOWS_TEMP_CLEANUP_RM_OPTIONS);
+  assert.equal(seen[0].options.recursive, true);
+  assert.equal(seen[0].options.maxRetries, 40);
+  assert.equal(seen[0].options.retryDelay, 250);
+});
+
 test("Windows standalone installer path normalizer is executable PowerShell", {
   skip: process.platform !== "win32",
 }, () => {
@@ -83,7 +115,7 @@ test("Windows uninstall cleanup removes only CLI shims owned by this installatio
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade uninstall cleanup "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const installDir = path.join(tempRoot, "install & source");
   const packagedCliDir = path.join(installDir, "resources", "ade-cli", "bin");
   const cliBinDir = path.join(tempRoot, "user bin");
@@ -129,7 +161,7 @@ test("Windows stable uninstall reaches protocol cleanup without treating it as C
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade stable protocol cleanup "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const installDir = path.join(tempRoot, "ADE");
   const cliBinDir = path.join(tempRoot, "empty user bin");
   fs.mkdirSync(installDir, { recursive: true });
@@ -161,7 +193,7 @@ test("Windows uninstall still cleans a corrupted product whose executable is mis
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade missing executable cleanup "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const installDir = path.join(tempRoot, "ADE Beta");
   const cliBinDir = path.join(tempRoot, "empty user bin");
   const adeHome = path.join(tempRoot, ".ade-beta");
@@ -197,7 +229,7 @@ test("Windows bundled CLI wrapper resolves the Beta executable and identity", {
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade beta wrapper "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const resourcesDir = path.join(tempRoot, "resources");
   const cliRoot = path.join(resourcesDir, "ade-cli");
   const binDir = path.join(cliRoot, "bin");
@@ -250,7 +282,7 @@ test("Windows install setup compensates shim and startup state when service regi
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade setup rollback "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const installDir = path.join(tempRoot, "ADE Beta");
   const cliRoot = path.join(installDir, "resources", "ade-cli");
   const cliBin = path.join(cliRoot, "bin");
@@ -314,7 +346,7 @@ test("Windows failed repair restores the previous shim and startup service", {
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade repair rollback "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const installDir = path.join(tempRoot, "ADE Beta");
   const cliRoot = path.join(installDir, "resources", "ade-cli");
   const cliBin = path.join(cliRoot, "bin");
@@ -376,7 +408,7 @@ test("Windows uninstall cleanup uses the packaged executable and channel identit
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade beta uninstall "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const installDir = path.join(tempRoot, "ADE Beta");
   const cliRoot = path.join(installDir, "resources", "ade-cli");
   const cliBinDir = path.join(tempRoot, "empty user bin");
@@ -450,7 +482,7 @@ test("Windows uninstall cleanup reports the packaged executable exit code", {
   skip: process.platform !== "win32",
 }, (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade failed uninstall "));
-  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  t.after(() => removeTempRoot(tempRoot));
   const installDir = path.join(tempRoot, "ADE");
   const cliRoot = path.join(installDir, "resources", "ade-cli");
   const cliBinDir = path.join(tempRoot, "empty user bin");

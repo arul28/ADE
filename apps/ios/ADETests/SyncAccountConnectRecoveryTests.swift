@@ -102,6 +102,189 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     XCTAssertEqual(secret, "fresh-secret")
   }
 
+  // MARK: - race-exhausted pairing invalidation
+
+  func testSingleAmbiguousPairingRejectionDoesNotDropSavedPairing() {
+    XCTAssertFalse(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-stranger",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 1
+    ))
+  }
+
+  func testTwoAmbiguousPairingRejectionsFromTheSameHostDropSavedPairing() {
+    XCTAssertTrue(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 2
+    ))
+  }
+
+  func testIncompleteRaceDoesNotDropSavedPairing() {
+    XCTAssertFalse(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-stranger",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-stranger",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 3
+    ))
+  }
+
+  func testTimeoutAmongHopsDoesNotDropSavedPairing() {
+    XCTAssertFalse(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-stranger",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-stranger",
+          isAmbiguous: true
+        ),
+        nil,
+      ],
+      startedCandidateCount: 3
+    ))
+  }
+
+  func testTwoAmbiguousPairingRejectionsStillDropWhenSavedHostIdentityIsStale() {
+    XCTAssertTrue(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 3
+    ))
+  }
+
+  func testMixedRespondingHostsDoNotDropSavedPairing() {
+    XCTAssertFalse(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-a",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-b",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 2
+    ))
+  }
+
+  func testAttributedPairingRejectionDropsSavedPairingOnItsOwn() {
+    XCTAssertTrue(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-saved",
+          isAmbiguous: false
+        ),
+      ],
+      startedCandidateCount: 1
+    ))
+  }
+
+  func testAttributedAndAmbiguousPairingRejectionsFromDifferentHostsDoNotDropSavedPairing() {
+    XCTAssertFalse(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-saved",
+          isAmbiguous: false
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-stranger",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 2
+    ))
+  }
+
+  func testStartedHopsConsensusDropsSavedPairingWhenLaterCandidatesNeverRan() {
+    XCTAssertTrue(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 3
+    ))
+  }
+
+  func testNonPairingFailuresDoNotDropSavedPairing() {
+    XCTAssertFalse(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "host_update_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 2
+    ))
+  }
+
   // MARK: - syncConnectReachedTarget
 
   func testReachedTargetWhenAttachedToTheRequestedMachine() {
