@@ -5,6 +5,7 @@ import {
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import type { SessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
+import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
 import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
@@ -83,16 +84,18 @@ export function SessionStatusSlot({
     if (!actionsEnabled) setSnoozeMenuOpen(false);
   }, [actionsEnabled]);
 
-  const canonicalPhase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
-  // Every session type prefers the turn anchor: chats get it from the chat
-  // projection, PTY-backed CLIs from the runtime-state transition in
-  // ptyService. Without it the timer counts time-since-last-output-write,
-  // which for a CLI repainting its TUI resets every few seconds.
-  const elapsedSince = canonicalPhase === "running"
-    ? session.currentTurnStartedAt ?? session.lastActivityAt ?? session.startedAt
-    : session.lastActivityAt ?? session.startedAt;
+  const canonicalState = sessionCanonicalUiState(canonicalInputFromSummary(session));
+  const canonicalPhase = canonicalState.phase;
+  const elapsedSince = sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);
+  // A row promoted to `running` by background work is not mid-turn — its turn
+  // already ended. Treating it as actively running hid Settle, which is the one
+  // control that stops that work (`sessionSettleTeardown` stops outstanding
+  // background tasks, leaves terminals alone, and records anything it could not
+  // confirm as residue). A session holding a warm agent open therefore had an
+  // honest label and no way to act on it.
+  const isMidTurn = canonicalPhase === "running" && (canonicalState.liveness ?? "turn") === "turn";
   const isActivelyRunning = canonicalPhase === "starting"
-    || canonicalPhase === "running"
+    || isMidTurn
     || canonicalPhase === "stale";
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"

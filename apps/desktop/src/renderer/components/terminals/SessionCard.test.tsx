@@ -679,6 +679,29 @@ describe("SessionCard status slot", () => {
     expect(screen.getByTestId("session-snooze-button")).toBeTruthy();
   });
 
+  it("offers settle on a row that is only running because of background work", () => {
+    // A background-promoted row is not mid-turn — its turn already ended. Settle
+    // is the one control that stops that work, so hiding it left a session
+    // holding a warm agent open with an honest label and no way to act on it.
+    render(
+      <SessionCard
+        session={makeSession({
+          status: "running",
+          runtimeState: "idle",
+          toolType: "claude-chat",
+          activeBackgroundTaskCount: 2,
+          backgroundWork: { workingCount: 2, monitoringCount: 0 },
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("session-settle-button")).toBeTruthy();
+  });
+
   it("offers un-settle on an already settled row and shows its timestamp instead of a status", () => {
     const unsettle = vi.fn().mockResolvedValue(undefined);
     (window as unknown as { ade: unknown }).ade = {

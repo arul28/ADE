@@ -337,7 +337,16 @@ Shared types and IPC:
   SDK renames a type. Liveness is in-memory and deliberately empty after a
   restart — orphaned background work is not live work — and it sits BELOW
   failure, stopped, settled and stale in the precedence order, so a lingering
-  "Working" can never mask a failed session.
+  "Working" can never mask a failed session. The summary also carries
+  `backgroundWorkSince`, the instant the live set last went from empty to
+  non-empty, so the promoted row's elapsed counts from when the work started
+  rather than from a `lastActivityAt` that every provider frame refreshes. See
+  [ui-surfaces](ui-surfaces.md) for the three anchors and the shared
+  `sessionElapsedAnchor` helper. The promotion is presentation only: the runtime
+  behind it is not immortal: once a background-only Claude runtime has been
+  silent long enough for this module to call it `stale`, the idle sweep
+  reclaims it — the backstop uses `SESSION_STALE_AFTER_MS` precisely so the two
+  cannot disagree (see [chat](../chat/README.md)).
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
   `"settled"` behaves like a declared settle, and `"active"` is an explicit

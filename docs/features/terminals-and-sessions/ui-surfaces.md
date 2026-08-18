@@ -314,11 +314,19 @@ These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
 is never scraped to infer plan mode. Working/Planning elapsed time ticks from
 the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
-reset it; legacy chat rows without that anchor, plus Background work, CLI, and
-Stale durations, use last activity. That makes the Background work elapsed a
-proxy, not the job's own runtime — the session summary does not carry per-job
-start times, so a job launched early in a long turn reads near zero the moment
-the turn ends. Waiting refreshes on a quiet 30-second cadence. On row hover or
+reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
+use last activity. Background work counts from `backgroundWorkSince` — when the
+session's live background set last went from empty to non-empty — which the
+runtime reports on the session summary. Anchoring it to last activity instead
+made it meaningless: every provider frame refreshes that column, so a job that
+had been running for two hours read "Background work ×2 3s", identical to one
+that started three seconds ago, and the row could not be judged by its own
+duration. It is still a session-level anchor rather than any single job's
+runtime — a second job joining a live set counts from the first one's start —
+and providers with no background-task level (Codex, Cursor) keep the last-activity
+fallback. All three anchors come from one shared helper, `sessionElapsedAnchor`,
+so the Work rows, `ade code`, and `ade session show` cannot report different
+durations for the same session. Waiting refreshes on a quiet 30-second cadence. On row hover or
 keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
 the context-appropriate Settle or Un-settle action. An open snooze menu pins the
 action slot visible. A row whose snooze ended early shows the shared Woke

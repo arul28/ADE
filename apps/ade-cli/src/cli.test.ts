@@ -2460,6 +2460,48 @@ describe("ADE CLI", () => {
     expect(maintenanceText).toContain("skipped: not due");
   });
 
+  it("ade session show reports what a session is DOING, not just its columns", () => {
+    // `runtime state` alone reads `idle` for a chat holding a warm agent
+    // process and two background jobs open — the state people were dropping to
+    // `ps` to diagnose. The words come from the shared presentation module, so
+    // this also pins that the CLI has not grown its own vocabulary.
+    const now = Date.now();
+    const text = formatOutput(
+      {
+        sessionId: "chat-1",
+        title: "Reap stale runtimes",
+        laneId: "lane-1",
+        status: "running",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+        startedAt: new Date(now - 3 * 60 * 60_000).toISOString(),
+        lastActivityAt: new Date(now - 3_000).toISOString(),
+        backgroundWorkSince: new Date(now - 2 * 60 * 60_000).toISOString(),
+        activeBackgroundTaskCount: 2,
+        backgroundWork: { workingCount: 1, monitoringCount: 1 },
+        runtimeProcesses: [{ pid: 59213, startedAt: new Date(now - 2 * 60 * 60_000).toISOString() }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    // Elapsed counts from when the work started, not from the last frame the
+    // provider happened to emit three seconds ago.
+    expect(text).toMatch(/^status\s+Background work \u00d72 2h$/mu);
+    expect(text).toContain("pid 59213 (2h)");
+  });
+
+  it("ade session show mutation acks carry no activity lines", () => {
+    // The same formatter renders snooze/wake acks, which have none of these
+    // fields. Every added line must disappear rather than render empty.
+    const text = formatOutput(
+      { sessionId: "chat-1", snoozedUntil: new Date(Date.now() + 3_600_000).toISOString(), ok: true },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    expect(text).not.toMatch(/^agent processes\s/mu);
+    expect(text).not.toMatch(/^status\s/mu);
+  });
+
   it("formats external session action results as text", () => {
     const plan = expectExecutePlan(buildCliPlan([
       "actions",

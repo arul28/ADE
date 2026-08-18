@@ -397,6 +397,14 @@ import type {
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
 } from "../../../shared/types/chatMentions";
+import type { RuntimeProcessSummary } from "../../../shared/types/sessions";
+import { formatWorkingDuration } from "../../../shared/sessionStatusPresentation";
+import {
+  createChatRuntimeBudget,
+  type ChatRuntimeBudget,
+  type EvictableRuntime,
+  type RuntimeBudgetParticipant,
+} from "./chatRuntimeBudget";
 import { createChatMentionService, markChatMentionsExpanded } from "./chatMentionService";
 import {
   claudeJsonlToChatEvents,
@@ -496,6 +504,7 @@ import {
 } from "../skills/agentSkillRuntimeService";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  SESSION_STALE_AFTER_MS,
   summarizeBackgroundWork,
   totalBackgroundWork,
   type SessionBackgroundWork,
@@ -1589,6 +1598,19 @@ type ClaudeRuntime = {
    * background shell, and would silently classify those as unknown.
    */
   backgroundTaskTypeById: Map<string, string>;
+  /**
+   * When `liveBackgroundTaskIds` last went from empty to non-empty, in epoch ms.
+   *
+   * The status row's elapsed used to count from the session's last activity,
+   * which for a background-only session is refreshed by every provider frame —
+   * so a job that had been running for hours still read "Background work ×2 3s"
+   * and was indistinguishable from one that had just started. This is the
+   * honest anchor: how long this session has owned background work.
+   *
+   * Reset with the set, so a session that drains its jobs and starts new ones
+   * counts from the new ones. Null whenever no background work is live.
+   */
+  backgroundWorkStartedAt: number | null;
   /** True after this CLI process has emitted its first authoritative level. */
   backgroundTasksLevelObserved: boolean;
   seenBackgroundTaskIds: Set<string>;
@@ -1646,10 +1668,24 @@ type ClaudeRuntime = {
   rateLimitWarningEmitted: boolean;
 };
 
+/**
+ * Keep `backgroundWorkStartedAt` in step with the live level set. Idempotent by
+ * design so every site that mutates `liveBackgroundTaskIds` can call it without
+ * having to know whether it was the transition.
+ */
+function syncClaudeBackgroundWorkAnchor(runtime: ClaudeRuntime): void {
+  if (runtime.liveBackgroundTaskIds.size === 0) {
+    runtime.backgroundWorkStartedAt = null;
+    return;
+  }
+  if (runtime.backgroundWorkStartedAt == null) runtime.backgroundWorkStartedAt = Date.now();
+}
+
 function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
   runtime.liveBackgroundTaskIds.clear();
   runtime.backgroundTaskTypeById.clear();
   runtime.backgroundTasksLevelObserved = false;
+  syncClaudeBackgroundWorkAnchor(runtime);
 }
 
 function settleClaudeInitialInputDispatch(
@@ -2287,6 +2323,56 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
   }
 }
 
+/**
+ * When this runtime's live background work started, or null when it cannot say.
+ *
+ * Claude-only for now, and that is the honest answer rather than a gap: it is
+ * the one runtime that reports a full background-task level ADE can watch for
+ * the empty→non-empty edge. Codex subagents and Cursor cloud runs are tracked
+ * per item with no shared anchor, so those surfaces keep the previous
+ * `lastActivityAt` fallback rather than being handed a made-up timestamp.
+ */
+function runtimeBackgroundWorkSince(runtime: ChatRuntime | null): string | null {
+  if (!runtime || runtime.kind !== "claude") return null;
+  const startedAt = runtime.backgroundWorkStartedAt;
+  return startedAt == null ? null : new Date(startedAt).toISOString();
+}
+
+/**
+ * A Claude runtime's BOUNDED claims: work with a known end and a party waiting
+ * on it. These can never be overridden by an inactivity backstop — a turn ends,
+ * a steer is delivered, an approval is answered.
+ */
+function claudeHasBoundedWorkload(runtime: ClaudeRuntime): boolean {
+  return Boolean(
+    runtime.busy
+    || runtime.activeTurnId
+    || runtime.pendingSteers.length > 0
+    || runtime.approvals.size > 0
+  );
+}
+
+/**
+ * A Claude runtime's BACKGROUND claims: work that outlives its turn and whose
+ * end ADE learns about only if the provider says so.
+ *
+ * Split from the bounded half so `hasRuntimeActiveWorkload` and
+ * `isRuntimeWorkloadExemptionStale` compose the same two predicates instead of
+ * hand-mirroring them. They used to be two copies of one list, and the drift
+ * failed OPEN: a claim added to the workload predicate alone would silently
+ * become overridable by the backstop an hour later.
+ *
+ * Before the first level signal, task edge state is the only evidence we have.
+ * Once observed, `background_tasks_changed` is authoritative for background
+ * agents/shells; only foreground subagent edges remain an independent signal.
+ */
+function claudeHasBackgroundWorkload(runtime: ClaudeRuntime): boolean {
+  const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
+    (subagent) => !subagent.background || !runtime.backgroundTasksLevelObserved,
+  );
+  return Boolean(hasUnlevelledSubagent || runtime.liveBackgroundTaskIds.size > 0);
+}
+
 function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
   if (!runtime) return false;
   switch (runtime.kind) {
@@ -2301,23 +2387,8 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         || runtime.activeSubagents.size > 0
         || runtime.pendingPlanFollowups.length > 0
       );
-    case "claude": {
-      // Before the first level signal, task edge state is the only evidence we
-      // have. Once observed, background_tasks_changed is authoritative for
-      // background agents/shells; only foreground subagent edges remain an
-      // independent workload signal.
-      const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
-        (subagent) => !subagent.background || !runtime.backgroundTasksLevelObserved,
-      );
-      return Boolean(
-        runtime.busy
-        || runtime.activeTurnId
-        || runtime.pendingSteers.length > 0
-        || runtime.approvals.size > 0
-        || hasUnlevelledSubagent
-        || runtime.liveBackgroundTaskIds.size > 0
-      );
-    }
+    case "claude":
+      return claudeHasBoundedWorkload(runtime) || claudeHasBackgroundWorkload(runtime);
     case "opencode":
       return Boolean(
         runtime.busy
@@ -2351,6 +2422,65 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * How long a runtime whose ONLY claim on life is background work may stay
+ * completely silent before the idle sweep is allowed to reclaim it anyway.
+ *
+ * Deliberately `SESSION_STALE_AFTER_MS` — ADE's own, already cross-surface bar
+ * for "nothing has happened here". A session past it is not being reported as
+ * working by anything: every surface already renders it neutral **Stale**
+ * rather than blue "Background work". Reclaiming a runtime that the whole
+ * product is already calling stale is coherent; inventing a shorter private
+ * threshold would have made ADE kill work its own UI still described as live.
+ *
+ * The honest limit of the signal, stated because it decides a destructive
+ * action: what ages here is silence ADE can SEE. A background job that runs for
+ * three hours without emitting a single event, a task edge, or a change to the
+ * background-task level is indistinguishable from a wedged one. That is the
+ * accepted cost — the alternative is what shipped before, where one task whose
+ * completion edge never arrived pinned an SDK process, its MCP children, and
+ * the whole project context for the life of the app (measured on a real
+ * machine: five such sessions, 5.4 GB across 35 processes, against a 404 MB
+ * brain). The teardown says so in the chat rather than happening quietly.
+ */
+const RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS = SESSION_STALE_AFTER_MS;
+
+/**
+ * Has a runtime's background-work exemption stopped meaning anything?
+ *
+ * `hasRuntimeActiveWorkload` is a truthful predicate and must stay one — it is
+ * the close/quit guard, and it has to fail closed. But for Claude it is also
+ * SELF-SEALING: `liveBackgroundTaskIds` is cleared only by teardown, and
+ * teardown is exactly what the flag blocks. A task whose completion edge never
+ * arrives (the SDK went quiet, the job died with its shell, an edge raced a
+ * reset) therefore pins the runtime, its MCP children, and the whole project
+ * context for the life of the app. The docs promise the exemption holds "until
+ * the work actually ends"; nothing enforced the second half.
+ *
+ * This is the enforcement, and it is deliberately NOT the wall-clock turn
+ * watchdog that was removed for false positives during long tool calls:
+ *
+ *   • It only ever looks at sessions the sweep already considers at rest —
+ *     no live turn, no pending input, past the idle window. A mid-turn
+ *     session is never reached by this path.
+ *   • The clock is event-driven. `lastActivityTimestamp` moves on every
+ *     emitted chat event and on every real change to the background-task
+ *     level, so a genuinely working job — one emitting progress, output, or
+ *     task edges — resets it and is never reclaimed. Only total silence ages.
+ *   • Anything bounded and attributable (a live turn, a queued steer, an
+ *     unanswered approval) still exempts the runtime unconditionally.
+ *
+ * Claude-only on purpose: it is the only runtime whose exemption has no other
+ * writer. Codex clears its subagents on turn end, Cursor's cloud runs are
+ * reconciled against the server, and neither can wedge this way.
+ */
+function isRuntimeWorkloadExemptionStale(runtime: ChatRuntime | null, silentForMs: number): boolean {
+  if (!runtime || runtime.kind !== "claude") return false;
+  if (silentForMs <= RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS) return false;
+  if (claudeHasBoundedWorkload(runtime)) return false;
+  return claudeHasBackgroundWorkload(runtime);
 }
 
 function isSignalPermissionError(error: unknown): boolean {
@@ -3101,7 +3231,6 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
-const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
@@ -7268,6 +7397,7 @@ type AgentChatAutomationService = {
  *  the event loop on GC. */
 export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -7359,7 +7489,16 @@ export function createAgentChatService(args: {
     linkedAt: string;
   }) => void | Promise<void>;
   getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
+  /**
+   * The warm-runtime budget this service shares with every other chat service
+   * in the process. Hosts that open more than one project scope MUST pass one
+   * shared instance — see `createChatRuntimeBudget`. Omitted, the service gets
+   * a private budget, which is the right answer for a single-scope host and for
+   * tests.
+   */
+  runtimeBudget?: ChatRuntimeBudget;
 }) {
+  const runtimeBudget = args.runtimeBudget ?? createChatRuntimeBudget();
   const {
     projectRoot,
     transcriptsDir,
@@ -11504,9 +11643,7 @@ export function createAgentChatService(args: {
     } else if (managed.runtime) {
       teardownRuntime(managed, "handle_close");
     }
-    let activeCount = 0;
-    for (const [, session] of managedSessions) if (session.runtime) activeCount++;
-    if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+    runtimeBudget.enforce(managed.session.id);
 
     const runtimeEnv = buildAgentRuntimeEnv(managed);
     const skillRoots = existingAgentSkillRoots(runtimeEnv);
@@ -11894,12 +12031,7 @@ export function createAgentChatService(args: {
     handle.setBusy(false);
     handle.touch();
 
-    // Evict least-recent runtime if at capacity
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
     managed.session.provider = "opencode";
@@ -14985,6 +15117,7 @@ export function createAgentChatService(args: {
     } else {
       runtime.seenBackgroundTaskIds.add(args.taskId);
     }
+    syncClaudeBackgroundWorkAnchor(runtime);
   };
 
   const isClaudeAgentBackgroundTaskType = (value: unknown): boolean => {
@@ -15001,6 +15134,11 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     tasks: unknown,
   ): void => {
+    // Snapshot the live set BEFORE anything below mutates it. The drain loop
+    // further down emits terminal updates, and a terminal update removes its id
+    // from `liveBackgroundTaskIds` — so comparing against the set afterwards
+    // would report a genuine drain as "nothing changed".
+    const previousIds = new Set(runtime.liveBackgroundTaskIds);
     const nextIds = new Set<string>();
     const nextTaskTypes = new Map<string, string>();
     for (const rawTask of Array.isArray(tasks) ? tasks : []) {
@@ -15074,6 +15212,11 @@ export function createAgentChatService(args: {
       });
     }
 
+    // Whether this level actually said anything new. A re-sent level with the
+    // same membership is the SDK repeating itself, not the session doing work.
+    const membershipChanged = nextIds.size !== previousIds.size
+      || [...nextIds].some((taskId) => !previousIds.has(taskId));
+
     runtime.liveBackgroundTaskIds.clear();
     for (const taskId of nextIds) runtime.liveBackgroundTaskIds.add(taskId);
     runtime.backgroundTaskTypeById.clear();
@@ -15081,7 +15224,13 @@ export function createAgentChatService(args: {
       runtime.backgroundTaskTypeById.set(taskId, taskType);
     }
     runtime.backgroundTasksLevelObserved = true;
-    managed.lastActivityTimestamp = Date.now();
+    syncClaudeBackgroundWorkAnchor(runtime);
+    // Bump the inactivity clock only on a real membership change. This level is
+    // level-triggered, not edge-triggered: a session whose background set never
+    // changes re-sends the identical set, and bumping unconditionally reset the
+    // idle-TTL clock forever — the runtime could then never age out no matter
+    // how long it had actually been silent.
+    if (membershipChanged) managed.lastActivityTimestamp = Date.now();
   };
 
   const pruneClaudeStoppingBackgroundTasks = (runtime: ClaudeRuntime): void => {
@@ -15193,7 +15342,18 @@ export function createAgentChatService(args: {
         runtime.taskToolInputByToolUseId.delete(existing.parentToolUseId);
       }
     }));
-    for (const taskId of taskIds) runtime.seenBackgroundTaskIds.delete(taskId);
+    for (const taskId of taskIds) {
+      runtime.seenBackgroundTaskIds.delete(taskId);
+      // The level set has to drop it too, not just the "seen" bookkeeping.
+      // `liveBackgroundTaskIds` is what exempts this runtime from idle-TTL
+      // teardown and budget eviction, so a task we just settled as stopped that
+      // stays in the set pins a warm SDK process (and its MCP children) for the
+      // life of the app. The terminal update above normally removes it; this
+      // covers the ids whose terminal edge came from the provider instead.
+      runtime.liveBackgroundTaskIds.delete(taskId);
+      runtime.backgroundTaskTypeById.delete(taskId);
+    }
+    syncClaudeBackgroundWorkAnchor(runtime);
   };
 
   const emitClaudeTranscriptRetraction = (
@@ -24673,7 +24833,21 @@ export function createAgentChatService(args: {
     await closeOpenClaudeBackgroundTasks(managed, runtime, "stopped", turnId);
 
     const activeSubagents = [...runtime.activeSubagents.values()];
-    if (activeSubagents.length === 0) return;
+    if (activeSubagents.length === 0) {
+      syncClaudeBackgroundWorkAnchor(runtime);
+      return;
+    }
+
+    // Everything below is being settled as stopped, so none of it may keep
+    // exempting the runtime from idle-TTL teardown or budget eviction. The
+    // background-shell ids were dropped by `closeOpenClaudeBackgroundTasks`;
+    // native background subagents only ever left `activeSubagents`, which is
+    // how a stopped session could still hold a warm SDK process forever.
+    for (const subagent of activeSubagents) {
+      runtime.liveBackgroundTaskIds.delete(subagent.taskId);
+      runtime.backgroundTaskTypeById.delete(subagent.taskId);
+    }
+    syncClaudeBackgroundWorkAnchor(runtime);
 
     const control = getClaudeQueryControl(runtime.query);
     await Promise.all(activeSubagents.map(async (subagent) => {
@@ -28205,12 +28379,7 @@ export function createAgentChatService(args: {
 
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     if (managed.runtime?.kind === "codex") return managed.runtime;
-    // Evict least-recent runtime if at capacity
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
     const runtime = await startCodexRuntime(managed);
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -29824,12 +29993,7 @@ export function createAgentChatService(args: {
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
-    // Evict least-recent runtime if at capacity
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
     const persisted = readPersistedState(managed.session.id);
     const currentLaneDirectiveKey = buildLaneDirectiveKey({
       laneId: resolveManagedExecutionLaneId(managed),
@@ -29866,6 +30030,7 @@ export function createAgentChatService(args: {
       emittedTextByAssistantMessage: new Map(),
       liveBackgroundTaskIds: new Set(),
       backgroundTaskTypeById: new Map(),
+      backgroundWorkStartedAt: null,
       backgroundTasksLevelObserved: false,
       seenBackgroundTaskIds: new Set(),
       stoppingBackgroundTaskIds: new Map(),
@@ -35174,11 +35339,7 @@ export function createAgentChatService(args: {
       teardownRuntime(managed, "handle_close");
     }
 
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
 
     const apiKey = getCursorSdkApiKey();
     if (!apiKey) {
@@ -37312,11 +37473,7 @@ export function createAgentChatService(args: {
       teardownRuntime(managed, "handle_close");
     }
 
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
 
     const throwIfDroidSetupInterrupted = (): void => {
       if (!droidRuntimeSetupInterruptRequested.get(managed)) return;
@@ -40776,6 +40933,13 @@ export function createAgentChatService(args: {
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
+    const backgroundWorkSince = runtimeBackgroundWorkSince(liveManaged?.runtime ?? null);
+    // Reported even when nothing is live in the runtime's own bookkeeping: a
+    // session holding an SDK process with no background work is exactly the
+    // state that used to be invisible everywhere except `ps`.
+    const runtimeProcesses = claudeSubprocessReaper
+      .recordsForSession(row.id)
+      .map((record): RuntimeProcessSummary => ({ pid: record.pid, startedAt: record.createdAt }));
     let nextWakeAt: string | null = null;
     let scheduledWorkPaused = false;
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
@@ -40896,6 +41060,8 @@ export function createAgentChatService(args: {
       // zero record carries no information and would ride along on every
       // summary read for every session.
       ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
+      ...(activeBackgroundTaskCount > 0 && backgroundWorkSince ? { backgroundWorkSince } : {}),
+      ...(runtimeProcesses.length ? { runtimeProcesses } : {}),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
@@ -43144,6 +43310,11 @@ export function createAgentChatService(args: {
   };
 
   const disposeAll = async (): Promise<void> => {
+    // First, before anything that can throw. The dispose tail is wrapped in a
+    // swallow by both hosts, so a rejection further down would leave this
+    // service registered — and a half-disposed service keeps counting runtimes
+    // that no longer exist, permanently shrinking the process budget.
+    runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
@@ -43164,6 +43335,11 @@ export function createAgentChatService(args: {
   };
 
   const forceDisposeAll = (): void => {
+    // First, before anything that can throw. The dispose tail is wrapped in a
+    // swallow by both hosts, so a rejection further down would leave this
+    // service registered — and a half-disposed service keeps counting runtimes
+    // that no longer exist, permanently shrinking the process budget.
+    runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
@@ -43200,44 +43376,107 @@ export function createAgentChatService(args: {
     claudeSubprocessReaper.reapAll("force_dispose_all");
   };
 
+  /**
+   * Report the one teardown that overrides a workload the runtime still claims.
+   *
+   * Both the idle sweep and budget eviction can take this branch, and both owe
+   * the same two things: a log line an operator can find after the fact, and a
+   * sentence in the chat. Every other teardown either follows something the
+   * user did or leaves the work running; this one ends background work the
+   * session was still reporting, and stopped rows with no reason attached read
+   * as a bug rather than a decision.
+   *
+   * The duration in the copy is derived, not written, so the constant and the
+   * message cannot drift apart.
+   */
+  const announceExpiredWorkloadExemption = (managed: ManagedChatSession, silentForMs: number): void => {
+    logger.warn("agent_chat.runtime_workload_exemption_expired", {
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      silentForMs,
+      liveBackgroundTaskCount: managed.runtime?.kind === "claude"
+        ? managed.runtime.liveBackgroundTaskIds.size
+        : 0,
+      activeSubagentCount: managed.runtime?.kind === "claude"
+        ? managed.runtime.activeSubagents.size
+        : 0,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: `Background work here hadn't reported anything for ${formatWorkingDuration(RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS)}, so ADE stopped it and released the agent. Ask for a re-run if it's still needed.`,
+    });
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [, managed] of managedSessions) {
-      if (
-        managed.runtime
-        && !managed.closed
-        && managed.session.status === "idle"
-        && !hasLivePendingInput(managed)
-        && !hasRuntimeActiveWorkload(managed.runtime)
-        && now - managed.lastActivityTimestamp > getSessionInactivityTimeoutMs(managed)
-      ) {
-        teardownRuntime(managed, "idle_ttl");
-      }
+      if (!managed.runtime || managed.closed) continue;
+      if (managed.session.status !== "idle") continue;
+      if (hasLivePendingInput(managed)) continue;
+      const silentForMs = now - managed.lastActivityTimestamp;
+      if (silentForMs <= getSessionInactivityTimeoutMs(managed)) continue;
+      // Only meaningful when the runtime is actually claiming work — otherwise
+      // this is the ordinary idle path and there is nothing to override.
+      const claimsWorkload = hasRuntimeActiveWorkload(managed.runtime);
+      const exemptionStale = claimsWorkload
+        && isRuntimeWorkloadExemptionStale(managed.runtime, silentForMs);
+      if (claimsWorkload && !exemptionStale) continue;
+      if (exemptionStale) announceExpiredWorkloadExemption(managed, silentForMs);
+      teardownRuntime(managed, "idle_ttl");
     }
   }, SESSION_CLEANUP_INTERVAL_MS);
   // Allow the process to exit even if the timer is still scheduled
   if (sessionCleanupTimer.unref) sessionCleanupTimer.unref();
 
-  // --- Max concurrent active runtimes eviction ---
-  const evictLeastRecentRuntime = (excludeSessionId: string): void => {
-    let oldest: ManagedChatSession | null = null;
-    let oldestTimestamp = Infinity;
+  // --- Warm-runtime budget participation ---
+  /**
+   * Every runtime this service would agree to release right now, unordered —
+   * the shared budget picks which one, so its choice can span projects.
+   */
+  const listEvictableRuntimes = (excludeSessionId: string): EvictableRuntime[] => {
+    const now = Date.now();
+    const evictable: EvictableRuntime[] = [];
     for (const [id, managed] of managedSessions) {
       if (id === excludeSessionId) continue;
       if (!managed.runtime) continue;
       if (managed.session.status !== "idle") continue;
       if (hasLivePendingInput(managed)) continue;
-      if (hasRuntimeActiveWorkload(managed.runtime)) continue;
-      if (managed.lastActivityTimestamp < oldestTimestamp) {
-        oldestTimestamp = managed.lastActivityTimestamp;
-        oldest = managed;
-      }
+      // A stale background-work exemption must not shield a runtime from the
+      // budget either — that is the same self-sealing flag, and letting it veto
+      // eviction is how the cap silently stopped applying at all.
+      const claimsWorkload = hasRuntimeActiveWorkload(managed.runtime);
+      const exemptionStale = claimsWorkload
+        && isRuntimeWorkloadExemptionStale(managed.runtime, now - managed.lastActivityTimestamp);
+      if (claimsWorkload && !exemptionStale) continue;
+      evictable.push({
+        lastActivityTimestamp: managed.lastActivityTimestamp,
+        evict: () => {
+          // Same rule as the idle sweep: whichever path ends work the session
+          // still claimed has to say so. Stopped rows with no reason attached
+          // read as a bug rather than a decision.
+          if (exemptionStale) announceExpiredWorkloadExemption(managed, now - managed.lastActivityTimestamp);
+          teardownRuntime(managed, "budget_eviction");
+        },
+      });
     }
-    if (oldest) {
-      teardownRuntime(oldest, "budget_eviction");
-    }
+    return evictable;
   };
+
+  const countActiveRuntimes = (): number => {
+    let count = 0;
+    for (const [, managed] of managedSessions) if (managed.runtime) count++;
+    return count;
+  };
+
+  /** This service's half of the shared budget. See `chatRuntimeBudget.ts`. */
+  const runtimeBudgetParticipant: RuntimeBudgetParticipant = {
+    countActiveRuntimes,
+    listEvictableRuntimes,
+  };
+  runtimeBudget.register(runtimeBudgetParticipant);
+
 
   const updateSession = async ({
     sessionId,
