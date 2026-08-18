@@ -36,6 +36,7 @@ import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
+import { useGithubPollGovernor, type GithubPollGovernor } from "./useGithubPollGovernor";
 
 type PrTab = "normal" | "integration" | "rebase";
 
@@ -152,11 +153,7 @@ type PrsContextValue = PrsState & {
   setAiSummaryDismissed: (prId: string, dismissed: boolean) => void;
   regeneratePrAiSummary: (prId: string) => Promise<void>;
   setViewerLogin: (login: string | null) => void;
-  /** True while the shared GitHub rate-limit backoff is in effect. */
-  isGithubRateLimited: () => boolean;
-  /** Records a GitHub rate-limit hit, pausing polling for the shared window. */
-  noteGithubRateLimit: () => void;
-};
+} & GithubPollGovernor;
 
 const PrsContext = createContext<PrsContextValue | null>(null);
 
@@ -165,7 +162,6 @@ const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
 const LS_DISMISSED_SUMMARIES_KEY = "ade:prs:dismissedAiSummaries";
 const LS_TIMELINE_FILTERS_KEY = "ade:prs:timelineFiltersByPrId";
-const GITHUB_RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
 const PRS_CONTEXT_CACHE_TTL_MS = 120_000;
 const PRS_DETAIL_CACHE_TTL_MS = 60_000;
 const PRS_CONTEXT_DEFAULT_CACHE_KEY = "__default_project__";
@@ -858,23 +854,25 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     };
   }, [active, error, refreshCore, refreshErrorRetryCount]);
 
+  // One brake for every automatic PR read on this surface.
+  const {
+    isGithubPollStoodDown,
+    noteGithubReadFailure,
+    noteGithubReadSuccess,
+    githubPollPeriodFor,
+    githubPollGeneration,
+  } = useGithubPollGovernor(active);
+
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.
-  const rateLimitedUntilRef = React.useRef(0);
-  // Shared with any other PR surface that polls GitHub (e.g. the detail pane's
-  // adaptive checks refresh) so they all back off together.
-  const isGithubRateLimited = useCallback(() => Date.now() < rateLimitedUntilRef.current, []);
-  const noteGithubRateLimit = useCallback(() => {
-    rateLimitedUntilRef.current = Date.now() + GITHUB_RATE_LIMIT_BACKOFF_MS;
-  }, []);
   const refreshDetailSilently = useCallback((prId: string) => {
     if (detailFetchInProgress.current) return;
     // Bail if the PR we were asked to refresh is no longer the active one
     if (selectedPrIdRef.current !== prId) return;
     // Guard: don't fetch details for a PR that's not in the list
     if (!prsRef.current.some((p) => p.id === prId)) return;
-    // Skip if we're rate-limited
-    if (Date.now() < rateLimitedUntilRef.current) return;
+    // Skip while the shared governor is standing down.
+    if (isGithubPollStoodDown()) return;
 
     detailFetchInProgress.current = true;
     Promise.allSettled([
@@ -887,18 +885,17 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         // Only apply if this PR is still selected
         if (selectedPrIdRef.current !== prId) return;
 
-        // Check for rate-limit errors in any rejected result
-        for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
-          if (result.status === "rejected") {
-            const msg = String(result.reason?.message ?? result.reason);
-            if (msg.includes("rate limit") || msg.includes("API rate")) {
-              noteGithubRateLimit();
-              console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
-              return; // Don't apply partial results during rate limiting
-            }
-          }
+        const results = [statusResult, checksResult, reviewsResult, commentsResult];
+        // ANY rejection arms the governor. Classifying by message here is what
+        // let a whole-outage of 5xx responses poll at full speed; the kind and
+        // the quota reserve come from the runtime's request budget instead.
+        if (results.some((result) => result.status === "rejected")) {
+          noteGithubReadFailure();
+        } else {
+          noteGithubReadSuccess();
         }
-        if (![statusResult, checksResult, reviewsResult, commentsResult].some((result) => result.status === "fulfilled")) {
+        if (!results.some((result) => result.status === "fulfilled")) {
+          // Nothing new to apply. Whatever is on screen stays on screen.
           return;
         }
 
@@ -936,12 +933,17 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       .finally(() => {
         detailFetchInProgress.current = false;
       });
-  }, [noteGithubRateLimit]);
+  }, [isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess]);
 
+  // Reached only from `refresh()`, which is user-driven (the Refresh button and
+  // post-mutation re-reads). Deliberately NOT gated on the governor: the
+  // 500-request reserve exists so an explicit user action still works while
+  // automatic polling stands down, and a manual retry is the escape hatch from
+  // a stale backoff. It still reports its outcome, so a success here clears the
+  // ladder for the automatic loops too.
   const refreshSelectedPrDetail = useCallback(async (prId: string) => {
     if (selectedPrIdRef.current !== prId) return;
     if (!prsRef.current.some((p) => p.id === prId)) return;
-    if (Date.now() < rateLimitedUntilRef.current) return;
 
     detailFetchInProgress.current = true;
     try {
@@ -953,15 +955,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       ]);
       if (selectedPrIdRef.current !== prId) return;
 
-      for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
-        if (result.status === "rejected") {
-          const msg = String(result.reason?.message ?? result.reason);
-          if (msg.includes("rate limit") || msg.includes("API rate")) {
-            noteGithubRateLimit();
-            console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
-            return;
-          }
-        }
+      const results = [statusResult, checksResult, reviewsResult, commentsResult];
+      if (results.some((result) => result.status === "rejected")) {
+        noteGithubReadFailure();
+      } else {
+        noteGithubReadSuccess();
       }
 
       if (statusResult.status === "fulfilled") setDetailStatus((prev) => (jsonEqual(prev, statusResult.value) ? prev : statusResult.value));
@@ -978,7 +976,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     } finally {
       detailFetchInProgress.current = false;
     }
-  }, [noteGithubRateLimit]);
+  }, [noteGithubReadFailure, noteGithubReadSuccess]);
 
   const refresh = useCallback(async (args: PrRefreshArgs = {}) => {
     const githubRefreshArgs = normalizePrRefreshArgs(args);
@@ -996,13 +994,22 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   }, [refreshCore, refreshSelectedPrDetail]);
 
   // Load detail data when selected PR changes, then poll every 60s.
-  // Reset rate-limit backoff on each mount / PR change so stale backoff
-  // from a previous session doesn't block the first fetch.
+  //
+  // The governor is deliberately NOT reset here. It used to be cleared on every
+  // PR selection, which meant clicking between PRs — the natural thing to do
+  // when the tab looks stuck — disarmed the one brake on GitHub polling. A
+  // GitHub outage or an exhausted quota is account-wide, not per-PR, so the
+  // stand-down has to survive selection. Opening a PR is still a user action
+  // and its first load runs regardless of the governor; only the repeating
+  // timers below stand down.
+  //
+  // The governor's state lives in the provider, so leaving the PRs tab or
+  // switching project does still drop the failure ladder. The quota reserve
+  // self-heals on the next mount (the governor reads the runtime's budget
+  // immediately), and the ladder re-arms on the first failure, so the worst
+  // case is one poll group spent re-learning what ADE already knew.
   useEffect(() => {
     if (!active) return;
-    // Reset rate-limit backoff whenever the selected PR changes (including
-    // on remount) so stale backoff from a previous session is cleared.
-    rateLimitedUntilRef.current = 0;
 
     if (!selectedPrId) {
       detailStatePrIdRef.current = null;
@@ -1094,10 +1101,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailDeployments([]);
       setDetailAiSummary(null);
     }
-    const isPrRateLimitError = (error: unknown): boolean => {
-      const msg = String((error as { message?: unknown } | null)?.message ?? error);
-      return msg.includes("rate limit") || msg.includes("API rate");
-    };
     const yieldToPaint = () =>
       new Promise<void>((resolve) => {
         const ric = (window as unknown as {
@@ -1143,7 +1146,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
       let primarySettledCount = 0;
       let primaryFulfilledCount = 0;
-      let rateLimited = false;
       const primaryRequestCount = 4;
       const markPrimarySettled = (fulfilled: boolean) => {
         primarySettledCount += 1;
@@ -1153,11 +1155,18 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         }
         if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
           detailFetchInProgress.current = false;
-          if (!rateLimited && primaryFulfilledCount === primaryRequestCount) {
+          // Report the group's outcome once, not per piece. The four settle in
+          // nondeterministic order, so a single piece resolving last (from the
+          // host's conditional cache, say) would otherwise clear a stand-down
+          // its three failing siblings had just armed. This matches the
+          // aggregate rule the repeating loops already use.
+          if (primaryFulfilledCount === primaryRequestCount) {
+            noteGithubReadSuccess();
             detailStatePrIdRef.current = prId;
             detailLoadedAtByPrIdRef.current[prId] = Date.now();
             setDetailLiveDataPrId(prId);
           } else {
+            noteGithubReadFailure();
             setDetailLiveDataPrId(null);
           }
         }
@@ -1171,7 +1180,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         promise
           .then((value) => {
             if (cancelled || selectedPrIdRef.current !== prId) return;
-            if (rateLimited) return;
             fulfilled = true;
             if (value != null && (!Array.isArray(value) || value.length > 0)) {
               liveDetailApplied = true;
@@ -1181,20 +1189,22 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           })
           .catch((error: unknown) => {
             if (cancelled || selectedPrIdRef.current !== prId) return;
-            if (isPrRateLimitError(error)) {
-              rateLimited = true;
-              noteGithubRateLimit();
-              console.warn("[PrsContext] GitHub rate limit hit - pausing detail polling for 5 min");
-              if (snapshotForRequest?.prId === prId) {
-                setDetailStatus(snapshotForRequest.status);
-                setDetailChecks(snapshotForRequest.checks);
-                setDetailReviews(snapshotForRequest.reviews);
-                setDetailComments(snapshotForRequest.comments);
-              }
-              setDetailLiveDataPrId(null);
-            } else {
-              console.warn(`[PrsContext] Failed to load PR ${name}:`, error);
+            console.warn(`[PrsContext] Failed to load PR ${name}:`, error);
+            // Fall back to the cached snapshot for EVERY failure, not just a
+            // recognised rate limit. A 5xx used to leave the pane empty and
+            // then keep polling for more of the same; showing what ADE already
+            // knows is the point of degrading the request rate instead of the
+            // feature. Only while nothing live has landed yet, though — the
+            // four pieces settle in any order, and rewinding all four to the
+            // snapshot because the last one failed would discard fresher data
+            // its siblings already applied.
+            if (!liveDetailApplied && snapshotForRequest?.prId === prId) {
+              setDetailStatus(snapshotForRequest.status);
+              setDetailChecks(snapshotForRequest.checks);
+              setDetailReviews(snapshotForRequest.reviews);
+              setDetailComments(snapshotForRequest.comments);
             }
+            setDetailLiveDataPrId(null);
             setDetailBusy(false);
           })
           .finally(() => {
@@ -1216,158 +1226,58 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         setDetailComments(value);
       });
     };
-    if (hasFreshDetailCache) {
-      setDetailLiveDataPrId(prId);
-      setDetailBusy(false);
-      startSecondaryDetailFetch();
+    // Every path below ends the same way: keep the detail live on a 60s tick.
+    // This one skips its ticks while the governor is standing down rather than
+    // lengthening its period — 60s is already at the safe end, so there is no
+    // request volume to win, and the base cadence is what should resume the
+    // moment GitHub does.
+    const startDetailPolling = () => {
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
       }, 60_000);
       return () => {
         cancelled = true;
         window.clearInterval(intervalId);
-        rateLimitedUntilRef.current = 0;
       };
+    };
+    if (hasFreshDetailCache) {
+      setDetailLiveDataPrId(prId);
+      setDetailBusy(false);
+      startSecondaryDetailFetch();
+      return startDetailPolling();
     }
     if (hasFreshSnapshotPrefill) {
       setDetailBusy(false);
       startProgressivePrimaryFetch({ background: true });
       startSecondaryDetailFetch();
-      const intervalId = window.setInterval(() => {
-        refreshDetailSilently(prId);
-      }, 60_000);
-      return () => {
-        cancelled = true;
-        window.clearInterval(intervalId);
-        rateLimitedUntilRef.current = 0;
-      };
+      return startDetailPolling();
     }
-    if (!hasFreshDetailCache && !hasFreshSnapshotPrefill && typeof window.ade.prs.listSnapshots === "function") {
-      setDetailBusy(true);
-      void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
-        if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
-        const snapshot = snapshots[0];
-        if (snapshot) {
-          applySnapshotPrefill(snapshot);
-          startProgressivePrimaryFetch({ background: true });
-          startSecondaryDetailFetch();
-        } else {
-          startProgressivePrimaryFetch();
-          startSecondaryDetailFetch({ reset: true });
-        }
-      }).catch(() => {
-        if (!cancelled) {
-          startProgressivePrimaryFetch();
-          startSecondaryDetailFetch({ reset: true });
-        }
-      });
-      const intervalId = window.setInterval(() => {
-        refreshDetailSilently(prId);
-      }, 60_000);
-      return () => {
-        cancelled = true;
-        window.clearInterval(intervalId);
-        rateLimitedUntilRef.current = 0;
-      };
-    }
-
+    // A caller without `listSnapshots` (an older adapter or a partial test
+    // stub) is treated as one that answered "no snapshots".
     setDetailBusy(true);
-    detailFetchInProgress.current = true;
-
-    let primarySettledCount = 0;
-    let primaryFulfilledCount = 0;
-    let rateLimited = false;
-    const primaryRequestCount = 4;
-    const markPrimarySettled = (fulfilled: boolean) => {
-      primarySettledCount += 1;
-      if (fulfilled) primaryFulfilledCount += 1;
-      if (selectedPrIdRef.current === prId && primarySettledCount === 1) {
-        detailFetchInProgress.current = false;
+    const listSnapshots = window.ade.prs.listSnapshots;
+    const snapshotsPromise = typeof listSnapshots === "function"
+      ? listSnapshots({ prId })
+      : Promise.resolve([]);
+    void snapshotsPromise.then((snapshots) => {
+      if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
+      const snapshot = snapshots[0];
+      if (snapshot) {
+        applySnapshotPrefill(snapshot);
+        startProgressivePrimaryFetch({ background: true });
+        startSecondaryDetailFetch();
+      } else {
+        startProgressivePrimaryFetch();
+        startSecondaryDetailFetch({ reset: true });
       }
-      if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
-        detailFetchInProgress.current = false;
-        setDetailLiveDataPrId(!rateLimited && primaryFulfilledCount > 0 ? prId : null);
+    }).catch(() => {
+      if (!cancelled) {
+        startProgressivePrimaryFetch();
+        startSecondaryDetailFetch({ reset: true });
       }
-    };
-    const isRateLimitError = (error: unknown): boolean => {
-      const msg = String((error as { message?: unknown } | null)?.message ?? error);
-      return msg.includes("rate limit") || msg.includes("API rate");
-    };
-    const loadPrimaryPiece = <T,>(
-      name: string,
-      promise: Promise<T>,
-      apply: (value: T) => void,
-    ) => {
-      let fulfilled = false;
-      promise
-        .then((value) => {
-          if (cancelled || selectedPrIdRef.current !== prId) return;
-          if (rateLimited) return;
-          fulfilled = true;
-          if (value != null && (!Array.isArray(value) || value.length > 0)) {
-            liveDetailApplied = true;
-          }
-          detailStatePrIdRef.current = prId;
-          detailLoadedAtByPrIdRef.current[prId] = Date.now();
-          apply(value);
-          setDetailLiveDataPrId(prId);
-          setDetailBusy(false);
-        })
-        .catch((error: unknown) => {
-          if (cancelled || selectedPrIdRef.current !== prId) return;
-          if (isRateLimitError(error)) {
-            rateLimited = true;
-            noteGithubRateLimit();
-            console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
-            if (snapshotForRequest?.prId === prId) {
-              setDetailStatus(snapshotForRequest.status);
-              setDetailChecks(snapshotForRequest.checks);
-              setDetailReviews(snapshotForRequest.reviews);
-              setDetailComments(snapshotForRequest.comments);
-            }
-            setDetailLiveDataPrId(null);
-          } else {
-            console.warn(`[PrsContext] Failed to load PR ${name}:`, error);
-          }
-          setDetailBusy(false);
-        })
-        .finally(() => {
-          if (cancelled) return;
-          markPrimarySettled(fulfilled);
-        });
-    };
-
-    loadPrimaryPiece("status", window.ade.prs.getStatus(prId), (value) => {
-      setDetailStatus(value ?? null);
     });
-    loadPrimaryPiece("checks", window.ade.prs.getChecks(prId), (value) => {
-      setDetailChecks(value);
-    });
-    loadPrimaryPiece("reviews", window.ade.prs.getReviews(prId), (value) => {
-      setDetailReviews(value);
-    });
-    loadPrimaryPiece("comments", window.ade.prs.getComments(prId), (value) => {
-      setDetailComments(value);
-    });
-
-    // Progressive secondary fetch (deployments, AI summary) — yields
-    // to the main paint so the primary header + checks render first.
-    startSecondaryDetailFetch({ reset: true });
-
-    // After the initial fetch, poll every 60 seconds for fresh detail data.
-    // GitHub rate limit is 5000/hour (~83/min) and each detail refresh uses ~10 API calls,
-    // so polling faster than 60s risks exhausting the rate limit.
-    const intervalId = window.setInterval(() => {
-      refreshDetailSilently(prId);
-    }, 60_000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      // Reset rate-limit backoff on cleanup so remounts start fresh
-      rateLimitedUntilRef.current = 0;
-    };
-  }, [active, noteGithubRateLimit, refreshDetailSilently, selectedPrId]);
+    return startDetailPolling();
+  }, [active, noteGithubReadFailure, noteGithubReadSuccess, refreshDetailSilently, selectedPrId]);
 
   useEffect(() => {
     if (!active || !selectedPrId) return;
@@ -1593,8 +1503,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setAiSummaryDismissed,
       regeneratePrAiSummary,
       setViewerLogin,
-      isGithubRateLimited,
-      noteGithubRateLimit,
+      isGithubPollStoodDown,
+      noteGithubReadFailure,
+      noteGithubReadSuccess,
+      githubPollPeriodFor,
+      githubPollGeneration,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedRebaseItemId,
     // setMergeMethod, setInlineTerminal, and setViewerLogin are intentionally excluded from this dependency
@@ -1641,8 +1554,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setTimelineFilters,
       setAiSummaryDismissed,
       regeneratePrAiSummary,
-      isGithubRateLimited,
-      noteGithubRateLimit,
+      isGithubPollStoodDown,
+      noteGithubReadFailure,
+      noteGithubReadSuccess,
+      githubPollPeriodFor,
+      githubPollGeneration,
     ],
   );
 

@@ -492,6 +492,14 @@ a boolean.
 
 **GitHub** (`github.*`)
 - `getStatus`, `getRemoteStatus`, `publishCurrentProject`
+- `getRequestBudget` — the host's zero-network GitHub request budget (quota
+  reserve pause, worst recent failure kind, retry instant). `viewerAllowed`,
+  because it only reports how hard the caller may poll. Registered for the
+  hosted web client specifically: its PR timers run in the browser but their
+  GitHub requests are spent from *this* machine's quota, so without the
+  registration its adapter falls back to an all-null budget and its 5-second
+  checks loop never sees the reserve. See
+  [pull requests](../pull-requests/README.md#keeping-automatic-github-reads-inside-the-quota).
 
 **Project config** (`projectConfig.*`)
 - `get`, `save`

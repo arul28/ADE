@@ -165,6 +165,8 @@ import {
   isGithubRequestError,
   markGithubRequestError,
 } from "./githubReadBackoff";
+import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
@@ -1223,6 +1225,25 @@ function parseIsoMs(value: string | null | undefined): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Whether an error means GitHub is unusable right now, as opposed to one row
+ * being unreachable. A 404/403 on a single PR is a fact about that PR.
+ *
+ * The transport check is not optional: a common outage shape is requests that
+ * *hang* rather than answer, and those reject with a bare `fetch failed`,
+ * `ENOTFOUND`, or ADE's own timeout — carrying no classified `authFailure` and
+ * matching none of GitHub's 5xx bodies — while each one has already been
+ * counted against the quota. `isTransientGithubProbeFailure` is the same
+ * predicate `classifyGitHubAuthFailure` uses to produce the `network` kind
+ * accepted above, so the two cannot disagree.
+ */
+function isGithubWideFailure(error: unknown): boolean {
+  const kind = githubAuthFailureKindOf(error);
+  if (kind === "rate_limited" || kind === "service_unavailable" || kind === "network") return true;
+  const message = getErrorMessage(error);
+  return isGithubServiceUnavailable({ message }) || isTransientGithubProbeFailure(message);
 }
 
 function isBackgroundRefreshCandidate(row: PullRequestRow, nowMs: number): boolean {
@@ -5410,27 +5431,13 @@ export function createPrService({
       });
     }
     if (failures[0] && refreshed.length === 0) {
-      throw failures[0].reason;
+      // Prefer a reason that says GitHub itself is down. The background sweep's
+      // caller decides whether to back off from this one error, and a mixed
+      // batch whose first row happens to be a permanent 404 would otherwise
+      // hide the outage behind it.
+      throw (failures.find((failure) => isGithubWideFailure(failure.reason)) ?? failures[0]).reason;
     }
     return refreshed;
-  };
-
-  const refreshRowsBestEffort = async (rows: PullRequestRow[]): Promise<void> => {
-    const seen = new Set<string>();
-    const uniqueRows = rows.filter((row) => {
-      if (seen.has(row.id)) return false;
-      seen.add(row.id);
-      return true;
-    });
-    for (let i = 0; i < uniqueRows.length; i += REFRESH_CONCURRENCY) {
-      await Promise.all(uniqueRows.slice(i, i + REFRESH_CONCURRENCY).map(async (row) => {
-        try {
-          await refreshOne(row.id);
-        } catch (error) {
-          logger.warn("prs.refresh_failed", { prId: row.id, error: getErrorMessage(error) });
-        }
-      }));
-    }
   };
 
   /**
@@ -5704,16 +5711,44 @@ export function createPrService({
     return status;
   };
 
+  /**
+   * A commit's checks, as GitHub reports them right now.
+   *
+   * A total failure rejects, never returns `[]`. The two are indistinguishable
+   * to every caller — an empty array is also the honest answer for "no checks
+   * yet" — and the renderer's CI poll uses exactly that distinction to decide
+   * whether the pipeline has settled, so a swallowed failure reads as CI that
+   * has not started and holds the poll open indefinitely. Callers that would
+   * rather show stale checks than nothing catch this, which is now an explicit
+   * choice at each call site instead of a silent default here.
+   *
+   * A *partial* failure still returns: one working source beats nothing, and
+   * `computeStatus` — not this — owns the rollup verdict that must not be
+   * recomputed from an incomplete picture.
+   */
   const getChecksByCoords = async (coords: PrGithubCoords): Promise<PrCheck[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prNumber = Number(coords.githubPrNumber);
     const pr = await fetchPr(repo, prNumber);
     const headSha = asString(pr?.head?.sha);
     if (!headSha) return rememberActivityInput("checks", repo, prNumber, [] as PrCheck[]);
+    let combinedStatusError: unknown = null;
+    let checkRunsError: unknown = null;
     const [combinedStatus, checkRuns] = await Promise.all([
-      bestEffort("getChecks.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }),
-      bestEffort("getChecks.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]),
+      bestEffort(
+        "getChecks.fetchCombinedStatus",
+        fetchCombinedStatus(repo, headSha),
+        { state: "", statuses: [] },
+        (error) => { combinedStatusError = error; },
+      ),
+      bestEffort(
+        "getChecks.fetchCheckRuns",
+        fetchCheckRuns(repo, headSha),
+        [] as any[],
+        (error) => { checkRunsError = error; },
+      ),
     ]);
+    if (combinedStatusError && checkRunsError) throw checkRunsError;
 
     const out: PrCheck[] = [];
     const seen = new Set<string>();
@@ -11188,7 +11223,23 @@ export function createPrService({
         .filter((row) => hotPrIds.has(row.id))
         .sort(compareBackgroundRefreshPriority);
       const candidates = [...hotCandidates, ...staleCandidates];
-      await refreshRowsBestEffort(candidates);
+      // Tolerate a row that fails, but let a GitHub-wide failure surface: the
+      // sweep used to run through a best-effort helper that swallowed
+      // everything, so an outage in which every row failed still read as a
+      // clean tick and `prPollingService` never engaged its backoff.
+      //
+      // "Every row failed" alone is NOT that evidence. Candidates are the rows
+      // whose `last_synced_at` is stale, and a row that permanently 404s (repo
+      // renamed, fork access lost, PR hard-deleted) never refreshes it — so it
+      // becomes the only candidate on every later sweep, and an unconditional
+      // rethrow would pin a perfectly healthy poller at max backoff forever.
+      // Only a failure that says GitHub itself is unusable counts.
+      try {
+        await refreshPrIds(candidates.map((row) => row.id));
+      } catch (error) {
+        if (isGithubWideFailure(error)) throw error;
+        logger.warn("prs.background_refresh_rows_failed", { error: getErrorMessage(error) });
+      }
 
       return withGithubStackMemberships(listRows().map(rowToSummary));
     },

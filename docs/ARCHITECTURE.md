@@ -803,6 +803,18 @@ ade.github.*                 # PR list, review, merge, checks. Also exposes
                              # getAppUserAuthStatus / startAppUserDeviceAuth /
                              # pollAppUserDeviceAuth / clearAppUserAuth (start/poll/
                              # clear are CTO-only actions in the ADE Actions registry).
+                             # getRequestBudget is the zero-network read the PR
+                             # surface's poll governor consults on a slow timer
+                             # and after every failed read: the 500-request quota
+                             # reserve plus the last classified failure kind.
+                             # It exists on all three
+                             # transports (IPC, the `github` action domain, the
+                             # `github.getRequestBudget` sync remote command) because
+                             # a rejection cannot carry a typed kind across either
+                             # boundary. Optional on the client -- an older remote
+                             # runtime that omits it leaves callers on their own
+                             # local backoff. See
+                             # features/pull-requests/README.md.
 ade.prs.*                    # stacked PR queue, integration, rebase/issue
                              # resolver sessions, and merge readiness
 ade.conflicts.*              # risk matrix, simulation, proposals

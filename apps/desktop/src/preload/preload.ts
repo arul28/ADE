@@ -277,6 +277,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -9135,6 +9136,12 @@ const adeBridge = {
             : githubStatusCache.get(),
       );
     },
+    // Deliberately not cached: a stale "you may proceed" is the answer that
+    // burned the quota. The read is free, so there is nothing to save.
+    getRequestBudget: async (): Promise<GitHubRequestBudget> =>
+      callProjectRuntimeActionOr("github", "getRequestBudget", {}, () =>
+        ipcRenderer.invoke(IPC.githubGetRequestBudget),
+      ),
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;
     }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {

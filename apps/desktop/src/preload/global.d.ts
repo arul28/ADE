@@ -346,6 +346,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -2695,6 +2696,9 @@ declare global {
           sessionId: string;
         }) => Promise<GitHubAppDeviceAuthPollResult>;
         clearAppUserAuth: () => Promise<GitHubAppUserAuthStatus>;
+        // Optional: an older remote runtime does not implement the budget read.
+        // Callers must feature-detect and fall back to their own local backoff.
+        getRequestBudget?: () => Promise<GitHubRequestBudget>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
         listRepoAutolinks: (args?: {
           owner?: string;

@@ -257,6 +257,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -9651,6 +9652,12 @@ export function registerIpc({
   ipcMain.handle(IPC.githubClearAppUserAuth, async (): Promise<GitHubAppUserAuthStatus> => {
     const ctx = getCtx();
     return ctx.githubService.clearAppUserAuth();
+  });
+
+  // Zero-network read, so pollers can consult the reserve on a timer.
+  ipcMain.handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRequestBudget();
   });
 
   const resolveGithubRepoRef = async (
