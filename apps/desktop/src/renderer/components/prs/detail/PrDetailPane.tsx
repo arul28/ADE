@@ -1189,7 +1189,11 @@ export function PrDetailPane({
       // landing between the render that nulled it and the effect cleanup would
       // otherwise pass null straight to the host.
       const coords = coordsRef.current;
-      if (readByCoords && coords) return readByCoords(coords);
+      // An unmapped PR asks by coords or asks nothing: its `pr.id` is the
+      // synthetic `gh:owner/repo#n`, which `getStatus` rejects locally. That
+      // local rejection would arm the shared stand-down for every other loop on
+      // the surface — a GitHub brake tripped by something GitHub never saw.
+      if (readByCoords) return coords ? readByCoords(coords) : null;
       return readById ? readById(pr.id) : null;
     };
     let cancelled = false;

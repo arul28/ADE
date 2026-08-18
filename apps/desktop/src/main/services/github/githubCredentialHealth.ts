@@ -189,6 +189,23 @@ export function recordGithubCredentialProbeSuccess(
   });
 }
 
+/**
+ * A later failure must never *shorten* a cooldown that is still running. Kinds
+ * differ in how long they park a credential — a rejected token gets five
+ * minutes, a transport error deliberately gets none — and they share a resource
+ * entry, so overwriting unconditionally let a transient network blip un-park a
+ * credential ADE had already decided was broken, sending the next request
+ * straight back at it.
+ */
+function extendedCooldownUntilMs(
+  current: CredentialResourceHealth | undefined,
+  cooldownUntilMs: number,
+  nowMs: number,
+): number {
+  const live = (current?.cooldownUntilMs ?? 0) > nowMs ? current!.cooldownUntilMs : 0;
+  return Math.max(cooldownUntilMs, live);
+}
+
 function recordGithubFailure(
   candidate: GithubCredentialCandidate,
   failure: GitHubAuthFailure,
@@ -198,12 +215,13 @@ function recordGithubFailure(
   const digest = githubCredentialTokenDigest(candidate.token);
   const existing = healthByTokenDigest.get(digest);
   const userLogin = normalizedLogin(candidate.userLogin ?? existing?.userLogin);
+  const nowMs = Date.now();
   const next: CredentialHealth = {
     resources: updateResourceHealth(existing, rateLimit, (current) => ({
       failure,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      cooldownUntilMs,
-      failureAtMs: Date.now(),
+      cooldownUntilMs: extendedCooldownUntilMs(current, cooldownUntilMs, nowMs),
+      failureAtMs: nowMs,
     })),
     userLogin,
   };
@@ -221,8 +239,8 @@ function recordGithubFailure(
     resources.set(resource, {
       failure,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      cooldownUntilMs,
-      failureAtMs: Date.now(),
+      cooldownUntilMs: extendedCooldownUntilMs(current, cooldownUntilMs, nowMs),
+      failureAtMs: nowMs,
     });
     healthByTokenDigest.set(candidateDigest, {
       ...candidateHealth,

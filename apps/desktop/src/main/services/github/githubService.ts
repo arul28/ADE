@@ -1386,22 +1386,16 @@ export function createGithubService({
         }
       }
 
-      let response: Response;
-      try {
-        response = await fetchGitHub(url.toString(), {
-          method: args.method,
-          headers,
-          body: args.body != null ? JSON.stringify(args.body) : undefined,
-        });
-      } catch (error) {
-        // A request that never reached GitHub — a hang, a timeout, a DNS or TLS
-        // failure — used to throw straight out of here, recording nothing. That
-        // is the outage shape this lane targets, and with no record the request
-        // budget reported no failure kind, so the caller's ladder could not
-        // climb past its flat unclassified rung. Recorded with a null rate
-        // limit so it cannot clobber the real quota numbers, and the kinds this
-        // produces (`network` / `unknown`) carry no cooldown, so it can never
-        // park a credential the user's next action needs.
+      // A request that never got an answer from GitHub — a hang, a timeout, a
+      // DNS or TLS failure, a body that stalls mid-stream — used to throw
+      // straight out of here recording nothing. That is the outage shape this
+      // lane targets, and with no record the request budget reported no failure
+      // kind, so the caller's ladder could not climb past its flat unclassified
+      // rung. Recorded with a null rate limit so it cannot clobber the real
+      // quota numbers, and the kinds this produces (`network` / `unknown`)
+      // carry no cooldown, so it can never park a credential the user's next
+      // action needs.
+      const recordTransportFailure: (error: unknown) => never = (error) => {
         recordGithubOperationFailure(
           candidate,
           classifyGitHubAuthFailure({
@@ -1410,6 +1404,17 @@ export function createGithubService({
           null,
         );
         throw error;
+      };
+
+      let response: Response;
+      try {
+        response = await fetchGitHub(url.toString(), {
+          method: args.method,
+          headers,
+          body: args.body != null ? JSON.stringify(args.body) : undefined,
+        });
+      } catch (error) {
+        recordTransportFailure(error);
       } finally {
         releaseConditionalRequest?.();
       }
@@ -1428,10 +1433,12 @@ export function createGithubService({
           method: args.method,
           headers,
           body: args.body != null ? JSON.stringify(args.body) : undefined,
-        });
+        }).catch(recordTransportFailure);
       }
 
-      const text = await response.text();
+      // The body has its own timeout, so a response that stalls mid-stream
+      // fails here rather than above — same shape, same record.
+      const text = await response.text().catch(recordTransportFailure);
       let data: unknown = text;
       try {
         data = text.trim().length ? JSON.parse(text) : {};

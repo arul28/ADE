@@ -327,7 +327,27 @@ describe("githubCredentialHealth", () => {
       expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
     });
 
-    it("stops reporting a failure kind once it is no longer recent", () => {
+    it("does not let a transport blip un-park a credential already on cooldown", () => {
+      // Kinds differ in how long they park a credential and share one resource
+      // entry, so overwriting unconditionally let a `network` failure (which
+      // deliberately gets no cooldown) clear the five minutes a rejected token
+      // had just earned — sending the next request straight back at it.
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "invalid_token",
+        message: "Bad credentials",
+        retryAt: null,
+      }, null);
+      expect(githubCredentialCooldown(ghCandidate)?.failure.kind).toBe("invalid_token");
+
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "network",
+        message: "fetch failed",
+        retryAt: null,
+      }, null);
+      expect(githubCredentialCooldown(ghCandidate)).not.toBeNull();
+    });
+
+    it("stops reporting a failure kind once it is no longer recent", () =>{
       // A failure is otherwise cleared only by a success on the SAME credential
       // and resource, so a permanently-bad one (revoked PAT, stale
       // GITHUB_TOKEN) would keep its kind for the life of the process while

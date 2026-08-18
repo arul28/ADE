@@ -1187,8 +1187,10 @@ recovery is automatic.
   a permanently-bad one would become the process-wide answer and push every
   project's ladder onto the longer base on a healthy GitHub.
 
-  A request that never reaches GitHub at all — a hang, a timeout, a DNS or TLS
-  failure — is recorded as a failure by both owners before it is rethrown. It
+  A request that never gets an answer from GitHub — a hang, a timeout, a DNS or
+  TLS failure, a response body that stalls mid-stream — is recorded as a failure
+  by both owners before it is rethrown. The body phase matters as much as the
+  header phase: it has its own timeout, so a stalled response fails there. It
   used to throw straight out of the request helper, recording nothing, so the
   budget reported no kind and the governor could not climb past its flat
   unclassified rung — inert for exactly the outage shape it targets. The kind
