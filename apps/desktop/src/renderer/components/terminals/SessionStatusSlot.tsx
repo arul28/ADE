@@ -5,10 +5,12 @@ import {
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import type { SessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
+import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
 import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
   sessionCanonicalUiState,
+  sessionIsMidFlight,
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
 import { SessionSnoozeControl } from "./SessionSnoozeControl";
@@ -75,6 +77,11 @@ export function SessionStatusSlot({
   // hover-driven actions would fade out from under the open menu. Pin the slot
   // open for as long as the menu is.
   const [snoozeMenuOpenRaw, setSnoozeMenuOpen] = React.useState(false);
+  // Settle now appears on rows where teardown does real provider work (stopping
+  // background jobs, releasing the agent), so a second click lands inside that
+  // window. The backend answers a joined settle with a raw session id in the
+  // message — never something to show a user — so swallow the double click here.
+  const [settlePending, setSettlePending] = React.useState(false);
   // Derived, not raw: if the snooze button disappears while its menu is open
   // (the row gets blocked mid-interaction) it unmounts without ever reporting
   // `false`, and a stale `true` would permanently hide the status label.
@@ -83,17 +90,11 @@ export function SessionStatusSlot({
     if (!actionsEnabled) setSnoozeMenuOpen(false);
   }, [actionsEnabled]);
 
-  const canonicalPhase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
-  // Every session type prefers the turn anchor: chats get it from the chat
-  // projection, PTY-backed CLIs from the runtime-state transition in
-  // ptyService. Without it the timer counts time-since-last-output-write,
-  // which for a CLI repainting its TUI resets every few seconds.
-  const elapsedSince = canonicalPhase === "running"
-    ? session.currentTurnStartedAt ?? session.lastActivityAt ?? session.startedAt
-    : session.lastActivityAt ?? session.startedAt;
-  const isActivelyRunning = canonicalPhase === "starting"
-    || canonicalPhase === "running"
-    || canonicalPhase === "stale";
+  const canonicalInput = canonicalInputFromSummary(session);
+  const canonicalState = sessionCanonicalUiState(canonicalInput);
+  const canonicalPhase = canonicalState.phase;
+  const elapsedSince = sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);
+  const isActivelyRunning = sessionIsMidFlight(canonicalInput);
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"
     || isChatToolType(session.toolType)
@@ -156,12 +157,16 @@ export function SessionStatusSlot({
               title={settled ? "Un-settle session" : "Settle session"}
               data-testid="session-settle-button"
               className={cn(SESSION_ACTION_BUTTON_CLASS, "-mr-1")}
+              disabled={settlePending}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
+                if (settlePending) return;
+                setSettlePending(true);
                 void (settled
                   ? unsettleSession(session, runtimePin)
-                  : settleSession(session, runtimePin));
+                  : settleSession(session, runtimePin)
+                ).finally(() => setSettlePending(false));
               }}
             >
               {settled ? (

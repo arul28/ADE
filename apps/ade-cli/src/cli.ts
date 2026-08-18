@@ -57,6 +57,16 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import {
+  formatWorkingDuration,
+  sessionElapsedLabel,
+} from "../../desktop/src/shared/sessionStatusPresentation";
+import {
+  canonicalInputFromSummary,
+  sessionCanonicalUiState,
+  sessionStatusDisplay,
+} from "../../desktop/src/renderer/lib/terminalAttention";
 import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
@@ -1866,7 +1876,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   way to quiet a row you are waiting on — it hides the row without claiming
   the work is done, and a hand-raise wakes it early.
 
-    $ ade session show <id> --text                  Print settle/snooze state and the wake reason
+    $ ade session show <id> --text                  Print what the session is doing (status + elapsed), the agent
+                                                    processes it is holding open, settle/snooze state, and the wake reason
     $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
     $ ade session snooze <id> --until 2026-07-26T18:00:00Z
                                                     Snooze until an explicit ISO-8601 deadline
@@ -19673,11 +19684,14 @@ function formatSessionLifecycle(value: unknown): string {
   const snoozed = Number.isFinite(snoozedUntilMs) && snoozedUntilMs > now;
   const wakeLabel = snoozed ? snoozeWakeLabel(snoozedUntil, now) : null;
   const indefinite = isIndefiniteSnooze(snoozedUntil, now);
+
   return renderKeyValues("ADE session lifecycle", [
     ["session", record.sessionId ?? record.id],
     ["title", record.title],
     ["lane", record.laneId],
+    ["status", sessionStatusLine(record, now, snoozed)],
     ["runtime state", record.runtimeState],
+    ["agent processes", sessionRuntimeProcessLine(record, now)],
     ["settled at", record.settledAt],
     ["settle override", record.settleOverride],
     ["status note", record.statusNote],
@@ -19691,6 +19705,61 @@ function formatSessionLifecycle(value: unknown): string {
     ["woke reason", record.wokeReason ?? record.reason],
     ["ok", record.ok],
   ]);
+}
+
+/**
+ * What `ade session show` says a session is DOING, as opposed to which columns
+ * it has. `runtime state` alone reads `idle` for a chat that is holding a warm
+ * agent process and two background jobs open — the state people were dropping
+ * to `ps` to diagnose.
+ *
+ * The word, its elapsed, and the snooze overlay all come from the shared
+ * presentation helpers the Work rows and `ade code` use, so this line and the
+ * `snoozed` / `wakes` lines below it cannot tell two different stories.
+ * Undefined for the mutation acks that share this formatter — they carry no
+ * `status`, and `renderKeyValues` drops the row.
+ */
+function sessionStatusLine(record: JsonObject, now: number, snoozed: boolean): string | undefined {
+  // `session.get` answers with a TerminalSessionSummary. The formatter takes an
+  // opaque record because it also renders acks, and `status` is what tells the
+  // two apart.
+  if (!asString(record.status)) return undefined;
+  const summary = record as unknown as TerminalSessionSummary;
+  const input = { ...canonicalInputFromSummary(summary), nowMs: now };
+  const canonical = sessionCanonicalUiState(input);
+  // Deliberately no `snoozeWakeLabel`: the shared module would then make the
+  // return ticket the whole status ("in 40 minutes"), which reads as a status
+  // nowhere else and duplicates the `wakes` line three rows down. The bare word
+  // is the status; the timing already has its own line.
+  const presentation = sessionStatusDisplay(input, { snoozed });
+  if (!presentation) return undefined;
+  const elapsed = sessionElapsedLabel(summary, presentation, canonical.phase, canonical.liveness, now);
+  return elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+}
+
+/**
+ * The agent SDK processes a session is holding open, with their ages.
+ *
+ * Reads the raw record rather than the summary type: these entries arrive as
+ * JSON over the action boundary, so their shape is a claim to check, not one to
+ * assert. A pid we cannot read is dropped rather than printed as `pid undefined`.
+ */
+function sessionRuntimeProcessLine(record: JsonObject, now: number): string | undefined {
+  const entries = Array.isArray(record.runtimeProcesses) ? record.runtimeProcesses : [];
+  const rendered = entries
+    .map((entry) => {
+      const info = isRecord(entry) ? entry : null;
+      const pid = typeof info?.pid === "number" && Number.isInteger(info.pid) ? info.pid : null;
+      if (pid == null) return null;
+      const startedMs = Date.parse(asString(info?.startedAt) ?? "");
+      const age = Number.isFinite(startedMs)
+        ? formatWorkingDuration(Math.max(0, now - startedMs))
+        : null;
+      return age ? `pid ${pid} (${age})` : `pid ${pid}`;
+    })
+    .filter((entry): entry is string => entry !== null)
+    .join(", ");
+  return rendered || undefined;
 }
 
 /**

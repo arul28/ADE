@@ -10,6 +10,7 @@ import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
+import type { RuntimeProcessSummary } from "./sessions";
 import type { SubagentCapability } from "../subagentCapabilities";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {});
@@ -1671,6 +1672,23 @@ export type AgentChatSessionSummary = {
   activeBackgroundTaskCount?: number;
   /** The same live work split into working vs monitoring (`classifyBackgroundWorkKind`). */
   backgroundWork?: SessionBackgroundWork;
+  /**
+   * ISO instant this session's live background work began — the anchor for the
+   * "Background work ×N 2h" elapsed. Omitted when the runtime cannot say
+   * (nothing live, or a provider that does not track a background level), in
+   * which case surfaces fall back to `lastActivityAt` as before.
+   */
+  backgroundWorkSince?: string | null;
+  /**
+   * Agent SDK processes this chat currently owns, as tracked by the subprocess
+   * reaper. In-memory and host-local: empty after a restart, and never a
+   * liveness claim about work that escaped ADE's process tree.
+   *
+   * Exists so "this chat is holding a warm agent process open" is answerable
+   * from `ade session show` and the diagnostics surfaces instead of only from
+   * `ps`. One entry per SDK process; each owns MCP children of its own.
+   */
+  runtimeProcesses?: RuntimeProcessSummary[];
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */

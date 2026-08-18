@@ -25,7 +25,7 @@ import {
   isSessionFiledAsSnoozed,
 } from "../../../desktop/src/shared/sessionCanonicalState";
 import {
-  formatWorkingDuration,
+  sessionElapsedLabel,
   sessionStatusPresentation,
   type SessionStatusGlyph,
   type SessionStatusPresentation,
@@ -266,18 +266,6 @@ function parseMs(value: string | null | undefined): number | null {
 }
 
 /**
- * The elapsed anchor, mirroring `SessionStatusSlot` (:91-93): a running row
- * counts from the start of its TURN, everything else from its last activity.
- * Counting from last output for a CLI repainting its TUI resets every few
- * seconds and reports a five-minute turn as "2s".
- */
-function elapsedAnchor(session: TerminalSessionSummary, phase: string): string | null {
-  return phase === "running"
-    ? session.currentTurnStartedAt ?? session.lastActivityAt ?? session.startedAt
-    : session.lastActivityAt ?? session.startedAt;
-}
-
-/**
  * The one text marker a row carries, in the same precedence the shared modules
  * file it under. Colour repeats this information; the text is what survives a
  * monochrome terminal.
@@ -301,7 +289,8 @@ function buildSessionRow(args: {
 }): WorkListSessionRow {
   const summary = toWorkSessionSummary(args.session, args.laneName);
   const input = canonicalInputFromSummary(summary);
-  const phase = sessionCanonicalUiState({ ...input, nowMs: args.nowMs }).phase;
+  const canonical = sessionCanonicalUiState({ ...input, nowMs: args.nowMs });
+  const phase = canonical.phase;
   const filing = sessionFilingBucket(summary, args.nowMs);
   const snoozed = isSessionFiledAsSnoozed(summary, phase, args.nowMs);
   const woke = !snoozed && sessionWokeMarker(summary, args.nowMs) !== null;
@@ -315,7 +304,7 @@ function buildSessionRow(args: {
   );
   const settled = canonicalStatusBucket(phase) === "settled";
   const title = primarySessionLabel(summary);
-  const anchorMs = parseMs(elapsedAnchor(summary, phase));
+
   return {
     kind: "session",
     key: `session:${args.session.sessionId}`,
@@ -327,9 +316,7 @@ function buildSessionRow(args: {
     status,
     tone: status?.tone ?? "neutral",
     glyph: status?.glyph ?? null,
-    elapsedLabel: status?.showsElapsed && anchorMs != null
-      ? formatWorkingDuration(Math.max(0, args.nowMs - anchorMs))
-      : null,
+    elapsedLabel: sessionElapsedLabel(summary, status, phase, canonical.liveness, args.nowMs),
     // Settled rows swap the status word for when they ended — the only fact in
     // the tail worth reading.
     timestampLabel: status === null

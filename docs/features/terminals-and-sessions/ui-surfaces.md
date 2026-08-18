@@ -314,14 +314,28 @@ These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
 is never scraped to infer plan mode. Working/Planning elapsed time ticks from
 the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
-reset it; legacy chat rows without that anchor, plus Background work, CLI, and
-Stale durations, use last activity. That makes the Background work elapsed a
-proxy, not the job's own runtime — the session summary does not carry per-job
-start times, so a job launched early in a long turn reads near zero the moment
-the turn ends. Waiting refreshes on a quiet 30-second cadence. On row hover or
+reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
+use last activity. Background work counts from `backgroundWorkSince` — when the
+session's live background set last went from empty to non-empty — which the
+runtime reports on the session summary. Anchoring it to last activity instead
+made it meaningless: every provider frame refreshes that column, so a job that
+had been running for two hours read "Background work ×2 3s", identical to one
+that started three seconds ago, and the row could not be judged by its own
+duration. It is still a session-level anchor rather than any single job's
+runtime — a second job joining a live set counts from the first one's start —
+and providers with no background-task level (Codex, Cursor) keep the last-activity
+fallback. All three anchors come from one shared helper, `sessionElapsedAnchor`,
+so the Work rows, `ade code`, and `ade session show` cannot report different
+durations for the same session. The desktop slot feeds the raw anchor to a
+ticking component; the two text surfaces take the already-formatted string from
+`sessionElapsedLabel`, which wraps the same anchor. Waiting refreshes on a quiet
+30-second cadence. On row hover or
 keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
-the context-appropriate Settle or Un-settle action. An open snooze menu pins the
-action slot visible. A row whose snooze ended early shows the shared Woke
+the context-appropriate Settle or Un-settle action. That button disables itself
+while its settle/un-settle call is in flight: settle teardown now does real
+provider work on the rows where it is offered, so a second click lands inside
+the window and the backend answers a joined settle with a raw session id. An
+open snooze menu pins the action slot visible. A row whose snooze ended early shows the shared Woke
 presentation until it is opened, at which point `TerminalsPage` clears the
 marker — opening is the acknowledgement.
 
@@ -927,13 +941,22 @@ The right-click menu uses one grouped, liquid-glass menu vocabulary:
 - **Copy** is a hover/keyboard submenu for the session ID and deep link.
 - Destructive Stop & delete / Delete chat / Delete session actions are fenced
   into the final red block.
-- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest,
-  **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
+- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest — "at rest"
+  being the negation of `sessionIsMidFlight` (`renderer/lib/terminalAttention.ts`),
+  the one predicate the row's hover slot and its right-click menu share. Note
+  mid-flight is narrower than the `running` phase: it is `stale`, or `running`
+  with `liveness === "turn"`. A session whose turn has ended but which still owns
+  background work is promoted back to `running` with a non-turn liveness, so it
+  is *not* mid-flight and must stay settleable — settle teardown is what stops
+  that work and releases the warm agent. Hiding Settle there left the one state
+  a user most wants to stop as the only state with no control. The chat block
+  also carries **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
-  and Settle/Unsettle when the runtime is not actively working. A tracked CLI's
+  and Settle/Unsettle when the runtime is not actively working (same shared
+  predicate). A tracked CLI's
   explicit `ade chat ask` marker can use **Dismiss & settle**; a raw native TUI
   prompt shows the disabled **Resolve input to settle** row.
 
@@ -1113,7 +1136,8 @@ nothing when no delta is available.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
   `canonicalInputFromSummary`, `sessionCanonicalUiState`,
   `sessionStatusBucket`, `sessionFilingBucket`, `sessionStatusDot`,
-  `sessionCapsuleBadge`,
+  `sessionCapsuleBadge`, `sessionIsMidFlight` (the shared Settle-affordance
+  predicate — see the context-menu section),
   `sessionNeedsYou`, `summarizeTerminalAttention`,
   `sessionInlineStatusLabel`, `sanitizeTerminalInlineText`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` —

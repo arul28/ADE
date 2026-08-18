@@ -121,6 +121,7 @@ import { installEditableContextMenu } from "./editorContextMenu";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
 import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLocalDatabase";
@@ -308,6 +309,9 @@ import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersion
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
+
+/** One warm-runtime budget for every project context in this process. */
+const chatRuntimeBudget = createChatRuntimeBudget();
 
 type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -3616,6 +3620,7 @@ app.whenReady().then(async () => {
     linearLiveStatusServiceRef = linearLiveStatusService;
 
     const agentChatService = createAgentChatService({
+      runtimeBudget: chatRuntimeBudget,
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
       fileService,

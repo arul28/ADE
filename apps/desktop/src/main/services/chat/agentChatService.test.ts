@@ -875,7 +875,9 @@ import {
   createAgentChatService,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
 } from "./agentChatService";
+import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
+import { SESSION_STALE_AFTER_MS } from "../../../shared/sessionCanonicalState";
 import {
   enforceCrossMachineForkEncodedBudget,
   gunzipFromBase64,
@@ -12689,6 +12691,196 @@ describe("createAgentChatService", () => {
       const drained = await service.getSessionSummary(session.id);
       expect(drained?.activeBackgroundTaskCount).toBe(0);
       expect(drained?.backgroundWork).toBeUndefined();
+    });
+
+    /**
+     * The background-task exemption is what keeps a query alive past the
+     * 5-minute idle window "until the work actually ends". These three cases pin
+     * the second half of that promise, which nothing used to enforce:
+     * `liveBackgroundTaskIds` was cleared only by teardown, and the flag itself
+     * blocked teardown, so one task whose completion edge never arrived pinned
+     * the SDK process (and its MCP children) for the life of the app.
+     */
+    const runBackgroundExemptionCase = async (args: {
+      /** Extra levels the SDK publishes after the turn, released by the test. */
+      laterLevels: unknown[][];
+    }) => {
+      const close = vi.fn();
+      let streamCall = 0;
+      const gates: Array<{ promise: Promise<void>; release: () => void }> = args.laterLevels.map(() => {
+        let release!: () => void;
+        const promise = new Promise<void>((resolve) => { release = resolve; });
+        return { promise, release };
+      });
+      let holdRelease!: () => void;
+      const held = new Promise<void>((resolve) => { holdRelease = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "bg-1", task_type: "local_bash", description: "npm run build" }],
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        for (const [index, tasks] of args.laterLevels.entries()) {
+          await gates[index]!.promise;
+          yield { type: "system", subtype: "background_tasks_changed", tasks };
+        }
+        // Keep the idle reader attached: ending it would run the query-ended
+        // teardown, which clears the level set and hides the very state under
+        // test.
+        await held;
+      })());
+      const sdk = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close,
+        sessionId: "sdk-bg-exemption",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdk as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdk as any);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const turn = service.runSessionTurn({ sessionId: session.id, text: "start background work", timeoutMs: 15_000 });
+      // Buffered-text and transcript flushes are timer-driven, so the turn only
+      // settles once the fake clock is allowed to run.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await turn;
+      const publishNextLevel = async (index: number) => {
+        gates[index]!.release();
+        await vi.advanceTimersByTimeAsync(0);
+      };
+      return { close, events, publishNextLevel, release: holdRelease };
+    };
+
+    it("applies the warm-runtime budget across every chat service in the process", async () => {
+      // The brain builds one agentChatService per open project scope, and the
+      // cap used to be applied inside each one — so "at most 5 warm agent
+      // runtimes" was really 5 x however many projects were open. Memory is
+      // owned by the process, not by a project.
+      const close = vi.fn();
+      let holdRelease!: () => void;
+      const held = new Promise<void>((resolve) => { holdRelease = resolve; });
+      // One SDK object per acquire, so each session's warmup/turn stream has its
+      // own call counter. The idle reader is held open afterwards: a query that
+      // ends closes itself, and this test is about what the BUDGET closes.
+      const makeSdk = () => {
+        let streamCall = 0;
+        return {
+          send: vi.fn().mockResolvedValue(undefined),
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            if (streamCall > 1) await held;
+          })()),
+          close,
+          sessionId: "sdk-budget",
+          setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        };
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(makeSdk as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(makeSdk as any);
+
+      // Exactly what a host does: one budget, handed to every project scope.
+      const runtimeBudget = createChatRuntimeBudget();
+      const first = createService({ runtimeBudget });
+      const secondRoot = fs.mkdtempSync(path.join(tmpHomeRoot, "second-project-"));
+      const second = createService({ runtimeBudget, projectRoot: secondRoot });
+      try {
+        const warm = async (service: ReturnType<typeof createService>["service"], text: string) => {
+          const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+          await service.runSessionTurn({ sessionId: session.id, text, timeoutMs: 15_000 });
+        };
+
+        // Fill the budget inside the first service. Nothing is evicted: the cap
+        // is only consulted before a runtime is added, so the fifth still fits.
+        for (let index = 0; index < 5; index += 1) {
+          await warm(first.service, `warm ${index}`);
+        }
+        expect(close).not.toHaveBeenCalled();
+
+        // A sixth runtime in a DIFFERENT project must still cost something.
+        await warm(second.service, "warm across projects");
+        expect(close).toHaveBeenCalled();
+      } finally {
+        holdRelease();
+        await first.service.disposeAll();
+        await second.service.disposeAll();
+      }
+    });
+
+    it("keeps a background-only runtime warm past the idle window, then reclaims it once the session reads Stale", async () => {
+      vi.useFakeTimers();
+      const { close, events, release } = await runBackgroundExemptionCase({ laterLevels: [] });
+      try {
+        // Well past SESSION_INACTIVITY_TIMEOUT_MS: the exemption is doing its job.
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+
+        // But it is no longer unbounded. Past SESSION_STALE_AFTER_MS every ADE
+        // surface already calls this session Stale rather than Working, so the
+        // warm process is reclaimed too.
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS);
+        expect(close).toHaveBeenCalled();
+
+        // And the user is told why. This is the one teardown that ends work the
+        // session still claimed; stopped rows with no reason attached read as a
+        // bug rather than a decision.
+        const notice = events.find((envelope) =>
+          envelope.event.type === "system_notice"
+          && typeof (envelope.event as { message?: unknown }).message === "string"
+          && (envelope.event as { message: string }).message.includes("released the agent"));
+        expect(notice).toBeDefined();
+      } finally {
+        release();
+      }
+    });
+
+    it("does not reclaim a background-only runtime that is still reporting real changes", async () => {
+      vi.useFakeTimers();
+      const { close, publishNextLevel, release } = await runBackgroundExemptionCase({
+        laterLevels: [[
+          { task_id: "bg-1", task_type: "local_bash", description: "npm run build" },
+          { task_id: "bg-2", task_type: "local_agent", description: "Implement the feature" },
+        ]],
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS - 10 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+
+        // A real membership change is the session doing something, so the
+        // silence clock restarts from here.
+        await publishNextLevel(0);
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS - 10 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+      } finally {
+        release();
+      }
+    });
+
+    it("treats a re-sent identical background level as silence, not activity", async () => {
+      vi.useFakeTimers();
+      // `background_tasks_changed` is level-triggered, so an unchanged set is
+      // the SDK repeating itself. Counting it as activity reset the idle clock
+      // on every frame and made the runtime immortal by construction.
+      const { close, publishNextLevel, release } = await runBackgroundExemptionCase({
+        laterLevels: [[{ task_id: "bg-1", task_type: "local_bash", description: "npm run build" }]],
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS - 10 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+        await publishNextLevel(0);
+        await vi.advanceTimersByTimeAsync(20 * 60_000);
+        expect(close).toHaveBeenCalled();
+      } finally {
+        release();
+      }
     });
 
     it("uses the SDK background level to distinguish background and foreground local_bash tasks", async () => {

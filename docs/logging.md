@@ -50,6 +50,35 @@ writes `agent_chat.spawn_kind_changed` with `sessionId`, `parentSessionId`,
 `previousSpawnKind`, `spawnKind`, and `source` (`takeover`, `promote`, or
 `parent_dispatch`). None of these spawn-coordination lines is a PostHog event.
 
+When the idle sweep or budget eviction reclaims a chat runtime that still
+*claims* live background work — the exemption expired after
+`RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS` (= `SESSION_STALE_AFTER_MS`, three
+hours) of total silence — it writes the local structured line `agent_chat.runtime_workload_exemption_expired` with
+`sessionId`, `provider`, `silentForMs`, `liveBackgroundTaskCount`, and
+`activeSubagentCount`. This is the one teardown path that overrides a workload
+the runtime is still reporting, so it must be attributable after the fact:
+without it, a user asking "why did my background job stop" has nothing to read.
+It is a local operational log, not a PostHog event, and it carries no task ids,
+commands, or titles.
+
+**No product-analytics event accompanies it, deliberately.** The closed event
+taxonomy records what an installation *does* — a surface opened, a chat started,
+a settle the user asked for. This teardown is a background timer firing with no
+user action behind it, so an `ade_feature_used` here would report engagement
+nobody generated and would fire on a schedule rather than on use. The nearest
+precedent cuts the same way: the settle-with-residue event exists because a
+human pressed Settle and the stop could not be confirmed. If a future change
+ever makes this reclaim user-initiated, revisit the decision then.
+
+The Claude subprocess reaper writes its own local lines around process
+teardown: `agent_chat.claude_subprocess_terminate` (with `pid`, `sessionId`,
+`reason`, and on POSIX a `groupLeader` flag recording whether the whole process
+group was signalled), `agent_chat.claude_subprocess_kill` for the SIGKILL
+escalation, `agent_chat.claude_subprocess_pid_reused` when an identity probe
+refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
+Windows. They carry pids and session ids and no command lines, and none is a
+PostHog event.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map
