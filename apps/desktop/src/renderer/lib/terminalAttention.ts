@@ -204,6 +204,28 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
  * layout when no capsule renders. Backed by the shared canonical state module
  * so the capsule, the Live Activity phase, and notifications always agree.
  */
+/**
+ * Is this session mid-flight — work the machine is actively doing, that will
+ * change state on its own?
+ *
+ * The lifecycle actions (Settle in particular) hide behind this: filing away a
+ * row the machine is still working in claims an outcome that has not happened.
+ *
+ * The subtlety it exists to hold in one place: `running` is NOT the same thing
+ * as mid-turn. `restingPhaseWithBackgroundWork` promotes a session whose turn
+ * has already ended back to `running` while it still owns background jobs, and
+ * that row is exactly the one a user needs to be able to settle — settle
+ * teardown is what stops the background work and releases the warm agent. Two
+ * surfaces read this (the row's hover slot and its right-click menu) and iOS
+ * mirrors it; when they each carried their own copy, hover offered Settle on a
+ * background-promoted row and right-click on the same row did not.
+ */
+export function sessionIsMidFlight(session: SessionCanonicalUiInput): boolean {
+  const state = sessionCanonicalUiState(session);
+  if (state.phase === "stale") return true;
+  return state.phase === "running" && (state.liveness ?? "turn") === "turn";
+}
+
 export function sessionCapsuleBadge(session: SessionCanonicalUiInput): SessionBadge | null {
   return sessionCanonicalUiState(session).badge;
 }

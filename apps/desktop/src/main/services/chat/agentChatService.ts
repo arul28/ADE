@@ -43453,10 +43453,19 @@ export function createAgentChatService(args: {
       evictable.push({
         lastActivityTimestamp: managed.lastActivityTimestamp,
         evict: () => {
-          // Same rule as the idle sweep: whichever path ends work the session
-          // still claimed has to say so. Stopped rows with no reason attached
-          // read as a bug rather than a decision.
-          if (exemptionStale) announceExpiredWorkloadExemption(managed, now - managed.lastActivityTimestamp);
+          // Recomputed rather than closed over: `evict` is a public callback on
+          // `EvictableRuntime`, so the day the budget gains an await between
+          // building the list and calling this, a captured verdict would
+          // announce an override for a runtime that has since reported
+          // activity. Same rule as the idle sweep otherwise — whichever path
+          // ends work the session still claimed has to say so.
+          const silentNowMs = Date.now() - managed.lastActivityTimestamp;
+          if (
+            hasRuntimeActiveWorkload(managed.runtime)
+            && isRuntimeWorkloadExemptionStale(managed.runtime, silentNowMs)
+          ) {
+            announceExpiredWorkloadExemption(managed, silentNowMs);
+          }
           teardownRuntime(managed, "budget_eviction");
         },
       });

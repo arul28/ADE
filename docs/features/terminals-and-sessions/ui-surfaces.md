@@ -935,13 +935,21 @@ The right-click menu uses one grouped, liquid-glass menu vocabulary:
 - **Copy** is a hover/keyboard submenu for the session ID and deep link.
 - Destructive Stop & delete / Delete chat / Delete session actions are fenced
   into the final red block.
-- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest,
+- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest — where
+  "at rest" is `sessionIsMidFlight` in `renderer/lib/terminalAttention.ts`, the
+  one predicate the row's hover slot and its right-click menu share. Note it is
+  narrower than "not `running`": a session whose turn has ended but which still
+  owns background work is promoted back to `running`, and that row must stay
+  settleable, because settle teardown is what stops the work and releases the
+  warm agent. Hiding it there left the one state a user most wants to stop as
+  the only state with no control,
   **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
-  and Settle/Unsettle when the runtime is not actively working. A tracked CLI's
+  and Settle/Unsettle when the runtime is not actively working (same shared
+  predicate). A tracked CLI's
   explicit `ade chat ask` marker can use **Dismiss & settle**; a raw native TUI
   prompt shows the disabled **Resolve input to settle** row.
 

@@ -10,6 +10,7 @@ import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
   sessionCanonicalUiState,
+  sessionIsMidFlight,
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
 import { SessionSnoozeControl } from "./SessionSnoozeControl";
@@ -76,6 +77,11 @@ export function SessionStatusSlot({
   // hover-driven actions would fade out from under the open menu. Pin the slot
   // open for as long as the menu is.
   const [snoozeMenuOpenRaw, setSnoozeMenuOpen] = React.useState(false);
+  // Settle now appears on rows where teardown does real provider work (stopping
+  // background jobs, releasing the agent), so a second click lands inside that
+  // window. The backend answers a joined settle with a raw session id in the
+  // message — never something to show a user — so swallow the double click here.
+  const [settlePending, setSettlePending] = React.useState(false);
   // Derived, not raw: if the snooze button disappears while its menu is open
   // (the row gets blocked mid-interaction) it unmounts without ever reporting
   // `false`, and a stale `true` would permanently hide the status label.
@@ -84,19 +90,11 @@ export function SessionStatusSlot({
     if (!actionsEnabled) setSnoozeMenuOpen(false);
   }, [actionsEnabled]);
 
-  const canonicalState = sessionCanonicalUiState(canonicalInputFromSummary(session));
+  const canonicalInput = canonicalInputFromSummary(session);
+  const canonicalState = sessionCanonicalUiState(canonicalInput);
   const canonicalPhase = canonicalState.phase;
   const elapsedSince = sessionElapsedAnchor(session, canonicalPhase, canonicalState.liveness);
-  // A row promoted to `running` by background work is not mid-turn — its turn
-  // already ended. Treating it as actively running hid Settle, which is the one
-  // control that stops that work (`sessionSettleTeardown` stops outstanding
-  // background tasks, leaves terminals alone, and records anything it could not
-  // confirm as residue). A session holding a warm agent open therefore had an
-  // honest label and no way to act on it.
-  const isMidTurn = canonicalPhase === "running" && (canonicalState.liveness ?? "turn") === "turn";
-  const isActivelyRunning = canonicalPhase === "starting"
-    || isMidTurn
-    || canonicalPhase === "stale";
+  const isActivelyRunning = sessionIsMidFlight(canonicalInput);
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"
     || isChatToolType(session.toolType)
@@ -159,12 +157,16 @@ export function SessionStatusSlot({
               title={settled ? "Un-settle session" : "Settle session"}
               data-testid="session-settle-button"
               className={cn(SESSION_ACTION_BUTTON_CLASS, "-mr-1")}
+              disabled={settlePending}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
+                if (settlePending) return;
+                setSettlePending(true);
                 void (settled
                   ? unsettleSession(session, runtimePin)
-                  : settleSession(session, runtimePin));
+                  : settleSession(session, runtimePin)
+                ).finally(() => setSettlePending(false));
               }}
             >
               {settled ? (

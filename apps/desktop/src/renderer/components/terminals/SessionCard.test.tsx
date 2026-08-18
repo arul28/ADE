@@ -702,6 +702,29 @@ describe("SessionCard status slot", () => {
     expect(screen.getByTestId("session-settle-button")).toBeTruthy();
   });
 
+  it("still hides settle while a turn is genuinely mid-flight", () => {
+    // The other half of the same predicate: exposing Settle on a background-
+    // promoted row must not expose it on a live turn, where filing the row as
+    // done claims an outcome that has not happened.
+    render(
+      <SessionCard
+        session={makeSession({
+          status: "running",
+          runtimeState: "running",
+          toolType: "claude-chat",
+          activeBackgroundTaskCount: 2,
+          backgroundWork: { workingCount: 2, monitoringCount: 0 },
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId("session-settle-button")).toBeNull();
+  });
+
   it("offers un-settle on an already settled row and shows its timestamp instead of a status", () => {
     const unsettle = vi.fn().mockResolvedValue(undefined);
     (window as unknown as { ade: unknown }).ade = {
