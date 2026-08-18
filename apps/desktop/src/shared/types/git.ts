@@ -349,7 +349,8 @@ export type GitHubRequestBudget = {
   /**
    * The worst failure currently recorded on a PR-read resource — worst meaning
    * the one that justifies the longest stand-down — or null when the most
-   * recent request succeeded. `service_unavailable` carries no `pausedUntil`
+   * recent request succeeded, or when the failure is old enough that it no
+   * longer describes the request the caller just made. `service_unavailable` carries no `pausedUntil`
    * (a GitHub 5xx must never park a credential) but still tells a poller to
    * lengthen its cadence.
    */

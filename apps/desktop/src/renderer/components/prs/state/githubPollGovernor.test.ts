@@ -84,7 +84,7 @@ describe("githubPollGovernor", () => {
   it("clears the ladder on the first success", () => {
     let state = noteGithubPollFailure(initialGithubPollGovernorState, NOW);
     state = noteGithubPollFailure(state, NOW);
-    state = noteGithubPollSuccess(state);
+    state = noteGithubPollSuccess(state, NOW);
     expect(state).toEqual(initialGithubPollGovernorState);
     expect(isGithubPollPaused(state, NOW)).toBe(false);
   });
@@ -92,7 +92,7 @@ describe("githubPollGovernor", () => {
   it("returns the same object when a success finds nothing to clear", () => {
     // Referential stability matters: the hook bumps a render generation when
     // the stand-down changes, and a healthy poll must not churn it.
-    expect(noteGithubPollSuccess(initialGithubPollGovernorState))
+    expect(noteGithubPollSuccess(initialGithubPollGovernorState, NOW))
       .toBe(initialGithubPollGovernorState);
   });
 
@@ -112,6 +112,21 @@ describe("githubPollGovernor", () => {
       expect(periodFor(state)).toBe(GITHUB_POLL_BACKOFF_MAX_MS);
     });
 
+    it("is dropped by a success once it has elapsed, without needing the budget", () => {
+      // The drop also lives in `applyGithubRequestBudget`, but recovery must
+      // not depend on the budget action still answering (a runtime restart, a
+      // downgraded host) — otherwise the timer keeps its stretched period.
+      const reserved = applyGithubRequestBudget(
+        initialGithubPollGovernorState,
+        budget({ pausedUntil }),
+        NOW,
+      );
+      const afterResetMs = Date.parse(pausedUntil) + 1;
+      const recovered = noteGithubPollSuccess(reserved, afterResetMs);
+      expect(recovered.reservePausedUntilMs).toBe(0);
+      expect(recovered).not.toBe(reserved);
+    });
+
     it("survives a success, because a request does not refill the quota", () => {
       // User actions are ungated on purpose, so their successes reach the
       // governor. When the reserve shared one field with the failure ladder,
@@ -123,7 +138,7 @@ describe("githubPollGovernor", () => {
         budget({ pausedUntil }),
         NOW,
       );
-      const afterSuccess = noteGithubPollSuccess(reserved);
+      const afterSuccess = noteGithubPollSuccess(reserved, NOW);
       expect(isGithubPollPaused(afterSuccess, NOW)).toBe(true);
       expect(afterSuccess.reservePausedUntilMs).toBe(Date.parse(pausedUntil));
     });
@@ -213,6 +228,7 @@ describe("githubPollGovernor", () => {
     it("does not let a late budget response resurrect a kind a success cleared", () => {
       const cleared = noteGithubPollSuccess(
         noteGithubPollFailure(initialGithubPollGovernorState, NOW),
+        NOW,
       );
       const applied = applyGithubRequestBudget(
         cleared,

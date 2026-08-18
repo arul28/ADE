@@ -94,7 +94,7 @@ export function useGithubPollGovernor(active: boolean): GithubPollGovernor {
   }, [commit, refreshBudget]);
 
   const noteGithubReadSuccess = useCallback(() => {
-    commit(noteGithubPollSuccess(stateRef.current));
+    commit(noteGithubPollSuccess(stateRef.current, Date.now()));
   }, [commit]);
 
   const isGithubPollStoodDown = useCallback(

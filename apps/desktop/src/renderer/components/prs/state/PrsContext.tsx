@@ -1194,8 +1194,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
             // recognised rate limit. A 5xx used to leave the pane empty and
             // then keep polling for more of the same; showing what ADE already
             // knows is the point of degrading the request rate instead of the
-            // feature.
-            if (snapshotForRequest?.prId === prId) {
+            // feature. Only while nothing live has landed yet, though — the
+            // four pieces settle in any order, and rewinding all four to the
+            // snapshot because the last one failed would discard fresher data
+            // its siblings already applied.
+            if (!liveDetailApplied && snapshotForRequest?.prId === prId) {
               setDetailStatus(snapshotForRequest.status);
               setDetailChecks(snapshotForRequest.checks);
               setDetailReviews(snapshotForRequest.reviews);
@@ -1224,8 +1227,10 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       });
     };
     // Every path below ends the same way: keep the detail live on a 60s tick.
-    // The tick itself is gated on the shared governor, which lengthens the
-    // effective cadence while GitHub is failing or the reserve is armed.
+    // This one skips its ticks while the governor is standing down rather than
+    // lengthening its period — 60s is already at the safe end, so there is no
+    // request volume to win, and the base cadence is what should resume the
+    // moment GitHub does.
     const startDetailPolling = () => {
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);

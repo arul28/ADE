@@ -1177,13 +1177,21 @@ export function PrDetailPane({
     // nothing to ask, so the loop never starts — it used to resolve `null`
     // without making a request, which then recorded a governor *success* and
     // cleared the stand-down for every other loop on the surface.
-    const pollStatus = isUnmapped && coordsRef.current
-      && typeof window.ade.prs.getStatusByGithub === "function"
-      ? () => window.ade.prs.getStatusByGithub!(coordsRef.current!)
-      : typeof window.ade.prs.getStatus === "function"
-        ? () => window.ade.prs.getStatus(pr.id)
-        : null;
-    if (!pollStatus) return undefined;
+    const readByCoords = isUnmapped && typeof window.ade.prs.getStatusByGithub === "function"
+      ? window.ade.prs.getStatusByGithub
+      : null;
+    const readById = typeof window.ade.prs.getStatus === "function"
+      ? window.ade.prs.getStatus
+      : null;
+    if (!readByCoords && !readById) return undefined;
+    const pollStatus = (): Promise<PrStatus | null> | null => {
+      // Re-read the ref at tick time: it is reassigned every render, and a tick
+      // landing between the render that nulled it and the effect cleanup would
+      // otherwise pass null straight to the host.
+      const coords = coordsRef.current;
+      if (readByCoords && coords) return readByCoords(coords);
+      return readById ? readById(pr.id) : null;
+    };
     let cancelled = false;
     // Stands down with the governor like every other automatic loop, by
     // lengthening its period rather than skipping ticks. The ceiling is
@@ -1199,7 +1207,9 @@ export function PrDetailPane({
         return;
       }
       if (isGithubPollStoodDown()) return;
-      pollStatus()
+      const request = pollStatus();
+      if (!request) return;
+      request
         .then((next) => {
           noteGithubReadSuccess();
           // Drop if cancelled, empty, or a newer detail load superseded us.

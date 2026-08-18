@@ -467,7 +467,16 @@ export function githubRequestBudget(
   let failure: GitHubAuthFailure | null = null;
   for (const health of healthEntriesFor(candidates)) {
     for (const [resource, resourceHealth] of health.resources) {
-      if (!protectsPullRequestReads(resource, resourceHealth.rateLimit)) continue;
+      // Deliberately NOT `protectsPullRequestReads`. That filter exists to stop
+      // the tiny `search` bucket from pausing PR refresh, and its `limit >= 1000`
+      // clause makes it a statement about a quota bucket. A failure kind is a
+      // statement about GitHub, and the failures that matter most here — a hung
+      // request, a DNS failure, an edge 5xx — carry no `x-ratelimit-*` headers
+      // at all, so they land under `unknown` with no limit and were being
+      // dropped. That left the classified ladder inert for exactly the outage
+      // shape it was written for: the governor saw `failureKind: null` and held
+      // a flat 30-second rung instead of climbing to the five-minute ceiling.
+      if (resource === "search") continue;
       const current = nowMs - resourceHealth.failureAtMs <= REQUEST_BUDGET_FAILURE_FRESHNESS_MS
         ? resourceHealth.failure
         : null;

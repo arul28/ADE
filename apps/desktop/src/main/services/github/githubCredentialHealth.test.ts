@@ -299,6 +299,34 @@ describe("githubCredentialHealth", () => {
       expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
     });
 
+    it("reports a failure that arrived without any rate-limit headers", () => {
+      // The failures that matter most here — a hung request, a DNS failure, an
+      // edge 5xx — carry no `x-ratelimit-*` at all, so they land under the
+      // `unknown` resource with no limit. Filtering the kind scan by the quota
+      // bucket dropped exactly those, which left the classified ladder inert
+      // for the outage shape it was written for: the governor saw no kind and
+      // held a flat short rung instead of climbing to its ceiling.
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "network",
+        message: "GitHub API request timed out. Check network access on this machine.",
+        retryAt: null,
+      }, null);
+
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBe("network");
+      // ...and it must still not park the credential a user action needs.
+      expect(githubCredentialCooldown(ghCandidate)).toBeNull();
+    });
+
+    it("still ignores the search bucket for the reported kind", () => {
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "rate_limited",
+        message: "API rate limit exceeded",
+        retryAt: RESET_AT,
+      }, { limit: 30, remaining: 0, used: 30, resetAt: RESET_AT, resource: "search" });
+
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
+    });
+
     it("stops reporting a failure kind once it is no longer recent", () => {
       // A failure is otherwise cleared only by a success on the SAME credential
       // and resource, so a permanently-bad one (revoked PAT, stale

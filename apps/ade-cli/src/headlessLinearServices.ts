@@ -1241,6 +1241,23 @@ export function createHeadlessGitHubService(
           headers,
           body: args.body == null ? undefined : JSON.stringify(args.body),
         });
+      } catch (error) {
+        // A request that never reached GitHub — a hang, a timeout, a DNS or TLS
+        // failure — used to throw straight out of here, recording nothing. That
+        // is the outage shape this lane targets, and with no record the request
+        // budget reported no failure kind, so the caller's ladder could not
+        // climb past its flat unclassified rung. Recorded with a null rate
+        // limit so it cannot clobber the real quota numbers, and the kinds this
+        // produces (`network` / `unknown`) carry no cooldown, so it can never
+        // park a credential the user's next action needs.
+        recordGithubOperationFailure(
+          candidate,
+          classifyGitHubAuthFailure({
+            message: error instanceof Error ? error.message : String(error),
+          }).authFailure,
+          null,
+        );
+        throw error;
       } finally {
         releaseConditionalRequest?.();
       }

@@ -1187,6 +1187,15 @@ recovery is automatic.
   a permanently-bad one would become the process-wide answer and push every
   project's ladder onto the longer base on a healthy GitHub.
 
+  A request that never reaches GitHub at all — a hang, a timeout, a DNS or TLS
+  failure — is recorded as a failure by both owners before it is rethrown. It
+  used to throw straight out of the request helper, recording nothing, so the
+  budget reported no kind and the governor could not climb past its flat
+  unclassified rung — inert for exactly the outage shape it targets. The kind
+  scan also deliberately does *not* reuse the reserve's quota-bucket filter:
+  these failures carry no `x-ratelimit-*` headers, so they land under an
+  `unknown` bucket with no limit and were being dropped by it.
+
   It is implemented in **both** GitHub service owners (desktop `githubService`
   and the daemon's `createHeadlessGitHubService`), because the runtime-bound
   production build reaches GitHub through the second one, and registered on the

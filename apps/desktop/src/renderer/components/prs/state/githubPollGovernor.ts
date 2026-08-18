@@ -179,19 +179,21 @@ export function noteGithubPollFailure(
  */
 export function noteGithubPollSuccess(
   state: GithubPollGovernorState,
+  nowMs: number,
 ): GithubPollGovernorState {
+  // A still-future reserve survives on purpose — see `reservePausedUntilMs` —
+  // but an elapsed one is dropped here as well as in `applyGithubRequestBudget`,
+  // so recovery never depends on the budget action still answering.
+  const reservePausedUntilMs = state.reservePausedUntilMs > nowMs ? state.reservePausedUntilMs : 0;
   if (
     state.consecutiveFailures === 0
     && state.ladderPausedUntilMs === 0
     && state.failureKind === null
+    && reservePausedUntilMs === state.reservePausedUntilMs
   ) {
     return state;
   }
-  // The reserve survives on purpose — see `reservePausedUntilMs`.
-  return {
-    ...initialGithubPollGovernorState,
-    reservePausedUntilMs: state.reservePausedUntilMs,
-  };
+  return { ...initialGithubPollGovernorState, reservePausedUntilMs };
 }
 
 /**

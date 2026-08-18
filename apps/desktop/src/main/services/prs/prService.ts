@@ -5431,7 +5431,11 @@ export function createPrService({
       });
     }
     if (failures[0] && refreshed.length === 0) {
-      throw failures[0].reason;
+      // Prefer a reason that says GitHub itself is down. The background sweep's
+      // caller decides whether to back off from this one error, and a mixed
+      // batch whose first row happens to be a permanent 404 would otherwise
+      // hide the outage behind it.
+      throw (failures.find((failure) => isGithubWideFailure(failure.reason)) ?? failures[0]).reason;
     }
     return refreshed;
   };
