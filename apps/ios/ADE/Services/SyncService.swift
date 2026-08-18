@@ -2490,6 +2490,51 @@ private func syncCodeIsPairingRejection(_ code: String?) -> Bool {
   code == "auth_failed" || code == "repair_required"
 }
 
+/// One hop's pairing-rejection outcome after a connection race. A single
+/// unattributed hop must not drop the pairing — a stale LAN address can reach
+/// a stranger. Invalidation requires the race to have *finished* (every
+/// scheduled candidate produced an outcome) and every outcome to be a pairing
+/// rejection from the same host. Timeouts and mixed failures keep the pairing.
+struct SyncRacePairingFailure: Equatable {
+  var code: String?
+  var respondingHostIdentity: String?
+  var isAmbiguous: Bool
+}
+
+func syncShouldInvalidateSavedPairingAfterRace(
+  hopOutcomes: [SyncRacePairingFailure?],
+  scheduledCandidateCount: Int
+) -> Bool {
+  guard scheduledCandidateCount > 0, hopOutcomes.count == scheduledCandidateCount else {
+    return false
+  }
+  let pairing = hopOutcomes.compactMap { $0 }
+  guard pairing.count == hopOutcomes.count else { return false }
+  guard pairing.allSatisfy({ syncCodeIsPairingRejection($0.code) }) else { return false }
+  if pairing.contains(where: { !$0.isAmbiguous }) {
+    return true
+  }
+  guard pairing.count >= 2 else { return false }
+  let responding = pairing.compactMap { failure -> String? in
+    let trimmed = failure.respondingHostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let trimmed, !trimmed.isEmpty else { return nil }
+    return trimmed
+  }
+  guard responding.count == pairing.count else { return false }
+  return Set(responding).count == 1
+}
+
+private func syncRacePairingFailure(from error: Error) -> SyncRacePairingFailure? {
+  let nsError = error as NSError
+  let code = nsError.userInfo["ADEErrorCode"] as? String
+  guard syncCodeIsPairingRejection(code) else { return nil }
+  return SyncRacePairingFailure(
+    code: code,
+    respondingHostIdentity: nsError.userInfo[syncRespondingHostIdentityKey] as? String,
+    isAmbiguous: nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true
+  )
+}
+
 /// Copy for the rejection codes worth rewording on the phone. Everything else
 /// shows the host's own message, which is already written for a person.
 func syncHelloErrorFriendlyMessage(code: String?, respondingHostName: String?) -> String? {
@@ -15397,6 +15442,18 @@ final class SyncService: ObservableObject {
 
       var ownership = SyncConnectionRaceOwnership(candidateIds: Set(candidates.map(\.id)))
       var lastFailure: Error?
+      var raceHopOutcomes: [SyncRacePairingFailure?] = []
+      var lastPairingFailure: Error?
+      func resolvedRaceFailure(fallback: Error) -> Error {
+        if let lastPairingFailure,
+           syncShouldInvalidateSavedPairingAfterRace(
+            hopOutcomes: raceHopOutcomes,
+            scheduledCandidateCount: candidates.count
+           ) {
+          return errorByClearingAmbiguousRouteAuthFailure(lastPairingFailure)
+        }
+        return lastFailure ?? fallback
+      }
       while let event = try await group.next() {
         switch event {
         case .authenticated(let candidate):
@@ -15414,6 +15471,9 @@ final class SyncService: ObservableObject {
           }
         case .failed(let candidateId, let error):
           lastFailure = error
+          if candidateId < 0 {
+            continue
+          }
           let endpoint = candidates.first(where: { $0.id == candidateId })?.endpoint
           if let endpoint {
             let marked = errorByMarkingAmbiguousRouteAuthFailure(
@@ -15422,6 +15482,11 @@ final class SyncService: ObservableObject {
               expectedHostIdentity: profile.hostIdentity
             )
             lastFailure = marked
+            let pairingFailure = syncRacePairingFailure(from: marked)
+            raceHopOutcomes.append(pairingFailure)
+            if pairingFailure != nil {
+              lastPairingFailure = marked
+            }
             if syncEndpointFailureIsMeaningful(marked),
                raceFailedEndpoints.generation == connectAttemptGeneration {
               raceFailedEndpoints.addresses.append(endpoint.address)
@@ -15438,10 +15503,12 @@ final class SyncService: ObservableObject {
               }
               throw marked
             }
+          } else {
+            raceHopOutcomes.append(nil)
           }
           if ownership.failed(candidateId: candidateId) == .exhausted {
             group.cancelAll()
-            throw lastFailure ?? noConnectableAddressError()
+            throw resolvedRaceFailure(fallback: noConnectableAddressError())
           }
           if let nextCandidate = scheduler.candidateFinished(candidateId) {
             group.addTask { @MainActor [weak self] in
@@ -15465,14 +15532,14 @@ final class SyncService: ObservableObject {
               lateCandidate.task.cancel(with: .goingAway, reason: nil)
             }
           }
-          throw lastFailure ?? NSError(
+          throw resolvedRaceFailure(fallback: NSError(
             domain: "ADE",
             code: 35,
             userInfo: [NSLocalizedDescriptionKey: "The secure connection attempt timed out."]
-          )
+          ))
         }
       }
-      throw lastFailure ?? noConnectableAddressError()
+      throw resolvedRaceFailure(fallback: noConnectableAddressError())
     }
   }
 
@@ -16041,6 +16108,13 @@ final class SyncService: ObservableObject {
     )
     var userInfo = nsError.userInfo
     userInfo[syncAmbiguousRouteAuthFailureKey] = true
+    return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
+  }
+
+  private func errorByClearingAmbiguousRouteAuthFailure(_ error: Error) -> Error {
+    let nsError = error as NSError
+    var userInfo = nsError.userInfo
+    userInfo[syncAmbiguousRouteAuthFailureKey] = false
     return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
   }
 

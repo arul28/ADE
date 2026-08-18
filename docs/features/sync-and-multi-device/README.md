@@ -1111,6 +1111,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   turn the handshake into an existence oracle for an unauthenticated caller.
   Connection arbitration and sealed adoption are options the brain leaves unset,
   which is the only genuine divergence between the two callers.
+- `pairedDeviceRejectionLimiter.ts` — per-`deviceId` throttle for repeated
+  paired-hello rejections. A phone that kept a pairing secret after the host
+  forgot the record will race LAN + Tailscale + Relay forever; without a cap
+  that is thousands of `paired_device_rejected` lines a day. The limiter
+  samples warn logs and delays later rejects. It never sees
+  `unknown_device` vs `secret_mismatch` — a different cadence per reason would
+  leak existence to an unauthenticated caller. Both ingresses share it.
 - `brainMachineSyncStores.ts` — the machine-level PIN / pairing / security
   stores for a brain hosting sync with no project scope
   (`sync-pin.json`, `sync-paired-devices.json`, `sync-security.json` under
