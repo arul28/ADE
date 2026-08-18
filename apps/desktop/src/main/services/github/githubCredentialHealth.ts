@@ -27,6 +27,21 @@ const SECONDARY_RATE_LIMIT_COOLDOWN_MS = 60_000;
 // instant GitHub recovers.
 const REPOSITORY_ACCESS_TTL_MS = 2 * 60_000;
 export const GITHUB_BACKGROUND_RATE_LIMIT_RESERVE = 500;
+/**
+ * How recent a recorded failure must be for {@link githubRequestBudget} to
+ * report its kind.
+ *
+ * A failure is otherwise cleared only by a success on the SAME credential and
+ * resource, so a permanently-bad one (a stale `GITHUB_TOKEN`, a revoked PAT, a
+ * fork the App cannot see) keeps its kind for the life of the process while
+ * ADE happily serves every request from the next credential in the chain. The
+ * budget is read unscoped, so that stale kind would become the process-wide
+ * answer and push every project's poll ladder onto the longer base on a
+ * perfectly healthy GitHub. Callers read the budget immediately after a failure
+ * they just observed, so a window a little wider than their refresh cadence is
+ * all the kind needs to be useful.
+ */
+const REQUEST_BUDGET_FAILURE_FRESHNESS_MS = 90_000;
 
 export type GithubCredentialCandidate = {
   source: GitHubCredentialSource;
@@ -39,6 +54,8 @@ type CredentialResourceHealth = {
   failure: GitHubAuthFailure | null;
   rateLimit: GitHubRateLimitState | null;
   cooldownUntilMs: number;
+  /** When {@link failure} was recorded. Zero when there is no failure. */
+  failureAtMs: number;
 };
 
 type CredentialHealth = {
@@ -147,6 +164,7 @@ export function recordGithubCredentialSuccess(
       failure: null,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
       cooldownUntilMs: 0,
+      failureAtMs: 0,
     })),
     userLogin: normalizedLogin(userLogin ?? candidate.userLogin ?? existing?.userLogin),
   });
@@ -165,6 +183,7 @@ export function recordGithubCredentialProbeSuccess(
       failure: null,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
       cooldownUntilMs: 0,
+      failureAtMs: 0,
     })),
     userLogin: normalizedLogin(userLogin ?? candidate.userLogin ?? existing?.userLogin),
   });
@@ -184,6 +203,7 @@ function recordGithubFailure(
       failure,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
       cooldownUntilMs,
+      failureAtMs: Date.now(),
     })),
     userLogin,
   };
@@ -202,6 +222,7 @@ function recordGithubFailure(
       failure,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
       cooldownUntilMs,
+      failureAtMs: Date.now(),
     });
     healthByTokenDigest.set(candidateDigest, {
       ...candidateHealth,
@@ -424,27 +445,19 @@ const REQUEST_BUDGET_FAILURE_SEVERITY: Record<GitHubAuthFailure["kind"], number>
 };
 
 /**
- * The reserve and the classified failure kind that automatic GitHub readers
- * need, computed from in-memory health only — this function must never issue a
- * request, because its whole purpose is to be safe to call while GitHub is
- * refusing or exhausted.
+ * The reserve and the worst recorded failure kind, for automatic GitHub readers
+ * deciding their cadence before spending a request.
  *
- * "In-memory only" is load-bearing, and it is why this takes no credential
- * inventory: resolving one can shell out to `gh auth token`, decrypt the
- * credential store (a PowerShell subprocess under DPAPI on Windows), and even
- * refresh an expired App user token over the network. A safety read consulted
- * on a timer — and once per failing poll group during exactly the outage it
- * exists to survive — must cost nothing. Reading every credential this process
- * knows instead of this project's is also the safe direction: the primary quota
- * is per-account, so over-throttling is conservative and under-throttling is
- * the bug. It matches `prPollingService`, which calls
- * `githubBackgroundRequestPauseUntilMs()` unscoped for the same reason.
- *
- * The reported failure kind is the worst one currently recorded on a PR-read
- * resource. Worst-first matters: with several credentials in the chain, "GitHub
- * is down" and "this one token is out of quota" can be recorded at the same
- * time, and the caller's cadence must be driven by the one that asks for the
- * longest stand-down.
+ * Takes no credential inventory, and that is load-bearing rather than a
+ * shortcut: resolving one can shell out to `gh auth token`, decrypt the
+ * credential store (a PowerShell subprocess under DPAPI on Windows), or refresh
+ * an expired App user token *over the network* — and this runs on a timer and
+ * again on every failed poll group, during exactly the outage it exists to
+ * survive. Reading every credential this process knows rather than one
+ * project's is also the safe direction: the primary quota is per-account, so
+ * over-throttling is conservative and under-throttling is the bug. It matches
+ * `prPollingService`, which calls `githubBackgroundRequestPauseUntilMs()`
+ * unscoped for the same reason.
  */
 export function githubRequestBudget(
   nowMs = Date.now(),
@@ -455,7 +468,9 @@ export function githubRequestBudget(
   for (const health of healthEntriesFor(candidates)) {
     for (const [resource, resourceHealth] of health.resources) {
       if (!protectsPullRequestReads(resource, resourceHealth.rateLimit)) continue;
-      const current = resourceHealth.failure;
+      const current = nowMs - resourceHealth.failureAtMs <= REQUEST_BUDGET_FAILURE_FRESHNESS_MS
+        ? resourceHealth.failure
+        : null;
       if (
         current
         && (

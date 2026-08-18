@@ -1075,23 +1075,6 @@ export function PrDetailPane({
     };
   }, [activeTab, deepLinkState.eventId, fetchActivity, pr.id, updateDetailPaneWarmCache]);
 
-  // Adaptive refresh for the PR detail readiness signals.
-  //
-  // Cadence: ~5s while the CI tab is open AND something is still queued or
-  // running, 60s otherwise. It stops entirely when the window is hidden, and on
-  // the CI tab once everything is terminal — there is nothing left to observe.
-  // `getChecks` is included: it used to be missing, so third-party checks
-  // (CodeRabbit, Vercel, …) never refreshed while the tab was open.
-  //
-  // The 5s rung is the most expensive loop in the app: each tick costs roughly
-  // seven to ten GitHub REST requests, which is the entire 5,000/hour quota if
-  // it runs for an hour. It normally cannot, because CI settles in ~10 minutes
-  // and `checksTerminal` stops it — but a *failed* checks fetch used to look
-  // exactly like "CI has not started yet", so during the 2026-08-17 GitHub
-  // outage it ran the full hour and exhausted the account. Two things now
-  // prevent that: `getChecks` reports a total failure as a rejection instead of
-  // an empty list, and the shared governor turns any rejection (and the
-  // 500-request quota reserve) into a longer period for this very timer.
   const [windowVisible, setWindowVisible] = React.useState(
     () => (typeof document === "undefined" ? true : document.visibilityState !== "hidden"),
   );
@@ -1102,6 +1085,20 @@ export function PrDetailPane({
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
+  // Adaptive refresh for the PR detail readiness signals.
+  //
+  // Cadence: ~5s while the CI tab is open AND something is still queued or
+  // running, 60s otherwise. It stops entirely when the window is hidden, and on
+  // the CI tab once everything is terminal — there is nothing left to observe.
+  // `getChecks` is included: it used to be missing, so third-party checks
+  // (CodeRabbit, Vercel, …) never refreshed while the tab was open.
+  //
+  // The 5s rung is the most expensive loop in the app — roughly seven to ten
+  // GitHub REST requests per tick, i.e. a whole hourly quota if it runs for an
+  // hour, which is exactly what happened on 2026-08-17. It is now braked from
+  // two sides: `getChecks` rejects instead of returning an empty list a failure
+  // is indistinguishable from, and the shared governor turns any rejection or
+  // the quota reserve into a longer period for this timer.
   React.useEffect(() => {
     if (!windowVisible) return undefined;
     const checksTabOpen = activeTab === "checks";
@@ -1176,22 +1173,24 @@ export function PrDetailPane({
   React.useEffect(() => {
     if (!mergeabilityComputing) return undefined;
     // Unmapped PRs have a synthetic `gh:` id that getStatus(prId) can't resolve,
-    // so re-poll them by coords instead.
-    const pollStatus = (): Promise<PrStatus | null> => {
-      if (isUnmapped && coordsRef.current && typeof window.ade.prs.getStatusByGithub === "function") {
-        return window.ade.prs.getStatusByGithub(coordsRef.current);
-      }
-      if (typeof window.ade.prs.getStatus === "function") return window.ade.prs.getStatus(pr.id);
-      return Promise.resolve(null);
-    };
+    // so re-poll them by coords instead. With neither reader available there is
+    // nothing to ask, so the loop never starts — it used to resolve `null`
+    // without making a request, which then recorded a governor *success* and
+    // cleared the stand-down for every other loop on the surface.
+    const pollStatus = isUnmapped && coordsRef.current
+      && typeof window.ade.prs.getStatusByGithub === "function"
+      ? () => window.ade.prs.getStatusByGithub!(coordsRef.current!)
+      : typeof window.ade.prs.getStatus === "function"
+        ? () => window.ade.prs.getStatus(pr.id)
+        : null;
+    if (!pollStatus) return undefined;
     let cancelled = false;
-    const pollPeriodMs = mergeabilityPollPeriodMs();
-    // A wall-clock ceiling, not an attempt count. This is an automatic loop
-    // too, so it stands down with the governor — and skipped attempts against a
+    // Stands down with the governor like every other automatic loop, by
+    // lengthening its period rather than skipping ticks. The ceiling is
+    // wall-clock rather than an attempt count: skipped attempts against a
     // counter would have turned "~1 minute, then defer to the background poll"
-    // into hours of a live 2.5s timer during an outage. Making fewer attempts
-    // inside the same minute is the correct degradation: the background poller
-    // owns freshness after the deadline either way.
+    // into hours of a live 2.5s timer during an outage.
+    const pollPeriodMs = githubPollPeriodFor(mergeabilityPollPeriodMs());
     const deadlineAtMs = Date.now() + 60_000;
     const seqAtStart = detailLoadSeqRef.current;
     const id = window.setInterval(() => {
@@ -1220,8 +1219,9 @@ export function PrDetailPane({
       window.clearInterval(id);
     };
   }, [
-    mergeabilityComputing, isUnmapped, isGithubPollStoodDown, noteGithubReadFailure,
-    noteGithubReadSuccess, pr.id, updateDetailPaneWarmCache,
+    mergeabilityComputing, isUnmapped, githubPollGeneration, githubPollPeriodFor,
+    isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, pr.id,
+    updateDetailPaneWarmCache,
   ]);
 
   // ---- Action helper to reduce repetitive try/catch/finally ----

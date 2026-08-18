@@ -97,7 +97,6 @@ export function useGithubPollGovernor(active: boolean): GithubPollGovernor {
     commit(noteGithubPollSuccess(stateRef.current));
   }, [commit]);
 
-
   const isGithubPollStoodDown = useCallback(
     () => isGithubPollPaused(stateRef.current, Date.now()),
     [],

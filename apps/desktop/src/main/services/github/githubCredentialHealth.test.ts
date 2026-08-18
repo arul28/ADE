@@ -299,6 +299,24 @@ describe("githubCredentialHealth", () => {
       expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
     });
 
+    it("stops reporting a failure kind once it is no longer recent", () => {
+      // A failure is otherwise cleared only by a success on the SAME credential
+      // and resource, so a permanently-bad one (revoked PAT, stale
+      // GITHUB_TOKEN) would keep its kind for the life of the process while
+      // ADE served every request from the next credential — and, read
+      // unscoped, would push every project's poll ladder onto the longer base
+      // on a perfectly healthy GitHub.
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "invalid_token",
+        message: "Bad credentials",
+        retryAt: null,
+      }, { limit: 5000, remaining: 4000, used: 1000, resetAt: null, resource: "core" });
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBe("invalid_token");
+
+      vi.setSystemTime(new Date(Date.now() + 10 * 60_000));
+      expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
+    });
+
     it("answers with an unknown budget when nothing has been recorded", () => {
       expect(githubRequestBudget(Date.now(), [ghCandidate])).toEqual({
         pausedUntil: null,

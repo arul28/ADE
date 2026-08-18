@@ -4057,6 +4057,22 @@ describe("prService.refresh", () => {
     await expect(service.refresh()).rejects.toThrow(/No server is currently available/);
   });
 
+  it("reports a background sweep that failed because GitHub never answered", async () => {
+    // A very common outage shape is requests that HANG rather than answer.
+    // Those reject with a bare transport error carrying no classified
+    // authFailure and matching none of GitHub's 5xx bodies — while each one has
+    // already been counted against the quota.
+    const row = makePrRow({ id: "pr-timeout", github_pr_number: 91 });
+    const { service } = buildService({
+      db: makeRefreshDb([row]),
+      githubService: makeOutageGithubService(
+        "GitHub API request timed out. Check network access on this machine.",
+      ),
+    });
+
+    await expect(service.refresh()).rejects.toThrow(/timed out/);
+  });
+
   it("does not report a sweep whose only stale row is individually unreachable", async () => {
     // Candidates are the rows whose `last_synced_at` is stale, and a row that
     // permanently 404s never refreshes it — so it becomes the ONLY candidate on

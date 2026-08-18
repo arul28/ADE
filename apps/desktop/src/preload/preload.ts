@@ -9136,10 +9136,8 @@ const adeBridge = {
             : githubStatusCache.get(),
       );
     },
-    // Automatic GitHub readers consult this before spending a request. It is a
-    // zero-network read of the runtime's in-memory credential health, so it is
-    // deliberately NOT cached here: a stale "you may proceed" is exactly the
-    // answer that burned the quota during the 2026-08-17 outage.
+    // Deliberately not cached: a stale "you may proceed" is the answer that
+    // burned the quota. The read is free, so there is nothing to save.
     getRequestBudget: async (): Promise<GitHubRequestBudget> =>
       callProjectRuntimeActionOr("github", "getRequestBudget", {}, () =>
         ipcRenderer.invoke(IPC.githubGetRequestBudget),

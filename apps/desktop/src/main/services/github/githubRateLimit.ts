@@ -217,6 +217,21 @@ export function classifyGitHubGraphqlCredentialFailure(
   return null;
 }
 
+/**
+ * The classified failure kind carried by a thrown GitHub request error, or null
+ * when the error is not one.
+ *
+ * Duck-typed rather than `instanceof`: the error classes that carry
+ * `authFailure` are module-private to their request helpers, and there are two
+ * of them (the desktop service and the headless twin), so a nominal check would
+ * silently answer null for whichever owner it was not written against.
+ */
+export function githubAuthFailureKindOf(error: unknown): GitHubAuthFailure["kind"] | null {
+  if (error instanceof GitHubRateLimitError) return "rate_limited";
+  const kind = (error as { authFailure?: { kind?: unknown } } | null)?.authFailure?.kind;
+  return typeof kind === "string" ? kind as GitHubAuthFailure["kind"] : null;
+}
+
 export function githubRateLimitResetAtMs(rateLimit: GitHubRateLimitState | null): number | null {
   if (!rateLimit?.resetAt) return null;
   const parsed = Date.parse(rateLimit.resetAt);

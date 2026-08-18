@@ -854,13 +854,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     };
   }, [active, error, refreshCore, refreshErrorRetryCount]);
 
-  // Silently refresh detail data for the given PR (no loading state).
-  // Returns early if a fetch is already in progress or the PR is no longer selected.
-
-  // One brake for every automatic PR read on this surface. See
-  // `useGithubPollGovernor` / `githubPollGovernor.ts` for why the previous
-  // message-substring check could not see the outage that burned the account's
-  // whole GitHub quota.
+  // One brake for every automatic PR read on this surface.
   const {
     isGithubPollStoodDown,
     noteGithubReadFailure,
@@ -869,6 +863,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     githubPollGeneration,
   } = useGithubPollGovernor(active);
 
+  // Silently refresh detail data for the given PR (no loading state).
+  // Returns early if a fetch is already in progress or the PR is no longer selected.
   const refreshDetailSilently = useCallback((prId: string) => {
     if (detailFetchInProgress.current) return;
     // Bail if the PR we were asked to refresh is no longer the active one
@@ -1159,11 +1155,18 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         }
         if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
           detailFetchInProgress.current = false;
+          // Report the group's outcome once, not per piece. The four settle in
+          // nondeterministic order, so a single piece resolving last (from the
+          // host's conditional cache, say) would otherwise clear a stand-down
+          // its three failing siblings had just armed. This matches the
+          // aggregate rule the repeating loops already use.
           if (primaryFulfilledCount === primaryRequestCount) {
+            noteGithubReadSuccess();
             detailStatePrIdRef.current = prId;
             detailLoadedAtByPrIdRef.current[prId] = Date.now();
             setDetailLiveDataPrId(prId);
           } else {
+            noteGithubReadFailure();
             setDetailLiveDataPrId(null);
           }
         }
@@ -1178,7 +1181,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           .then((value) => {
             if (cancelled || selectedPrIdRef.current !== prId) return;
             fulfilled = true;
-            noteGithubReadSuccess();
             if (value != null && (!Array.isArray(value) || value.length > 0)) {
               liveDetailApplied = true;
             }
@@ -1188,7 +1190,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           .catch((error: unknown) => {
             if (cancelled || selectedPrIdRef.current !== prId) return;
             console.warn(`[PrsContext] Failed to load PR ${name}:`, error);
-            noteGithubReadFailure();
             // Fall back to the cached snapshot for EVERY failure, not just a
             // recognised rate limit. A 5xx used to leave the pane empty and
             // then keep polling for more of the same; showing what ADE already
@@ -1222,10 +1223,10 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         setDetailComments(value);
       });
     };
-    if (hasFreshDetailCache) {
-      setDetailLiveDataPrId(prId);
-      setDetailBusy(false);
-      startSecondaryDetailFetch();
+    // Every path below ends the same way: keep the detail live on a 60s tick.
+    // The tick itself is gated on the shared governor, which lengthens the
+    // effective cadence while GitHub is failing or the reserve is armed.
+    const startDetailPolling = () => {
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
       }, 60_000);
@@ -1233,57 +1234,44 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         cancelled = true;
         window.clearInterval(intervalId);
       };
+    };
+    if (hasFreshDetailCache) {
+      setDetailLiveDataPrId(prId);
+      setDetailBusy(false);
+      startSecondaryDetailFetch();
+      return startDetailPolling();
     }
     if (hasFreshSnapshotPrefill) {
       setDetailBusy(false);
       startProgressivePrimaryFetch({ background: true });
       startSecondaryDetailFetch();
-      const intervalId = window.setInterval(() => {
-        refreshDetailSilently(prId);
-      }, 60_000);
-      return () => {
-        cancelled = true;
-        window.clearInterval(intervalId);
-      };
+      return startDetailPolling();
     }
-    // A caller that cannot answer `listSnapshots` is treated as one that
-    // answered "no snapshots", which lands on the same cold-open path below.
-    // This used to be a `typeof` guard around an entire second copy of the
-    // progressive-fetch machinery — unreachable in every shipping environment
-    // (preload, the hosted web adapter, and the browser mock all define it) and
-    // encoding a *different* live-promotion policy, so a reader had to assume
-    // the difference meant something.
+    // A caller without `listSnapshots` (an older adapter or a partial test
+    // stub) is treated as one that answered "no snapshots".
     setDetailBusy(true);
-    {
-      const listSnapshots = window.ade.prs.listSnapshots;
-      const snapshotsPromise = typeof listSnapshots === "function"
-        ? listSnapshots({ prId })
-        : Promise.resolve([]);
-      void snapshotsPromise.then((snapshots) => {
-        if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
-        const snapshot = snapshots[0];
-        if (snapshot) {
-          applySnapshotPrefill(snapshot);
-          startProgressivePrimaryFetch({ background: true });
-          startSecondaryDetailFetch();
-        } else {
-          startProgressivePrimaryFetch();
-          startSecondaryDetailFetch({ reset: true });
-        }
-      }).catch(() => {
-        if (!cancelled) {
-          startProgressivePrimaryFetch();
-          startSecondaryDetailFetch({ reset: true });
-        }
-      });
-      const intervalId = window.setInterval(() => {
-        refreshDetailSilently(prId);
-      }, 60_000);
-      return () => {
-        cancelled = true;
-        window.clearInterval(intervalId);
-      };
-    }
+    const listSnapshots = window.ade.prs.listSnapshots;
+    const snapshotsPromise = typeof listSnapshots === "function"
+      ? listSnapshots({ prId })
+      : Promise.resolve([]);
+    void snapshotsPromise.then((snapshots) => {
+      if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
+      const snapshot = snapshots[0];
+      if (snapshot) {
+        applySnapshotPrefill(snapshot);
+        startProgressivePrimaryFetch({ background: true });
+        startSecondaryDetailFetch();
+      } else {
+        startProgressivePrimaryFetch();
+        startSecondaryDetailFetch({ reset: true });
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        startProgressivePrimaryFetch();
+        startSecondaryDetailFetch({ reset: true });
+      }
+    });
+    return startDetailPolling();
   }, [active, noteGithubReadFailure, noteGithubReadSuccess, refreshDetailSilently, selectedPrId]);
 
   useEffect(() => {

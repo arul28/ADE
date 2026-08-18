@@ -96,7 +96,6 @@ function GovernorHarness() {
   const {
     isGithubPollStoodDown,
     githubPollPeriodFor,
-    githubPollGeneration,
     loading,
     setSelectedPrId,
     selectedPrId,
@@ -108,9 +107,7 @@ function GovernorHarness() {
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
       <div data-testid="selected-pr-id">{selectedPrId ?? ""}</div>
       <div data-testid="paused">{isGithubPollStoodDown() ? "paused" : "running"}</div>
-      {/* Read through the render generation so the period reflects the latest
-          stand-down rather than whatever it was at first render. */}
-      <div data-testid="period">{githubPollGeneration >= 0 ? githubPollPeriodFor(CHECKS_BASE_PERIOD_MS) : 0}</div>
+      <div data-testid="period">{githubPollPeriodFor(CHECKS_BASE_PERIOD_MS)}</div>
     </div>
   );
 }

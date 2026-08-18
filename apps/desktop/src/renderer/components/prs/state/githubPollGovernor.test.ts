@@ -25,24 +25,17 @@ function periodFor(state: Parameters<typeof githubPollPeriodMs>[0], nowMs = NOW)
 }
 
 describe("githubPollGovernor", () => {
-  it("arms a stand-down for a failure it cannot classify", () => {
-    // The 2026-08-17 regression in one assertion: the old brake only fired on a
-    // message containing "rate limit", so a 5xx polled at full speed. Any
-    // rejection now costs the loop its fast cadence.
-    const state = noteGithubPollFailure(initialGithubPollGovernorState, NOW);
-    expect(isGithubPollPaused(state, NOW)).toBe(true);
-    expect(periodFor(state)).toBe(GITHUB_POLL_BACKOFF_BASE_MS);
-  });
-
-  it("does not hold the 5s checks poll open after an errored checks fetch", () => {
-    // `getChecks` rejecting used to be indistinguishable from "CI has not
-    // started yet", which kept the pane at its 5s cadence for as long as GitHub
-    // stayed down — 720 poll groups an hour at ~7-10 requests each.
+  it("does not hold the fast poll open after any rejection, classified or not", () => {
+    // The whole regression in one assertion. The old brake only fired on a
+    // message containing "rate limit", so the 5xx responses of the outage
+    // polled at full speed; and an errored `getChecks` was indistinguishable
+    // from "CI has not started yet", so the pane's stop condition never fired.
     let state = initialGithubPollGovernorState;
     expect(periodFor(state)).toBe(BASE_PERIOD_MS);
 
     state = noteGithubPollFailure(state, NOW);
-    expect(periodFor(state)).toBeGreaterThan(BASE_PERIOD_MS);
+    expect(isGithubPollPaused(state, NOW)).toBe(true);
+    expect(periodFor(state)).toBe(GITHUB_POLL_BACKOFF_BASE_MS);
   });
 
   it("does not climb the ladder for failures GitHub was never proven to have seen", () => {
@@ -133,6 +126,26 @@ describe("githubPollGovernor", () => {
       const afterSuccess = noteGithubPollSuccess(reserved);
       expect(isGithubPollPaused(afterSuccess, NOW)).toBe(true);
       expect(afterSuccess.reservePausedUntilMs).toBe(Date.parse(pausedUntil));
+    });
+
+    it("drops an elapsed reserve so the caller's cadence visibly recovers", () => {
+      // Readers already treat a past instant as "not paused", but the hook only
+      // rebuilds a timer at the faster cadence when a field CHANGES. Carried
+      // monotonically, this field never changed after the reset, so a pane that
+      // stood down at five minutes stayed there for the rest of the session on
+      // a healthy GitHub — degrading without ever coming back.
+      const reserved = applyGithubRequestBudget(
+        initialGithubPollGovernorState,
+        budget({ pausedUntil }),
+        NOW,
+      );
+      expect(reserved.reservePausedUntilMs).toBe(Date.parse(pausedUntil));
+
+      const afterResetMs = Date.parse(pausedUntil) + 1;
+      const recovered = applyGithubRequestBudget(reserved, budget(), afterResetMs);
+      expect(recovered.reservePausedUntilMs).toBe(0);
+      expect(recovered).not.toBe(reserved);
+      expect(periodFor(recovered, afterResetMs)).toBe(BASE_PERIOD_MS);
     });
 
     it("lifts by itself at the quota reset", () => {

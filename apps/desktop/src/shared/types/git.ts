@@ -329,38 +329,29 @@ export type GitHubAuthFailureKind = GitHubAuthFailure["kind"];
 
 /**
  * What every *automatic* GitHub reader needs to know before it spends a
- * request, delivered as data rather than as an error message.
+ * request, delivered as data rather than as an error message — a rejection
+ * cannot carry it, because Electron IPC and the runtime's JSON-RPC both flatten
+ * an error to its message.
  *
- * ADE used to decide "should I keep polling GitHub?" by substring-matching the
- * message of a rejected request (`msg.includes("rate limit")`). That reading is
- * both too narrow and unreachable in the case that matters most: during the
- * 2026-08-17 GitHub outage every response was a 5xx, which matches neither
- * substring, so the PR detail pane's 5-second checks poll never backed off and
- * burned the account's entire 5,000/hour core quota in one hour.
- *
- * The budget is a *zero-network* read of the same in-memory credential health
- * the background PR poller already consults, so a client can honour the 500
- * request reserve and the classified failure kind without asking GitHub
- * anything. Every field is optional-by-nullability: an older runtime that does
- * not implement the read leaves clients on their own local backoff rather than
- * breaking them.
+ * Zero-network to produce, so it is safe to consult on a timer and while GitHub
+ * is refusing. Every field is optional-by-nullability: a runtime that does not
+ * implement the read leaves clients on their own local backoff rather than
+ * breaking them. See `docs/features/pull-requests/README.md`, "Keeping
+ * automatic GitHub reads inside the quota".
  */
 export type GitHubRequestBudget = {
   /**
-   * ISO time until which automatic GitHub requests must stand down, or null
-   * when they may proceed. Set when an available credential's core/GraphQL
-   * quota has reached {@link GITHUB_BACKGROUND_RATE_LIMIT_RESERVE}; the value
-   * is the quota reset instant, so callers resume by themselves.
+   * The quota reset instant, set once an available credential reaches the
+   * 500-request background reserve; null while requests may proceed. Callers
+   * resume by themselves because the value is the instant the quota refills.
    */
   pausedUntil: string | null;
   /**
-   * The last classified failure on a PR-read resource, or null when the most
-   * recent request on it succeeded. `service_unavailable` deliberately carries
-   * no pause — a GitHub 5xx must never park a credential — but it is the signal
-   * that tells a poller to lengthen its own cadence.
-   *
-   * When several credentials have each recorded a failure this is the one that
-   * justifies the longest stand-down, so a caller can act on it directly.
+   * The worst failure currently recorded on a PR-read resource — worst meaning
+   * the one that justifies the longest stand-down — or null when the most
+   * recent request succeeded. `service_unavailable` carries no `pausedUntil`
+   * (a GitHub 5xx must never park a credential) but still tells a poller to
+   * lengthen its cadence.
    */
   failureKind: GitHubAuthFailureKind | null;
   /** Retry instant GitHub supplied for {@link failureKind}, when it gave one. */

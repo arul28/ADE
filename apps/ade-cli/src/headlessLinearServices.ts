@@ -1926,9 +1926,8 @@ export function createHeadlessGitHubService(
     },
     /**
      * Runtime-owned twin of the desktop service's budget read. The daemon owns
-     * GitHub access for packaged/runtime-bound windows, so a budget implemented
-     * only on the desktop side would answer `undefined` in the shipping build
-     * and leave the renderer's poll governor permanently un-gated.
+     * GitHub access for runtime-bound windows, so implementing this only on the
+     * desktop side would leave the shipping build's poll governor un-gated.
      */
     async getRequestBudget(): Promise<GitHubRequestBudget> {
       return githubRequestBudget();

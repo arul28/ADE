@@ -85,7 +85,7 @@ export const initialGithubPollGovernorState: GithubPollGovernorState = {
 };
 
 /** The later of the two independent stand-downs. */
-function pausedUntilMs(state: GithubPollGovernorState): number {
+function standDownUntilMs(state: GithubPollGovernorState): number {
   return Math.max(state.ladderPausedUntilMs, state.reservePausedUntilMs);
 }
 
@@ -180,7 +180,11 @@ export function noteGithubPollFailure(
 export function noteGithubPollSuccess(
   state: GithubPollGovernorState,
 ): GithubPollGovernorState {
-  if (state.consecutiveFailures === 0 && state.ladderPausedUntilMs === 0 && state.failureKind === null) {
+  if (
+    state.consecutiveFailures === 0
+    && state.ladderPausedUntilMs === 0
+    && state.failureKind === null
+  ) {
     return state;
   }
   // The reserve survives on purpose — see `reservePausedUntilMs`.
@@ -191,21 +195,12 @@ export function noteGithubPollSuccess(
 }
 
 /**
- * Fold the runtime's request budget into the governor.
+ * Fold the runtime's request budget into the governor: the quota reserve, and
+ * the typed failure kind that a bare rejection could not carry.
  *
- * This is where the *typed* half of the fix lands. A rejected read reaches the
- * renderer as a bare rejection — Electron IPC and the runtime's JSON-RPC both
- * flatten an error to its message — so the kind cannot come from the error. It
- * comes from here instead: the budget reports the kind `classifyGitHubAuthFailure`
- * already recorded on the credential in the process that made the request. When
- * that kind says GitHub is down rather than merely unhappy, the ladder is
- * re-derived at the outage base, which is how a 5xx now arms a real stand-down
- * where the old `msg.includes("rate limit")` check armed nothing at all.
- *
- * The reserve is authoritative and one-directional: it can only *extend* a
- * stand-down. A budget reporting no pause never clears a ladder armed by
- * observed failures, because "quota is fine" says nothing about whether GitHub
- * is answering.
+ * One-directional. A budget can only ever *extend* a stand-down — "quota is
+ * fine" says nothing about whether GitHub is answering, so it never clears a
+ * ladder armed by observed failures.
  */
 export function applyGithubRequestBudget(
   state: GithubPollGovernorState,
@@ -219,6 +214,9 @@ export function applyGithubRequestBudget(
   // ladder must not resurrect the kind it carried.
   const observedFailure = state.consecutiveFailures > 0;
   const failureKind = observedFailure ? budget.failureKind ?? state.failureKind : null;
+  // Re-derive only when the kind actually CHANGED. Re-deriving on an unchanged
+  // kind would re-arm from `nowMs` on every 60s budget poll and push the pause
+  // out forever — a livelock that never lets the loop retry.
   const ladderUntilMs = observedFailure && failureKind !== state.failureKind
     ? nowMs + githubPollBackoffMs(state.consecutiveFailures, failureKind)
     : 0;
@@ -226,13 +224,18 @@ export function applyGithubRequestBudget(
   // is explicit: when `x-ratelimit-remaining` is 0, do not make another request
   // until `x-ratelimit-reset`. Waiting exactly that long beats guessing.
   const retryAtMs = failureKind === "rate_limited" ? parseIsoMs(budget.retryAt) ?? 0 : 0;
+  // Drop a reserve that has already elapsed instead of carrying it forward.
+  // Every reader already treats a past instant as "not paused", but the hook
+  // only re-renders — and so only rebuilds a timer at the faster cadence — when
+  // one of these fields *changes*. Carried monotonically, the field never
+  // changed after the quota reset, so a pane that stood down at 5 minutes
+  // stayed there for the rest of the session on a healthy GitHub. Degrading and
+  // not coming back is the one failure mode this whole module exists to avoid.
+  const carriedReserveMs = state.reservePausedUntilMs > nowMs ? state.reservePausedUntilMs : 0;
   const next: GithubPollGovernorState = {
     ...state,
     failureKind,
-    reservePausedUntilMs: Math.max(
-      state.reservePausedUntilMs,
-      parseIsoMs(budget.pausedUntil) ?? 0,
-    ),
+    reservePausedUntilMs: Math.max(carriedReserveMs, parseIsoMs(budget.pausedUntil) ?? 0),
     ladderPausedUntilMs: Math.max(state.ladderPausedUntilMs, ladderUntilMs, retryAtMs),
   };
   if (
@@ -247,7 +250,7 @@ export function isGithubPollPaused(
   state: GithubPollGovernorState,
   nowMs: number,
 ): boolean {
-  return pausedUntilMs(state) > nowMs;
+  return standDownUntilMs(state) > nowMs;
 }
 
 /**
@@ -263,7 +266,7 @@ export function githubPollPeriodMs(
   basePeriodMs: number,
   nowMs: number,
 ): number {
-  const remainingPauseMs = pausedUntilMs(state) - nowMs;
+  const remainingPauseMs = standDownUntilMs(state) - nowMs;
   if (remainingPauseMs <= 0) return basePeriodMs;
   return Math.max(basePeriodMs, Math.min(remainingPauseMs, GITHUB_POLL_BACKOFF_MAX_MS));
 }

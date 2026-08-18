@@ -166,6 +166,7 @@ import {
   markGithubRequestError,
 } from "./githubReadBackoff";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
@@ -1224,6 +1225,25 @@ function parseIsoMs(value: string | null | undefined): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Whether an error means GitHub is unusable right now, as opposed to one row
+ * being unreachable. A 404/403 on a single PR is a fact about that PR.
+ *
+ * The transport check is not optional: a common outage shape is requests that
+ * *hang* rather than answer, and those reject with a bare `fetch failed`,
+ * `ENOTFOUND`, or ADE's own timeout — carrying no classified `authFailure` and
+ * matching none of GitHub's 5xx bodies — while each one has already been
+ * counted against the quota. `isTransientGithubProbeFailure` is the same
+ * predicate `classifyGitHubAuthFailure` uses to produce the `network` kind
+ * accepted above, so the two cannot disagree.
+ */
+function isGithubWideFailure(error: unknown): boolean {
+  const kind = githubAuthFailureKindOf(error);
+  if (kind === "rate_limited" || kind === "service_unavailable" || kind === "network") return true;
+  const message = getErrorMessage(error);
+  return isGithubServiceUnavailable({ message }) || isTransientGithubProbeFailure(message);
 }
 
 function isBackgroundRefreshCandidate(row: PullRequestRow, nowMs: number): boolean {
@@ -5393,20 +5413,6 @@ export function createPrService({
     return updated;
   };
 
-  /**
-   * Whether an error means GitHub is unusable right now, as opposed to one row
-   * being unreachable. Duck-typed on the classified `authFailure` every GitHub
-   * request error carries rather than on an imported error class, so it keeps
-   * working across the desktop and headless service owners.
-   */
-  const isGithubWideFailure = (error: unknown): boolean => {
-    const kind = (error as { authFailure?: { kind?: unknown } } | null)?.authFailure?.kind;
-    if (kind === "rate_limited" || kind === "service_unavailable" || kind === "network") return true;
-    // `GitHubRateLimitError` carries the reset instant instead of an authFailure.
-    if ((error as { rateLimitResetAtMs?: unknown } | null)?.rateLimitResetAtMs !== undefined) return true;
-    return isGithubServiceUnavailable({ message: getErrorMessage(error) });
-  };
-
   const refreshPrIds = async (prIds: string[]): Promise<PrSummary[]> => {
     const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
     const refreshed: PrSummary[] = [];
@@ -5704,20 +5710,17 @@ export function createPrService({
   /**
    * A commit's checks, as GitHub reports them right now.
    *
-   * A total failure here is reported as a rejection, never as `[]`. The two are
-   * indistinguishable to every caller — an empty array is also the honest
-   * answer for "this commit has no checks yet" — and the renderer's CI poll
-   * uses exactly that distinction to decide whether the pipeline has settled.
-   * Folding a failure into an empty list made a broken fetch look like CI that
-   * had not started, which held the pane's 5-second poll open indefinitely; on
-   * 2026-08-17 that consumed the account's whole hourly GitHub quota. Callers
-   * that would rather show stale checks than nothing catch this and keep what
-   * they had, which is the correct behaviour and now an explicit choice at each
-   * call site instead of a silent default here.
+   * A total failure rejects, never returns `[]`. The two are indistinguishable
+   * to every caller — an empty array is also the honest answer for "no checks
+   * yet" — and the renderer's CI poll uses exactly that distinction to decide
+   * whether the pipeline has settled, so a swallowed failure reads as CI that
+   * has not started and holds the poll open indefinitely. Callers that would
+   * rather show stale checks than nothing catch this, which is now an explicit
+   * choice at each call site instead of a silent default here.
    *
-   * A *partial* failure still returns: one working source is more than nothing,
-   * and `computeStatus` — not this function — owns the rollup verdict that must
-   * not be recomputed from an incomplete picture.
+   * A *partial* failure still returns: one working source beats nothing, and
+   * `computeStatus` — not this — owns the rollup verdict that must not be
+   * recomputed from an incomplete picture.
    */
   const getChecksByCoords = async (coords: PrGithubCoords): Promise<PrCheck[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };

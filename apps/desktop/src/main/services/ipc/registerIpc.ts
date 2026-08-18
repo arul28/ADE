@@ -9654,9 +9654,7 @@ export function registerIpc({
     return ctx.githubService.clearAppUserAuth();
   });
 
-  // Zero-network read: it inspects in-memory credential health only, so the
-  // renderer's automatic GitHub pollers can consult the 500-request reserve on
-  // a timer without the check itself costing quota.
+  // Zero-network read, so pollers can consult the reserve on a timer.
   ipcMain.handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
     const ctx = getCtx();
     return await ctx.githubService.getRequestBudget();

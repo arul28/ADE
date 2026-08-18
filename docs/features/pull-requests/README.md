@@ -1152,7 +1152,10 @@ recovery is automatic.
   (60 s → … → 5 min, matching `prPollingService`'s `MAX_INTERVAL_MS`).
 
   The failure ladder and the **quota reserve** are tracked as two independent
-  stand-downs, and only the ladder is cleared by a success. They were one field
+  stand-downs; an elapsed reserve is dropped rather than carried, so the
+  renderer re-renders and rebuilds its timers at the fast cadence when the quota
+  resets — degrading without ever coming back is the one failure mode this whole
+  module exists to avoid. Only the ladder is cleared by a success. They were one field
   first, which quietly leaked the reserve: user actions are ungated on purpose,
   so a single PR open or Refresh click reset the governor and handed every
   automatic loop its 5-second cadence back with the quota still below 500. A
@@ -1178,7 +1181,11 @@ recovery is automatic.
   process knows rather than one project's is also the safe direction — the
   primary quota is per-account, so over-throttling is conservative and
   under-throttling is the bug — and it matches `prPollingService`, which calls
-  `githubBackgroundRequestPauseUntilMs()` unscoped for the same reason.
+  `githubBackgroundRequestPauseUntilMs()` unscoped for the same reason. The
+  reported *failure kind* is bounded by recency for that reason too: a failure
+  is otherwise cleared only by a success on the same credential and resource, so
+  a permanently-bad one would become the process-wide answer and push every
+  project's ladder onto the longer base on a healthy GitHub.
 
   It is implemented in **both** GitHub service owners (desktop `githubService`
   and the daemon's `createHeadlessGitHubService`), because the runtime-bound
@@ -1199,7 +1206,10 @@ recovery is automatic.
   failure, not only a recognised rate limit, so the pane keeps showing what ADE
   already knows instead of going empty and then polling for more of the same.
 - `prService.refresh()`'s background sweep reports a failure that means **GitHub
-  itself is unusable** (`rate_limited`, `service_unavailable`, `network`). It
+  itself is unusable** — a classified `rate_limited` / `service_unavailable` /
+  `network` kind, one of GitHub's own 5xx bodies, or a transport failure
+  (`isTransientGithubProbeFailure`), because a common outage shape is requests
+  that hang rather than answer and those carry no classification at all. It
   used to run through a best-effort helper that swallowed every per-row failure
   and returned void, so a sweep where GitHub refused everything still read as a
   clean tick: `prPollingService`'s `consecutiveFailures` stayed at zero and
