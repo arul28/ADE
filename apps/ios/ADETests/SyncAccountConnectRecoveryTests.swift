@@ -113,7 +113,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
           isAmbiguous: true
         ),
       ],
-      scheduledCandidateCount: 1
+      startedCandidateCount: 1
     ))
   }
 
@@ -131,7 +131,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
           isAmbiguous: true
         ),
       ],
-      scheduledCandidateCount: 2
+      startedCandidateCount: 2
     ))
   }
 
@@ -149,7 +149,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
           isAmbiguous: true
         ),
       ],
-      scheduledCandidateCount: 3
+      startedCandidateCount: 3
     ))
   }
 
@@ -168,7 +168,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
         ),
         nil,
       ],
-      scheduledCandidateCount: 3
+      startedCandidateCount: 3
     ))
   }
 
@@ -191,7 +191,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
           isAmbiguous: true
         ),
       ],
-      scheduledCandidateCount: 3
+      startedCandidateCount: 3
     ))
   }
 
@@ -209,7 +209,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
           isAmbiguous: true
         ),
       ],
-      scheduledCandidateCount: 2
+      startedCandidateCount: 2
     ))
   }
 
@@ -222,7 +222,48 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
           isAmbiguous: false
         ),
       ],
-      scheduledCandidateCount: 1
+      startedCandidateCount: 1
+    ))
+  }
+
+  func testAttributedAndAmbiguousPairingRejectionsFromDifferentHostsDoNotDropSavedPairing() {
+    XCTAssertFalse(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-saved",
+          isAmbiguous: false
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-stranger",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 2
+    ))
+  }
+
+  func testStartedHopsConsensusDropsSavedPairingWhenLaterCandidatesNeverRan() {
+    XCTAssertTrue(syncShouldInvalidateSavedPairingAfterRace(
+      hopOutcomes: [
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+        SyncRacePairingFailure(
+          code: "repair_required",
+          respondingHostIdentity: "host-live",
+          isAmbiguous: true
+        ),
+      ],
+      startedCandidateCount: 3
     ))
   }
 
@@ -240,7 +281,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
           isAmbiguous: true
         ),
       ],
-      scheduledCandidateCount: 2
+      startedCandidateCount: 2
     ))
   }
 

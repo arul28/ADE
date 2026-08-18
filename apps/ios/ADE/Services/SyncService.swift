@@ -2492,9 +2492,10 @@ private func syncCodeIsPairingRejection(_ code: String?) -> Bool {
 
 /// One hop's pairing-rejection outcome after a connection race. A single
 /// unattributed hop must not drop the pairing — a stale LAN address can reach
-/// a stranger. Invalidation requires the race to have *finished* (every
-/// scheduled candidate produced an outcome) and every outcome to be a pairing
-/// rejection from the same host. Timeouts and mixed failures keep the pairing.
+/// a stranger. Invalidation requires the race's *started* hops to have all
+/// finished and every outcome to be a pairing rejection from the same host.
+/// Queued candidates that never got a slot do not keep a dead pairing alive.
+/// Timeouts and mixed failures keep the pairing.
 struct SyncRacePairingFailure: Equatable {
   var code: String?
   var respondingHostIdentity: String?
@@ -2503,25 +2504,23 @@ struct SyncRacePairingFailure: Equatable {
 
 func syncShouldInvalidateSavedPairingAfterRace(
   hopOutcomes: [SyncRacePairingFailure?],
-  scheduledCandidateCount: Int
+  startedCandidateCount: Int
 ) -> Bool {
-  guard scheduledCandidateCount > 0, hopOutcomes.count == scheduledCandidateCount else {
+  guard startedCandidateCount > 0, hopOutcomes.count == startedCandidateCount else {
     return false
   }
   let pairing = hopOutcomes.compactMap { $0 }
   guard pairing.count == hopOutcomes.count else { return false }
   guard pairing.allSatisfy({ syncCodeIsPairingRejection($0.code) }) else { return false }
-  if pairing.contains(where: { !$0.isAmbiguous }) {
-    return true
-  }
-  guard pairing.count >= 2 else { return false }
   let responding = pairing.compactMap { failure -> String? in
     let trimmed = failure.respondingHostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let trimmed, !trimmed.isEmpty else { return nil }
     return trimmed
   }
-  guard responding.count == pairing.count else { return false }
-  return Set(responding).count == 1
+  guard responding.count == pairing.count, Set(responding).count == 1 else {
+    return false
+  }
+  return pairing.contains(where: { !$0.isAmbiguous }) || pairing.count >= 2
 }
 
 private func syncRacePairingFailure(from error: Error) -> SyncRacePairingFailure? {
@@ -15419,7 +15418,9 @@ final class SyncService: ObservableObject {
     let budget = connectAttemptBudget
     return try await withThrowingTaskGroup(of: AuthenticatedConnectionRaceEvent.self) { group in
       var scheduler = SyncConnectionRaceWaveScheduler(candidates: candidates)
-      for candidate in scheduler.startInitialCandidates() {
+      let initialCandidates = scheduler.startInitialCandidates()
+      var startedCandidateCount = initialCandidates.count
+      for candidate in initialCandidates {
         group.addTask { @MainActor [weak self] in
           guard let self else { return .failed(candidateId: candidate.id, error: CancellationError()) }
           return await self.authenticatedConnectionRaceEvent(
@@ -15448,7 +15449,7 @@ final class SyncService: ObservableObject {
         if let lastPairingFailure,
            syncShouldInvalidateSavedPairingAfterRace(
             hopOutcomes: raceHopOutcomes,
-            scheduledCandidateCount: candidates.count
+            startedCandidateCount: startedCandidateCount
            ) {
           return errorByClearingAmbiguousRouteAuthFailure(lastPairingFailure)
         }
@@ -15511,6 +15512,7 @@ final class SyncService: ObservableObject {
             throw resolvedRaceFailure(fallback: noConnectableAddressError())
           }
           if let nextCandidate = scheduler.candidateFinished(candidateId) {
+            startedCandidateCount += 1
             group.addTask { @MainActor [weak self] in
               guard let self else {
                 return .failed(candidateId: nextCandidate.id, error: CancellationError())

@@ -1072,11 +1072,12 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    and its identity matches the paired machine; unattributed or
    mismatched rejections are marked ambiguous, keep the pairing, and
    let the reconnect loop try other routes. After a connection race
-   *finishes* (every scheduled candidate produced an outcome) and every
-   hop was a pairing rejection from the same responding host, iOS also
-   drops the pairing — that is the saved machine rejecting this phone,
-   even when the profile never stored `hostIdentity` or it went stale.
-   A timeout or mixed failure among hops still keeps the pairing.
+   *finishes* (every candidate that actually started produced an outcome)
+   and every hop was a pairing rejection from the same responding host,
+   iOS also drops the pairing — that is the saved machine rejecting this
+   phone, even when the profile never stored `hostIdentity` or it went
+   stale. Queued addresses that never got a race slot do not keep a dead
+   pairing alive. A timeout or mixed failure among hops still keeps the pairing.
    "Pairing rejection" is
    `syncCodeIsPairingRejection` — `repair_required` (what current hosts send)
    or the generic `auth_failed` (what older hosts send for the same cause).

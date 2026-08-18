@@ -109,4 +109,21 @@ describe("paired device rejection limiter", () => {
     });
     expect(Date.now() - started).toBeLessThan(50);
   });
+
+  it("keeps a large same-device burst as a bounded count, not a growing timestamp list", () => {
+    const clock = createClock();
+    const limiter = createPairedDeviceRejectionLimiter({ now: clock.now });
+    const burst = 10_000;
+
+    let last = limiter.record("phone-burst");
+    for (let i = 1; i < burst; i += 1) {
+      last = limiter.record("phone-burst");
+    }
+
+    expect(last.countInWindow).toBe(burst);
+    expect(last.delayMs).toBe(PAIRED_DEVICE_REJECTION_MAX_DELAY_MS);
+    const other = limiter.record("phone-ok");
+    expect(other.countInWindow).toBe(1);
+    expect(other.delayMs).toBe(0);
+  });
 });

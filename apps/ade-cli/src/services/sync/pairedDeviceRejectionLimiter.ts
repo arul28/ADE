@@ -47,13 +47,11 @@ export function createPairedDeviceRejectionLimiter(
   const delayAfter = options.delayAfter ?? PAIRED_DEVICE_REJECTION_DELAY_AFTER;
   const baseDelayMs = options.baseDelayMs ?? PAIRED_DEVICE_REJECTION_BASE_DELAY_MS;
   const maxDelayMs = options.maxDelayMs ?? PAIRED_DEVICE_REJECTION_MAX_DELAY_MS;
-  const hits = new Map<string, number[]>();
+  const hits = new Map<string, { windowStartMs: number; count: number }>();
 
   const pruneExpired = (nowMs: number): void => {
-    for (const [id, stamps] of hits) {
-      const next = stamps.filter((ts) => nowMs - ts <= windowMs);
-      if (next.length === 0) hits.delete(id);
-      else hits.set(id, next);
+    for (const [id, slot] of hits) {
+      if (nowMs - slot.windowStartMs > windowMs) hits.delete(id);
     }
   };
 
@@ -69,10 +67,13 @@ export function createPairedDeviceRejectionLimiter(
         const oldest = hits.keys().next().value;
         if (oldest) hits.delete(oldest);
       }
-      const series = hits.get(key) ?? [];
-      series.push(nowMs);
-      hits.set(key, series);
-      const countInWindow = series.length;
+      const existing = hits.get(key);
+      const slot =
+        existing && nowMs - existing.windowStartMs <= windowMs
+          ? { windowStartMs: existing.windowStartMs, count: existing.count + 1 }
+          : { windowStartMs: nowMs, count: 1 };
+      hits.set(key, slot);
+      const countInWindow = slot.count;
       const shouldLog = countInWindow === 1 || countInWindow % logEvery === 0;
       let delayMs = 0;
       if (countInWindow > delayAfter) {
