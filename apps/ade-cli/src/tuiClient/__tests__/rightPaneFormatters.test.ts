@@ -276,6 +276,51 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("CI: not run");
   });
 
+  it("shows a failed checks read as a failure, not as an empty suite", () => {
+    // `prService.getChecks` now REJECTS when neither checks source could be
+    // read, and `/pr checks` catches that into `{ error }`. Rendering that as
+    // "No PR checks." would tell the reader the commit ran nothing — the same
+    // false all-clear the host-side change exists to stop.
+    const body = formatPrChecks({ error: "GitHub API rate limit exceeded" });
+
+    expect(body).toContain("could not be read");
+    expect(body).toContain("GitHub API rate limit exceeded");
+    expect(body).not.toContain("No PR checks.");
+  });
+
+  it("shows a failed comments read as a failure", () => {
+    const body = formatPrComments({ error: "fetch failed" });
+
+    expect(body).toContain("could not be read");
+    expect(body).toContain("fetch failed");
+    expect(body).not.toContain("No actionable PR comments.");
+  });
+
+  it("names the sources that failed in a partial PR review read", () => {
+    // `/pr review` fires three reads and catches each independently, so a
+    // partial outage is the common case. The sources that answered still
+    // render; the ones that did not must not report a count of zero.
+    const body = formatPrReview({
+      reviews: [{ state: "approved", reviewer: "octocat" }],
+      threads: { error: "GitHub is unavailable" },
+      comments: { error: "GitHub is unavailable" },
+    });
+
+    expect(body).toContain("1 review");
+    expect(body).toContain("threads unavailable");
+    expect(body).toContain("comments unavailable");
+    expect(body).toContain("GitHub is unavailable");
+    expect(body).not.toContain("0 threads");
+    expect(body).not.toContain("No PR reviews or comments.");
+  });
+
+  it("keeps the empty verdict when every PR review read succeeded", () => {
+    const body = formatPrReview({ reviews: [], threads: [], comments: [] });
+
+    expect(body).toContain("No PR reviews or comments.");
+    expect(body).not.toContain("could not be read");
+  });
+
   it("summarizes PR review comments and threads", () => {
     const body = formatPrComments({
       summary: { checksStatus: "passing", actionableComments: 2 },
