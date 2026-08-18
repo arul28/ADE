@@ -126,4 +126,23 @@ describe("paired device rejection limiter", () => {
     expect(other.countInWindow).toBe(1);
     expect(other.delayMs).toBe(0);
   });
+
+  it("keeps backoff across the 60s boundary for a sustained retry loop", () => {
+    const clock = createClock();
+    const limiter = createPairedDeviceRejectionLimiter({ now: clock.now });
+
+    for (let i = 0; i < 8; i += 1) {
+      limiter.record("phone-loop");
+      clock.advance(7_500);
+    }
+
+    const acrossBoundary = limiter.record("phone-loop");
+    expect(acrossBoundary.countInWindow).toBeGreaterThan(PAIRED_DEVICE_REJECTION_DELAY_AFTER);
+    expect(acrossBoundary.delayMs).toBeGreaterThan(0);
+
+    clock.advance(PAIRED_DEVICE_REJECTION_WINDOW_MS + 1);
+    const afterQuiet = limiter.record("phone-loop");
+    expect(afterQuiet.countInWindow).toBe(1);
+    expect(afterQuiet.delayMs).toBe(0);
+  });
 });

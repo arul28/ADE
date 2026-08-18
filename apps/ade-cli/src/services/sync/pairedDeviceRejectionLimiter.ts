@@ -18,6 +18,8 @@ export const PAIRED_DEVICE_REJECTION_DELAY_AFTER = 3;
 export const PAIRED_DEVICE_REJECTION_BASE_DELAY_MS = 250;
 export const PAIRED_DEVICE_REJECTION_MAX_DELAY_MS = 8_000;
 const PAIRED_DEVICE_REJECTION_MAX_TRACKED = 512;
+/** Rolling buckets keep a sliding 60s count without a timestamp per hit. */
+const PAIRED_DEVICE_REJECTION_BUCKET_MS = 5_000;
 
 export type PairedDeviceRejectionAction = {
   countInWindow: number;
@@ -47,11 +49,21 @@ export function createPairedDeviceRejectionLimiter(
   const delayAfter = options.delayAfter ?? PAIRED_DEVICE_REJECTION_DELAY_AFTER;
   const baseDelayMs = options.baseDelayMs ?? PAIRED_DEVICE_REJECTION_BASE_DELAY_MS;
   const maxDelayMs = options.maxDelayMs ?? PAIRED_DEVICE_REJECTION_MAX_DELAY_MS;
-  const hits = new Map<string, { windowStartMs: number; count: number }>();
+  const hits = new Map<string, Map<number, number>>();
+
+  const pruneSlot = (slot: Map<number, number>, nowMs: number): number => {
+    const cutoff = nowMs - windowMs;
+    let count = 0;
+    for (const [bucketStartMs, bucketCount] of slot) {
+      if (bucketStartMs <= cutoff) slot.delete(bucketStartMs);
+      else count += bucketCount;
+    }
+    return count;
+  };
 
   const pruneExpired = (nowMs: number): void => {
     for (const [id, slot] of hits) {
-      if (nowMs - slot.windowStartMs > windowMs) hits.delete(id);
+      if (pruneSlot(slot, nowMs) === 0) hits.delete(id);
     }
   };
 
@@ -67,13 +79,17 @@ export function createPairedDeviceRejectionLimiter(
         const oldest = hits.keys().next().value;
         if (oldest) hits.delete(oldest);
       }
-      const existing = hits.get(key);
-      const slot =
-        existing && nowMs - existing.windowStartMs <= windowMs
-          ? { windowStartMs: existing.windowStartMs, count: existing.count + 1 }
-          : { windowStartMs: nowMs, count: 1 };
-      hits.set(key, slot);
-      const countInWindow = slot.count;
+      let slot = hits.get(key);
+      if (!slot) {
+        slot = new Map();
+        hits.set(key, slot);
+      }
+      const bucketStartMs =
+        Math.floor(nowMs / PAIRED_DEVICE_REJECTION_BUCKET_MS) *
+        PAIRED_DEVICE_REJECTION_BUCKET_MS;
+      slot.set(bucketStartMs, (slot.get(bucketStartMs) ?? 0) + 1);
+      const countInWindow = pruneSlot(slot, nowMs);
+      if (countInWindow === 0) hits.delete(key);
       const shouldLog = countInWindow === 1 || countInWindow % logEvery === 0;
       let delayMs = 0;
       if (countInWindow > delayAfter) {
