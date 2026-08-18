@@ -15970,6 +15970,164 @@ describe("createAgentChatService", () => {
       })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
     });
 
+    // Regression (quality A2): the redirect rebuilds the send from scratch, so
+    // the per-message overrides the user picked for THIS message have to be
+    // carried across it. Before the fix they were dropped and the redirect ran
+    // on whatever the session already had.
+    it("carries per-message reasoning and execution overrides through the Cursor interrupt redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+      const before = await service.getSessionSummary(session.id);
+      expect(before?.reasoningEffort ?? null).toBeNull();
+      expect(before?.executionMode).toBe("focused");
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Actually, do the migration first.",
+        dispatchMode: "interrupt",
+        reasoningEffort: "high",
+        executionMode: "parallel",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const after = await service.getSessionSummary(session.id);
+      expect(after?.reasoningEffort).toBe("high");
+      expect(after?.executionMode).toBe("parallel");
+      expect(readPersistedChatState(session.id).reasoningEffort).toBe("high");
+    });
+
+    // Regression (quality A2): the same three overrides ride the staged row
+    // when the user promotes it, exactly as `deliverNextQueuedSteer` applies
+    // them at a natural turn boundary.
+    it("carries a staged Cursor steer's overrides through the promotion redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({
+        sessionId: session.id,
+        text: "Run this one instead.",
+        reasoningEffort: "high",
+        executionMode: "subagents",
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+      // Staging must not apply them: they belong to the message, not the session.
+      expect((await service.getSessionSummary(session.id))?.executionMode).toBe("focused");
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const after = await service.getSessionSummary(session.id);
+      expect(after?.reasoningEffort).toBe("high");
+      expect(after?.executionMode).toBe("subagents");
+    });
+
+    // Regression (quality A8): `steerWithOptions` already expanded the chips,
+    // so the redirect's `sendMessage` must not expand them a second time —
+    // expanded file content can itself contain chip syntax.
+    it("expands @-mention chips exactly once on the Cursor interrupt redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({
+        sessionId: session.id,
+        text: "apply the fix from @chat:other-session-id",
+        dispatchMode: "interrupt",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const promptText = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(promptText).toContain("<ade-mention");
+      expect(promptText.match(/<ade-mention/g) ?? []).toHaveLength(1);
+      expect(promptText).toContain("other-session-id");
+    });
+
+    // Regression (quality A4/B7): the settle wait can time out with the run
+    // still live. The old blanket `finally` disarmed the preserve flag on the
+    // way out, so the late cancel — issued by exactly the stop this redirect
+    // asked for — wiped the messages the user had already queued.
+    it("keeps queued Cursor steers when the interrupt's settle wait times out", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({ sessionId: session.id, text: "Then update the docs." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      // The stop reaches the worker, but the run does not settle: the redirect
+      // gives up after its 30 s wait and reports that, instead of hanging.
+      const releaseTurn = mockState.onCursorCancel;
+      mockState.onCursorCancel = () => {};
+      vi.useFakeTimers();
+      try {
+        const redirect = service.steer({
+          sessionId: session.id,
+          text: "Actually, do the migration first.",
+          dispatchMode: "interrupt",
+        }).then(() => "resolved", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+        await vi.advanceTimersByTimeAsync(31_000);
+        await expect(redirect).resolves.toMatch(/still stopping/);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      // The run settles late, and its tail runs the cancel the stop earned.
+      // The flag is still armed, so the user's other message survives it.
+      releaseTurn?.();
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && typeof event.event.steerId === "string"
+        && event.event.message.includes("cancelled"))).toBe(false);
+    });
+
+    // Regression (quality R6): the promotion splices the row out of the queue
+    // before the redirect completes, so a cancel arriving in that window must
+    // say the message is going out, not that it was never queued.
+    it("tells the user a promoted Cursor steer is already being dispatched, not that it is gone", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({ sessionId: session.id, text: "Run this one instead." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      // The worker's cancel runs inside the redirect, while the row is spliced
+      // out but the dispatch has not landed yet.
+      let cancelDuringDispatch: Promise<unknown> | null = null;
+      const releaseTurn = mockState.onCursorCancel;
+      mockState.onCursorCancel = () => {
+        cancelDuringDispatch = service
+          .cancelSteer({ sessionId: session.id, steerId: staged.steerId, requireQueued: true })
+          .then(() => "resolved", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+        releaseTurn?.();
+      };
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      expect(cancelDuringDispatch, "the cancel must land inside the dispatch window").toBeTruthy();
+      await expect(cancelDuringDispatch!).resolves.toBe("This message is already being dispatched.");
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Run this one instead.");
+    });
+
     it("settles a re-queued Cursor steer exactly once when the recovery re-send also goes silent", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
@@ -16691,6 +16849,10 @@ describe("createAgentChatService", () => {
       });
       const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
       expect(postRotationPrompt).toContain("[ADE launch directive]");
+      // One staged replay, consumed exactly once: the rotation stage is durable,
+      // so a turn that did not trigger a rotation must not replay it again.
+      expect(postRotationPrompt).not.toContain("verbatim replay");
+      expect(postRotationPrompt).not.toContain("Cursor SDK continuity recovery");
     });
 
     it("recreates the Cursor SDK agent with recovery context when resume state is missing", async () => {

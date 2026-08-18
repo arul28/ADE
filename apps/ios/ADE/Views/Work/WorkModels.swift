@@ -387,8 +387,16 @@ struct WorkActiveSendCapability: Equatable {
 
   var defaultMode: WorkActiveSendMode { modes.first ?? .queue }
 
+  /// The atomic active-turn dispatch modes — everything except plain staging.
+  /// These are the ones `chat.dispatchSteer` accepts, so they are also the set
+  /// the staged-message strip can offer as buttons.
+  var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
+
   static func forProvider(_ provider: String) -> WorkActiveSendCapability {
-    switch provider.lowercased() {
+    // Normalized through the same family collapse the rest of Work uses, so a
+    // session labelled "claude-code" or "cursor-agent" is not silently demoted
+    // to the queue-only default.
+    switch providerFamilyKey(provider) {
     case "claude":
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
     case "cursor":

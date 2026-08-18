@@ -688,20 +688,23 @@ that could not work without it.
   entry: edit (guard-cancel the queued entry with `requireQueued: true`, then
   merge its text, file attachments, and structured context attachments into the
   main composer so the user can revise it and choose a delivery mode again),
-  cancel (`ade.agentChat.cancelSteer`), and — for Claude SDK sessions only —
-  **send during turn** (`ArrowBendDownRight`) and **interrupt & send**
-  (`Lightning`). **Send during turn** dispatches the queued message into the
-  active turn via `ade.agentChat.dispatchSteer({ mode: "inline" })`;
-  the user message then appears in-transcript with
-  `deliveryState: "inline"`; the service pushes an SDK message with
-  `priority: "next"` and `shouldQuery: true`. **Interrupt & send** calls
-  `dispatchSteer({ mode: "interrupt" })`, which uses SDK priority `now` to
-  redirect the current model step without tearing down the Claude query.
-  Cursor sessions get the interrupt action only — `dispatchSteer({ mode:
-  "interrupt" })` there promotes the staged row to the cancel-and-resend
-  redirect, and `"inline"` is rejected. Both buttons are hidden for the
-  remaining providers (Codex, OpenCode, Droid, Pi), which only support
-  post-turn delivery.
+  cancel (`ade.agentChat.cancelSteer`), and the immediate-dispatch actions the
+  session's provider accepts per `ACTIVE_TURN_DISPATCH_MODES`: **send during
+  turn** (`ArrowBendDownRight`) and **interrupt** (`Lightning`). **Send during
+  turn** dispatches the queued message into the active turn via
+  `ade.agentChat.dispatchSteer({ mode: "inline" })`; the user message then
+  appears in-transcript with `deliveryState: "inline"`; the service pushes an
+  SDK message with `priority: "next"` and `shouldQuery: true`. Claude's
+  **Interrupt & send** calls `dispatchSteer({ mode: "interrupt" })`, which uses
+  SDK priority `now` to redirect the current model step without tearing down the
+  Claude query. Cursor sessions get the interrupt action only, labelled
+  **Interrupt & continue** — `dispatchSteer({ mode: "interrupt" })` there
+  promotes the staged row to the cancel-and-resend redirect, and `"inline"` is
+  rejected. The tooltips and the hover hint above the staged list follow the
+  same table and name the real provider, so a Cursor session reads "Hover to
+  interrupt with this message, edit, or remove." rather than promising an inline
+  send. Both buttons are hidden for the remaining providers (Codex, OpenCode,
+  Droid, Pi), which only support post-turn delivery.
 - **Mid-turn split Send button.** While a Claude or Cursor turn is active, the
   composer's primary send control is a split button
   (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery

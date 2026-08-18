@@ -499,7 +499,7 @@ ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431 --no-parent
 ade chat list --personal --text
 ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan a trip"
-ade chat steer personal-session-id --personal --text "focus on the tradeoffs"
+ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
 ade chat actions --personal --text
@@ -550,6 +550,7 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
+ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude takes both, Cursor takes interrupt)
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
 ade session show session-id --text                          # status + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
@@ -572,7 +573,7 @@ ade chat demote [session-id]                                     # take over a s
 ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
-ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); stays in source lane
+ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded

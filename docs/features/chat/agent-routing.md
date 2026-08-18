@@ -537,6 +537,20 @@ window) — the same replay staged when a wedged thread is recycled.
 actually happens, and so cross-machine fork excludes it (there is no provider
 artifact to transport).
 
+Cursor is likewise the one non-Claude provider that can take a message *during*
+a live turn, and it takes it differently. The SDK has no mid-run message API, so
+`ACTIVE_TURN_DISPATCH_MODES` (`shared/types/chat.ts`) gives Cursor `interrupt`
+and `queue` but no `inline`: the redirect stops the run, waits for the turn to
+settle, and sends the message as the next turn on the same agent, which keeps
+the thread because the SDK's local agent store holds it. That is what
+`activeTurnInterruptContinues` records, and why every surface labels Cursor's
+affordance "Interrupt & continue" rather than "Interrupt & send". Because that
+stop exists only to resend, it runs in `stop_only` mode with
+`preserveQueuedSteersOnInterrupt` armed on the Cursor runtime until the
+interrupted turn's own tail consumes it, so messages the user had already staged
+ride through the redirect instead of being cleared. `interrupt-replace` on
+OpenCode, Pi and Droid keeps its `stop_and_clear` contract.
+
 ### Abstract-to-native mapping
 
 `AgentChatPermissionMode` is `default | plan | edit | full-auto | config-toml`.

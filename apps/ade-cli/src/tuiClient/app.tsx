@@ -10342,8 +10342,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // A full steer queue drops the message server-side. Surface it the same way
       // the primary messageSession path does — throw so submitPrompt restores the
       // typed text and shows an error — instead of falsely implying it was sent.
+      // Every queue-bearing runtime can hit this (Claude, Cursor, Droid,
+      // OpenCode), so the message names the session's own agent.
       if (result.reason === "queue_full") {
-        throw new Error("The Claude steer queue is full; the message was not queued.");
+        const agentLabel = providerDisplayLabel(
+          sessions.find((session) => session.sessionId === sessionId)?.provider,
+          "agent",
+        );
+        throw new Error(`The ${agentLabel} steer queue is full; the message was not queued.`);
       }
       if (result.queued) {
         addNotice("Staged message — sends after the current turn.", "info");
@@ -10868,10 +10874,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/steer") {
+      // Which dispatch commands this pane advertises comes off the canonical
+      // per-provider table (desktop shared/types/chat.ts), the same source the
+      // /steer commands and the desktop staged strip read — Claude offers both,
+      // Cursor only the interrupt, everything else stages until the turn ends.
+      const steerProvider = activeSession?.provider;
+      const dispatchHint = [
+        supportsActiveTurnDispatchMode(steerProvider, "inline") ? "/steer send" : null,
+        supportsActiveTurnDispatchMode(steerProvider, "interrupt") ? "/steer interrupt" : null,
+      ].filter((entry): entry is string => entry != null);
+      const hintLine = pendingSteers.length
+        ? dispatchHint.length
+          ? `${dispatchHint.join(" · ")} · /steer edit · /steer cancel`
+          : "Sends when the current turn finishes · /steer edit · /steer cancel"
+        : null;
       const body = pendingSteers.length
-        ? pendingSteers
-            .map((steer, index) => `${index + 1}. ${steer.text}`)
-            .join("\n")
+        ? [
+            pendingSteers.map((steer, index) => `${index + 1}. ${steer.text}`).join("\n"),
+            ...(hintLine ? ["", hintLine] : []),
+          ].join("\n")
         : "No staged steer messages are waiting.";
       setRightPane({ kind: "details", title: "Staged messages", body });
       return;

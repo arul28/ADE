@@ -3032,12 +3032,25 @@ the stats and shows update guidance.
   time without squeezing tool details into the same line. The association is
   data-driven and never invents file changes for providers that did not emit
   them.
-- **Active-turn send and Stop use dismissing native popovers.** For Claude,
-  the in-session composer mirrors desktop's three delivery choices: **Send
-  during turn**, **Send after turn**, and **Interrupt & send**. The primary
-  button's icon/label communicates the selected behavior, the chevron opens a
-  custom SwiftUI popover, and selection dismisses it immediately. Non-Claude
-  providers keep the single stage-behind-turn action. When the host advertises
+- **Active-turn send and Stop use dismissing native popovers.** The in-session
+  composer's delivery choices come from `WorkActiveSendCapability` in
+  `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical
+  `ACTIVE_TURN_DISPATCH_MODES` table in `apps/desktop/src/shared/types/chat.ts`,
+  kept in step by hand because iOS cannot import the TS. Modes are in menu order
+  and the first is the default, so Claude mirrors desktop's three choices
+  (**Send during turn**, **Send after turn**, **Interrupt & send**, defaulting to
+  *Send during turn*) and Cursor gets two (**Interrupt & continue**, **Send after
+  turn**, defaulting to *Interrupt & continue*). `interruptContinues` is mirrored
+  alongside the table, so Cursor's button and hint say "continue" — its SDK has
+  no mid-run message API, and the redirect cancels and resends on the same agent
+  thread. Every provider name in the option titles, details, hints and VoiceOver
+  strings comes from the capability's `agentLabel` rather than hard-coded
+  "Claude". The primary button's icon/label communicates the selected behavior,
+  the chevron opens a custom SwiftUI popover, and selection dismisses it
+  immediately. The effective mode is derived from the pick rather than stored, so
+  switching providers mid-chat can never leave a mode selected that the new
+  provider cannot honor; queue-only providers (a single mode is not a choice)
+  keep the plain stage-behind-turn button, matching the desktop composer. When the host advertises
   additive `chat.interruptWithQueueMode`, Claude Stop likewise becomes a split
   control for **Stop & clear queue**
   and **Stop only**; the per-chat choice is stored in `UserDefaults`, carries
