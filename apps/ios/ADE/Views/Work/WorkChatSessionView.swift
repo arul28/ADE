@@ -357,6 +357,10 @@ struct WorkChatSessionView: View {
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
 
+  /// Opens the parent chat for a standalone spawned child session. The nested
+  /// transcript viewer uses its own back control and leaves this unset.
+  var onOpenParentSession: (() -> Void)? = nil
+
   var resolvedSessionStatus: String? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
@@ -920,6 +924,17 @@ struct WorkChatSessionView: View {
     // so the Accept / Decline actions are always in reach instead of scrolled
     // off the top of the transcript.
 
+    if let parentId = chatSummaryContext.orchestrationParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !parentId.isEmpty,
+       parentId != session.id,
+       let onOpenParentSession {
+      WorkSubagentLineageBreadcrumb(
+        parentTitle: chatSummaryContext.parentTitle,
+        onOpen: onOpenParentSession
+      )
+    }
+
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
     if let errorMessageSnapshot, !hostUnreachable {
@@ -1106,15 +1121,25 @@ struct WorkChatSessionView: View {
       let subagentCount = subagentSnapshots.count
       let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
       let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil
-      let showsSubagentBadge = inputLockMessage == nil && subagentCount > 0 && onOpenSubagents != nil
+      let showsSubagentBadge = inputLockMessage == nil
+        && subagentCount > 0
+        && onOpenSubagents != nil
       let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
       if showsChatInfoBadge || showsSubagentBadge || showsPrBadge {
         HStack(spacing: 8) {
           if showsChatInfoBadge, let onOpenChatInfo {
             WorkChatInfoActivePopup(count: activeScheduledWorkCount, onOpen: onOpenChatInfo)
           }
-          if showsSubagentBadge, let onOpenSubagents {
-            WorkSubagentActivePopup(count: subagentCount, onOpen: onOpenSubagents)
+          if showsSubagentBadge {
+            if subagentCount == 1,
+               let snapshot = subagentSnapshots.first,
+               let onSelectSubagentRow {
+              WorkSubagentActivePopup(count: subagentCount) {
+                Task { await onSelectSubagentRow(snapshot) }
+              }
+            } else if let onOpenSubagents {
+              WorkSubagentActivePopup(count: subagentCount, onOpen: onOpenSubagents)
+            }
           }
           if showsPrBadge, let prBadge, let onOpenPrDetails {
             WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
@@ -2922,6 +2947,55 @@ private struct WorkSubagentTakeoverBanner: View {
         .fill(ADEColor.accent.opacity(0.08))
     )
     .accessibilityElement(children: .contain)
+  }
+}
+
+private struct WorkSubagentLineageBreadcrumb: View {
+  let parentTitle: String?
+  let onOpen: () -> Void
+
+  private var sourceLabel: String {
+    let trimmed = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? "parent chat" : trimmed
+  }
+
+  var body: some View {
+    Button(action: onOpen) {
+      HStack(spacing: 8) {
+        Image(systemName: "arrow.turn.up.left")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Subagent chat")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+          Text("from \(sourceLabel)")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+
+        Spacer(minLength: 4)
+
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.18), lineWidth: 1)
+      )
+      .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Open parent chat, \(sourceLabel)")
+    .accessibilityHint("Returns to the chat that spawned this subagent.")
   }
 }
 

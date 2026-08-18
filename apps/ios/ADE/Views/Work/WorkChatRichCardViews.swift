@@ -2496,17 +2496,28 @@ struct WorkSubagentActivePopup: View {
   let count: Int
   let onOpen: () -> Void
 
+  private var label: String {
+    count == 1 ? "Subagent" : "Subagents"
+  }
+
   var body: some View {
     WorkComposerBadgeCapsule(
       tint: ADEColor.accent,
       spacing: 8,
-      accessibilityLabel: "\(count) subagent\(count == 1 ? "" : "s")",
+      accessibilityLabel: "\(count) \(label.lowercased())",
       onOpen: onOpen
     ) {
       Image(systemName: "person.2.fill")
         .font(.system(size: 12, weight: .semibold))
-      Text("\(count) subagent\(count == 1 ? "" : "s")")
+      Text(label)
         .font(.caption.weight(.semibold))
+      if count > 1 {
+        Text("\(count)")
+          .font(.caption2.weight(.bold))
+          .padding(.horizontal, 6)
+          .padding(.vertical, 2)
+          .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
+      }
     }
   }
 }

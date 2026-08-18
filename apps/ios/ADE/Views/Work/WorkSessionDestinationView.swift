@@ -1541,6 +1541,7 @@ struct WorkSessionDestinationView: View {
       inputLockMessage: inputLockMessage,
       transitionNamespace: transitionNamespace,
       onOpenLane: openLaneAction,
+      onOpenParentSession: viewingSubagent ? nil : { openParentSession() },
       onSend: { text, attachments, mode in
         await sendMessage(text, attachments: attachments, deliveryMode: mode)
       },
@@ -1577,8 +1578,9 @@ struct WorkSessionDestinationView: View {
       scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : workScheduledWorkSnapshotsRenderSignature(scheduledWorkSnapshots),
       selectedSubagentTaskId: subagentView?.taskId,
       onOpenChatInfo: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
-      // The subagent roster now lives inside the unified Chat Info sheet, so the
-      // composer badge and header menu both open Chat Info — no separate drawer.
+      // A singular badge opens its child directly; an aggregate badge opens
+      // Chat Info. Timeline-row selection stays scoped to the parent chat, so
+      // nested transcript state cannot accidentally fetch from itself.
       onOpenSubagents: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
       onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
       onForkChatInLane: {
