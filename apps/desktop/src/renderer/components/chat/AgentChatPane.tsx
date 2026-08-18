@@ -10824,10 +10824,13 @@ export function AgentChatPane({
           displayText: finalDisplayText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
-          // Only send a dispatch mode this provider's backend accepts (see the
-          // canonical table in shared/types/chat.ts); otherwise this stages.
+          // Only send a dispatch mode the session's own backend accepts (see
+          // the canonical table in shared/types/chat.ts); otherwise this
+          // stages. The gate reads selectedSession.provider — the provider that
+          // actually receives the IPC call — not the picked model's provider,
+          // which diverges while a different model is selected mid-turn.
           ...(activeTurnDispatchMode
-            && supportsActiveTurnDispatchMode(sessionProvider, activeTurnDispatchMode)
+            && supportsActiveTurnDispatchMode(selectedSession?.provider, activeTurnDispatchMode)
             ? { dispatchMode: activeTurnDispatchMode }
             : {}),
         }, chatRuntimePinRef.current);

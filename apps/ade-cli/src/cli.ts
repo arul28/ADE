@@ -12263,6 +12263,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--depth",
   "--desc",
   "--device",
+  "--dispatch",
+  "--dispatch-mode",
   "--disk",
   "--disk-size",
   "--display",
