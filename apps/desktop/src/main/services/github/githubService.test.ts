@@ -126,6 +126,26 @@ class MemoryCredentialStore {
   }
 }
 
+/**
+ * A store whose ciphertext will not decrypt. It reports the truth the way the
+ * real file store does — an EMPTY view plus `getLastReadState() === "unreadable"`
+ * — rather than by throwing, which is precisely how "corrupted" used to reach
+ * the UI wearing "never connected".
+ */
+class UnreadableCredentialStore extends MemoryCredentialStore {
+  override getSync(_key: string): string | null {
+    return null;
+  }
+
+  getLastReadState(): "available" | "missing" | "unreadable" {
+    return "unreadable";
+  }
+
+  getLastReadFailureReason(): "decrypt_failure" {
+    return "decrypt_failure";
+  }
+}
+
 function makeService(options: {
   credentialStore?: MemoryCredentialStore;
   ghAuthTokenProvider?: () =>
@@ -1361,6 +1381,55 @@ describe("githubService.getStatus", () => {
       stderr: "",
     });
   }
+
+  // Regression: an undecryptable credential store used to emit a status that was
+  // byte-identical to a fresh install (tokenStored:false, connected:false,
+  // authFailure:null), so the UI told users GitHub had never been connected and
+  // invited them to reconnect over credentials that were still on disk.
+  it("reports an undecryptable credential store instead of a fresh-install status", async () => {
+    stubOriginRemote();
+    const status = await makeService({
+      credentialStore: new UnreadableCredentialStore(),
+    }).getStatus();
+
+    expect(status.credentialStoreUnreadable).toBe(true);
+    expect(status.tokenStored).toBe(false);
+    expect(status.connected).toBe(false);
+    // The distinct state must not be reachable by inspecting the token fields:
+    // that is exactly the conflation this field exists to break.
+    expect(status.tokenDecryptionFailed).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not claim an unreadable store when the store is merely empty", async () => {
+    stubOriginRemote();
+    const status = await makeService({
+      credentialStore: new MemoryCredentialStore(),
+    }).getStatus();
+
+    expect(status.credentialStoreUnreadable).toBe(false);
+    expect(status.tokenStored).toBe(false);
+    expect(status.connected).toBe(false);
+  });
+
+  it("keeps the unreadable flag off a status a working gh credential produced", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+    const status = await makeService({
+      credentialStore: new MemoryCredentialStore(),
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    }).getStatus();
+
+    expect(status.connected).toBe(true);
+    expect(status.credentialStoreUnreadable).toBe(false);
+  });
 
   it("keeps repo-capable classic tokens connected while withholding write access", async () => {
     stubOriginRemote();

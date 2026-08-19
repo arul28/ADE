@@ -1259,6 +1259,17 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private readonly lockPath: string;
   private readonly legacyLockPath: string;
   private readonly legacyStore: CredentialStoreMigrationSource | null;
+  /**
+   * Result of the most recent read, for the same reason the file store records
+   * one: a read that cannot open the ciphertext still has to return SOMETHING,
+   * and the only branch here that returns `{}` rather than throwing is the
+   * aborted legacy migration below. Without this, a caller cannot tell that
+   * empty view from a machine that was never signed in — and telling a user
+   * "not connected" when the truth is "not readable" invites them to reconnect
+   * over credentials that are still on disk.
+   */
+  private lastReadState: CredentialStoreReadState = "missing";
+  private lastReadFailureReason: CredentialStoreReadFailureReason | null = null;
 
   constructor(args: {
     safeStorage: SafeStorageLike;
@@ -1303,6 +1314,14 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
     return this.readAll()[normalized] ?? null;
+  }
+
+  getLastReadState(): CredentialStoreReadState {
+    return this.lastReadState;
+  }
+
+  getLastReadFailureReason(): CredentialStoreReadFailureReason | null {
+    return this.lastReadFailureReason;
   }
 
   setSync(key: string, value: string): void {
@@ -1361,20 +1380,39 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     } catch (error: unknown) {
       if (isEnoent(error)) {
         const legacyValues = this.migrateLegacyStore(args.safeLockHeld === true);
-        return legacyValues ?? {};
+        if (legacyValues) return this.recordRead(legacyValues, "available");
+        // No safeStorage file AND no migratable legacy values. That is "missing"
+        // UNLESS the legacy store told us it could not decrypt what is there —
+        // the migration aborts on exactly that case (readLegacyEncryptedFileStore)
+        // and returning `{}` without saying so is the masking bug.
+        return this.legacyStore?.getLastReadState() === "unreadable"
+          ? this.recordRead({}, "unreadable", "decrypt_failure")
+          : this.recordRead({}, "missing");
       }
+      this.recordRead({}, "unreadable", "store_format");
       throw error;
     }
     try {
       const decrypted = this.safeStorage.decryptString(payload.encrypted);
-      return normalizeStoredCredentialValues(JSON.parse(decrypted));
+      return this.recordRead(normalizeStoredCredentialValues(JSON.parse(decrypted)), "available");
     } catch (error: unknown) {
       if (!payload.hasMagic && isStoredCredentialEnvelopeBuffer(payload.encrypted)) {
         const legacyValues = this.migrateLegacyStore(args.safeLockHeld === true);
-        if (legacyValues) return legacyValues;
+        if (legacyValues) return this.recordRead(legacyValues, "available");
       }
+      this.recordRead({}, "unreadable", "decrypt_failure");
       throw error;
     }
+  }
+
+  private recordRead(
+    values: Record<string, string>,
+    state: CredentialStoreReadState,
+    reason: CredentialStoreReadFailureReason | null = null,
+  ): Record<string, string> {
+    this.lastReadState = state;
+    this.lastReadFailureReason = state === "unreadable" ? reason : null;
+    return values;
   }
 
   private readLegacySafeStorageFile(): Record<string, string> | null {

@@ -324,6 +324,8 @@ type HeadlessGitHubCredentialInventory = {
   patTokenStored: boolean;
   ghCliPath: string | null;
   ghAuthError: string | null;
+  /** Whether the credential file was readable on the read that built this. */
+  credentialStoreUnreadable: boolean;
 };
 
 class HeadlessGithubCredentialAttemptError extends Error {
@@ -673,6 +675,10 @@ export function createHeadlessGitHubService(
   let cachedStatusBinding: string | null = null;
   let tokenOverride: string | null = null;
   let tokenDecryptionFailed = false;
+  // An undecryptable store returns an EMPTY view instead of throwing, so without
+  // this a remote runtime reports a corrupted store as "GitHub was never
+  // connected" — identical to a fresh install. See GitHubStatus.credentialStoreUnreadable.
+  let credentialStoreUnreadable = false;
   let statusLookupGeneration = 0;
   let statusLookupInFlight: {
     generation: number;
@@ -691,14 +697,24 @@ export function createHeadlessGitHubService(
     statusLookupGeneration += 1;
   };
 
+  /**
+   * MUST run immediately after a store read: `getLastReadState()` describes the
+   * store's most recent read, so asking later answers about a different one.
+   */
+  const noteCredentialStoreReadState = (): boolean => {
+    credentialStoreUnreadable = credentialStore.getLastReadState() === "unreadable";
+    return credentialStoreUnreadable;
+  };
+
   const readStoredPatToken = (): string | null => {
     if (tokenOverride != null) return tokenOverride;
     try {
       const stored = credentialStore.getSync(tokenKey);
-      tokenDecryptionFailed = false;
+      tokenDecryptionFailed = noteCredentialStoreReadState();
       if (stored?.trim()) return stored.trim();
     } catch {
       tokenDecryptionFailed = true;
+      credentialStoreUnreadable = true;
     }
     return null;
   };
@@ -736,10 +752,11 @@ export function createHeadlessGitHubService(
     if (tokenOverride != null) return tokenOverride;
     try {
       const stored = await credentialStore.get(tokenKey);
-      tokenDecryptionFailed = false;
+      tokenDecryptionFailed = noteCredentialStoreReadState();
       if (stored?.trim()) return stored.trim();
     } catch {
       tokenDecryptionFailed = true;
+      credentialStoreUnreadable = true;
     }
     return null;
   };
@@ -819,6 +836,7 @@ export function createHeadlessGitHubService(
       patTokenStored,
       ghCliPath: gh.ghCliPath,
       ghAuthError: gh.ghAuthError,
+      credentialStoreUnreadable,
     };
   };
 
@@ -1645,6 +1663,7 @@ export function createHeadlessGitHubService(
           repo,
           hasOrigin,
           patTokenStored: inventory.patTokenStored,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           ghCliPath: inventory.ghCliPath ?? cachedStatus.ghCliPath,
           ghAuthError: inventory.ghAuthError,
           credentialStates: githubCredentialStates({
@@ -1686,6 +1705,7 @@ export function createHeadlessGitHubService(
           tokenStored: inventory.appTokenStored,
           patTokenStored: inventory.patTokenStored,
           tokenDecryptionFailed,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           storageScope: "app",
           authSource: failure?.source ?? "none",
           writeAuthSource: "none",
@@ -1776,6 +1796,7 @@ export function createHeadlessGitHubService(
           tokenStored: true,
           patTokenStored: inventory.patTokenStored,
           tokenDecryptionFailed: false,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           storageScope: "app",
           authSource: candidate.source,
           writeAuthSource: activeWriteSource ?? "none",
@@ -1826,6 +1847,7 @@ export function createHeadlessGitHubService(
         tokenStored: true,
         patTokenStored: inventory.patTokenStored,
         tokenDecryptionFailed: false,
+        credentialStoreUnreadable: inventory.credentialStoreUnreadable,
         storageScope: "app",
         authSource: primaryCandidate.source,
         writeAuthSource: "none",

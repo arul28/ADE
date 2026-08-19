@@ -22,7 +22,9 @@ import {
   describeGithubPatVerification,
   describeGithubAuthFailure,
   githubCredentialPresentation,
+  GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
 } from "../../lib/githubIntegrationStatus";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -215,6 +217,10 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   let readsWithLabel = authSourceLabel(githubStatus);
   if (authFailure?.kind === "rate_limited") readsWithLabel = "Paused";
   if (activeReadCredential) readsWithLabel = credentialSourceLabel(activeReadCredential.source);
+  // An unreadable credential store empties every stored-credential signal below
+  // it, so "Not connected" here would be a guess drawn from credentials ADE
+  // could not read. Say what is actually true instead.
+  const credentialStoreUnreadable = githubStatus?.credentialStoreUnreadable === true;
   let statusColor: string;
   let statusLabel: string;
   if (isConnected && credentialFallback) {
@@ -223,6 +229,9 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   } else if (isConnected) {
     statusColor = COLORS.success;
     statusLabel = "Connected";
+  } else if (credentialStoreUnreadable) {
+    statusColor = COLORS.warning;
+    statusLabel = GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.statusLabel;
   } else if (authFailurePresentation) {
     statusColor = COLORS.warning;
     statusLabel = authFailurePresentation.statusLabel;
@@ -244,6 +253,9 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     githubStatus != null
     && !isConnected
     && githubStatus.authSource !== "pat"
+    // Nothing here is worth reading while the store is unreadable: the setup
+    // steps would be answering a question ADE has not actually asked.
+    && !credentialStoreUnreadable
     && (
       !githubStatus.tokenStored
       || authFailure?.kind === "invalid_token"
@@ -394,6 +406,27 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             {summaryCell("READS WITH", readsWithLabel)}
             {summaryCell("WRITES WITH", credentialSourceLabel(effectiveWriteAuthSource))}
           </div>
+
+          {credentialStoreUnreadable ? (
+            <div style={{
+              ...infoBoxStyle,
+              borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
+              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+              color: COLORS.textPrimary,
+            }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}
+              </div>
+              <div>{GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}</div>
+              <button
+                type="button"
+                style={{ ...linkButtonStyle, marginTop: 10 }}
+                onClick={() => openConnectionsPanel("machines")}
+              >
+                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action}
+              </button>
+            </div>
+          ) : null}
 
           {credentialFallback ? (
             <div style={{

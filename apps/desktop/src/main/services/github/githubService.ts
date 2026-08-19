@@ -194,6 +194,13 @@ type GitHubCredentialInventory = {
   patTokenStored: boolean;
   ghCliPath: string | null;
   ghAuthError: string | null;
+  /**
+   * Whether the credential file backing `github.token.v1` /
+   * `github.appUserToken.v1` was readable when this inventory was built. Carried
+   * on the inventory (rather than read again at status time) so the answer is
+   * the one that belongs to the read that produced these candidates.
+   */
+  credentialStoreUnreadable: boolean;
 };
 
 class GithubCredentialAttemptError extends Error {
@@ -569,6 +576,9 @@ export function createGithubService({
 
   let tokenDecryptionFailed = false;
   let machineTokenReadFailed = false;
+  // Sticky across reads so the status can report it, and so the log line below
+  // fires on the transition instead of on every cached status refresh.
+  let credentialStoreUnreadable = false;
   const ghAuthProvider = ghAuthTokenProvider ?? readGitHubCliAuthToken;
   const sharedGhAuth = processGithubAuthState(ghAuthProvider);
   let statusInFlight: Promise<GitHubStatus> | null = null;
@@ -605,14 +615,46 @@ export function createGithubService({
     invalidateStatusCache();
   };
 
+  /**
+   * Records whether the credential file was readable on the read that just ran.
+   *
+   * MUST be called immediately after a `getSync`: `getLastReadState()` describes
+   * the store's most recent read, so asking at any other moment answers about
+   * somebody else's read.
+   */
+  const noteCredentialStoreReadState = (): boolean => {
+    const unreadable = credentialStore?.getLastReadState?.() === "unreadable";
+    if (unreadable !== credentialStoreUnreadable) {
+      credentialStoreUnreadable = unreadable;
+      if (unreadable) {
+        logger.warn("github.credential_store_unreadable", {
+          reason: credentialStore?.getLastReadFailureReason?.() ?? null,
+        });
+      }
+    }
+    return unreadable;
+  };
+
   const readMachineToken = (): string | null => {
     if (!credentialStore) return null;
     try {
       const token = credentialStore.getSync(MACHINE_TOKEN_KEY)?.trim() ?? "";
-      machineTokenReadFailed = false;
-      return token.length > 0 ? token : null;
+      if (token.length > 0) {
+        noteCredentialStoreReadState();
+        machineTokenReadFailed = false;
+        return token;
+      }
+      // An undecryptable store returns an EMPTY view instead of throwing, so an
+      // absent token here means either "never connected" or "connected, but ADE
+      // cannot read it". Only the store knows which, and it does: ask it before
+      // the two collapse into the same "not connected" status.
+      machineTokenReadFailed = noteCredentialStoreReadState();
+      return null;
     } catch (error) {
+      // A store that throws is unreadable too — the Electron safeStorage store
+      // reports decrypt failures this way rather than by returning `{}`.
       machineTokenReadFailed = true;
+      credentialStoreUnreadable = true;
       logger.warn("github.machine_token_read_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -630,6 +672,9 @@ export function createGithubService({
         credentialStore.deleteSync(MACHINE_TOKEN_KEY);
       }
       machineTokenReadFailed = false;
+      // A write that landed re-sealed the store with a key this process holds,
+      // so whatever made the previous read unreadable no longer applies.
+      credentialStoreUnreadable = false;
     } catch (error) {
       machineTokenReadFailed = true;
       logger.warn("github.machine_token_write_failed", {
@@ -880,6 +925,11 @@ export function createGithubService({
       patTokenStored,
       ghCliPath: gh.ghCliPath,
       ghAuthError: gh.ghAuthError,
+      // `readPatAuthToken()` above is the read that touched the store, so this
+      // is that read's outcome. An unreadable store also empties the App user
+      // token (same file), which is why it is reported once for the whole
+      // inventory rather than per source.
+      credentialStoreUnreadable,
     };
   };
 
@@ -1623,6 +1673,7 @@ export function createGithubService({
         tokenStored: inventory.appTokenStored,
         patTokenStored: inventory.patTokenStored,
         tokenDecryptionFailed,
+        credentialStoreUnreadable: inventory.credentialStoreUnreadable,
         storageScope: "app",
         authSource: failure?.source ?? "none",
         writeAuthSource: "none",
@@ -1690,6 +1741,7 @@ export function createGithubService({
           repo,
           hasOrigin,
           patTokenStored: inventory.patTokenStored,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           ghCliPath: inventory.ghCliPath ?? cachedStatus.ghCliPath,
           ghAuthError: inventory.ghAuthError,
           writeAuthSource: activeWriteSource ?? "none",
@@ -1780,6 +1832,7 @@ export function createGithubService({
         tokenStored: true,
         patTokenStored: inventory.patTokenStored,
         tokenDecryptionFailed: false,
+        credentialStoreUnreadable: inventory.credentialStoreUnreadable,
         storageScope: "app",
         authSource: candidate.source,
         writeAuthSource: activeWriteSource ?? "none",
@@ -1834,6 +1887,7 @@ export function createGithubService({
       tokenStored: true,
       patTokenStored: inventory.patTokenStored,
       tokenDecryptionFailed: false,
+      credentialStoreUnreadable: inventory.credentialStoreUnreadable,
       storageScope: "app",
       authSource: primaryCandidate.source,
       writeAuthSource: "none",

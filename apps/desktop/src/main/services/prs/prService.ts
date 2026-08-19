@@ -139,6 +139,7 @@ import type {
   ReviewPublicationDestination,
   ReviewPublicationInlineComment,
 } from "../../../shared/types";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
@@ -9196,6 +9197,12 @@ export function createPrService({
   };
 
   const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): string => {
+    // Ahead of `!tokenStored`: an unreadable credential store reports no token,
+    // so this would otherwise tell someone whose credentials are intact to run
+    // `gh auth login` and overwrite them.
+    if (githubStatus.credentialStoreUnreadable === true) {
+      return `${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}. ${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}`;
+    }
     if (!githubStatus.tokenStored) {
       return "GitHub auth missing. Run gh auth login or add a PAT in Settings to sync pull requests.";
     }

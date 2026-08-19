@@ -4,6 +4,9 @@ import type {
   GitHubSetTokenResult,
   GitHubStatus,
 } from "../../shared/types";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
+
+export { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY };
 
 export type GithubCredentialPresentation = {
   tokenTypeLabel: string;
@@ -295,12 +298,28 @@ export function describeGithubPatVerification(result: GitHubSetTokenResult): {
   };
 }
 
+/**
+ * Where the banner's single CTA has to land. Everything about GitHub itself is
+ * fixed in the GitHub settings card; an unreadable credential store is not a
+ * GitHub problem at all, and its only repair control lives in Connections.
+ */
+export type GithubBannerTarget = "github-settings" | "connections";
+
 export function describeGithubCliBanner(status: GitHubStatus): {
   subState: string;
   title: string;
   detail: string;
   action: string;
+  target?: GithubBannerTarget;
 } {
+  // First, and ahead of `!tokenStored`: an unreadable store returns an EMPTY
+  // view, so every other conclusion below is drawn from credentials ADE could
+  // not read. Saying "not connected" here is what invited users to reconnect
+  // over working credentials.
+  if (status.credentialStoreUnreadable === true) {
+    const { subState, title, detail, action } = GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY;
+    return { subState, title, detail, action, target: "connections" };
+  }
   if (!status.tokenStored) {
     return {
       subState: "no-token",

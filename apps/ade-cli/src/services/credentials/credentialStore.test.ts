@@ -992,6 +992,10 @@ describe("ElectronSafeStorageCredentialStore", () => {
     });
 
     expect(store.getSync("linear.token.v1")).toBeNull();
+    // …and it says so. A `null` here is indistinguishable from "never stored",
+    // which is how a corrupted store reached the UI as a fresh install.
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(store.getLastReadFailureReason()).toBe("decrypt_failure");
 
     // Nothing written, nothing deleted: the credentials stay recoverable.
     expect(fs.existsSync(safePath)).toBe(false);

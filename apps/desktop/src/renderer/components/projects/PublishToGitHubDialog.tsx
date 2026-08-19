@@ -20,7 +20,10 @@ import {
 import type { PublishProjectResult } from "../../../shared/types";
 import { extractCodeFromMessage } from "../../lib/codedError";
 import { extractError } from "../../lib/format";
-import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
+import {
+  GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
+  describeGithubPatVerification,
+} from "../../lib/githubIntegrationStatus";
 import { fadeScale } from "../../lib/motion";
 import {
   COLORS,
@@ -115,6 +118,7 @@ export function PublishToGitHubDialog({
   const [tokenDraft, setTokenDraft] = useState("");
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  const [storeUnreadable, setStoreUnreadable] = useState(false);
 
   // Reset all local state whenever the dialog opens.
   useEffect(() => {
@@ -131,10 +135,15 @@ export function PublishToGitHubDialog({
     setTokenDraft("");
     setTokenSaving(false);
     setTokenError(null);
+    setStoreUnreadable(false);
     void window.ade.github.getStatus({ forceRefresh: false }).then((status) => {
-      if (!cancelled && status.connected && status.userLogin) {
+      if (cancelled) return;
+      if (status.connected && status.userLogin) {
         setOwner(status.userLogin);
       }
+      // "Not connected" would be a guess here: an unreadable store reports no
+      // credential whether or not one is saved.
+      setStoreUnreadable(status.credentialStoreUnreadable === true);
     }).catch(() => {});
     return () => {
       cancelled = true;
@@ -313,6 +322,7 @@ export function PublishToGitHubDialog({
                       error={tokenError}
                       onOpenTokenLink={handleOpenTokenLink}
                       onCancel={() => setConnectMode(false)}
+                      storeUnreadable={storeUnreadable}
                     />
                   ) : (
                     <FormBody
@@ -522,6 +532,7 @@ function ConnectBody({
   error,
   onOpenTokenLink,
   onCancel,
+  storeUnreadable,
 }: {
   tokenDraft: string;
   onTokenChange: (value: string) => void;
@@ -530,6 +541,7 @@ function ConnectBody({
   error: string | null;
   onOpenTokenLink: () => void;
   onCancel: () => void;
+  storeUnreadable: boolean;
 }) {
   const detected = tokenDraft.trim() ? detectTokenType(tokenDraft.trim()) : null;
   return (
@@ -550,7 +562,11 @@ function ConnectBody({
         }}
       >
         <LinkBreak size={14} weight="regular" style={{ color: COLORS.warning, flexShrink: 0, marginTop: 2 }} />
-        <span>GitHub is not connected. Run gh auth login with repo and workflow scopes, or paste a personal access token.</span>
+        <span>
+          {storeUnreadable
+            ? `${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}. ${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}`
+            : "GitHub is not connected. Run gh auth login with repo and workflow scopes, or paste a personal access token."}
+        </span>
       </div>
 
       <Field label="PERSONAL ACCESS TOKEN">

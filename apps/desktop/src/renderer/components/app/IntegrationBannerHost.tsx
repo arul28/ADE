@@ -375,7 +375,12 @@ export function IntegrationBannerHost({
           {
             label: cli.action,
             variant: "primary",
-            onClick: () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE),
+            // An unreadable credential store is not fixed on the GitHub card —
+            // the Repair control lives in the Connections panel, so that state
+            // routes there instead. Same panel the relay banner opens.
+            onClick: cli.target === "connections"
+              ? () => openConnectionsPanel("machines")
+              : () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE),
           },
         ],
         dismiss: { key: `github-cli:${currentProjectRoot}`, fingerprint: cli.subState },
