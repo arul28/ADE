@@ -18,6 +18,8 @@ import {
   updateToast,
 } from "./toastStore";
 import { useLaneEventToasts } from "./useLaneEventToasts";
+import { useAutoDiagnosticsToast } from "./useAutoDiagnosticsToast";
+import type { DiagnosticsAutoSentPayload } from "../../../../shared/types/diagnostics";
 
 // The store is a module-level singleton with no reset hook; each test clears
 // the stack it created so state doesn't leak between cases.
@@ -318,5 +320,77 @@ describe("useLaneEventToasts", () => {
       message: "conflict on package-lock.json",
       tone: "error",
     });
+  });
+});
+
+describe("useAutoDiagnosticsToast", () => {
+  function AutoDiagnosticsHarness(): React.ReactElement | null {
+    useAutoDiagnosticsToast();
+    return null;
+  }
+
+  function installDiagnosticsApi() {
+    let listener: ((payload: DiagnosticsAutoSentPayload) => void) | null = null;
+    const bridge = {
+      diagnostics: {
+        openIssue: vi.fn(),
+        onAutoSent: vi.fn((cb: (payload: DiagnosticsAutoSentPayload) => void) => {
+          listener = cb;
+          return () => {
+            listener = null;
+          };
+        }),
+        revealReport: vi.fn(async () => {}),
+        setSharing: vi.fn(async () => ({ enabled: false, sendsInWindow: 1, limit: 3 })),
+      },
+    };
+    Object.defineProperty(window, "ade", { value: bridge, configurable: true, writable: true });
+    return {
+      bridge,
+      emit: (payload: DiagnosticsAutoSentPayload) => listener?.(payload),
+    };
+  }
+
+  beforeEach(() => {
+    // The store is a module singleton and the suites above leave toasts behind.
+    cleanup();
+    clearAll();
+  });
+
+  afterEach(() => {
+    delete (window as { ade?: unknown }).ade;
+  });
+
+  it("tells the user what was sent, and offers the report and the off switch", () => {
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+
+    const [toast] = getToasts();
+    expect(toast).toMatchObject({
+      title: "A diagnostic report was sent to ADE",
+      message: "Reference abcd1234",
+    });
+    expect(toast?.action?.label).toBe("View");
+    expect(toast?.secondaryAction?.label).toBe("Turn off");
+
+    toast?.action?.onClick();
+    expect(api.bridge.diagnostics.revealReport).toHaveBeenCalledWith("/reports/x.md");
+    toast?.secondaryAction?.onClick();
+    expect(api.bridge.diagnostics.setSharing).toHaveBeenCalledWith(false);
+  });
+
+  it("still offers the off switch when the local copy could not be written", () => {
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "", reference: "abcd1234" });
+
+    const [toast] = getToasts();
+    // Nothing to reveal, so no dead "View" button — but turning it off must
+    // always be one click away from the message that says it happened.
+    expect(toast?.action).toBeUndefined();
+    expect(toast?.secondaryAction?.label).toBe("Turn off");
   });
 });

@@ -168,6 +168,7 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("banner").map((e) => e.id)).toContain("lanes-git.rebase-suggestions");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
     expect(searchSettingsEntries("all machines").map((e) => e.id)).toContain("activity.dock-badge");
+    expect(searchSettingsEntries("crash").map((e) => e.id)).toContain("general.diagnostics-sharing");
   });
 
   it("returns nothing for a blank query rather than every setting", () => {
@@ -255,6 +256,7 @@ describe("settings command palette entries", () => {
       ["scrollback", "setting-appearance.terminal"],
       ["do not disturb", "setting-notifications.focus-suppression"],
       ["api key", "setting-secrets.secrets"],
+      ["crash", "setting-general.diagnostics-sharing"],
     ];
     for (const [query, expectedId] of cases) {
       const ids = filterPalette(commands, query).map((command) => command.id);

@@ -33,6 +33,13 @@ export type ReportIssueOptions = {
   surface?: string;
   projectRoot?: string | null;
   cliVersion?: string | null;
+  /**
+   * The failure this report is about, when the caller already knows it. The
+   * interactive command does not (a person pressed "report", not a subsystem),
+   * so it stays null there; the automatic sender always has one.
+   */
+  code?: string | null;
+  headline?: string | null;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 };
@@ -100,8 +107,8 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
     identity: { installId },
     context: {
       surface,
-      headline: null,
-      code: null,
+      headline: options.headline?.trim().slice(0, 300) || null,
+      code: options.code?.trim().slice(0, 120) || null,
       technicalDetail: null,
       projectRoot,
     },
@@ -119,6 +126,8 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
     secretsDir: sources.layout.secretsDir,
     issueUrl: buildDiagnosticIssueUrl({
       surface,
+      headline: options.headline?.trim().slice(0, 300) || null,
+      code: options.code?.trim().slice(0, 120) || null,
       appVersion: options.cliVersion ?? null,
       platform: process.platform,
       arch: process.arch,
@@ -186,6 +195,9 @@ export async function sendDiagnosticReport(
     /** Test seam; production resolves the token from the credential store. */
     getToken?: () => Promise<string | null>;
     fetchImpl?: typeof fetch;
+    /** Set by the automatic sender; `ade report-issue --send` leaves it off. */
+    auto?: boolean;
+    failureCode?: string | null;
   } = {},
 ): Promise<DiagnosticUploadResult> {
   const env = deps.env ?? process.env;
@@ -217,6 +229,8 @@ export async function sendDiagnosticReport(
     token,
     installId: built.installId === "unknown" ? null : built.installId,
     appVersion: built.appVersion,
+    auto: deps.auto === true,
+    failureCode: deps.failureCode ?? null,
     fetchImpl: deps.fetchImpl,
   });
 }

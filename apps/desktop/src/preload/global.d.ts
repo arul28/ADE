@@ -725,7 +725,12 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
-import type { DiagnosticReportPayload, DiagnosticReportRequestPayload } from "../shared/types/diagnostics";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsSharingStatus,
+} from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
 import type {
   ProductAnalyticsCapture,
@@ -904,6 +909,16 @@ declare global {
        */
       diagnostics?: {
         openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
+        /**
+         * Ask main to consider ONE automatic send for a failure the renderer
+         * detected. Main owns the setting and the budget, so this is a request,
+         * not an instruction, and its answer is deliberately uninteresting.
+         */
+        autoReport?: (context: DiagnosticReportRequestPayload) => Promise<void>;
+        getSharing?: () => Promise<DiagnosticsSharingStatus>;
+        setSharing?: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
+        revealReport?: (reportPath: string) => Promise<void>;
+        onAutoSent?: (cb: (payload: DiagnosticsAutoSentPayload) => void) => () => void;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;

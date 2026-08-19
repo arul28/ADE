@@ -604,6 +604,9 @@ rides the clipboard.
 | IPC | `IPC.diagnosticsOpenIssue` |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
 | Headless equivalent | `ade report-issue [--open] [--send]` |
+| Automatic sending (desktop) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` |
+| Automatic sending (brain) | `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` |
+| Consent flag + shared daily budget | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` → `~/.ade/secrets/diagnostics-autosend.json` |
 | Upload (opt-in) | `POST /diagnostics/upload` on the account directory Worker (`apps/account-directory/src/diagnostics.ts`); one client for both senders — the renderer button and the CLI — in `apps/desktop/src/shared/diagnosticsUpload.ts` |
 
 `ade report-issue` and the desktop button read the same machine sources through
@@ -689,9 +692,67 @@ origin the way the brain does also means a self-hosted machine's report and its
 token are not silently redirected to ADE's directory. The Worker treats the body
 as opaque: it never parses, indexes or echoes a report, which is what lets it
 accept anonymous uploads at all, and it bounds one identity (Clerk user, else a
-hash of the caller address) to five uploads a UTC day. The button's disclosure
-text says so — nothing leaves the computer unless the user posts the issue or
-chooses **Send to ADE**.
+hash of the caller address) to five uploads a UTC day.
+
+#### Auto-send
+
+Nobody presses the button. A person looking at an error screen has to notice the
+control, decide the failure is worth reporting, and follow through — so the
+reports that would explain the worst failures are exactly the ones that never
+arrive. When ADE hits a failure it has **already classified**, it sends the same
+finished report by itself, with `auto: true` and the failure code alongside it so
+the two populations stay separable on the server.
+
+**Triggers.** One call each, at the point the failure is already known:
+
+| Trigger | Where | `failureCode` |
+| --- | --- | --- |
+| Recovery diagnosis reached a terminal state | `main/services/runtime/projectRecoveryService.ts` (`diagnose`, via `onTerminalDiagnosis`) | the `AdeRecoveryErrorCode` — `disk_full`, `brain_crash_looping`, … |
+| Renderer crash | `renderer/components/app/RendererErrorBoundary.tsx` (`componentDidCatch`, via `IPC.diagnosticsAutoReport`) | `renderer_crash` |
+| Post-update transaction failed | `main/main.ts`, beside `autoUpdate.transaction_failed` | `update_<step>` |
+| Pairing auto-recovery gave up | `ade-cli/.../machinePairingAutoRecovery.ts` (`onGaveUp`) | the refusal code, or `snapshot_failed` |
+| Account publisher failing > 5 min | `ade-cli/.../accountMachinePublisherService.ts` (`onSustainedFailure`) | the health state, e.g. `snapshot_failed` |
+
+`healthy` and `brain_starting` are deliberately not terminal: a booting brain
+fixes itself in seconds, and reporting it would spend the day's budget on a
+non-event. The auto builder also passes **no** `diagnoseProject`, because the
+diagnosis is itself a trigger and asking for a fresh one while building the
+report about it would re-enter the path that asked.
+
+**Budgets.** At most **one report per failure code per 24 hours** and **three in
+total per 24 hours, per install** — one rolling ledger in
+`~/.ade/secrets/diagnostics-autosend.json`, shared by the desktop and the brain,
+so it is three a day for the computer rather than three per process. The
+reservation is taken **before** the request: a budget that only counted
+successes would let a machine whose uploads all fail retry the same failure
+every time it recurs, which is precisely the loop this is not allowed to become.
+An unreadable or locked ledger fails closed. The client ceiling sits well inside
+the server's five-per-day-per-identity limit and its fleet-wide daily cap
+(`DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT`, see
+`apps/account-directory/README.md` § *Diagnostic report uploads*), so the cost
+ceiling is enforced twice and neither side depends on the other.
+
+**Failure is silence.** Any upload failure — `429` from the per-user or the
+fleet budget, `503`, a network error — is logged locally and nothing else. No
+toast, no error, no retry. The person is already looking at something broken;
+telling them the thing they did not ask for also did not work is not help.
+
+**Toast and toggle.** Every successful send raises one toast — *"A diagnostic
+report was sent to ADE"* — with **View** (reveals the saved `.md`, through a
+handler scoped to the reports directory rather than by widening
+`appRevealPath`'s allowlist) and **Turn off**. Settings → General → Privacy
+carries the same switch, *"Share diagnostics with ADE when something breaks"*,
+default **on**. The brain has no window to toast, so a headless send is left
+marked pending and drained into the same toast the next time a renderer
+subscribes — event-driven, nothing polls. The desktop and the brain can both
+report one incident; they carry different codes and surfaces, so both are
+individually useful, and the shared three-a-day ceiling bounds the duplication.
+Nothing else coordinates them, deliberately.
+
+The button's disclosure text still holds for the manual path — nothing leaves
+the computer unless the user posts the issue or chooses **Send to ADE** — and
+the automatic path adds one more way, which is announced every time it happens
+and switched off in one click.
 
 ## Gotchas
 

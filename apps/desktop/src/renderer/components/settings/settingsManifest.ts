@@ -162,6 +162,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Privacy",
   },
   {
+    id: "general.diagnostics-sharing",
+    label: "Diagnostics",
+    keywords: ["diagnostics", "crash", "report", "privacy", "error", "send", "opt out"],
+    tab: "general",
+    anchor: "diagnostics-sharing",
+    scope: "machine",
+    // Machine-local consent written into `~/.ade/secrets` by the main process;
+    // a browser has no such file, so the toggle is not offered there.
+    web: "hidden",
+    group: "Privacy",
+  },
+  {
     id: "general.about",
     label: "About ADE",
     keywords: ["version", "build", "license", "logs", "support"],

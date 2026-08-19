@@ -47,6 +47,7 @@ function harness(options: {
   repair: () => Promise<MachinePairingRepairResult>;
   hasAccountSession?: () => boolean;
   budgetLimit?: number;
+  onGaveUp?: (input: { trigger: string; code: string; attempts: number }) => void;
   now: () => number;
 }) {
   let spent = 0;
@@ -69,6 +70,7 @@ function harness(options: {
         return { allowed: true, countInWindow: spent, limit };
       },
     },
+    onGaveUp: options.onGaveUp,
     now: options.now,
   });
   return { recovery, spentRepairs: () => spent };
@@ -148,6 +150,79 @@ describe("machinePairingAutoRecovery", () => {
     expect(repair).toHaveBeenCalledTimes(3);
     expect(spentRepairs()).toBe(3);
     expect(recovery.getState().settled).toBe(true);
+  });
+
+  it("reports giving up once, with the refusal code, when the budget runs out", async () => {
+    let clock = 0;
+    const onGaveUp = vi.fn();
+    const { recovery } = harness({
+      health: () => REFUSED_HEALTH("machine_revoked"),
+      revoked: () => true,
+      repair: async () => REPAIR_FAILED,
+      budgetLimit: 1,
+      onGaveUp,
+      now: () => clock,
+    });
+
+    await recovery.tick();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      clock += 24 * 60 * 60 * 1_000;
+      await recovery.tick();
+    }
+
+    // Once for the episode, not once per tick: this machine is disconnected and
+    // saying so repeatedly is what the send budget exists to prevent.
+    expect(onGaveUp).toHaveBeenCalledTimes(1);
+    expect(onGaveUp).toHaveBeenCalledWith({
+      trigger: "refusal",
+      code: "machine_revoked",
+      attempts: 1,
+    });
+  });
+
+  it("reports giving up after the single snapshot_failed cycle does not fix it", async () => {
+    let clock = 0;
+    const onGaveUp = vi.fn();
+    const { recovery } = harness({
+      health: () => createSyncAccountDirectoryHealth("snapshot_failed", "No snapshot.", {
+        lastAttemptAt: 0,
+        failingSinceMs: 0,
+      }),
+      revoked: () => false,
+      repair: async () => REPAIR_FAILED,
+      onGaveUp,
+      now: () => clock,
+    });
+
+    clock = PAIRING_AUTO_REPAIR_SNAPSHOT_GRACE_MS + 1;
+    // First tick opens the episode; the repair itself runs after the first delay.
+    await recovery.tick();
+    clock += PAIRING_AUTO_REPAIR_DELAYS_MS[0] + 1;
+    await recovery.tick();
+
+    expect(onGaveUp).toHaveBeenCalledWith({
+      trigger: "snapshot_failed",
+      code: "snapshot_failed",
+      attempts: 1,
+    });
+  });
+
+  it("says nothing when the machine recovers on its own", async () => {
+    let clock = 0;
+    const onGaveUp = vi.fn();
+    const { recovery } = harness({
+      health: () => REFUSED_HEALTH("machine_revoked"),
+      revoked: () => true,
+      repair: async () => REPAIR_OK,
+      onGaveUp,
+      now: () => clock,
+    });
+
+    await recovery.tick();
+    clock += 1;
+    await recovery.tick();
+
+    expect(onGaveUp).not.toHaveBeenCalled();
   });
 
   it("waits for a signed-in session instead of burning the budget proving there is none", async () => {

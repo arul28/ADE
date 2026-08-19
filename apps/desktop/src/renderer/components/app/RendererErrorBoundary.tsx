@@ -32,7 +32,25 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
     };
   }
 
+  /**
+   * One automatic report per crash, not per re-render. `componentDidCatch` is
+   * React's once-per-caught-error hook (`getDerivedStateFromError` can run
+   * twice under StrictMode), and this flag covers a boundary that catches again
+   * after a failed recovery.
+   */
+  private autoReported = false;
+
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
+    if (!this.autoReported) {
+      this.autoReported = true;
+      // Main owns the setting and the budget; this is a request, and its answer
+      // is deliberately uninteresting to a screen that is already broken.
+      void window.ade?.diagnostics?.autoReport?.({
+        surface: "renderer_crash",
+        code: "renderer_crash",
+        headline: "ADE needs to reload this window",
+      }).catch(() => undefined);
+    }
     // Keep renderer crashes visible in devtools logs and avoid a blank screen.
     console.error("renderer.crash", {
       error: error instanceof Error ? error.message : String(error),

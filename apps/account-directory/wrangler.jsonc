@@ -31,7 +31,15 @@
     // to skip the public edge. PUSH_RELAY_URL is still required — it is what
     // builds the request URL — and DIRECTORY_AUTH_SECRET is still required,
     // because a service binding carries no provenance the relay can verify.
-    "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev"
+    "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
+    // Fleet-wide diagnostic uploads STORED per UTC day. This Worker is the only
+    // writer the diagnostics bucket has, so this number is the storage bill:
+    // 400 × 512 KB × the bucket's 30-day expiry lifecycle ≈ 6 GB steady state,
+    // inside R2's 10 GB free tier. Clients auto-send reports on failure, so
+    // raising it is a deliberate act with arithmetic attached (README,
+    // "Diagnostic report uploads"). `0` stops every upload without a code
+    // deploy; unset or unparseable falls back to the same 400.
+    "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
   },
   "d1_databases": [
     {
@@ -59,7 +67,11 @@
       "vars": {
         "ONLINE_WINDOW_MS": "90000",
         "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
-        "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev"
+        "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
+        // Same ceiling as the default environment, and set explicitly: wrangler
+        // environments do not inherit `vars`, so an omission here would silently
+        // fall back to the code default rather than to the value above.
+        "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
       },
       "d1_databases": [
         {

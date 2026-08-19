@@ -81,6 +81,22 @@ export const IPC = {
   recoveryRepairStep: "ade.recovery.repairStep",
   /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
   diagnosticsOpenIssue: "ade.diagnostics.openIssue",
+  /** Renderer-detected failure asking main to consider one automatic send. */
+  diagnosticsAutoReport: "ade.diagnostics.autoReport",
+  /** Read the "share diagnostics automatically" setting. */
+  diagnosticsGetSharing: "ade.diagnostics.getSharing",
+  /** Flip that setting; also what the toast's "Turn off" action calls. */
+  diagnosticsSetSharing: "ade.diagnostics.setSharing",
+  /** Reveal a saved auto-report in Finder/Explorer. Reports directory only. */
+  diagnosticsRevealReport: "ade.diagnostics.revealReport",
+  /** Main → renderer: one automatic report was sent, so a toast can say so. */
+  diagnosticsAutoSent: "ade.diagnostics.autoSent",
+  /**
+   * Release sends the brain made while no window was listening. Called by a
+   * renderer as it subscribes, so a headless auto-send still gets its toast
+   * without anything polling for one.
+   */
+  diagnosticsFlushAutoSent: "ade.diagnostics.flushAutoSent",
   projectForgetRecent: "ade.project.forgetRecent",
   projectReorderRecent: "ade.project.reorderRecent",
   projectSetRecentPinned: "ade.project.setRecentPinned",

@@ -28,7 +28,12 @@ import {
 } from "./pinnedRuntimeEvents";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
-import type { DiagnosticReportPayload, DiagnosticReportRequestPayload } from "../shared/types/diagnostics";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsSharingStatus,
+} from "../shared/types/diagnostics";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
@@ -4106,6 +4111,29 @@ const adeBridge = {
       context: DiagnosticReportRequestPayload,
     ): Promise<DiagnosticReportPayload> =>
       ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
+    autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
+    getSharing: (): Promise<DiagnosticsSharingStatus> =>
+      ipcRenderer.invoke(IPC.diagnosticsGetSharing),
+    setSharing: (enabled: boolean): Promise<DiagnosticsSharingStatus> =>
+      ipcRenderer.invoke(IPC.diagnosticsSetSharing, { enabled }),
+    revealReport: (reportPath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsRevealReport, { reportPath }),
+    onAutoSent: (cb: (payload: DiagnosticsAutoSentPayload) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: DiagnosticsAutoSentPayload,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.diagnosticsAutoSent, listener);
+      // Subscribing is what releases any send the brain made while no window
+      // was listening, so a headless auto-send still gets its toast and nothing
+      // has to poll for one. Registered before the call, so the reply cannot
+      // arrive ahead of the listener.
+      void ipcRenderer.invoke(IPC.diagnosticsFlushAutoSent).catch(() => undefined);
+      return () => {
+        ipcRenderer.removeListener(IPC.diagnosticsAutoSent, listener);
+      };
+    },
   },
   recovery: {
     diagnose: (projectRoot: string): Promise<ProjectRecoveryDiagnosis> =>

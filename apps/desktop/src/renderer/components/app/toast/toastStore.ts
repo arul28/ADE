@@ -23,6 +23,11 @@ export type ToastInput = {
   /** CSS color for the small lane dot rendered before the title. */
   colorDot?: string;
   action?: ToastAction;
+  /**
+   * A second, quieter action beside the first. Added for notices that offer
+   * both "look at this" and "stop doing this"; most toasts want neither or one.
+   */
+  secondaryAction?: ToastAction;
   /** Auto-dismiss delay; <= 0 or non-finite keeps the toast until dismissed. */
   durationMs?: number;
 };
@@ -34,6 +39,7 @@ export type Toast = {
   tone: ToastTone;
   colorDot?: string;
   action?: ToastAction;
+  secondaryAction?: ToastAction;
   durationMs: number;
 };
 
@@ -114,6 +120,7 @@ export function showToast(input: ToastInput): string {
     tone: input.tone ?? "info",
     colorDot: input.colorDot,
     action: input.action,
+    secondaryAction: input.secondaryAction,
     durationMs,
   };
 

@@ -198,14 +198,17 @@ commands and paste output is where most of them stalled.
 | | |
 |---|---|
 | Method | `POST` (plus `OPTIONS` preflight; anything else is `405`) |
-| Body | `text/plain` — the report itself; or `application/json` — `{ report, installId?, appVersion? }` |
-| Metadata on `text/plain` | `?installId=` / `?appVersion=` query parameters |
+| Body | `text/plain` — the report itself; or `application/json` — `{ report, installId?, appVersion?, auto?, failureCode? }` |
+| Metadata on `text/plain` | `?installId=` / `?appVersion=` / `?auto=` / `?failureCode=` query parameters |
+| Automatic sends | `auto` (boolean, or `1`/`true`/`yes` as a string) marks a report the client sent on its own rather than one a human pressed send on. `failureCode` names what broke and is bound to `^[a-z][a-z0-9_-]{0,47}$`. Both are optional; absent means a manual send. A `failureCode` that does not match the shape is **dropped, not refused** — the label is cosmetic and the report is not |
 | Auth | **Optional** `Authorization: Bearer <Clerk token>`, verified exactly as the account routes verify it. Absent, the upload is anonymous. A header that is sent and does not verify — or does not even parse as `Bearer <token>` — is `401`, never silently downgraded. A Worker with no Clerk configuration answers `503`, exactly as the account routes do |
 | Origin | `403` when the browser reports `sec-fetch-site: cross-site` from a real remote origin. ADE's own senders are unaffected: the CLI sends no fetch-metadata header, and the Electron renderer's `null` (packaged `file://`) and loopback (development) origins are exempt |
 | Size | `413` above 512 KB. `content-length` is checked first, then the stream is counted as it arrives, so a missing or dishonest length changes nothing |
-| Rate limit | 5 per UTC day per user (signed in) or per `cf-connecting-ip` (anonymous) → `429` with `retry-after: 86400`. Off Cloudflare there is no trustworthy address, so anonymous callers share one bucket; `x-forwarded-for` is caller-controlled and is never read |
+| Per-caller limit | 5 per UTC day per user (signed in) or per `cf-connecting-ip` (anonymous) → `429 {"error":"rate limited"}` with `retry-after: 86400`. Off Cloudflare there is no trustworthy address, so anonymous callers share one bucket; `x-forwarded-for` is caller-controlled and is never read |
+| Fleet limit | `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` uploads **stored per UTC day across every caller** (default 400) → `429 {"error":"daily diagnostics budget exhausted"}` with `retry-after` counting the seconds to the next UTC midnight. A **distinct body** from the per-caller `429` on purpose: only one of the two is about the caller, and an auto-sender that reads a fleet-wide stop as its own quota retries forever |
+| Budget unavailable | `503 {"error":"diagnostics upload unavailable"}`. The claim **fails closed** — a ceiling that is skipped whenever D1 hiccups is not a ceiling |
 | Success | `200 {"ok": true, "id": "<uuid>"}`. The report is **never** echoed back |
-| Storage | `reports/<utc-date>/<userIdOrAnon>/<uuid>.md` in the `DIAGNOSTICS` R2 bucket, with `userId` / `installId` / `appVersion` as custom metadata |
+| Storage | `reports/<utc-date>/<userIdOrAnon>/<uuid>.md` in the `DIAGNOSTICS` R2 bucket, with `userId` / `installId` / `appVersion` / `auto` / `failureCode` as custom metadata (`auto` is written only when true, so a manual upload stores exactly what it always did) |
 | No binding | `503`, and the in-app button says sending is unavailable |
 
 The key's identity segment is `u-<clerk user id>` when signed in and
@@ -219,15 +222,62 @@ allow-list can name it; `*` is safe here because the route reads no account
 state, returns only an opaque id, and cannot be used with
 `credentials: "include"`. Every `/account/*` route keeps its exact-origin rule.
 
-**Rate limiting without a migration.** The device flow counts attempts in the
-`device_approval_rate_limits` D1 table. This route deliberately does not: it
-ships without touching `migrations/`, so the quota is enforced by a per-isolate
-counter (fast, but lost when Cloudflare recycles the isolate) backed by an R2
-prefix listing (durable and global, one class-A operation per upload). The
-listing is not transactional, so genuinely simultaneous requests can land a
-couple of objects over five. For a bound whose only job is "one person cannot
-fill the bucket", that is an acceptable trade; if volume ever justifies exact
-counting, move it to the D1 pattern the device flow already uses.
+**Two limits, because they bound different things.**
+
+The *per-caller* quota answers "one person cannot fill the bucket". It is
+enforced by a per-isolate counter (fast, but lost when Cloudflare recycles the
+isolate) backed by an R2 prefix listing on the caller's day (durable and global,
+one class-A operation per upload). The listing is not transactional, so
+genuinely simultaneous requests can land a couple of objects over five — an
+acceptable slop for an abuse bound.
+
+The *fleet* budget answers a different question, and it is not allowed any slop
+at all, because it is the storage bill. ADE clients now send reports
+**automatically on failure**, so a single bug that fires for every install at
+once multiplies "five each" by the install base, and no per-caller limit can see
+that coming. `diagnostics_upload_days` (migration `0009`) holds one row per UTC
+day, and every upload claims a slot from it in a single statement:
+
+```sql
+insert into diagnostics_upload_days (day, count)
+values (?, 1)
+on conflict(day) do update set count = count + 1
+where count < ?
+```
+
+`changes === 1` is the whole proof — the same upsert idiom
+`device_approval_rate_limits` uses, and for the same reason: a read followed by
+a write lets two concurrent uploads both observe the last free slot. No
+`RETURNING`, so nothing depends on a D1 version.
+
+**The cost ceiling is arithmetic, not an estimate.** This Worker is the *only*
+writer the bucket has, so the numbers below are the whole spend:
+
+```
+400 uploads/day        DIAGNOSTICS_DAILY_GLOBAL_LIMIT
+×  512 KB/upload       MAX_DIAGNOSTIC_REPORT_BYTES (413 above it)
+×   30 days            the bucket's expiry lifecycle rule
+≈  6 GB steady-state maximum, against R2's 10 GB free tier
+```
+
+Every term is enforced somewhere a client cannot reach: the first by the claim
+above, the second by the streaming size cap, the third by the bucket lifecycle
+(see the deployment steps — **nothing in the Worker ever deletes a report**).
+Change any one of them and redo the multiplication.
+
+Ordering matters and is deliberate: the fleet slot is claimed **after** the
+per-caller quota and **before** the R2 `put`. After, because one caller
+hammering their own limit must not spend the fleet's budget on requests that
+were never going to be stored. Before, because that ordering is what makes the
+cap unraceable — the day's stored count cannot exceed the day's claimed count. A
+`put` that then fails **refunds** the slot, so an R2 outage does not quietly eat
+the day's ceiling for reports that do not exist.
+
+`0` is a kill switch: it refuses every upload without a code deploy. An unset or
+unparseable value falls back to 400, so a typo can neither uncap the bill nor
+close the route. The cron sweep prunes budget rows older than seven days;
+today's row is never in range, so a sweep can never hand back budget the running
+day has already spent.
 
 ## Local checks
 
@@ -275,20 +325,24 @@ deployment:
    The binding is optional in code, so an already-deployed Worker whose bucket
    was removed answers `503` on `/diagnostics/upload` and keeps every other
    route working.
-4. Give both diagnostics buckets an expiry lifecycle rule. **Nothing in the
-   Worker ever deletes a report**, so without this the bucket grows forever and
-   every report a user ever sent stays readable indefinitely. Ninety days is the
-   default because it is far longer than any support thread and far shorter than
-   "forever" — shorten it if your retention policy says so:
+4. Give both diagnostics buckets a **30-day** expiry lifecycle rule. **Nothing
+   in the Worker ever deletes a report**, so without this the bucket grows
+   forever and every report a user ever sent stays readable indefinitely. Thirty
+   days is not a taste preference: it is the third term of the cost ceiling
+   above (400/day × 512 KB × 30 days ≈ 6 GB, inside R2's 10 GB free tier), and
+   it is the one term this repository cannot enforce in code. Lengthen it and
+   the ceiling moves with it — 90 days is ~18 GB and off the free tier:
 
    ```sh
    npx wrangler r2 bucket lifecycle add ade-diagnostics \
-     expire-reports reports/ --expire-days 90
+     expire-reports reports/ --expire-days 30
    npx wrangler r2 bucket lifecycle add ade-diagnostics-production \
-     expire-reports reports/ --expire-days 90
+     expire-reports reports/ --expire-days 30
    ```
 
-   Confirm with `npx wrangler r2 bucket lifecycle list <bucket>`.
+   Confirm with `npx wrangler r2 bucket lifecycle list <bucket>`. Thirty days is
+   still far longer than any support thread; a report nobody has read in a month
+   is not going to be read.
 5. Apply the remote migrations and deploy the Worker. Use
    `npm run d1:migrate:production` and `npm run deploy:production` for the
    production environment. Each deploy script validates only the environment it

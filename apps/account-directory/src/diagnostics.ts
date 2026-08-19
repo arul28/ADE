@@ -16,7 +16,11 @@ import { isLoopbackHostname } from "./trustedOrigin";
  */
 
 /** R2 is optional in the binding type so a Worker deployed before the bucket exists degrades instead of crashing. */
-export type DiagnosticsEnv = Env & { DIAGNOSTICS?: R2Bucket };
+export type DiagnosticsEnv = Env & {
+  DIAGNOSTICS?: R2Bucket;
+  /** Fleet-wide uploads allowed per UTC day; see `DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT`. */
+  DIAGNOSTICS_DAILY_GLOBAL_LIMIT?: string;
+};
 
 export const DIAGNOSTICS_UPLOAD_PATH = "/diagnostics/upload";
 
@@ -36,7 +40,47 @@ export const MAX_DIAGNOSTIC_REPORT_BYTES = 512 * 1024;
 /** Uploads one identity may store per UTC day. */
 export const MAX_DIAGNOSTIC_UPLOADS_PER_DAY = 5;
 
+/**
+ * Uploads the WHOLE FLEET may store per UTC day, when
+ * `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` is unset or unreadable.
+ *
+ * The per-identity quota above bounds one caller. This one bounds the bill.
+ * Clients now send reports automatically on failure, so a bug that fires for
+ * every install at once multiplies "five each" by the install base, and this
+ * Worker is the only writer the bucket has — which means this number IS the
+ * spend cap rather than an estimate of one:
+ *
+ *   400 uploads/day × 512 KB/upload × 30-day bucket lifecycle ≈ 6 GB steady
+ *   state, against R2's 10 GB free tier.
+ *
+ * Raising it is a deliberate act with arithmetic attached; see the README.
+ */
+export const DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT = 400;
+
+/**
+ * How many days of budget rows the cron sweep keeps.
+ *
+ * Only today's row is ever read, so the rest is history kept for one reason: a
+ * support question about a fleet-wide refusal is asked days after it happened.
+ * A week covers that and keeps the table permanently tiny.
+ */
+export const DIAGNOSTICS_BUDGET_RETENTION_DAYS = 7;
+
+const DAY_MS = 86_400_000;
+
 const MAX_METADATA_CHARS = 200;
+
+/**
+ * Shape of a `failureCode`, and the whole validation it gets.
+ *
+ * It is a client-supplied label for an automatic send ("brain_start_timeout"),
+ * so it is bound to a shape that is safe as an R2 custom-metadata header value
+ * and as a log field, and anything else is DROPPED rather than refused: a
+ * report that arrives with a malformed label is still the report support needs,
+ * and failing the upload over a cosmetic field would be the auto-send path
+ * losing exactly the diagnostics it exists to collect.
+ */
+const FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
 /**
  * Bound on the per-isolate counter map. An isolate that has seen more distinct
  * uploaders than this is being probed, not used; dropping the whole map costs
@@ -162,6 +206,113 @@ function utcDayKey(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
+/**
+ * Seconds until the fleet budget resets.
+ *
+ * Unix time has no leap seconds, so `nowMs % DAY_MS` is exactly the time since
+ * UTC midnight and this is the honest number rather than the flat 86400 the
+ * per-identity limit answers. A client refused at 23:59 should retry in a
+ * minute, not tomorrow night.
+ */
+function secondsUntilNextUtcDay(nowMs: number): number {
+  return Math.max(1, Math.ceil((DAY_MS - (nowMs % DAY_MS)) / 1000));
+}
+
+/**
+ * The configured fleet ceiling.
+ *
+ * An unset, empty, or unparseable value falls back to the default — a typo in a
+ * var must not silently uncap the bill or silently close the route. `0` is
+ * honored, on purpose: it is the kill switch that stops every upload without a
+ * redeploy of code.
+ */
+function dailyGlobalLimit(env: DiagnosticsEnv): number {
+  const raw = env.DIAGNOSTICS_DAILY_GLOBAL_LIMIT?.trim();
+  if (!raw) return DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT;
+  const configured = Number(raw);
+  return Number.isFinite(configured) && configured >= 0
+    ? Math.trunc(configured)
+    : DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT;
+}
+
+type BudgetClaim = { ok: true } | { ok: false; reason: "exhausted" | "unavailable" };
+
+/**
+ * Claim one slot out of today's fleet budget, atomically.
+ *
+ * The increment and the check are ONE statement — the same upsert idiom
+ * `checkDeviceRateLimit` uses — because a read followed by a write lets two
+ * concurrent uploads both observe the last free slot, and a spend cap that can
+ * be raced is not a cap. `changes === 1` is the whole proof: SQLite applies the
+ * `where count < ?` to the `do update`, so a full day changes no row.
+ *
+ * FAILS CLOSED. A budget that cannot be counted is a budget that is not
+ * enforced, and the whole point of this table is that no path to the bucket
+ * bypasses it — so a D1 error refuses the upload rather than storing it
+ * uncounted. The deploy scripts apply migrations before publishing, so the
+ * window where the table does not exist is a deploy that has already failed.
+ */
+async function claimGlobalBudget(
+  env: DiagnosticsEnv,
+  dayKey: string,
+  limit: number,
+): Promise<BudgetClaim> {
+  // A configured zero means "store nothing today"; there is no row to write for
+  // an upload that will never happen.
+  if (limit <= 0) return { ok: false, reason: "exhausted" };
+  try {
+    const claimed = await env.DB.prepare(`
+      insert into diagnostics_upload_days (day, count)
+      values (?, 1)
+      on conflict(day) do update set count = count + 1
+      where count < ?
+    `).bind(dayKey, limit).run();
+    return (claimed.meta?.changes ?? 0) === 1 ? { ok: true } : { ok: false, reason: "exhausted" };
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+}
+
+/**
+ * Give the slot back when the write it was claimed for did not happen.
+ *
+ * The claim has to precede the `put` — that ordering is what makes the cap
+ * unraceable — so an R2 failure would otherwise burn budget for bytes nobody
+ * can ever read. `count > 0` keeps the row from going negative if a refund ever
+ * arrives without a matching claim, and a failed refund is swallowed: the
+ * caller is already being told the upload failed, and turning that into a 500
+ * would trade an accurate error for a confusing one. The cost of losing a
+ * refund is one slot out of the day, which is the safe direction.
+ */
+async function refundGlobalBudget(env: DiagnosticsEnv, dayKey: string): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "update diagnostics_upload_days set count = count - 1 where day = ? and count > 0",
+    ).bind(dayKey).run();
+  } catch {
+    // Best effort by design; see above.
+  }
+}
+
+/**
+ * Cron sweep: budget rows are write-once-a-day and read only for today.
+ *
+ * Lexicographic comparison is correct here because the key is a fixed-width
+ * ISO date. Today's row is never in range, so a sweep can never free budget the
+ * running day has already spent.
+ */
+export async function cleanupDiagnosticsUploadDays(
+  env: { DB: D1Database },
+  nowMs = Date.now(),
+): Promise<number> {
+  const cutoff = utcDayKey(nowMs - DIAGNOSTICS_BUDGET_RETENTION_DAYS * DAY_MS);
+  const result = await env.DB
+    .prepare("delete from diagnostics_upload_days where day < ?")
+    .bind(cutoff)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 function boundedMetadata(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -170,6 +321,29 @@ function boundedMetadata(value: unknown): string | undefined {
   // would be rejected (or silently mangled) at write time. Replaced rather
   // than escaped: this is a label a human reads off the object, not data.
   return trimmed.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, MAX_METADATA_CHARS);
+}
+
+/**
+ * Was this report sent by a human pressing a button, or by the client deciding
+ * on its own that something had broken?
+ *
+ * Both shapes have to be read because both senders exist: a JSON body carries a
+ * real boolean, and the `text/plain` path can only say `?auto=1`. Absent — or
+ * anything unrecognized — means manual, which is what every sender that shipped
+ * before this flag existed is.
+ */
+function parseAutoFlag(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+/** A `failureCode` that matches `FAILURE_CODE_PATTERN`, or nothing at all. */
+function boundedFailureCode(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return FAILURE_CODE_PATTERN.test(trimmed) ? trimmed : undefined;
 }
 
 /**
@@ -221,6 +395,9 @@ type ParsedUpload = {
   report: string;
   installId?: string;
   appVersion?: string;
+  /** True when the client sent this on its own; false is a human pressing send. */
+  auto: boolean;
+  failureCode?: string;
 };
 
 /**
@@ -249,6 +426,10 @@ function parseUpload(contentType: string, raw: string, url: URL): ParsedUpload |
     report,
     installId: boundedMetadata(fields.installId ?? url.searchParams.get("installId")),
     appVersion: boundedMetadata(fields.appVersion ?? url.searchParams.get("appVersion")),
+    // `??` rather than `||` so an explicit `auto: false` in the body is honored
+    // instead of falling through to a query parameter that says otherwise.
+    auto: parseAutoFlag(fields.auto ?? url.searchParams.get("auto")),
+    failureCode: boundedFailureCode(fields.failureCode ?? url.searchParams.get("failureCode")),
   };
 }
 
@@ -369,11 +550,47 @@ export async function handleDiagnosticsRequest(
       identity,
       authenticated: Boolean(userId),
       bytes: parsed.report.length,
+      auto: parsed.auto,
+      failureCode: parsed.failureCode,
     });
     return json({ error: "rate limited" }, {
       status: 429,
       headers: { "retry-after": "86400" },
     });
+  }
+
+  // The fleet ceiling is claimed AFTER the per-caller quota and BEFORE the put.
+  //
+  // After, because one caller hammering their own limit must not be able to
+  // spend the fleet's budget on requests that were never going to be stored —
+  // that would turn a per-caller abuse bound into a fleet-wide denial of
+  // service. Before, because the claim is what makes the cap real: every byte
+  // that reaches the bucket passes through this statement first, so the day's
+  // stored count cannot exceed the day's claimed count.
+  const budget = await claimGlobalBudget(env, dayKey, dailyGlobalLimit(env));
+  if (!budget.ok) {
+    const exhausted = budget.reason === "exhausted";
+    logDiagnosticsUpload({
+      outcome: "rejected",
+      status: exhausted ? 429 : 503,
+      reason: exhausted ? "global_budget_exhausted" : "budget_unavailable",
+      identity,
+      authenticated: Boolean(userId),
+      bytes: parsed.report.length,
+      auto: parsed.auto,
+      failureCode: parsed.failureCode,
+    });
+    // A DISTINCT 429 body from the per-caller one above. Both mean "not now",
+    // but only one of them is about the caller: a client that cannot tell them
+    // apart cannot decide whether backing off its own sends would help, and an
+    // auto-sender that treats a fleet-wide stop as its own quota would keep
+    // retrying forever.
+    return exhausted
+      ? json({ error: "daily diagnostics budget exhausted" }, {
+        status: 429,
+        headers: { "retry-after": String(secondsUntilNextUtcDay(now)) },
+      })
+      : json({ error: "diagnostics upload unavailable" }, { status: 503 });
   }
 
   const id = options.randomId?.() ?? crypto.randomUUID();
@@ -384,6 +601,10 @@ export async function handleDiagnosticsRequest(
         ...(userId ? { userId } : {}),
         ...(parsed.installId ? { installId: parsed.installId } : {}),
         ...(parsed.appVersion ? { appVersion: parsed.appVersion } : {}),
+        // Only written when true, so a manual upload's metadata is exactly what
+        // it was before this flag existed.
+        ...(parsed.auto ? { auto: "true" } : {}),
+        ...(parsed.failureCode ? { failureCode: parsed.failureCode } : {}),
       },
     });
   } catch {
@@ -395,6 +616,11 @@ export async function handleDiagnosticsRequest(
     // not the caller's. 502 rather than the 503 the missing-binding path uses,
     // so a configured bucket having a bad minute stays distinguishable from a
     // bucket that was never created.
+    //
+    // The budget slot claimed a moment ago is given back: nothing was stored,
+    // so nothing should have been spent, and a bucket having a bad hour must
+    // not quietly consume the day's ceiling for reports that do not exist.
+    await refundGlobalBudget(env, dayKey);
     logDiagnosticsUpload({
       outcome: "rejected",
       status: 502,
@@ -402,6 +628,8 @@ export async function handleDiagnosticsRequest(
       identity,
       authenticated: Boolean(userId),
       bytes: parsed.report.length,
+      auto: parsed.auto,
+      failureCode: parsed.failureCode,
     });
     return json({ error: "diagnostics upload failed" }, { status: 502 });
   }
@@ -412,6 +640,8 @@ export async function handleDiagnosticsRequest(
     identity,
     authenticated: Boolean(userId),
     bytes: parsed.report.length,
+    auto: parsed.auto,
+    failureCode: parsed.failureCode,
   });
   // Only the id goes back. The report is never echoed: a route that returned
   // what it stored would be a way to read other people's uploads the moment an

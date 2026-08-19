@@ -304,6 +304,9 @@ import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
+import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
+import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
+import { collectDiagnosticReport } from "./services/diagnostics/diagnosticReportService";
 import { createAgentToolsCacheService } from "./services/tools/agentToolsCacheService";
 import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersions";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
@@ -1642,6 +1645,14 @@ app.whenReady().then(async () => {
   const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
   const localRuntimeLogger = createFileLogger(path.join(app.getPath("userData"), "local-runtime.jsonl"));
+  /**
+   * The signed-in account owner, once there is an auth service to ask.
+   *
+   * Late-bound because the account services are built far below, while the
+   * diagnostics report builder that hashes this id is built up here next to its
+   * triggers. Null before then simply means an unattributed report.
+   */
+  let readAccountOwnerId: () => string | null = () => null;
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
   const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
     createProductAnalyticsService({
@@ -2543,6 +2554,61 @@ app.whenReady().then(async () => {
     });
   }
 
+  /**
+   * Automatic diagnostics: the report nobody was going to press the button for.
+   *
+   * Built here, ahead of the recovery service and the post-update transaction,
+   * because those two are triggers. It owns the Settings toggle, the per-install
+   * daily budget (shared on disk with the brain) and the send; every trigger is
+   * one call that cannot throw.
+   */
+  const autoDiagnosticsService = createAutoDiagnosticsService({
+    stateFilePath: resolveAutoDiagnosticsStateFile(machineAdeLayout.adeDir),
+    appVersion: app.getVersion(),
+    logger: localRuntimeLogger,
+    capture: (input) => productAnalyticsService.capture(input),
+    buildReport: async (request) => {
+      const projectRoot = request.projectRoot?.trim() || null;
+      const result = await collectDiagnosticReport(
+        {
+          appVersion: app.getVersion(),
+          packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+          isPackaged: app.isPackaged,
+          userDataPath: app.getPath("userData"),
+          reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
+          installId: productAnalyticsService.getDistinctId(),
+          accountUserId: readAccountOwnerId(),
+          projectLogsDir: projectRoot ? resolveAdeLayout(projectRoot).logsDir : null,
+          getLocalRuntimeStatus: () => localRuntimePool.getStatus(),
+          // Deliberately no `diagnoseProject`. The recovery diagnosis is itself
+          // one of the triggers, so asking for a fresh one while building the
+          // report about it would re-enter the code path that asked for it.
+          // The diagnosis that fired this is already in the report's context.
+        },
+        {
+          surface: request.surface,
+          headline: request.headline ?? null,
+          code: request.failureCode,
+          technicalDetail: request.technicalDetail ?? null,
+          projectRoot,
+        },
+      );
+      return { report: result.report, filePath: result.filePath, installId: result.installId };
+    },
+    onSent: (notice) => {
+      let delivered = false;
+      for (const win of BrowserWindow.getAllWindows()) {
+        try {
+          win.webContents.send(IPC.diagnosticsAutoSent, notice);
+          delivered = true;
+        } catch {
+          // A window tearing down simply does not get this toast.
+        }
+      }
+      return delivered;
+    },
+  });
+
   // The one recovery service for this machine. It owns `restartServiceAndWait`,
   // the verified restart sequence behind the Repair button, and the post-update
   // transaction below reuses it rather than growing a second restart path.
@@ -2551,6 +2617,15 @@ app.whenReady().then(async () => {
     adeHome: machineAdeLayout.adeDir,
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
+    // One call at the point the diagnosis is final. The service's own budget
+    // makes a re-diagnosed screen cost nothing.
+    onTerminalDiagnosis: ({ code, projectRoot }) => {
+      void autoDiagnosticsService.report({
+        failureCode: code,
+        surface: "project_recovery",
+        projectRoot,
+      });
+    },
   });
 
   const shouldRefreshRuntimeServiceAfterUpdate =
@@ -2616,12 +2691,21 @@ app.whenReady().then(async () => {
           });
           return;
         }
+        const failedStep = result.steps.find((step) => step.status === "failed")?.id ?? null;
         updateLogger.error("autoUpdate.transaction_failed", {
           version: result.version,
-          failedStep: result.steps.find((step) => step.status === "failed")?.id ?? null,
+          failedStep,
           failureMessage: result.failureMessage,
           steps: result.steps,
         });
+        // An update that half-landed is the failure people least often report
+        // and the one hardest to reconstruct afterwards.
+        if (failedStep) {
+          void autoDiagnosticsService.report({
+            failureCode: `update_${failedStep}`,
+            surface: "update_transaction",
+          });
+        }
       })
       .catch((error) => {
         // runUpdateTransaction never rejects; this only guards a broken
@@ -7251,6 +7335,10 @@ app.whenReady().then(async () => {
   const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
+  readAccountOwnerId = () => {
+    const status = attentionAccountAuthService.getStatus();
+    return status.signedIn ? status.userId?.trim() || null : null;
+  };
   const attentionRelayClient = createPushRelayClient({
     store: createPushRegistrationStore({
       filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
@@ -7642,6 +7730,7 @@ app.whenReady().then(async () => {
       : localRuntimePool,
     projectRecoveryConnectionPool: localRuntimePool,
     injectedProjectRecoveryService: machineRecoveryService,
+    autoDiagnosticsService,
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,
@@ -7685,10 +7774,7 @@ app.whenReady().then(async () => {
       );
     },
     accountAttentionClient: attentionRelayClient,
-    getCurrentAccountOwnerId: () => {
-      const status = attentionAccountAuthService.getStatus();
-      return status.signedIn ? status.userId?.trim() || null : null;
-    },
+    getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
 
   // Explicit project launches still bind a project before the renderer boots;

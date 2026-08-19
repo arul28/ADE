@@ -71,21 +71,35 @@ export function ToastStack() {
                     {toast.message}
                   </div>
                 ) : null}
-                {toast.action ? (
-                  <div className="mt-2">
-                    <button
-                      type="button"
-                      className={cn(
-                        "inline-flex items-center text-[11px] font-medium transition-colors",
-                        tone.action,
-                      )}
-                      onClick={() => {
-                        toast.action?.onClick();
-                        dismissToast(toast.id);
-                      }}
-                    >
-                      {toast.action.label} -&gt;
-                    </button>
+                {toast.action || toast.secondaryAction ? (
+                  <div className="mt-2 flex items-center gap-3">
+                    {toast.action ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          "inline-flex items-center text-[11px] font-medium transition-colors",
+                          tone.action,
+                        )}
+                        onClick={() => {
+                          toast.action?.onClick();
+                          dismissToast(toast.id);
+                        }}
+                      >
+                        {toast.action.label} -&gt;
+                      </button>
+                    ) : null}
+                    {toast.secondaryAction ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center text-[11px] font-medium text-muted-fg transition-colors hover:text-fg"
+                        onClick={() => {
+                          toast.secondaryAction?.onClick();
+                          dismissToast(toast.id);
+                        }}
+                      >
+                        {toast.secondaryAction.label}
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

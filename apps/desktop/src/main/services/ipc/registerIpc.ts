@@ -813,9 +813,12 @@ import {
   collectDiagnosticReport,
   writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
+import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
@@ -1662,6 +1665,7 @@ export function registerIpc({
   releaseRepository = DEFAULT_RELEASE_REPOSITORY,
   builtInBrowserService,
   productAnalyticsService,
+  autoDiagnosticsService,
   publishAttentionNotchSnapshot,
   publishAttentionNotchToast,
   updateAttentionNotchSettings,
@@ -1707,6 +1711,11 @@ export function registerIpc({
   releaseRepository?: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
+  /**
+   * Owns the auto-send setting, the budget and the send itself. Absent only in
+   * tests and in runtime modes that never built one; every call site guards.
+   */
+  autoDiagnosticsService?: AutoDiagnosticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
@@ -4779,6 +4788,83 @@ export function registerIpc({
         copied,
         opened,
       };
+    },
+  );
+
+  /**
+   * The renderer's failure surfaces (the crash boundaries) asking for one
+   * automatic send. Main decides: the setting, the budget and the send all live
+   * there, so a renderer that fires this repeatedly changes nothing.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsAutoReport,
+    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<void> => {
+      const code = typeof arg?.code === "string" ? arg.code : "";
+      if (!autoDiagnosticsService || !code.trim()) return;
+      await autoDiagnosticsService.report({
+        failureCode: code,
+        surface: typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown",
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string"
+          ? arg.technicalDetail.slice(0, 16_000)
+          : null,
+        projectRoot: typeof arg?.projectRoot === "string" ? arg.projectRoot : null,
+      });
+    },
+  );
+
+  const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>
+    autoDiagnosticsService?.getStatus() ?? { enabled: true, sendsInWindow: 0, limit: 3 };
+
+  ipcMain.handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
+    diagnosticsSharingStatus());
+
+  ipcMain.handle(
+    IPC.diagnosticsSetSharing,
+    async (_event, arg: { enabled?: boolean } | undefined): Promise<DiagnosticsSharingStatus> => {
+      autoDiagnosticsService?.setEnabled(arg?.enabled === true);
+      return diagnosticsSharingStatus();
+    },
+  );
+
+  ipcMain.handle(IPC.diagnosticsFlushAutoSent, async (event): Promise<void> => {
+    const pending = autoDiagnosticsService?.flushPendingNotices() ?? [];
+    for (const notice of pending) {
+      try {
+        event.sender.send(IPC.diagnosticsAutoSent, {
+          failureCode: notice.failureCode,
+          reportPath: notice.reportPath ?? "",
+          reference: notice.reference ?? "",
+        } satisfies DiagnosticsAutoSentPayload);
+      } catch {
+        // A window that went away between the drain and the send simply does
+        // not get the toast; the report was still sent.
+      }
+    }
+  });
+
+  /**
+   * Reveals a saved auto-report, and nothing else.
+   *
+   * Deliberately NOT `appRevealPath`: that one validates against the project
+   * root and the user's Downloads/Documents/temp, and diagnostic reports live
+   * under `userData`. Widening that allowlist for every caller to serve one
+   * toast button would be the wrong trade; this handler carries the one
+   * directory it needs instead.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsRevealReport,
+    async (_event, arg: { reportPath?: string } | undefined): Promise<void> => {
+      const raw = typeof arg?.reportPath === "string" ? arg.reportPath.trim() : "";
+      if (!raw) return;
+      const reportsDir = path.join(app.getPath("userData"), "diagnostic-reports");
+      let resolved: string;
+      try {
+        resolved = resolvePathWithinRoot(reportsDir, path.resolve(raw));
+      } catch {
+        throw new Error("Path is outside allowed directories.");
+      }
+      shell.showItemInFolder(resolved);
     },
   );
 

@@ -145,6 +145,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // and the one that produced no telemetry at all last time.
   "machine_removed",
   "machine_register_refused",
+  // One coarse fact per automatic diagnostic send: whether it went, was refused
+  // by the client budget, or failed. Never the failure code that triggered it,
+  // never the surface, never the report or its upload reference — those are the
+  // local file and the upload the user was toasted about, not analytics.
+  "auto_sent",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -274,6 +279,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `AdeUsageScope` and nothing else: a fourth spelling is dropped, not
     // widened, so the scope control can never carry free text.
     "machine", "project", "account",
+    // An automatic diagnostic report the client budget refused. Distinct from
+    // `failed` on purpose: "we chose not to send" and "we tried and could not"
+    // answer different questions, and the first is the guardrail working.
+    "skipped_budget",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

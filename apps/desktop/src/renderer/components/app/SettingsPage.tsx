@@ -29,6 +29,7 @@ import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
 import { NotificationsSection } from "../settings/NotificationsSection";
 import { PrChatTranscriptsSection } from "../settings/PrChatTranscriptsSection";
 import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
+import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { SecretsSection } from "../settings/SecretsSection";
@@ -152,6 +153,9 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.analytics"]}>
             <ProductAnalyticsSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.diagnostics-sharing"]}>
+            <DiagnosticsSharingSection />
           </WebSettingsSection>
         </>
       );

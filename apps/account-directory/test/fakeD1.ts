@@ -100,6 +100,8 @@ export class FakeD1Database {
   deviceRows: StoredDeviceAuthorization[] = [];
   pairingGrants: StoredPairingGrant[] = [];
   approvalRateLimits = new Map<string, { window_started_at: number; attempts: number }>();
+  /** `diagnostics_upload_days`: the fleet-wide diagnostics budget, one row per UTC day. */
+  diagnosticsUploadDays = new Map<string, number>();
   private rateLimitReadBarrier: {
     remaining: number;
     promise: Promise<void>;
@@ -224,6 +226,50 @@ export class FakeD1Database {
 
   run(sql: string, values: unknown[]): number {
     const normalized = sql.toLowerCase();
+    if (normalized.includes("insert into diagnostics_upload_days")) {
+      // The fleet budget claim. Mirrors the upsert's `where count < ?` exactly,
+      // because that predicate IS the cap: a worker that drops it (or checks the
+      // count in a separate read first) stores past the limit, and the tests
+      // must see that rather than have the fake absorb it.
+      const [day, limit] = values;
+      const key = String(day);
+      const stored = this.diagnosticsUploadDays.get(key);
+      if (stored === undefined) {
+        this.diagnosticsUploadDays.set(key, 1);
+        return 1;
+      }
+      // Read off the STATEMENT, not off the bind values: the cap lives in that
+      // predicate, and a worker that moved the check into a separate read — or
+      // dropped it — would otherwise be absorbed here and store past the limit
+      // with every test still green.
+      const capped = /where\s+count\s*<\s*\?/.test(normalized);
+      if (capped && stored >= Number(limit)) return 0;
+      this.diagnosticsUploadDays.set(key, stored + 1);
+      return 1;
+    }
+    if (normalized.includes("update diagnostics_upload_days")) {
+      // The refund taken when the R2 write the slot was claimed for failed.
+      // `count > 0` is mirrored so a refund can never drive the row negative
+      // and hand out budget nobody claimed.
+      const [day] = values;
+      const key = String(day);
+      const stored = this.diagnosticsUploadDays.get(key);
+      const floored = /count\s*>\s*0/.test(normalized);
+      if (stored === undefined || (floored && stored <= 0)) return 0;
+      this.diagnosticsUploadDays.set(key, stored - 1);
+      return 1;
+    }
+    if (normalized.includes("delete from diagnostics_upload_days")) {
+      // Cron sweep. Lexicographic on a fixed-width ISO date, same as SQLite.
+      const cutoff = String(values[0]);
+      let changes = 0;
+      for (const day of [...this.diagnosticsUploadDays.keys()]) {
+        if (day >= cutoff) continue;
+        this.diagnosticsUploadDays.delete(day);
+        changes += 1;
+      }
+      return changes;
+    }
     if (normalized.includes("insert into machine_pairing_grants")) {
       const [grantHash, userId, machineKey, createdAt, expiresAt] = values;
       if (this.pairingGrants.some((row) => row.grant_hash === grantHash)) return 0;

@@ -1,7 +1,12 @@
 import { handleRequest, type Env } from "./directory";
 import { cleanupExpiredPairingGrants } from "./pairingGrants";
 import { cleanupExpiredDeviceAuthorizations } from "./deviceAuthorization";
-import { handleDiagnosticsRequest, isDiagnosticsRequest, type DiagnosticsEnv } from "./diagnostics";
+import {
+  cleanupDiagnosticsUploadDays,
+  handleDiagnosticsRequest,
+  isDiagnosticsRequest,
+  type DiagnosticsEnv,
+} from "./diagnostics";
 
 export default {
   fetch(request: Request, env: DiagnosticsEnv): Promise<Response> {
@@ -19,6 +24,9 @@ export default {
     ctx.waitUntil(Promise.all([
       cleanupExpiredDeviceAuthorizations(env),
       cleanupExpiredPairingGrants(env),
+      // Only today's budget row is ever read; the rest is kept for a week so a
+      // support question about a fleet-wide refusal still has a row to point at.
+      cleanupDiagnosticsUploadDays(env),
     ]));
   },
 };

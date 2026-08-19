@@ -104,6 +104,17 @@ export type ProjectRecoveryServiceDeps = {
   clearFailureReports?: (projectRoot: string) => Promise<void>;
   readChatCounts?: (projectRoot: string) => Promise<ChatCounts>;
   socketExists?: (socketPath: string) => boolean;
+  /**
+   * Fires when a diagnosis settles on a state the user cannot work through —
+   * everything except `healthy` and the transient `brain_starting`. Automatic
+   * diagnostics listens here; the callback owns its own budget, so a screen
+   * that re-diagnoses on every poll costs nothing.
+   */
+  onTerminalDiagnosis?: (input: {
+    code: AdeRecoveryErrorCode;
+    state: ProjectRecoveryDiagnosis["state"];
+    projectRoot: string;
+  }) => void;
   now?: () => number;
 };
 
@@ -579,6 +590,14 @@ export class ProjectRecoveryService {
     } else {
       state = "unknown_failure";
       code = "unknown";
+    }
+
+    if (state !== "healthy" && state !== "brain_starting") {
+      try {
+        this.deps.onTerminalDiagnosis?.({ code, state, projectRoot: normalizedRoot });
+      } catch {
+        // A listener must never cost the user their diagnosis.
+      }
     }
 
     const required = RECOMMENDED_FREE_BYTES(dbSize);
