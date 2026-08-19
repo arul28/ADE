@@ -21,9 +21,15 @@ export type DiagnosticsEnv = Env & { DIAGNOSTICS?: R2Bucket };
 export const DIAGNOSTICS_UPLOAD_PATH = "/diagnostics/upload";
 
 /**
- * Hard cap on one report. Real reports are tens of kilobytes (log tails are
+ * Hard cap on one upload. Real reports are tens of kilobytes (log tails are
  * already truncated by the collector), so half a megabyte is far above the
  * honest ceiling and far below anything worth storing by accident.
+ *
+ * Applied to the WHOLE request body, because the bytes have to be bounded as
+ * they arrive, before anything is parsed. Senders mirror this number in
+ * `apps/desktop/src/shared/diagnosticsUpload.ts` and weigh their serialized
+ * body against it for that reason — a report that fits with no room for the
+ * `{"report":...}` envelope does not fit here.
  */
 export const MAX_DIAGNOSTIC_REPORT_BYTES = 512 * 1024;
 
@@ -371,14 +377,34 @@ export async function handleDiagnosticsRequest(
   }
 
   const id = options.randomId?.() ?? crypto.randomUUID();
-  await bucket.put(`${prefix}${id}.md`, parsed.report, {
-    httpMetadata: { contentType: "text/markdown; charset=utf-8" },
-    customMetadata: {
-      ...(userId ? { userId } : {}),
-      ...(parsed.installId ? { installId: parsed.installId } : {}),
-      ...(parsed.appVersion ? { appVersion: parsed.appVersion } : {}),
-    },
-  });
+  try {
+    await bucket.put(`${prefix}${id}.md`, parsed.report, {
+      httpMetadata: { contentType: "text/markdown; charset=utf-8" },
+      customMetadata: {
+        ...(userId ? { userId } : {}),
+        ...(parsed.installId ? { installId: parsed.installId } : {}),
+        ...(parsed.appVersion ? { appVersion: parsed.appVersion } : {}),
+      },
+    });
+  } catch {
+    // R2 refused the write. Left unhandled this is the one path that answers
+    // without a line, which defeats the point of the log: support could no
+    // longer tell "the report never arrived" from "it arrived and the store
+    // dropped it". `rejected` because the outcome vocabulary has exactly two
+    // values and nothing was stored; the reason carries that this one is ours,
+    // not the caller's. 502 rather than the 503 the missing-binding path uses,
+    // so a configured bucket having a bad minute stays distinguishable from a
+    // bucket that was never created.
+    logDiagnosticsUpload({
+      outcome: "rejected",
+      status: 502,
+      reason: "storage_write_failed",
+      identity,
+      authenticated: Boolean(userId),
+      bytes: parsed.report.length,
+    });
+    return json({ error: "diagnostics upload failed" }, { status: 502 });
+  }
 
   logDiagnosticsUpload({
     outcome: "stored",

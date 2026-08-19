@@ -221,6 +221,63 @@ describe("syncCloudRelayStore", () => {
     expect(fourth.rotationsInWindow).toBe(2);
   });
 
+  it("reads an ABSENT rotation budget as a fresh allowance", () => {
+    // A machine that has never rotated writes no `identityRotations` member at
+    // all. That must stay the cheap, ordinary case — the fail-closed read below
+    // is for garbled counters, not for missing ones.
+    const seeded = createSyncCloudRelayStore({ filePath });
+    const { machineKey, secret } = seeded.getMachineIdentity();
+    fs.writeFileSync(filePath, `${JSON.stringify({ machineKey, secret })}\n`);
+
+    const store = createSyncCloudRelayStore({ filePath });
+    const rotation = store.rotateMachineIdentity(machineKey);
+    expect(rotation.rotated).toBe(true);
+    expect(rotation.budgetExhausted).toBe(false);
+    expect(rotation.rotationsInWindow).toBe(1);
+  });
+
+  it.each([
+    ["a garbled non-object budget", "truncated"],
+    ["a budget with no count at all", { windowStartedAt: "2026-08-18T00:00:00.000Z" }],
+    ["a budget whose count is not a number", { count: "two" }],
+    ["a budget whose count serialized as null", { count: null }],
+    ["a budget that garbled into an array", [2]],
+  ])("reads %s as SPENT rather than as a fresh allowance", (_label, identityRotations) => {
+    // The failure this closes: a crash loop that truncates the identity file
+    // used to hand every boot a full rotation allowance, minting one phantom
+    // machine row per restart — exactly what persisting the budget prevents.
+    const seeded = createSyncCloudRelayStore({ filePath });
+    const { machineKey, secret } = seeded.getMachineIdentity();
+    fs.writeFileSync(filePath, `${JSON.stringify({
+      machineKey,
+      secret,
+      identityRotations,
+    })}\n`);
+
+    const store = createSyncCloudRelayStore({ filePath });
+    const rotation = store.rotateMachineIdentity(machineKey);
+    expect(rotation.rotated).toBe(false);
+    expect(rotation.budgetExhausted).toBe(true);
+    expect(store.getMachineIdentity().machineKey).toBe(machineKey);
+    // And the same file read on the next boot is still spent: forgiving it once
+    // per restart is the whole failure mode.
+    expect(createSyncCloudRelayStore({ filePath }).rotateMachineIdentity(machineKey).rotated)
+      .toBe(false);
+  });
+
+  it("reads an unreadable pairing-repair budget as SPENT", () => {
+    const seeded = createSyncCloudRelayStore({ filePath });
+    const { machineKey, secret } = seeded.getMachineIdentity();
+    fs.writeFileSync(filePath, `${JSON.stringify({
+      machineKey,
+      secret,
+      pairingAutoRepairs: { count: "many" },
+    })}\n`);
+
+    expect(createSyncCloudRelayStore({ filePath }).tryConsumePairingAutoRepair())
+      .toMatchObject({ allowed: false, limit: 3 });
+  });
+
   it("reopens the rotation budget once the 24-hour window has passed", () => {
     let clock = Date.parse("2026-08-18T00:00:00.000Z");
     const build = () => createSyncCloudRelayStore({ filePath, now: () => clock });
@@ -292,6 +349,49 @@ describe("syncCloudRelayStore", () => {
     expect(store.rotateMachineIdentity(first.machineKey).config).toEqual(first);
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toEqual(liveOwner);
     expect(createSyncCloudRelayStore({ filePath }).getConfig()).toEqual(first);
+  });
+
+  it("serves a .bak-recovered identity while another process owns the lock", () => {
+    const seeded = createSyncCloudRelayStore({ filePath });
+    const first = seeded.getConfig();
+    fs.writeFileSync(filePath, "not json at all");
+    const lockPath = `${filePath}.rotate.lock`;
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      token: "live-recovery-owner".padEnd(32, "0"),
+      createdAt: new Date().toISOString(),
+    })}\n`, { flag: "wx", mode: 0o600 });
+
+    // Every field of this identity is already on disk in the sibling, so a
+    // reader that cannot take the lock has nothing to be unsure about — the
+    // rewrite of the primary simply waits for an uncontended read.
+    const store = createSyncCloudRelayStore({ filePath, lockWaitMs: 0 });
+    expect(store.getConfig()).toEqual(first);
+    expect(store.getRelayWssUrl()).toContain(first.machineKey);
+
+    fs.unlinkSync(lockPath);
+    expect(store.getConfig()).toEqual(first);
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(first);
+  });
+
+  it("still refuses to hand out an identity that exists on no file", () => {
+    createSyncCloudRelayStore({ filePath }).getConfig();
+    // Neither copy yields a machine key, so the only answer this process has is
+    // one it minted in memory — and the lock holder may be minting a different
+    // one right now.
+    fs.writeFileSync(filePath, "{}");
+    fs.writeFileSync(`${filePath}.bak`, "{}");
+    const lockPath = `${filePath}.rotate.lock`;
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      token: "live-mint-owner".padEnd(32, "0"),
+      createdAt: new Date().toISOString(),
+    })}\n`, { flag: "wx", mode: 0o600 });
+
+    expect(() => createSyncCloudRelayStore({ filePath, lockWaitMs: 0 }).getConfig())
+      .toThrow("configuration is being updated by another live ADE process");
   });
 
   it("serializes relay URL writes behind the identity rotation lock", () => {

@@ -40,6 +40,7 @@ import {
   openDiagnosticIssue,
   sendDiagnosticReport,
 } from "./commands/reportIssue";
+import { redactDiagnosticText } from "./services/diagnostics/diagnosticReport";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -14217,14 +14218,75 @@ function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
   }
 }
 
+/**
+ * One thrown value must not be able to bury a log the user is asked to send:
+ * a rejected fetch can carry a whole response body.
+ */
+const DIAGNOSTIC_ERROR_MAX_CHARS = 4_000;
+
+/** Fields worth printing off a thrown non-Error: they describe, never carry. */
+const DIAGNOSTIC_ERROR_SAFE_FIELDS = [
+  "name",
+  "message",
+  "code",
+  "errno",
+  "syscall",
+  "status",
+  "statusCode",
+] as const;
+
+/**
+ * Renders a thrown value for stderr — which for the installed brain is
+ * `launchd.err.log`, a file `ade report-issue` tails into a report the user is
+ * told to paste into a public issue. So this is a redaction boundary, not a
+ * formatter: everything it returns goes through the same pass the report body
+ * gets, and a thrown non-Error is described rather than serialized. Dumping
+ * such a value with `JSON.stringify` would print whatever an upstream caller
+ * attached to it — `sync.connectToBrain` carries `draft.token`, and a rejected
+ * request object would have shipped it verbatim.
+ */
 function formatDiagnosticError(error: unknown): string {
+  return capDiagnosticText(redactDiagnosticText(describeDiagnosticError(error)));
+}
+
+function capDiagnosticText(text: string): string {
+  if (text.length <= DIAGNOSTIC_ERROR_MAX_CHARS) return text;
+  return `${text.slice(0, DIAGNOSTIC_ERROR_MAX_CHARS)}… (${text.length - DIAGNOSTIC_ERROR_MAX_CHARS} more characters truncated)`;
+}
+
+function describeDiagnosticError(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
   if (typeof error === "string") return error;
+  if (error === null || error === undefined) return String(error);
+  if (typeof error !== "object") return String(error);
+
+  // A thrown object: name the shape and the diagnostic fields, then list the
+  // remaining keys by name only. Key names locate the throw site; their values
+  // are exactly what must not reach a log the user may hand over.
+  const record = error as Record<string, unknown>;
+  const described: string[] = [];
+  let label = "Object";
   try {
-    return JSON.stringify(error);
+    for (const field of DIAGNOSTIC_ERROR_SAFE_FIELDS) {
+      const value = record[field];
+      if (value === undefined || value === null) continue;
+      if (typeof value === "object" || typeof value === "function") continue;
+      described.push(`${field}=${String(value)}`);
+    }
+    const otherKeys = Object.keys(record).filter(
+      (key) => !(DIAGNOSTIC_ERROR_SAFE_FIELDS as readonly string[]).includes(key),
+    );
+    if (otherKeys.length > 0) {
+      described.push(`otherKeys=[${otherKeys.slice(0, 20).join(", ")}]`);
+    }
+    label = Array.isArray(error) ? "Array" : (record.constructor?.name ?? "Object");
   } catch {
-    return String(error);
+    // Getters and proxy traps run arbitrary code and can throw; a value we
+    // cannot describe still must not take the error boundary down with it.
   }
+  return described.length > 0
+    ? `[thrown ${label}] ${described.join(" ")}`
+    : `[thrown ${label}]`;
 }
 
 function installRuntimeProcessErrorBoundary(label: string): () => void {
@@ -22757,6 +22819,7 @@ export {
   checkLinearReadiness,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,

@@ -51,6 +51,24 @@ describe("brainActionErrorCode", () => {
     expect(brainActionErrorCode(null, false)).toBe("unknown");
   });
 
+  it("keeps a platform errno as a code instead of costing the event", () => {
+    // An unmapped errno — EDEADLK is the one a cloud-evicted file answers with
+    // on macOS — is exactly the failure nobody predicted, which is what
+    // `error_code` is collected for. The policy lower-cases before it shape-
+    // checks, so the uppercase form is normalized rather than refused; and a
+    // property it did refuse would be stripped from an event that still lands,
+    // never drop the event.
+    const evicted = Object.assign(
+      new Error("Unknown system error -11: Unknown system error -11, read"),
+      { code: "EDEADLK" },
+    );
+    expect(brainActionErrorCode(evicted, false)).toBe("EDEADLK");
+    expect(sanitizeProductAnalyticsProperties("ade_brain_action_failed", {
+      action_domain: "lane",
+      error_code: brainActionErrorCode(evicted, false),
+    })).toEqual({ action_domain: "lane", error_code: "edeadlk" });
+  });
+
   it("never returns anything the policy would accept as a message", () => {
     // The load-bearing privacy property: whatever this returns, the policy only
     // lets a lower-case identifier through, so a message that slipped past the

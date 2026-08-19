@@ -18,6 +18,7 @@ import {
   describeLastFailureForStartupLog,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,
@@ -11777,5 +11778,63 @@ describe("unlinkOwnedRuntimeSocket", () => {
 
     expect(outcome).toBe("not_owned");
     expect(unlinked).toEqual([]);
+  });
+});
+
+describe("formatDiagnosticError", () => {
+  it("never prints the fields of a thrown non-Error, which can carry a token", () => {
+    // sync.connectToBrain hands the draft's token to the request it builds; a
+    // rejection that carried that request used to be JSON.stringify'd whole
+    // into launchd.err.log, which `ade report-issue` tails into a report the
+    // user is told to paste into a public GitHub issue.
+    const thrown = {
+      code: "ECONNREFUSED",
+      token: "ade_live_9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c",
+      body: { authorization: "Bearer sk-live-abcdefghijklmnopqrstuvwxyz" },
+    };
+
+    const formatted = formatDiagnosticError(thrown);
+
+    expect(formatted).not.toContain("ade_live_9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c");
+    expect(formatted).not.toContain("sk-live-abcdefghijklmnopqrstuvwxyz");
+    // The shape still has to be diagnosable: the errno and the key names that
+    // locate the throw site survive.
+    expect(formatted).toContain("code=ECONNREFUSED");
+    expect(formatted).toContain("token");
+  });
+
+  it("redacts a credential that an Error carried in its own message", () => {
+    const formatted = formatDiagnosticError(
+      new Error("connect failed: tcp://127.0.0.1:5051?token=6f1c8a2b4d9e7f30"),
+    );
+
+    expect(formatted).not.toContain("6f1c8a2b4d9e7f30");
+    expect(formatted).toContain("token=<redacted>");
+    // Loopback is the fact a maintainer needs and identifies nobody.
+    expect(formatted).toContain("127.0.0.1");
+  });
+
+  it("caps a runaway error so one throw cannot bury the log it is written to", () => {
+    const formatted = formatDiagnosticError("x".repeat(20_000));
+
+    expect(formatted.length).toBeLessThan(4_200);
+    expect(formatted).toMatch(/characters truncated/);
+  });
+
+  it("keeps a plain string error and survives a value that throws while described", () => {
+    expect(formatDiagnosticError("brain socket vanished")).toBe("brain socket vanished");
+
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("no keys for you");
+        },
+        get: () => {
+          throw new Error("no fields for you");
+        },
+      },
+    );
+    expect(() => formatDiagnosticError(hostile)).not.toThrow();
   });
 });

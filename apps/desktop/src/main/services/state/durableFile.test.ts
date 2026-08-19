@@ -89,8 +89,63 @@ describe("durableFile", () => {
       injectFsFault({ op: "renameSync", error: () => renameError("EXDEV") });
       injectFsFault({ op: "copyFileSync" });
 
-      expect(() => writeFileAtomic(filePath, "after")).toThrow(/EXDEV/);
+      // Both causes, not one: the copy failure used to be swallowed and the
+      // rename reported alone, which named the wrong device for a disk that
+      // filled up under the copy.
+      let thrown: NodeJS.ErrnoException | null = null;
+      try {
+        writeFileAtomic(filePath, "after");
+      } catch (error) {
+        thrown = error as NodeJS.ErrnoException;
+      }
+      expect(thrown?.message).toMatch(/EXDEV/);
+      expect(thrown?.message).toMatch(/no space/i);
+      expect(thrown?.code).toBe("EXDEV");
+      expect((thrown?.cause as NodeJS.ErrnoException | undefined)?.code).toBe("ENOSPC");
       expect(fs.readFileSync(filePath, "utf8")).toBe("before");
+      expect(tempLeftovers()).toEqual([]);
+    });
+
+    it("keeps the previous file whole when the copy fallback dies half-written", () => {
+      // The copy fallback is not atomic, so it must never run onto the target.
+      // Copying straight over it turned a failed write into a truncated
+      // destination — the old file gone and the new one incomplete.
+      fs.writeFileSync(filePath, "before");
+      injectFsFault({ op: "renameSync", error: () => renameError("EXDEV") });
+      vi.spyOn(fs, "copyFileSync").mockImplementation(((_src: unknown, dest: unknown) => {
+        fs.writeFileSync(String(dest), "aft");
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      }) as never);
+
+      expect(() => writeFileAtomic(filePath, "after")).toThrow(/copy fallback failed/);
+      expect(fs.readFileSync(filePath, "utf8")).toBe("before");
+      expect(tempLeftovers()).toEqual([]);
+    });
+
+    it("still lands the write when every rename onto the target is refused", () => {
+      // A Windows holder that permits writes and denies the replace: the staged
+      // rename cannot land either, so the direct copy is the only thing left
+      // between the user and a lost write.
+      fs.writeFileSync(filePath, "before");
+      vi.spyOn(fs, "renameSync").mockImplementation((() => {
+        throw renameError("EBUSY");
+      }) as never);
+
+      writeFileAtomic(filePath, "after");
+      expect(fs.readFileSync(filePath, "utf8")).toBe("after");
+      expect(tempLeftovers()).toEqual([]);
+    });
+
+    it.skipIf(process.platform === "win32")("keeps a secret's mode through the copy fallback", () => {
+      // The staged file carries the requested mode BEFORE it is exposed under
+      // the target's name, so a 0o600 secret is never briefly readable by
+      // anyone else — not even on the fallback path.
+      fs.writeFileSync(filePath, "old", { mode: 0o644 });
+      injectFsFault({ op: "renameSync", error: () => renameError("EXDEV") });
+
+      writeFileAtomic(filePath, "secret", { mode: 0o600 });
+      expect(fs.readFileSync(filePath, "utf8")).toBe("secret");
+      expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
       expect(tempLeftovers()).toEqual([]);
     });
 

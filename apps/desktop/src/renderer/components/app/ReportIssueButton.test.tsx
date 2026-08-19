@@ -3,7 +3,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticReportPayload } from "../../../shared/types/diagnostics";
+import type { DiagnosticUploadResult } from "../../../shared/diagnosticsUpload";
 import { ReportIssueButton } from "./ReportIssueButton";
+
+const uploadDiagnosticReport = vi.hoisted(() => vi.fn());
+vi.mock("../../../shared/diagnosticsUpload", async () => {
+  const actual = await vi.importActual<typeof import("../../../shared/diagnosticsUpload")>(
+    "../../../shared/diagnosticsUpload",
+  );
+  return { ...actual, uploadDiagnosticReport };
+});
 
 const CONTEXT = {
   surface: "project_recovery",
@@ -33,6 +42,7 @@ function installBridge(openIssue: ReturnType<typeof vi.fn>) {
 
 afterEach(() => {
   cleanup();
+  uploadDiagnosticReport.mockReset();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -68,6 +78,40 @@ describe("ReportIssueButton", () => {
     await screen.findByText(/couldn't prepare the report/i);
     // The raw errno never reaches the user on a screen that is already failing.
     expect(screen.queryByText(/ENOSPC/)).toBeNull();
+  });
+
+  it("ignores an upload result that belongs to a report the user already replaced", async () => {
+    // "Report issue" stays enabled while a send is in flight, so the first
+    // upload's reply can land after a second report exists. Showing its
+    // reference then would point a maintainer at the wrong report.
+    const openIssue = vi
+      .fn()
+      .mockResolvedValueOnce(payload({ report: "first report" }))
+      .mockResolvedValueOnce(payload({ report: "second report" }));
+    installBridge(openIssue);
+    let settleFirstUpload: (result: DiagnosticUploadResult) => void = () => {};
+    uploadDiagnosticReport.mockImplementationOnce(
+      () => new Promise<DiagnosticUploadResult>((resolve) => { settleFirstUpload = resolve; }),
+    );
+
+    render(<ReportIssueButton context={CONTEXT} />);
+    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    await screen.findByRole("button", { name: "Send to ADE" });
+    fireEvent.click(screen.getByRole("button", { name: "Send to ADE" }));
+    await screen.findByRole("button", { name: "Sending…" });
+
+    // A second report, generated while the first upload is still open.
+    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    await waitFor(() => {
+      expect(openIssue).toHaveBeenCalledTimes(2);
+    });
+
+    settleFirstUpload({ ok: true, id: "abc", reference: "ADE-STALE-REF" });
+
+    // The stale reply frees the Send button again but never claims the newer
+    // report was sent.
+    await screen.findByRole("button", { name: "Send to ADE" });
+    expect(screen.queryByText(/ADE-STALE-REF/)).toBeNull();
   });
 
   it("drops the disclosure inside one-line banners, and keeps it when asked", () => {

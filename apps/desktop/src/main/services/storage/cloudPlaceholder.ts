@@ -95,6 +95,21 @@ export function detectCloudPlaceholderFile(
 }
 
 /**
+ * What each provider is called on the user's own machine.
+ *
+ * `cloud-storage` has no name to give: `~/Library/CloudStorage/` hosts Box,
+ * Egnyte and any other File Provider, including brands this build has never
+ * heard of, so that one says "the cloud" rather than guessing a brand.
+ */
+const PROVIDER_LABELS: Record<CloudStorageProvider, string | null> = {
+  icloud: "iCloud Drive",
+  onedrive: "OneDrive",
+  dropbox: "Dropbox",
+  "google-drive": "Google Drive",
+  "cloud-storage": null,
+};
+
+/**
  * The one sentence a person needs: where the data is and what to do.
  *
  * The remedy is stated conditionally unless a provider was actually detected,
@@ -102,14 +117,16 @@ export function detectCloudPlaceholderFile(
  * a dropped network mount, and telling someone to move a folder that is
  * already local would send them chasing the wrong thing. Brand names rather
  * than "File Provider": the brand is how the folder is labelled on their
- * machine.
+ * machine — and it is the brand that was DETECTED, never a list, because
+ * naming three services a Google Drive folder is not in only reads as wrong.
  */
 export function storageUnreadableMessage(
   targetPath: string,
   provider?: CloudStorageProvider | null,
 ): string {
-  const remedy = provider
-    ? "The folder is stored in iCloud Drive, Dropbox or OneDrive and isn't downloaded to this computer. Move the project to a folder on this computer, then open it again."
+  const label = provider ? PROVIDER_LABELS[provider] ?? "the cloud" : null;
+  const remedy = label
+    ? `The folder is stored in ${label} and isn't downloaded to this computer. Move the project to a folder on this computer, then open it again.`
     : "If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.";
   return `ADE couldn't read this project's data at ${targetPath}. ${remedy}`;
 }

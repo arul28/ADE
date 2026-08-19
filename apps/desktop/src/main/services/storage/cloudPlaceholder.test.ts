@@ -3,6 +3,7 @@ import {
   detectCloudPlaceholderFile,
   detectCloudStorageProvider,
   isDatalessFileStats,
+  storageUnreadableMessage,
 } from "./cloudPlaceholder";
 
 describe("cloud storage provider detection", () => {
@@ -53,5 +54,38 @@ describe("dataless placeholder detection", () => {
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       },
     })).toBeNull();
+  });
+});
+
+describe("storageUnreadableMessage", () => {
+  const dbPath = "/Users/a/Google Drive/proj/.ade/ade.db";
+
+  it("names the provider it actually detected", () => {
+    // The Google Drive case is the one that used to be told its folder was in
+    // iCloud Drive, Dropbox or OneDrive — three services it is not in.
+    const message = storageUnreadableMessage(dbPath, "google-drive");
+    expect(message).toContain("stored in Google Drive");
+    expect(message).not.toContain("iCloud");
+    expect(message).not.toContain("Dropbox");
+    expect(message).not.toContain("OneDrive");
+    expect(message).toContain("Move the project to a folder on this computer");
+
+    expect(storageUnreadableMessage(dbPath, "icloud")).toContain("stored in iCloud Drive");
+    expect(storageUnreadableMessage(dbPath, "dropbox")).toContain("stored in Dropbox");
+    expect(storageUnreadableMessage(dbPath, "onedrive")).toContain("stored in OneDrive");
+  });
+
+  it("says `the cloud` for a provider folder with no brand to read", () => {
+    // `~/Library/CloudStorage/Box-Personal/…` is a provider root whose brand
+    // this build cannot name, so it says what it knows and nothing more.
+    expect(storageUnreadableMessage(dbPath, "cloud-storage")).toContain("stored in the cloud");
+  });
+
+  it("keeps the remedy conditional when no provider was detected", () => {
+    // The same failure arrives from a failing disk or a dropped network mount,
+    // so a local folder is never told to move.
+    const message = storageUnreadableMessage("/Users/a/Projects/proj/.ade/ade.db", null);
+    expect(message).toContain("If the folder is in iCloud Drive, Dropbox or OneDrive");
+    expect(message).toContain("/Users/a/Projects/proj/.ade/ade.db");
   });
 });

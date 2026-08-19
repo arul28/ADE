@@ -31,8 +31,19 @@ import {
 
 export const DIAGNOSTICS_UPLOAD_PATH = "/diagnostics/upload";
 
-/** Mirror of `MAX_DIAGNOSTIC_REPORT_BYTES` in `apps/account-directory/src/diagnostics.ts`. */
-export const MAX_DIAGNOSTIC_REPORT_BYTES = 512 * 1024;
+/**
+ * Mirror of `MAX_DIAGNOSTIC_REPORT_BYTES` in `apps/account-directory/src/diagnostics.ts`.
+ *
+ * Same number, deliberately measured against a different thing on each side —
+ * and they still agree. The Worker has to bound the bytes as they arrive, before
+ * anything is parsed, so its cap is on the WHOLE request body; this side knows
+ * what it is about to send, so it weighs the serialized body too rather than the
+ * report inside it. Checking only the report would pass a report sitting exactly
+ * at the cap and then have the `{"report":...}` envelope and its escaping push
+ * the request over on the wire — a 413 a round-trip later for something that was
+ * knowable here.
+ */
+export const MAX_DIAGNOSTIC_UPLOAD_BYTES = 512 * 1024;
 
 const DEFAULT_UPLOAD_TIMEOUT_MS = 20_000;
 
@@ -105,9 +116,17 @@ export async function uploadDiagnosticReport(
 ): Promise<DiagnosticUploadResult> {
   const report = request.report;
   if (!report.trim()) return { ok: false, reason: "rejected" };
+
+  const body = JSON.stringify({
+    report,
+    ...(request.installId ? { installId: request.installId } : {}),
+    ...(request.appVersion ? { appVersion: request.appVersion } : {}),
+  });
   // Checked here as well as on the Worker so an oversized report fails without
-  // spending one of the user's few daily uploads on a doomed request.
-  if (new TextEncoder().encode(report).byteLength > MAX_DIAGNOSTIC_REPORT_BYTES) {
+  // spending one of the user's few daily uploads on a doomed request. The exact
+  // bytes that would go on the wire, so this side never sends something the
+  // Worker's identical cap would refuse.
+  if (new TextEncoder().encode(body).byteLength > MAX_DIAGNOSTIC_UPLOAD_BYTES) {
     return { ok: false, reason: "too_large" };
   }
 
@@ -124,11 +143,7 @@ export async function uploadDiagnosticReport(
           "content-type": "application/json",
           ...(request.token ? { authorization: `Bearer ${request.token}` } : {}),
         },
-        body: JSON.stringify({
-          report,
-          ...(request.installId ? { installId: request.installId } : {}),
-          ...(request.appVersion ? { appVersion: request.appVersion } : {}),
-        }),
+        body,
         signal: controller.signal,
       },
     );

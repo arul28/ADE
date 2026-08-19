@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -70,11 +70,19 @@ export function ReportIssueButton({
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<DiagnosticUploadResult | null>(null);
   const { copy, copied } = useCopyToClipboard();
+  /**
+   * Which report the upload result belongs to. "Report issue" stays live while
+   * a send is in flight, so a user who reports twice can have the first
+   * upload's reply land after the second report exists — and a reference that
+   * points at the older report is worse than none.
+   */
+  const reportGenerationRef = useRef(0);
 
   const bridge = typeof window !== "undefined" ? window.ade?.diagnostics : undefined;
 
   const run = useCallback(async () => {
     if (!bridge?.openIssue || pending) return;
+    reportGenerationRef.current += 1;
     setPending(true);
     setError(null);
     setSent(null);
@@ -91,9 +99,10 @@ export function ReportIssueButton({
 
   const send = useCallback(async () => {
     if (!result || sending) return;
+    const generation = reportGenerationRef.current;
     setSending(true);
     try {
-      setSent(await uploadDiagnosticReport({
+      const outcome = await uploadDiagnosticReport({
         // The very bytes the clipboard holds. Redaction already happened in
         // the main process; nothing here reshapes the report.
         report: result.report,
@@ -108,8 +117,13 @@ export function ReportIssueButton({
             ? import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL
             : null,
         ),
-      }));
+      });
+      if (reportGenerationRef.current !== generation) return;
+      setSent(outcome);
     } finally {
+      // Cleared unconditionally: `sending` is the only thing keeping a second
+      // upload out, so a stale reply that left it set would strand the newer
+      // report with a permanently disabled Send.
       setSending(false);
     }
   }, [result, sending]);

@@ -97,9 +97,17 @@ export type HardwareAnchorDeps = {
  */
 let cachedAnchorUuid: { value: string | null } | null = null;
 
-/** Test seam only. Nothing in the product invalidates this cache. */
+/**
+ * Test seam only. Nothing in the product invalidates these caches.
+ *
+ * Both of them, deliberately: the canonical-home memo below is the module's
+ * other process-lifetime cache, and a reset that cleared one but not the other
+ * would let a test read a canonicalisation computed under a previous test's
+ * cwd or platform stub.
+ */
 export function resetHardwareAnchorCacheForTests(): void {
   cachedAnchorUuid = null;
+  canonicalHomeByInput.clear();
 }
 
 /**

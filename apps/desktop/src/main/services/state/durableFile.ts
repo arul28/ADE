@@ -29,6 +29,42 @@ function bestEffortFsync(fd: number): void {
 }
 
 /**
+ * A scratch name beside the target. The shape matches
+ * `ABANDONED_TEMP_FILE_PATTERN`, so anything left behind by a crash is swept by
+ * `cleanupAbandonedTempFiles` rather than accumulating forever.
+ */
+function siblingTempPath(filePath: string): string {
+  return path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`,
+  );
+}
+
+function describeCause(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Both causes, never one.
+ *
+ * The fallback used to rethrow the rename error and swallow its own, so a copy
+ * that failed on a full disk was reported as the `EXDEV` that sent it there —
+ * the wrong diagnosis for the wrong device. The rename's `code` is carried onto
+ * the thrown error because callers switch on errnos, and the copy failure
+ * travels as `cause`.
+ */
+function replaceFailure(filePath: string, renameError: unknown, copyError: unknown): Error {
+  const error = new Error(
+    `Failed to replace '${filePath}': rename failed (${describeCause(renameError)})`
+    + ` and the copy fallback failed (${describeCause(copyError)}).`,
+    { cause: copyError },
+  ) as NodeJS.ErrnoException;
+  const code = (renameError as NodeJS.ErrnoException | null)?.code;
+  if (code) error.code = code;
+  return error;
+}
+
+/**
  * Rename failures a copy can actually fix.
  *
  * `EXDEV` is a temp file that landed on another device; the rest are the
@@ -55,14 +91,53 @@ const COPY_RECOVERABLE_RENAME_CODES = new Set(["EXDEV", "EPERM", "EACCES", "EBUS
  *
  * The copy fallback is the last resort and never the first move: it is not
  * atomic, so it is reached only for the failures above, where the alternative
- * is losing the write outright.
+ * is losing the write outright. It runs in two steps, and the second one only
+ * when the first proves the target itself is what refuses to be renamed over.
  */
 function replaceViaRename(tempPath: string, filePath: string, mode?: number): void {
   try {
     fs.renameSync(tempPath, filePath);
+    return;
   } catch (renameError) {
     const code = (renameError as NodeJS.ErrnoException).code;
     if (!code || !COPY_RECOVERABLE_RENAME_CODES.has(code)) throw renameError;
+
+    // Copy BESIDE the target, then rename that into place. The destination is
+    // still only ever replaced by a rename, so a copy that dies half-written —
+    // the disk fills, the source turns out to be unreadable — leaves the
+    // previous file whole instead of truncating it. It is also the whole fix
+    // for `EXDEV`: the copy lands the bytes on the destination's device, and
+    // the rename that follows is a local one.
+    const stagedPath = siblingTempPath(filePath);
+    let reachedStagedRename = false;
+    try {
+      fs.copyFileSync(tempPath, stagedPath);
+      // The copy creates the staged file with the source's permissions, so a
+      // 0o600 secret is never briefly world-readable; the chmod states it
+      // outright for a filesystem that does not carry the mode across, and
+      // happens BEFORE the file is exposed under the target's name.
+      if (mode != null) fs.chmodSync(stagedPath, mode);
+      reachedStagedRename = true;
+      fs.renameSync(stagedPath, filePath);
+      bestEffortUnlink(tempPath);
+      return;
+    } catch (stagedError) {
+      bestEffortUnlink(stagedPath);
+      const stagedCode = (stagedError as NodeJS.ErrnoException).code;
+      // Only a link-level refusal of the staged RENAME earns the last resort
+      // below. When the copy is what failed, writing those same bytes straight
+      // onto the target would produce exactly the half-written destination the
+      // staging exists to prevent.
+      if (!reachedStagedRename || !stagedCode || !COPY_RECOVERABLE_RENAME_CODES.has(stagedCode)) {
+        throw replaceFailure(filePath, renameError, stagedError);
+      }
+    }
+
+    // Nothing can be renamed into this name — a Windows holder that permits
+    // writes and denies the replace, or a directory that refuses links
+    // outright. Copying onto the target is not atomic and a reader can catch it
+    // mid-write, which is why it is last: the alternative here is losing the
+    // write outright.
     try {
       fs.copyFileSync(tempPath, filePath);
       if (mode != null) {
@@ -74,8 +149,8 @@ function replaceViaRename(tempPath: string, filePath: string, mode?: number): vo
         }
       }
       bestEffortUnlink(tempPath);
-    } catch {
-      throw renameError;
+    } catch (copyError) {
+      throw replaceFailure(filePath, renameError, copyError);
     }
   }
 }
@@ -86,10 +161,7 @@ export function writeFileAtomic(
   opts: AtomicWriteOptions = {},
 ): void {
   const dir = path.dirname(filePath);
-  const tempPath = path.join(
-    dir,
-    `.${path.basename(filePath)}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`,
-  );
+  const tempPath = siblingTempPath(filePath);
   let fd: number | null = null;
   try {
     fd = opts.mode != null

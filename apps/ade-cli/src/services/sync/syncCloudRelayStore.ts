@@ -126,6 +126,12 @@ type ResolvedState = {
   state: SyncCloudRelayState;
   /** The identity differs from what the primary file literally held. */
   needsIdentityWrite: boolean;
+  /**
+   * Some half of the identity was minted in memory and exists on NO file yet.
+   * False means every field came off disk, so a reader may use it before the
+   * primary file has been rewritten.
+   */
+  identityMinted: boolean;
   needsWrite: boolean;
   event: SyncCloudRelayIdentityEvent | null;
 };
@@ -201,17 +207,40 @@ function readIsoTimestamp(value: unknown): string | null {
 }
 
 /**
- * Read a persisted budget defensively. A budget that cannot be understood is
- * read as SPENT-window-unknown rather than as empty: forgiving an unreadable
- * counter is the same failure mode as not persisting it at all.
+ * A budget whose whole window is already spent, anchored at now.
+ *
+ * This is what an unreadable counter reads as. The limit has to be passed in
+ * because the same reader serves two different allowances, and "spent" is only
+ * meaningful against one of them.
  */
-function readBudget(value: unknown, lastKey: string): SyncCloudRelayBudget {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return emptyBudget();
+function spentBudget(limit: number): SyncCloudRelayBudget {
+  return { count: Math.max(1, limit), windowStartedAt: new Date().toISOString(), lastAt: null };
+}
+
+/**
+ * Read a persisted budget defensively, distinguishing the two ways it can fail
+ * to produce a number.
+ *
+ * ABSENT is the ordinary case — a machine that has never rotated or repaired
+ * writes no member at all (see `serializeBudget`) — and reads as empty.
+ *
+ * PRESENT BUT UNREADABLE is a loss, and reads as SPENT for a full window.
+ * Forgiving a garbled counter is the same failure mode as not persisting it:
+ * a crash loop that truncates the identity file on every boot would otherwise
+ * regain its whole rotation allowance each time, which is precisely the
+ * phantom-machine failure this budget was made durable to stop.
+ */
+function readBudget(value: unknown, lastKey: string, limit: number): SyncCloudRelayBudget {
+  if (value == null) return emptyBudget();
+  if (typeof value !== "object" || Array.isArray(value)) return spentBudget(limit);
   const record = value as Record<string, unknown>;
   const rawCount = record.count;
-  const count = typeof rawCount === "number" && Number.isFinite(rawCount) && rawCount > 0
-    ? Math.floor(rawCount)
-    : 0;
+  // A literal 0 is readable and means untouched; anything that is not a
+  // non-negative finite number is a counter this build cannot trust.
+  if (typeof rawCount !== "number" || !Number.isFinite(rawCount) || rawCount < 0) {
+    return spentBudget(limit);
+  }
+  const count = Math.floor(rawCount);
   const windowStartedAt = readIsoTimestamp(record.windowStartedAt);
   const lastAt = readIsoTimestamp(record[lastKey]);
   if (count === 0) return emptyBudget();
@@ -428,16 +457,19 @@ export function createSyncCloudRelayStore(args: {
     const identityRotations = readBudget(
       source.identityRotations ?? fallbackSource.identityRotations,
       "lastRotationAt",
+      MAX_IDENTITY_ROTATIONS_PER_WINDOW,
     );
     const pairingAutoRepairs = readBudget(
       source.pairingAutoRepairs ?? fallbackSource.pairingAutoRepairs,
       "lastRepairAt",
+      MAX_PAIRING_AUTO_REPAIRS_PER_WINDOW,
     );
     let previousMachineKeys = readPreviousMachineKeys(
       source.previousMachineKeys ?? fallbackSource.previousMachineKeys,
     );
 
     let event: SyncCloudRelayIdentityEvent | null = null;
+    let identityMinted = false;
     let config: SyncCloudRelayConfig;
     if (machineKey && secret) {
       config = { machineKey, secret, ...(relayUrl ? { relayUrl } : {}) };
@@ -446,6 +478,7 @@ export function createSyncCloudRelayStore(args: {
       }
     } else if (machineKey) {
       // The machine survives; only its relay secret is replaced.
+      identityMinted = true;
       config = {
         machineKey,
         secret: mintIdentity().secret,
@@ -458,6 +491,7 @@ export function createSyncCloudRelayStore(args: {
       };
     } else {
       const minted = mintIdentity(relayUrl);
+      identityMinted = true;
       config = minted;
       // A file that exists but yields nothing is a LOSS, not a new machine, and
       // it is logged as such so the roster phantom it may create is explainable.
@@ -477,6 +511,7 @@ export function createSyncCloudRelayStore(args: {
     return {
       state: { config, identityRotations, pairingAutoRepairs, previousMachineKeys },
       needsIdentityWrite,
+      identityMinted,
       needsWrite: needsIdentityWrite || hasDeprecatedKillSwitchFields || !primary.parsed,
       event,
     };
@@ -584,9 +619,27 @@ export function createSyncCloudRelayStore(args: {
   const busyError = (): Error =>
     new Error("The ADE Relay configuration is being updated by another live ADE process.");
 
+  /**
+   * The best answer a reader may have while ANOTHER process owns the rotation
+   * lock and this one therefore cannot persist anything.
+   *
+   * A MINTED identity — a first mint, a remint out of two dead files, or a
+   * replacement secret — exists nowhere but this process's memory, and the
+   * process holding the lock may be about to write a different one. Handing
+   * that out would put a machine key on the wire that never lands on disk, so
+   * the read fails loudly instead.
+   *
+   * An identity RECOVERED from the `.bak` sibling is a different thing: every
+   * field of it is already on disk, and it is the same identity the lock holder
+   * itself will resolve. Refusing it turned "the primary file is damaged and
+   * another ADE is busy" into a hard failure of every status accessor —
+   * `getConfig`, `getRelayUrl`, `getRelayWssUrl` — for a machine whose identity
+   * was never actually in doubt. Return it and let the rewrite of the primary
+   * happen on the next uncontended read.
+   */
   const stateWhileLocked = (): SyncCloudRelayState => {
     const latest = resolve();
-    if (latest.needsIdentityWrite) throw busyError();
+    if (latest.needsIdentityWrite && latest.identityMinted) throw busyError();
     return latest.state;
   };
 

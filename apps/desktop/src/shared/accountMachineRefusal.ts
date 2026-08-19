@@ -35,11 +35,19 @@ export type AccountMachineRefusalCode = typeof ACCOUNT_MACHINE_REFUSAL_CODES[num
  * cannot name" is exactly the fact the last incident needed and could not get.
  *
  * Anything else — a timeout, a 5xx, a transport failure — is not a refusal.
+ *
+ * The state gate is the other half of that. Health is a STATE, not an event:
+ * `lastHttpStatus` / `lastHttpReason` describe the attempt currently failing
+ * only while the state is `http_error`, and every other state either carries
+ * its own status or leaves the pair behind. Decoding a refusal off one of those
+ * would date-stamp a rejection that is no longer the reason this machine is
+ * unpublished — and on the CLI's pairing-recovery path that is not just a
+ * mislabelled metric, it is a repair episode started for nothing.
  */
 export function readAccountRefusalCode(
   health: SyncAccountDirectoryHealth | null | undefined,
 ): AccountMachineRefusalCode | "other" | null {
-  if (!health || health.lastHttpStatus !== 403) return null;
+  if (!health || health.state !== "http_error" || health.lastHttpStatus !== 403) return null;
   const reason = typeof health.lastHttpReason === "string" ? health.lastHttpReason.trim() : "";
   return (ACCOUNT_MACHINE_REFUSAL_CODES as readonly string[]).includes(reason)
     ? reason as AccountMachineRefusalCode

@@ -805,6 +805,11 @@ export function createHeadlessGitHubService(
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
     const patToken = await readStoredPatTokenAsync();
     const patTokenStored = Boolean(patToken);
+    // Snapshotted next to `patTokenStored`, because the read that just ran is
+    // the one this verdict belongs to. `credentialStoreUnreadable` is shared
+    // mutable state: another caller reading the same store during the awaits
+    // below would otherwise hand this inventory somebody else's outcome.
+    const storeUnreadableForThisRead = credentialStoreUnreadable;
     const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
     const appStatus = appUserAuth.getAuthStatus();
     const [appResult, gh] = await Promise.all([
@@ -877,7 +882,7 @@ export function createHeadlessGitHubService(
       patTokenStored,
       ghCliPath: gh.ghCliPath,
       ghAuthError: gh.ghAuthError,
-      credentialStoreUnreadable,
+      credentialStoreUnreadable: storeUnreadableForThisRead,
     };
   };
 
@@ -2127,6 +2132,11 @@ export function createHeadlessGitHubService(
         credentialStore.deleteSync(tokenKey);
       }
       tokenDecryptionFailed = false;
+      // A write that landed re-sealed the store with a key this process holds,
+      // so whatever made the previous read unreadable no longer applies. Without
+      // this the status keeps reporting a broken store forever, because every
+      // later read short-circuits on `tokenOverride` before re-reading it.
+      credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       if (clean && clean !== previousToken) clearGithubCredentialHealth(clean);
       invalidateStatusCache();
@@ -2137,6 +2147,9 @@ export function createHeadlessGitHubService(
       tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
       tokenDecryptionFailed = false;
+      // Same reasoning as `setToken`: the delete rewrote the store with a key
+      // this process holds, so the previous unreadable verdict is stale.
+      credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       invalidateStatusCache();
       emitStatusChanged();

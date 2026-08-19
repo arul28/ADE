@@ -1,4 +1,6 @@
+import * as childProcess from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canonicalWindowsPath } from "../projects/machineLayout";
 import {
@@ -44,6 +46,20 @@ const REG_OUTPUT = "\r\n"
   + "\r\n";
 
 const LINUX_MACHINE_ID = "b7d3f0a1c2e94d5f8a6b0c1d2e3f4a5b\n";
+
+/**
+ * The real `spawnSync`, counted rather than replaced.
+ *
+ * `readHardwareAnchorUuid` deliberately has no dependency seam — that is the
+ * point of it — so the only way to prove its cache is to watch the syscall
+ * underneath. `vi.spyOn` cannot patch a node builtin's namespace ("Cannot
+ * redefine property"), so the module is mocked as a pass-through instead.
+ */
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const mocked = { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+  return { ...mocked, default: mocked };
+});
 
 afterEach(() => {
   resetHardwareAnchorCacheForTests();
@@ -216,16 +232,60 @@ describe("account hardware id", () => {
 });
 
 describe("hardware anchor cache", () => {
-  it("caches the public read and leaves the probe uncached", () => {
+  it("probes once and answers every later read without touching the host", () => {
     // The cache is unconditional now: it used to switch itself off whenever the
     // caller passed any argument at all, which made "is this cached?" depend on
     // how the call happened to be spelled.
-    const first = readHardwareAnchorUuid();
-    expect(readHardwareAnchorUuid()).toBe(first);
+    //
+    // Counted at the real seams rather than compared as return values. There is
+    // no dependency seam on `readHardwareAnchorUuid`, so two equal answers prove
+    // nothing — an implementation that re-probed on every call would produce
+    // them, and on a host with no anchor at all both would simply be null.
+    resetHardwareAnchorCacheForTests();
+    const spawnSpy = vi.mocked(childProcess.spawnSync);
+    spawnSpy.mockClear();
+    const readFileSpy = vi.spyOn(fs, "readFileSync");
+    const probeCalls = (): number => spawnSpy.mock.calls.length + readFileSpy.mock.calls.length;
 
+    const first = readHardwareAnchorUuid();
+    // Whichever probe this host uses — `ioreg` / `reg` through spawnSync, or
+    // `/etc/machine-id` through fs — the first read really did reach it. Without
+    // this the count assertion below would hold for a spy that intercepted
+    // nothing, which is the vacuous-assertion trap itself.
+    const afterFirstProbe = probeCalls();
+    expect(afterFirstProbe).toBeGreaterThan(0);
+
+    expect(readHardwareAnchorUuid()).toBe(first);
+    expect(readHardwareAnchorUuid()).toBe(first);
+    // Including a null first answer: a machine with no anchor must not respawn
+    // `ioreg` twice a minute forever to keep learning the same thing.
+    expect(probeCalls()).toBe(afterFirstProbe);
+  });
+
+  it("leaves the explicit probe uncached", () => {
     const runCommand = vi.fn(() => IOREG_OUTPUT);
     probeHardwareAnchorUuid({ platform: "darwin", runCommand });
     probeHardwareAnchorUuid({ platform: "darwin", runCommand });
     expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("memoizes the canonical home and clears that memo on reset too", () => {
+    // The Windows fold is the half with real work behind it: a `realpath` walk
+    // that can BLOCK on a stalled network home, on the 30-second publish path.
+    const nativeSpy = vi.spyOn(fs.realpathSync, "native");
+    const home = "C:\\Users\\Ada\\.ade-memo-probe";
+
+    const canonical = canonicalAdeHomePath(home, "win32");
+    const afterFirst = nativeSpy.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+    expect(canonicalAdeHomePath(home, "win32")).toBe(canonical);
+    expect(nativeSpy.mock.calls.length).toBe(afterFirst);
+
+    // The reset seam owns BOTH process-lifetime caches. Clearing only the anchor
+    // uuid would leave a test reading a canonicalisation computed under the
+    // previous test's cwd or platform stub.
+    resetHardwareAnchorCacheForTests();
+    expect(canonicalAdeHomePath(home, "win32")).toBe(canonical);
+    expect(nativeSpy.mock.calls.length).toBeGreaterThan(afterFirst);
   });
 });

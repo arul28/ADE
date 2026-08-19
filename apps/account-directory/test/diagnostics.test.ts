@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   handleDiagnosticsRequest,
   isDiagnosticsRequest,
@@ -26,6 +26,9 @@ class FakeR2Bucket {
 
   listCalls: Array<{ prefix?: string; limit?: number }> = [];
 
+  /** Set to make every `put` reject, the way a bucket having a bad minute does. */
+  putFailure: Error | null = null;
+
   async put(
     key: string,
     value: string | ArrayBuffer | ArrayBufferView,
@@ -34,6 +37,7 @@ class FakeR2Bucket {
       customMetadata?: Record<string, string>;
     },
   ): Promise<void> {
+    if (this.putFailure) throw this.putFailure;
     const body = typeof value === "string"
       ? value
       : new TextDecoder().decode(value as ArrayBuffer);
@@ -108,6 +112,18 @@ const REPORT = "# ADE diagnostic report\n\n- surface: brain_repair\n- installId:
 
 const KEY_SHAPE =
   /^reports\/\d{4}-\d{2}-\d{2}\/(u-[A-Za-z0-9_-]+|anon-[0-9a-f]{16})\/[0-9a-f-]{36}\.md$/;
+
+/**
+ * A fixed clock for every test that reasons about the day bucket.
+ *
+ * The quota key is the UTC day, so a test that spans midnight — either by
+ * deriving the prefix itself while the route derives its own, or by making
+ * several requests in a row — would silently be asking about two different
+ * days. `handleDiagnosticsRequest` takes `now` for exactly this.
+ */
+const FIXED_NOW = Date.UTC(2026, 7, 18, 12, 0, 0);
+const FIXED_DAY_KEY = new Date(FIXED_NOW).toISOString().slice(0, 10);
+const FIXED_CLOCK = { now: () => FIXED_NOW };
 
 describe("diagnostics upload route", () => {
   it("matches only the upload path", () => {
@@ -260,6 +276,7 @@ describe("diagnostics upload route", () => {
           headers: { "x-forwarded-for": `198.51.100.${attempt}` },
         }),
         env,
+        FIXED_CLOCK,
       );
       expect(accepted.status).toBe(200);
     }
@@ -270,6 +287,7 @@ describe("diagnostics upload route", () => {
         headers: { "x-forwarded-for": "198.51.100.99" },
       }),
       env,
+      FIXED_CLOCK,
     );
     expect(refused.status).toBe(429);
     expect(env.DIAGNOSTICS.keys()).toHaveLength(MAX_DIAGNOSTIC_UPLOADS_PER_DAY);
@@ -354,12 +372,14 @@ describe("diagnostics upload route", () => {
       const accepted = await handleDiagnosticsRequest(
         uploadRequest({ body: JSON.stringify({ report: REPORT }), ip }),
         env,
+        FIXED_CLOCK,
       );
       expect(accepted.status).toBe(200);
     }
     const refused = await handleDiagnosticsRequest(
       uploadRequest({ body: JSON.stringify({ report: REPORT }), ip }),
       env,
+      FIXED_CLOCK,
     );
     expect(refused.status).toBe(429);
     expect(refused.headers.get("retry-after")).toBe("86400");
@@ -370,9 +390,12 @@ describe("diagnostics upload route", () => {
     const other = await handleDiagnosticsRequest(
       uploadRequest({ body: JSON.stringify({ report: REPORT }), ip: "198.51.100.8" }),
       env,
+      FIXED_CLOCK,
     );
     expect(other.status).toBe(200);
-    expect(env.DIAGNOSTICS.listCalls.at(-1)?.prefix).toMatch(/^reports\/\d{4}-\d{2}-\d{2}\/anon-/);
+    expect(env.DIAGNOSTICS.listCalls.at(-1)?.prefix).toBe(
+      `reports/${FIXED_DAY_KEY}/anon-${createHash("sha256").update("198.51.100.8").digest("hex").slice(0, 16)}/`,
+    );
     expect(env.DIAGNOSTICS.listCalls.at(-1)?.limit).toBe(MAX_DIAGNOSTIC_UPLOADS_PER_DAY + 1);
   });
 
@@ -383,7 +406,7 @@ describe("diagnostics upload route", () => {
     const env = makeEnv();
     const ip = "198.51.100.30";
     const identity = `anon-${createHash("sha256").update(ip).digest("hex").slice(0, 16)}`;
-    const prefix = `reports/${new Date().toISOString().slice(0, 10)}/${identity}/`;
+    const prefix = `reports/${FIXED_DAY_KEY}/${identity}/`;
     for (let index = 0; index < MAX_DIAGNOSTIC_UPLOADS_PER_DAY; index += 1) {
       await env.DIAGNOSTICS.put(`${prefix}seeded-${index}.md`, "stored by an earlier isolate");
     }
@@ -391,9 +414,45 @@ describe("diagnostics upload route", () => {
     const refused = await handleDiagnosticsRequest(
       uploadRequest({ body: JSON.stringify({ report: REPORT }), ip }),
       env,
+      FIXED_CLOCK,
     );
     expect(refused.status).toBe(429);
     expect(env.DIAGNOSTICS.keys()).toHaveLength(MAX_DIAGNOSTIC_UPLOADS_PER_DAY);
+  });
+
+  it("answers a bounded status and still logs one line when the store refuses the write", async () => {
+    // The log line is the only record that an upload happened, so the one path
+    // where the store itself fails must not be the path that answers silently.
+    const env = makeEnv();
+    env.DIAGNOSTICS.putFailure = new Error("R2 unavailable");
+    const lines: string[] = [];
+    const logged = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      lines.push(String(line));
+    });
+    let response: Response;
+    try {
+      response = await handleDiagnosticsRequest(
+        uploadRequest({ body: JSON.stringify({ report: REPORT }) }),
+        env,
+      );
+    } finally {
+      logged.mockRestore();
+    }
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "diagnostics upload failed" });
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(0);
+
+    const uploadLines = lines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.kind === "diagnostics_upload");
+    expect(uploadLines).toHaveLength(1);
+    expect(uploadLines[0]).toMatchObject({
+      outcome: "rejected",
+      status: 502,
+      reason: "storage_write_failed",
+      authenticated: false,
+    });
   });
 
   it("answers 503 when the bucket binding is missing", async () => {

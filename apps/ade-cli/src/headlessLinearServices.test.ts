@@ -35,6 +35,7 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
 }));
 
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
 import { resetGitHubServiceHealthCache } from "../../desktop/src/main/services/github/githubStatusPage";
 import {
@@ -368,6 +369,48 @@ describe("headlessLinearServices", () => {
       expect(githubCredentialCooldown(newPatCandidate)).toBeNull();
       expect(githubCredentialCooldown(environmentCandidate)).not.toBeNull();
     } finally {
+      environment.restore();
+    }
+  });
+
+  // A PAT saved over an unreadable store re-seals it with a key this process
+  // holds, so the "ADE can't read your saved sign-in" verdict is stale the
+  // moment the write lands. Without clearing it there, every later read
+  // short-circuits on the in-memory override and never re-reads the store, so
+  // the status kept reporting a broken store forever after the user fixed it.
+  it("stops reporting an unreadable credential store after a replacement PAT is saved", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-store-recovery-", {
+      emptyGhConfig: true,
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-oauth-scopes": "repo, workflow",
+      },
+    })) as unknown as typeof fetch;
+    try {
+      const { secretsDir } = resolveMachineAdeLayout();
+      fs.mkdirSync(secretsDir, { recursive: true });
+      // An undecryptable store returns an EMPTY view instead of throwing, which
+      // is exactly why the read state has to be tracked separately.
+      fs.writeFileSync(path.join(secretsDir, "credentials.json.enc"), "not-json", "utf8");
+      const githubService = createHeadlessGitHubService(
+        "/tmp/ade-project",
+        { debug() {}, info() {}, warn() {}, error() {} } as any,
+      );
+
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        credentialStoreUnreadable: true,
+      });
+
+      githubService.setToken("ghp_replacement_token");
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        credentialStoreUnreadable: false,
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
       environment.restore();
     }
   });

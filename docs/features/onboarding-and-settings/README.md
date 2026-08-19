@@ -206,7 +206,10 @@ Shared types and IPC:
   client remains compatible with an older remote runtime, which simply omits
   them. The same module owns `GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY` — the
   single wording for the unreadable case, shared by the Settings card, the
-  integration banner, and the PR tab's main-process empty state. It lives beside
+  integration banner, the PR tab's main-process empty state, and the
+  Publish-to-GitHub dialog — which, in this state, drops the token field
+  entirely and offers only **Open connections**, because saving a token would
+  overwrite a sign-in that repair can still recover. It lives beside
   the field rather than in a renderer helper because the main process needs it
   too, and two hand-kept copies of one sentence is how the "not connected"
   masking survived in more than one place.

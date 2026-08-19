@@ -3,7 +3,7 @@ import { DEFAULT_ADE_ACCOUNT_DIRECTORY_URL } from "./accountDirectory";
 import {
   describeDiagnosticUploadFailure,
   diagnosticsUploadUrl,
-  MAX_DIAGNOSTIC_REPORT_BYTES,
+  MAX_DIAGNOSTIC_UPLOAD_BYTES,
   resolveDiagnosticsUploadBaseUrl,
   uploadDiagnosticReport,
 } from "./diagnosticsUpload";
@@ -100,11 +100,36 @@ describe("uploadDiagnosticReport", () => {
   it("refuses an oversized report locally instead of burning a daily upload", async () => {
     const { calls, fetchImpl } = capture(ok());
     await expect(uploadDiagnosticReport({
-      report: "x".repeat(MAX_DIAGNOSTIC_REPORT_BYTES + 1),
+      report: "x".repeat(MAX_DIAGNOSTIC_UPLOAD_BYTES + 1),
       baseUrl: BASE_URL,
       fetchImpl,
     })).resolves.toEqual({ ok: false, reason: "too_large" });
     expect(calls).toHaveLength(0);
+  });
+
+  it("never puts a body on the wire that the Worker's identical cap would refuse", async () => {
+    // The Worker bounds the whole request body, so a report sitting exactly at
+    // the cap is already over it once the JSON envelope is added. Caught here,
+    // it costs nothing; missed, it is a 413 that spends a request.
+    const atCap = capture(ok());
+    await expect(uploadDiagnosticReport({
+      report: "x".repeat(MAX_DIAGNOSTIC_UPLOAD_BYTES),
+      baseUrl: BASE_URL,
+      fetchImpl: atCap.fetchImpl,
+    })).resolves.toEqual({ ok: false, reason: "too_large" });
+    expect(atCap.calls).toHaveLength(0);
+
+    // The largest report that does fit is still sent, and what goes out is
+    // within the cap the Worker applies to the same bytes.
+    const envelope = new TextEncoder().encode(JSON.stringify({ report: "" })).byteLength;
+    const fits = capture(ok());
+    await expect(uploadDiagnosticReport({
+      report: "x".repeat(MAX_DIAGNOSTIC_UPLOAD_BYTES - envelope),
+      baseUrl: BASE_URL,
+      fetchImpl: fits.fetchImpl,
+    })).resolves.toMatchObject({ ok: true });
+    expect(new TextEncoder().encode(String(fits.calls[0]!.init.body)).byteLength)
+      .toBe(MAX_DIAGNOSTIC_UPLOAD_BYTES);
   });
 
   it("turns every refusal into a reason, never an exception on an error screen", async () => {

@@ -851,6 +851,11 @@ export function createGithubService({
   const buildCredentialInventory = async (): Promise<GitHubCredentialInventory> => {
     const patLookup = readPatAuthToken();
     const patTokenStored = Boolean(patLookup);
+    // Snapshotted here, next to `patTokenStored`, because the read that just ran
+    // is the one this verdict belongs to. `credentialStoreUnreadable` is shared
+    // mutable state: any other caller reading the same store during the `await`
+    // below would otherwise hand this inventory somebody else's outcome.
+    const storeUnreadableForThisRead = credentialStoreUnreadable;
     const environment = readEnvironmentAuthToken();
     const appStatus = appUserAuth.getAuthStatus();
     const [appResult, gh] = await Promise.all([
@@ -924,7 +929,7 @@ export function createGithubService({
       // is that read's outcome. An unreadable store also empties the App user
       // token (same file), which is why it is reported once for the whole
       // inventory rather than per source.
-      credentialStoreUnreadable,
+      credentialStoreUnreadable: storeUnreadableForThisRead,
     };
   };
 
