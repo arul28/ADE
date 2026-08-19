@@ -749,14 +749,20 @@ rather than by widening `appRevealPath`'s allowlist. Both, because a headless
 send is exactly the one the user was not present for, so a brain report is the
 one they are most likely to open.
 
-Delivery is the ledger's job, not the window's. `webContents.send` does not
-throw when the receiving renderer has crashed or has not mounted its toast
-host, so a successful send is ALWAYS recorded pending and is retired only when
-a renderer drains it (`IPC.diagnosticsFlushAutoSent`, on subscribe —
-event-driven, nothing polls). The immediate send to open windows is a fast path
-on top of that; a window that gets both keys the toast on
-`diagnostics-auto-sent-<reference>` and sees one. The brain has no window at all
-and relies on the same drain. The desktop and the brain can both report one
+Delivery is the ledger's job, not the window's, and only the window can close
+it. `webContents.send` does not throw when the receiving renderer has crashed or
+has not mounted its toast host, so a successful send is ALWAYS recorded pending,
+and *pending* means "no renderer has said it showed this". A renderer asks for
+the outstanding ones as it subscribes (`IPC.diagnosticsFlushAutoSent` —
+event-driven, nothing polls); that read retires nothing, because the window can
+still vanish between being handed a notice and rendering it. What retires one is
+the renderer acknowledging it after the toast exists
+(`IPC.diagnosticsAckAutoSent`). So a toast is never shown twice across restarts,
+and a window that dies mid-render repeats one toast rather than swallowing it.
+The immediate send to open windows is a fast path on top of that; a window that
+gets both keys the toast on `diagnostics-auto-sent-<reference>` and sees one, and
+acknowledges it either way. The brain has no window at all and waits for the
+same acknowledgement. The desktop and the brain can both report one
 incident; they carry different codes and surfaces, so both are individually
 useful, and the shared three-a-day ceiling bounds the duplication. Nothing else
 coordinates them, deliberately.

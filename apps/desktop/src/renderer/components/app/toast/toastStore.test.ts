@@ -342,6 +342,7 @@ describe("useAutoDiagnosticsToast", () => {
         }),
         revealReport: vi.fn(async () => {}),
         setSharing: vi.fn(async () => ({ enabled: false, sendsInWindow: 1, limit: 3 })),
+        ackAutoSent: vi.fn(async () => {}),
       },
     };
     Object.defineProperty(window, "ade", { value: bridge, configurable: true, writable: true });
@@ -381,11 +382,27 @@ describe("useAutoDiagnosticsToast", () => {
     expect(api.bridge.diagnostics.setSharing).toHaveBeenCalledWith(false);
   });
 
+  it("tells main the toast exists, so the next launch does not repeat it", () => {
+    // The ack is the ONLY thing that retires a notice: main cannot tell that
+    // `webContents.send` reached a live toast host, and listing the pending
+    // ones on subscribe deliberately clears nothing. It goes out after the
+    // toast, so a renderer that dies mid-render repeats one rather than
+    // swallowing it.
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+
+    expect(getToasts()).toHaveLength(1);
+    expect(api.bridge.diagnostics.ackAutoSent).toHaveBeenCalledWith(["abcd1234"]);
+  });
+
   it("shows one toast for a report delivered twice", () => {
-    // Main now keeps a successful send marked pending REGARDLESS of whether a
+    // Main keeps a successful send marked pending REGARDLESS of whether a
     // window was sent the notice, because `webContents.send` cannot report that
-    // anything received it. So the fast-path send and the later drain can both
-    // arrive; keying on the reference is what makes that safe.
+    // anything received it. So the fast-path send and the replay on subscribe
+    // can both arrive; keying on the reference is what makes that safe, and the
+    // repeated ack is a no-op on main.
     const api = installDiagnosticsApi();
     render(React.createElement(AutoDiagnosticsHarness));
 

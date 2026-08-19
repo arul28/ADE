@@ -73,12 +73,15 @@ export type AutoDiagnosticsSend = {
   /** Short upload handle, present once the upload succeeded. */
   reference: string | null;
   /**
-   * A successful send no renderer has drained yet.
+   * A successful send no renderer has acknowledged RENDERING yet.
    *
    * Set on EVERY successful send, including one made while a window was open:
    * `webContents.send` does not throw when the receiving renderer has crashed
    * or has not mounted its toast host, so nothing on the sending side can know
-   * the user was shown anything. Only a renderer draining this clears it.
+   * the user was shown anything. What clears it is the renderer saying so, once
+   * the toast exists (`ackAutoDiagnosticsNotices`). A renderer that dies between
+   * rendering and acknowledging costs one repeated toast, which is the honest
+   * side of the trade: the alternative is a send the user never hears about.
    */
   pending: boolean;
 };
@@ -211,6 +214,11 @@ function sleepSync(ms: number): void {
 
 const LOCK_RETRY_MS = 20;
 const LOCK_RETRY_ATTEMPTS = 5;
+/**
+ * The patient variant, for the one caller that must not give up early: ~1s of
+ * total wait, still bounded. See `setAutoDiagnosticsEnabled`.
+ */
+const LOCK_PATIENT_RETRY_ATTEMPTS = 50;
 
 /**
  * mkdir-based mutual exclusion, same idiom as the identity/relay store.
@@ -218,18 +226,22 @@ const LOCK_RETRY_ATTEMPTS = 5;
  * `mkdir` is atomic on every filesystem ADE runs on, and a crashed holder is
  * reclaimed after `LOCK_STALE_MS` rather than wedging the feature forever.
  *
- * The wait is deliberately tiny — five tries, 20ms apart, so at most ~100ms of
- * blocking. The critical section is one small file rewritten a handful of times
- * a day, so a contended lock is nearly always the other process finishing its
- * own write microseconds from now; a spin that short converts almost every
- * collision into a success while still refusing to queue. Callers keep their
- * fail-closed fallbacks for the case it does not: giving up on a claim is the
- * correct outcome, and losing a consent flip is not (see
- * `setAutoDiagnosticsEnabled`).
+ * The default wait is deliberately tiny — five tries, 20ms apart, so at most
+ * ~100ms of blocking PER ACQUIRE. The critical section is one small file
+ * rewritten a handful of times a day, so a contended lock is nearly always the
+ * other process finishing its own write microseconds from now; a spin that
+ * short converts almost every collision into a success while still refusing to
+ * queue. Callers keep their fail-closed fallbacks for the case it does not:
+ * giving up on a claim is the correct outcome, and losing a consent flip is not
+ * (see `setAutoDiagnosticsEnabled`, which is why `attempts` exists).
  */
-function acquireLock(filePath: string, now: () => number): (() => void) | null {
+function acquireLock(
+  filePath: string,
+  now: () => number,
+  attempts: number = LOCK_RETRY_ATTEMPTS,
+): (() => void) | null {
   const lockPath = `${filePath}.lock`;
-  for (let attempt = 0; attempt < LOCK_RETRY_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
       fs.mkdirSync(lockPath);
@@ -258,7 +270,7 @@ function acquireLock(filePath: string, now: () => number): (() => void) | null {
       }
       // A lock we just reclaimed is free right now, so retry immediately; a
       // live one needs the holder to finish, which is what the pause is for.
-      if (!reclaimed && attempt < LOCK_RETRY_ATTEMPTS - 1) sleepSync(LOCK_RETRY_MS);
+      if (!reclaimed && attempt < attempts - 1) sleepSync(LOCK_RETRY_MS);
     }
   }
   return null;
@@ -275,8 +287,9 @@ function mutate<T>(
   now: () => number,
   fn: (state: AutoDiagnosticsState, readable: boolean) => { state: AutoDiagnosticsState | null; result: T },
   onLocked: () => T,
+  lockAttempts: number = LOCK_RETRY_ATTEMPTS,
 ): T {
-  const release = acquireLock(filePath, now);
+  const release = acquireLock(filePath, now, lockAttempts);
   if (!release) return onLocked();
   try {
     const { state, readable } = readState(filePath);
@@ -302,10 +315,10 @@ export function isAutoDiagnosticsEnabled(filePath: string): boolean {
  * This is a consent control: a toggle that reports a state it did not manage to
  * save would show the user an "off" that is really on.
  *
- * Three attempts, weakest last. The lock's own short spin already absorbs
- * ordinary contention, so reaching the unlocked write means a holder outlived
- * ~100ms — and dropping a withdrawal of consent is worse than the narrow race
- * that write carries.
+ * Four attempts, weakest third. The lock's own short spin absorbs ordinary
+ * contention; a patient retry (~1s) absorbs a holder that is slow rather than
+ * gone; only past that does the unlocked write run, because dropping a
+ * withdrawal of consent is worse than the narrow race that write carries.
  */
 export function setAutoDiagnosticsEnabled(
   filePath: string,
@@ -315,12 +328,13 @@ export function setAutoDiagnosticsEnabled(
   const now = deps.now ?? Date.now;
 
   /** The correct path. `null` means the lock never came free. */
-  const writeUnderLock = (): boolean | null =>
+  const writeUnderLock = (attempts?: number): boolean | null =>
     mutate<boolean | null>(
       filePath,
       now,
       (state) => ({ state: { ...state, enabled }, result: enabled }),
       () => null,
+      attempts,
     );
 
   const sendsFingerprint = (state: AutoDiagnosticsState): string => JSON.stringify(state.sends);
@@ -329,10 +343,15 @@ export function setAutoDiagnosticsEnabled(
    * The same read-modify-write with no lock held, which can clobber a
    * concurrent ledger write.
    *
-   * So it refuses to run into one it can see: the ledger is read twice and the
-   * replace is abandoned if it moved in between. That cannot close the window —
-   * only the lock does that — but it shrinks it from the whole read-modify-write
-   * to the gap between two adjacent statements, and an abandoned attempt still
+   * So it refuses to run into one it can SEE: the ledger is read twice and the
+   * replace is abandoned if it moved in between. That does not make the write
+   * safe. A holder still mid-write — one that has read but not yet replaced —
+   * is invisible to both reads and gets clobbered by this one, which is exactly
+   * the case that got us here, since reaching this line means a holder has
+   * already outlived ~1.1s of waiting. What bounds the damage is what the ledger
+   * holds: at worst one send's entry is lost, costing a repeated toast or one
+   * extra send against the day's budget, while the consent flip itself — the
+   * thing the user is waiting on — still lands. An abandoned attempt also still
    * has a locked retry behind it. `null` is "did not write".
    */
   const writeWithoutLock = (): boolean | null => {
@@ -348,7 +367,16 @@ export function setAutoDiagnosticsEnabled(
     }
   };
 
-  const persisted = writeUnderLock() ?? writeWithoutLock() ?? writeUnderLock();
+  // Worst case is ~1.2s of synchronous blocking on this call: ~100ms for the
+  // ordinary acquire, ~1s for the patient one, ~100ms for the final retry. That
+  // is a user-initiated toggle contending with a process that will not let go,
+  // so waiting a beat is better than persisting the wrong answer — and every
+  // wait here is bounded, none of them queue.
+  const persisted =
+    writeUnderLock()
+    ?? writeUnderLock(LOCK_PATIENT_RETRY_ATTEMPTS)
+    ?? writeWithoutLock()
+    ?? writeUnderLock();
   if (persisted != null) return persisted;
   // Nothing landed. Fail loudly in the only way a boolean can: report the
   // state on disk, so the pane redraws to what is real.
@@ -413,8 +441,8 @@ export function claimAutoDiagnosticsSend(args: {
  *
  * `pending` is how a send reaches the user's screen at all. The brain has no
  * renderer and the desktop cannot tell whether one received its notice, so a
- * successful send is left pending either way and a renderer drains it into a
- * toast the next time one subscribes.
+ * successful send is left pending either way, offered to the next renderer that
+ * subscribes, and cleared only when one acknowledges having toasted it.
  */
 export function completeAutoDiagnosticsSend(args: {
   filePath: string;
@@ -455,28 +483,66 @@ export type AutoDiagnosticsNotice = {
   reference: string | null;
 };
 
-/** Takes the successful sends nobody has been shown yet, clearing them. */
-export function drainAutoDiagnosticsNotices(
+/**
+ * The successful sends nobody has been shown yet.
+ *
+ * Read-only ON PURPOSE. Handing a notice to a renderer is not the same as the
+ * user seeing it — the window can go away, or never mount its toast host,
+ * between the two — so listing retires nothing. `ackAutoDiagnosticsNotices` is
+ * the only thing that clears `pending`, and it is called after the toast exists.
+ */
+export function listPendingAutoDiagnosticsNotices(filePath: string): AutoDiagnosticsNotice[] {
+  return readState(filePath).state.sends
+    .filter((entry) => entry.pending)
+    .map((entry) => ({
+      failureCode: entry.code,
+      reportPath: entry.reportPath,
+      reference: entry.reference,
+    }));
+}
+
+/**
+ * Retires the notices a renderer has actually put on screen.
+ *
+ * Matched by upload reference, which every pending entry has: `pending` is only
+ * ever set alongside a successful upload, and a successful upload always
+ * carries one. Unknown or already-cleared references are a no-op, so two
+ * windows that both toasted the same send can both acknowledge it, in any
+ * order, without the second one being an error.
+ *
+ * A lock we cannot take simply leaves the entry pending: repeating a toast once
+ * is the cheap failure, and it is the one this direction chooses.
+ */
+export function ackAutoDiagnosticsNotices(
   filePath: string,
+  references: readonly string[],
   deps: { now?: () => number } = {},
-): AutoDiagnosticsNotice[] {
+): void {
   const now = deps.now ?? Date.now;
-  return mutate<AutoDiagnosticsNotice[]>(
+  const wanted = new Set(
+    references.map((reference) => reference?.trim()).filter((reference): reference is string => !!reference),
+  );
+  if (wanted.size === 0) return;
+  mutate<void>(
     filePath,
     now,
     (state) => {
-      const pending = state.sends.filter((entry) => entry.pending);
-      if (pending.length === 0) return { state: null, result: [] };
+      if (!state.sends.some((entry) => entry.pending && entry.reference && wanted.has(entry.reference))) {
+        return { state: null, result: undefined };
+      }
       return {
-        state: { ...state, sends: state.sends.map((entry) => ({ ...entry, pending: false })) },
-        result: pending.map((entry) => ({
-          failureCode: entry.code,
-          reportPath: entry.reportPath,
-          reference: entry.reference,
-        })),
+        state: {
+          ...state,
+          sends: state.sends.map((entry) =>
+            entry.pending && entry.reference && wanted.has(entry.reference)
+              ? { ...entry, pending: false }
+              : entry,
+          ),
+        },
+        result: undefined,
       };
     },
-    () => [],
+    () => undefined,
   );
 }
 

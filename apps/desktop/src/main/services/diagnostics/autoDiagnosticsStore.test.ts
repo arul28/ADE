@@ -3,11 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ackAutoDiagnosticsNotices,
   AUTO_DIAGNOSTICS_WINDOW_MS,
   claimAutoDiagnosticsSend,
   completeAutoDiagnosticsSend,
-  drainAutoDiagnosticsNotices,
   isAutoDiagnosticsEnabled,
+  listPendingAutoDiagnosticsNotices,
   normalizeAutoDiagnosticsFailureCode,
   readAutoDiagnosticsState,
   resolveAutoDiagnosticsStateFile,
@@ -172,11 +173,14 @@ describe("auto diagnostics budget", () => {
     }
   });
 
-  it("hands a brain-side send to the desktop exactly once", () => {
-    const filePath = stateFile();
+  function recordPendingSend(
+    filePath: string,
+    failureCode: string,
+    reference: string,
+  ): void {
     const claim = claimAutoDiagnosticsSend({
       filePath,
-      failureCode: "snapshot_failed",
+      failureCode,
       source: "brain",
       now: () => T0,
     });
@@ -184,19 +188,51 @@ describe("auto diagnostics budget", () => {
     if (!claim.allowed) return;
     completeAutoDiagnosticsSend({
       filePath,
-      failureCode: "snapshot_failed",
+      failureCode,
       atMs: claim.atMs,
       reportPath: "/tmp/report.md",
-      reference: "abcd1234",
+      reference,
       pending: true,
       now: () => T0,
     });
+  }
 
-    expect(drainAutoDiagnosticsNotices(filePath, { now: () => T0 })).toEqual([
-      { failureCode: "snapshot_failed", reportPath: "/tmp/report.md", reference: "abcd1234" },
+  it("keeps offering a brain-side send until a renderer says it showed it", () => {
+    const filePath = stateFile();
+    recordPendingSend(filePath, "snapshot_failed", "abcd1234");
+
+    const notice = {
+      failureCode: "snapshot_failed",
+      reportPath: "/tmp/report.md",
+      reference: "abcd1234",
+    };
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([notice]);
+    // Listing is not showing. Nothing has claimed to have put this on screen,
+    // so it is still on offer — including to a window that opens later.
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([notice]);
+
+    ackAutoDiagnosticsNotices(filePath, ["abcd1234"], { now: () => T0 });
+    // Acknowledged means shown: the next launch must not toast it again.
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([]);
+  });
+
+  it("takes an acknowledgement from either window and ignores one for nothing", () => {
+    const filePath = stateFile();
+    recordPendingSend(filePath, "snapshot_failed", "abcd1234");
+    recordPendingSend(filePath, "disk_full", "efgh5678");
+
+    // Two windows both got the fast-path notice and both toasted it; the second
+    // ack is a no-op rather than an error, and so is one for a send that never
+    // existed or was already retired.
+    ackAutoDiagnosticsNotices(filePath, ["abcd1234"], { now: () => T0 });
+    ackAutoDiagnosticsNotices(filePath, ["abcd1234"], { now: () => T0 });
+    ackAutoDiagnosticsNotices(filePath, ["nosuchref", ""], { now: () => T0 });
+
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([
+      { failureCode: "disk_full", reportPath: "/tmp/report.md", reference: "efgh5678" },
     ]);
-    // Drained means shown: a second window must not toast the same report.
-    expect(drainAutoDiagnosticsNotices(filePath, { now: () => T0 })).toEqual([]);
+    ackAutoDiagnosticsNotices(filePath, ["efgh5678"], { now: () => T0 });
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([]);
   });
 });
 

@@ -13,8 +13,9 @@ import {
   type AutoDiagnosticsUploadResult,
 } from "./autoDiagnosticsSend";
 import {
-  drainAutoDiagnosticsNotices,
+  ackAutoDiagnosticsNotices,
   isAutoDiagnosticsEnabled,
+  listPendingAutoDiagnosticsNotices,
   readAutoDiagnosticsState,
   setAutoDiagnosticsEnabled,
   type AutoDiagnosticsNotice,
@@ -68,7 +69,7 @@ export type AutoDiagnosticsServiceDeps = {
   /**
    * Fires once per successful send so a window that is up can toast
    * immediately. It is a fast path only: the send is recorded pending either
-   * way and a renderer's drain is what actually retires it.
+   * way and the renderer's acknowledgement is what actually retires it.
    */
   onSent?: (notice: AutoDiagnosticsSentNotice) => void;
   capture?: (input: ProductAnalyticsCapture) => void;
@@ -91,11 +92,14 @@ export type AutoDiagnosticsService = {
   setEnabled: (enabled: boolean) => boolean;
   getStatus: () => { enabled: boolean; sendsInWindow: number; limit: number };
   /**
-   * Shows the toasts for sends no renderer has drained yet — the brain's, and
-   * any this process made while no window was listening. Called when a renderer
-   * subscribes, so there is no timer behind it.
+   * The sends no renderer has acknowledged showing yet — the brain's, and any
+   * this process made while no window was listening. Read when a renderer
+   * subscribes, so there is no timer behind it. Listing does NOT retire them:
+   * `ackNotices` does, once the toast is on screen.
    */
-  flushPendingNotices: () => AutoDiagnosticsNotice[];
+  listPendingNotices: () => AutoDiagnosticsNotice[];
+  /** Retires the notices a renderer has actually rendered. Idempotent. */
+  ackNotices: (references: readonly string[]) => void;
 };
 
 export function createAutoDiagnosticsService(
@@ -146,6 +150,8 @@ export function createAutoDiagnosticsService(
     isEnabled: () => isAutoDiagnosticsEnabled(deps.stateFilePath),
     setEnabled: (enabled) => setAutoDiagnosticsEnabled(deps.stateFilePath, enabled, { now }),
     getStatus: () => readAutoDiagnosticsState(deps.stateFilePath, { now }),
-    flushPendingNotices: () => drainAutoDiagnosticsNotices(deps.stateFilePath, { now }),
+    listPendingNotices: () => listPendingAutoDiagnosticsNotices(deps.stateFilePath),
+    ackNotices: (references) =>
+      ackAutoDiagnosticsNotices(deps.stateFilePath, references, { now }),
   };
 }

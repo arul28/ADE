@@ -4839,8 +4839,18 @@ export function registerIpc({
     },
   );
 
+  /**
+   * Hands over the notices nobody has been shown, and clears NOTHING.
+   *
+   * Clearing here would record "asked" as "displayed" — the same mistake the
+   * fast path already cannot make — and this handler is the one place where the
+   * difference is visible: the window can vanish between this loop and the
+   * toast. The renderer acknowledges each reference once it has rendered it
+   * (`diagnosticsAckAutoSent`), and that is the only thing that retires a
+   * notice.
+   */
   ipcMain.handle(IPC.diagnosticsFlushAutoSent, async (event): Promise<void> => {
-    const pending = autoDiagnosticsService?.flushPendingNotices() ?? [];
+    const pending = autoDiagnosticsService?.listPendingNotices() ?? [];
     for (const notice of pending) {
       try {
         event.sender.send(IPC.diagnosticsAutoSent, {
@@ -4849,11 +4859,25 @@ export function registerIpc({
           reference: notice.reference ?? "",
         } satisfies DiagnosticsAutoSentPayload);
       } catch {
-        // A window that went away between the drain and the send simply does
-        // not get the toast; the report was still sent.
+        // A window that went away simply does not get the toast; the report was
+        // still sent, and it stays pending for the next window to show.
       }
     }
   });
+
+  ipcMain.handle(
+    IPC.diagnosticsAckAutoSent,
+    async (_event, arg: { references?: unknown } | undefined): Promise<void> => {
+      const references = Array.isArray(arg?.references)
+        ? arg.references
+            .filter((value): value is string => typeof value === "string")
+            // A renderer only ever holds the handful it was just sent; the cap
+            // is here so a malformed caller cannot hand this a huge array.
+            .slice(0, 64)
+        : [];
+      autoDiagnosticsService?.ackNotices(references);
+    },
+  );
 
   /**
    * Reveals a saved auto-report, and nothing else.

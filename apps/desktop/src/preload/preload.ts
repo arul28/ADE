@@ -4119,13 +4119,19 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.diagnosticsSetSharing, { enabled }),
     revealReport: (reportPath: string): Promise<void> =>
       ipcRenderer.invoke(IPC.diagnosticsRevealReport, { reportPath }),
+    /**
+     * "I have shown these to the user." Main stops offering them; anything it
+     * does not hear about is offered again next time a renderer subscribes.
+     */
+    ackAutoSent: (references: string[]): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsAckAutoSent, { references }),
     onAutoSent: (cb: (payload: DiagnosticsAutoSentPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: DiagnosticsAutoSentPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.diagnosticsAutoSent, listener);
-      // Subscribing is what releases any send the brain made while no window
+      // Subscribing is what asks for any send the brain made while no window
       // was listening, so a headless auto-send still gets its toast and nothing
       // has to poll for one. Registered before the call, so the reply cannot
       // arrive ahead of the listener.

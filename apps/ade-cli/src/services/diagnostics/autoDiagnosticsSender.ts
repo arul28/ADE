@@ -29,7 +29,8 @@ import { diagnosticReportFilePath, writeDiagnosticReportFile } from "./diagnosti
  * computer rather than three per process, and the guarantees are not restated
  * here to drift. What it cannot do is show a toast: there may be no window at
  * all. Successful sends are left pending in the shared ledger, and the desktop
- * drains them into the same toast the next time a renderer subscribes.
+ * shows them in the same toast the next time a renderer subscribes — the
+ * renderer's acknowledgement is what finally retires the entry.
  *
  * The desktop and the brain can both report the same incident — a brain that
  * cannot publish is also a brain the recovery screen may diagnose. They carry

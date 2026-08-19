@@ -904,15 +904,12 @@ declare global {
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
       };
       /**
-       * Absent on older preloads: every call site must tolerate `undefined`
-       * and simply not offer the button.
-       */
-      /**
        * Optional as a GROUP, because an older preload has no `diagnostics` at
-       * all and every call site already guards on the group. The members inside
-       * are not: they all shipped together, so a build that exposes the group
-       * exposes all of them, and marking them individually optional would only
-       * teach call sites to write `?.()` chains that can never fire.
+       * all: every call site must tolerate `undefined` and simply not offer the
+       * button. The members inside are not optional — they all shipped
+       * together, so a build that exposes the group exposes all of them, and
+       * marking them individually optional would only teach call sites to write
+       * `?.()` chains that can never fire.
        */
       diagnostics?: {
         openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
@@ -926,6 +923,11 @@ declare global {
         setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
         revealReport: (reportPath: string) => Promise<void>;
         onAutoSent: (cb: (payload: DiagnosticsAutoSentPayload) => void) => () => void;
+        /**
+         * Confirms these references reached the screen, so main stops offering
+         * them on the next subscribe. Called after the toast is rendered.
+         */
+        ackAutoSent: (references: string[]) => Promise<void>;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;

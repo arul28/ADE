@@ -162,36 +162,44 @@ describe("createAutoDiagnosticsService", () => {
       .resolves.toBe("skipped_budget");
   });
 
-  it("holds a send nobody was listening for until a window drains it", async () => {
+  it("holds a send nobody was listening for until a window says it showed it", async () => {
     const { service, filePath } = harness({ onSent: undefined });
 
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
       .resolves.toBe("completed");
 
-    expect(service.flushPendingNotices()).toEqual([
-      { failureCode: "disk_full", reportPath: "/tmp/reports/report.md", reference: "abcd1234" },
-    ]);
-    expect(service.flushPendingNotices()).toEqual([]);
+    const notice = {
+      failureCode: "disk_full",
+      reportPath: "/tmp/reports/report.md",
+      reference: "abcd1234",
+    };
+    expect(service.listPendingNotices()).toEqual([notice]);
+    // No renderer acknowledged it, so it is still on offer — being handed to a
+    // window that then dies is not the same as being seen.
+    expect(service.listPendingNotices()).toEqual([notice]);
+
+    service.ackNotices(["abcd1234"]);
+    expect(service.listPendingNotices()).toEqual([]);
     expect(fs.existsSync(filePath)).toBe(true);
   });
 
-  it("still holds the notice when a window took the fast-path toast", async () => {
-    // Regression: `webContents.send` does not throw when the renderer has
-    // crashed or has not mounted its toast host, so "a window existed" was
-    // being recorded as "the user was told" and the notice was retired
-    // unshown. A successful send is now ALWAYS pending until a renderer
-    // drains it; the immediate send is only a fast path.
-    const { service, onSent } = harness();
+  it("stops re-toasting a fast-path send across a restart once it is acknowledged", async () => {
+    // Regression, both halves. `webContents.send` does not throw when the
+    // renderer has crashed or has not mounted its toast host, so "a window
+    // existed" must not be recorded as "the user was told" — but leaving it
+    // pending forever meant the live toast came back at every launch. The
+    // renderer's ack is what closes it, and it survives the process.
+    const { service, filePath, onSent } = harness();
 
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
       .resolves.toBe("completed");
-
     expect(onSent).toHaveBeenCalledTimes(1);
-    expect(service.flushPendingNotices()).toEqual([
-      { failureCode: "disk_full", reportPath: "/tmp/reports/report.md", reference: "abcd1234" },
-    ]);
-    // Drained once and only once, so the redundant delivery is bounded at one.
-    expect(service.flushPendingNotices()).toEqual([]);
+    // The window that got the fast path toasted it and said so.
+    service.ackNotices(["abcd1234"]);
+
+    // Next launch: a brand new service over the same ledger.
+    const { service: afterRestart } = harness({ stateFilePath: filePath });
+    expect(afterRestart.listPendingNotices()).toEqual([]);
   });
 
   it("records the send even when the toast listener throws", async () => {
@@ -203,7 +211,7 @@ describe("createAutoDiagnosticsService", () => {
 
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
       .resolves.toBe("completed");
-    expect(service.flushPendingNotices()).toHaveLength(1);
+    expect(service.listPendingNotices()).toHaveLength(1);
   });
 
   it("exposes the toggle the settings pane and the toast both write", async () => {

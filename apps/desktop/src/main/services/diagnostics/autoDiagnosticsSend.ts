@@ -104,11 +104,18 @@ export type AutoDiagnosticsSendArgs<TBuilt> = {
  * definition of the flag. It used to derive from whether `onSent` claimed the
  * toast was delivered, which cannot be known: `webContents.send` does not throw
  * when the receiving renderer has crashed or has not mounted its toast host, so
- * "a window existed" was being recorded as "the user was told". A send is
- * therefore left pending until a renderer actually drains it
- * (`IPC.diagnosticsFlushAutoSent`), and the fast-path `onSent` above may deliver
- * the same notice first — safe, because the renderer keys the toast on
- * `diagnostics-auto-sent-${reference}` and a repeat replaces it in place.
+ * "a window existed" was being recorded as "the user was told". Nothing on this
+ * side can retire it, therefore: pending means "no renderer has said it showed
+ * this", and it is cleared only when one does say so
+ * (`IPC.diagnosticsAckAutoSent`, sent after the toast is rendered). Listing the
+ * pending notices on subscribe (`IPC.diagnosticsFlushAutoSent`) deliberately
+ * clears nothing.
+ *
+ * The fast-path `onSent` above may deliver the same notice ahead of that list —
+ * safe twice over: the renderer keys the toast on
+ * `diagnostics-auto-sent-${reference}` so a repeat replaces it in place, and
+ * the ack is idempotent. The record is written BEFORE `onSent` fires so an ack
+ * can never arrive ahead of the entry it names.
  */
 export async function runAutoDiagnosticsSend<TBuilt>(
   args: AutoDiagnosticsSendArgs<TBuilt>,

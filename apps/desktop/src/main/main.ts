@@ -2611,8 +2611,8 @@ app.whenReady().then(async () => {
     // Fast path only. `webContents.send` does not throw when the renderer has
     // crashed or has not mounted its toast host, so nothing here can tell that
     // the user was actually shown anything — which is why the send stays marked
-    // pending regardless and a renderer's drain is what retires it. A window
-    // that gets both keys the toast on the same id and sees one.
+    // pending regardless and only a renderer's acknowledgement retires it. A
+    // window that gets both keys the toast on the same id and sees one.
     onSent: (notice) => {
       for (const win of BrowserWindow.getAllWindows()) {
         try {

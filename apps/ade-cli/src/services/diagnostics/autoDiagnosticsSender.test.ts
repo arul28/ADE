@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  drainAutoDiagnosticsNotices,
+  listPendingAutoDiagnosticsNotices,
   resolveAutoDiagnosticsStateFile,
   setAutoDiagnosticsEnabled,
 } from "../../../../desktop/src/main/services/diagnostics/autoDiagnosticsStore";
@@ -75,7 +75,7 @@ describe("createBrainAutoDiagnostics", () => {
     );
 
     // No renderer here, so the send waits to be shown rather than vanishing.
-    expect(drainAutoDiagnosticsNotices(stateFilePath, { now: () => T0 })).toEqual([
+    expect(listPendingAutoDiagnosticsNotices(stateFilePath)).toEqual([
       {
         failureCode: "machine_revoked",
         reportPath: writeReportFile.mock.calls[0]?.[0] ?? null,
@@ -113,6 +113,6 @@ describe("createBrainAutoDiagnostics", () => {
     await expect(sender.report({ failureCode: "snapshot_failed", surface: "account_publisher" }))
       .resolves.toBe("failed");
     // Nothing succeeded, so there is nothing to tell the user about.
-    expect(drainAutoDiagnosticsNotices(stateFilePath, { now: () => T0 })).toEqual([]);
+    expect(listPendingAutoDiagnosticsNotices(stateFilePath)).toEqual([]);
   });
 });
