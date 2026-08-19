@@ -83,7 +83,14 @@ function Stop-InstalledProductProcesses {
   })
   foreach ($supervisor in $supervisors) {
     if ((Invoke-TaskKill ([string]$supervisor.ProcessId)) -ne 0) {
-      throw "Could not stop channel-owned ADE supervisor $($supervisor.ProcessId) before repair."
+      # The process list is a snapshot, so a supervisor can exit on its own
+      # between the snapshot and the kill - which is the state we wanted. Only
+      # a PID that is still there AND still the channel-owned supervisor is a
+      # real failure.
+      $remaining = Get-CimInstance Win32_Process -Filter "ProcessId = $($supervisor.ProcessId)" -ErrorAction SilentlyContinue
+      if ($remaining -and ([string]$remaining.CommandLine).IndexOf($launcherPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        throw "Could not stop channel-owned ADE supervisor $($supervisor.ProcessId) before repair."
+      }
     }
   }
   $processes = @($allProcesses | Where-Object {
