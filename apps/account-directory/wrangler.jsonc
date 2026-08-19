@@ -45,26 +45,12 @@
   // is NOT created by deploying — run `wrangler r2 bucket create` first (see
   // README, "Diagnostic report uploads"). Missing binding is handled: the route
   // answers 503 and the in-app button reports that sending is unavailable.
-  //
-  // TEMPORARILY UNBOUND (v1.2.61 release). R2 is not enabled on this Cloudflare
-  // account: bucket creation fails with "Please enable R2 through the Cloudflare
-  // Dashboard [code: 10042]", and a Worker bound to a bucket that cannot exist
-  // fails to start — which would take down machine registration and pairing for
-  // every user, not just diagnostics. Leaving DIAGNOSTICS unbound is the
-  // designed degradation: `DiagnosticsEnv` types it `DIAGNOSTICS?: R2Bucket`,
-  // the upload route answers 503, and the in-app "Send to ADE" button reports
-  // that sending is unavailable. Every other route is unaffected.
-  //
-  // TO RE-ENABLE, once the R2 subscription is added to the account:
-  //   1. revert this commit (restores both `r2_buckets` blocks verbatim)
-  //   2. npx wrangler r2 bucket create ade-diagnostics
-  //      npx wrangler r2 bucket create ade-diagnostics-production
-  //   3. add the 90-day expiry lifecycle rule to BOTH buckets — nothing in the
-  //      Worker ever deletes a report (see README, step 4)
-  //   4. npm run deploy:production
-  //   5. verify the fail-closed probes: garbage Bearer -> 401, >512 KiB -> 413
-  //
-  // "r2_buckets": [{ "binding": "DIAGNOSTICS", "bucket_name": "ade-diagnostics" }],
+  "r2_buckets": [
+    {
+      "binding": "DIAGNOSTICS",
+      "bucket_name": "ade-diagnostics"
+    }
+  ],
   "env": {
     "production": {
       "name": "ade-account-directory-production",
@@ -82,12 +68,13 @@
           "database_id": "38ebe0bb-ac4d-4b39-b73e-bab2f0092971",
           "migrations_dir": "migrations"
         }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "DIAGNOSTICS",
+          "bucket_name": "ade-diagnostics-production"
+        }
       ]
-      // DIAGNOSTICS is unbound here for the same reason as the top-level
-      // environment — see the note above `env` for why, and for the exact
-      // re-enable steps. The production bucket was `ade-diagnostics-production`.
-      //
-      // "r2_buckets": [{ "binding": "DIAGNOSTICS", "bucket_name": "ade-diagnostics-production" }]
     }
   }
 }
