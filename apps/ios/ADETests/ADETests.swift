@@ -6432,8 +6432,8 @@ final class ADETests: XCTestCase {
         ('pr-one', '2026-04-22T00:30:00.000Z'),
         ('pr-two', '2026-04-22T00:40:00.000Z');
       insert into pr_groups(id, project_id, group_type, name, target_branch, created_at) values
-        ('group-one', 'project-1', 'queue', 'Project one queue', 'main', '2026-04-22T00:30:00.000Z'),
-        ('group-two', 'project-2', 'queue', 'Project two queue', 'main', '2026-04-22T00:40:00.000Z');
+        ('group-one', 'project-1', 'integration', 'Project one integration', 'main', '2026-04-22T00:30:00.000Z'),
+        ('group-two', 'project-2', 'integration', 'Project two integration', 'main', '2026-04-22T00:40:00.000Z');
       insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values
         ('member-one', 'group-one', 'pr-one', 'lane-one', 0, 'source'),
         ('member-two', 'group-two', 'pr-two', 'lane-two', 0, 'source');
@@ -11560,7 +11560,11 @@ final class ADETests: XCTestCase {
       ),
     ]
 
-    XCTAssertEqual(filterPullRequestListItems(items, query: "review", state: .all).map(\.id), ["pr-1"])
+    // Search is a substring match over title/branches/lane/repo, so "review"
+    // matches pr-1 ("Improve review timeline") and pr-2 ("Draft review
+    // workflow") while excluding pr-3 — narrowing to one row is the job of the
+    // state filter, asserted below.
+    XCTAssertEqual(filterPullRequestListItems(items, query: "review", state: .all).map(\.id), ["pr-1", "pr-2"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .draft).map(\.id), ["pr-2"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "cleanup", state: .merged).map(\.id), ["pr-3"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["pr-1"])
@@ -13814,7 +13818,7 @@ final class ADETests: XCTestCase {
 
     try database.executeSqlForTesting("""
       insert into pr_groups(id, project_id, group_type, name, target_branch, created_at)
-      values ('group-1', 'project-1', 'queue', 'Queue rollout', 'main', '2026-03-17T00:15:00.000Z');
+      values ('group-1', 'project-1', 'integration', 'Integration rollout', 'main', '2026-03-17T00:15:00.000Z');
     """)
     try database.executeSqlForTesting("""
       insert into pr_group_members(id, group_id, pr_id, lane_id, position, role)
@@ -25052,12 +25056,15 @@ final class RosterDeltaTests: XCTestCase {
       }
       """.utf8)
     let cleanExit = try JSONDecoder().decode(RemoteRosterChat.self, from: cleanExitData)
+    XCTAssertEqual(cleanExit.exitCode, 0)
+    // Process completion is not a lifecycle declaration: settle is declared-only
+    // (`settledAt`), so a clean exit with no declaration rests at `.ended`.
     XCTAssertEqual(
       workCanonicalSessionState(
         session: cleanExit.asTerminalSessionSummary(laneName: "Feature"),
         summary: nil
       ).phase,
-      .settled
+      .ended
     )
 
     let legacyData = Data("""

@@ -575,6 +575,115 @@ jobs:
           src/main/services/sync/syncHostService.test.ts
           src/main/services/sync/syncService.test.ts
 
+  # ── iOS build + unit tests ────────────────────────────────────────────
+  # The iOS app is otherwise the only ADE surface with zero CI coverage, and
+  # three consecutive merges (#1117, #1120, #1121) each landed a Swift compile
+  # break that stayed invisible until someone built locally. This job keeps the
+  # ADE scheme compiling and ADETests green on every change that can affect
+  # them.
+  #
+  # It always RUNS (ci-pass treats "skipped" as failure, deliberately), but on
+  # pull requests that do not touch apps/ios/** or this workflow it exits
+  # success immediately, so non-iOS PRs pay only runner spin-up. Pushes to main
+  # and workflow_dispatch always execute the full build + test.
+  test-ios:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Depth 2 keeps the PR merge commit's parents available, so the
+          # gating step below can diff the merge against its base parent.
+          fetch-depth: 2
+          # xcodebuild executes PR-controlled build phases; it never needs
+          # authenticated git, so don't leave the token in .git/config.
+          persist-credentials: false
+
+      - name: Decide whether iOS is affected
+        id: gate
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # checkout@v4 checks out the PR merge commit; diffing it against its
+          # base parent yields exactly the changes this PR introduces.
+          changed=$(git diff --name-only HEAD^1 HEAD || true)
+          if printf '%s\n' "$changed" | grep -qE '^(apps/ios/|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No apps/ios changes in this PR; skipping the iOS build."
+          fi
+
+      - name: Select Xcode 26
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [[ -n "$latest" ]]; then
+            sudo xcode-select -s "$latest/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Cache Swift packages
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/spm-packages
+          key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-v1-
+
+      - name: Build for testing
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          cd apps/ios
+          xcodebuild \
+            -project ADE.xcodeproj \
+            -scheme ADE \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
+            -clonedSourcePackagesDirPath ~/spm-packages \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            -quiet \
+            build-for-testing
+
+      - name: Run ADETests
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          cd apps/ios
+          dest_id=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable and (.name | startswith("iPhone")))][0].udid')
+          if [[ -z "$dest_id" || "$dest_id" == "null" ]]; then
+            echo "::error::No available iPhone simulator on this runner image"
+            xcrun simctl list devices
+            exit 1
+          fi
+          xcodebuild \
+            -project ADE.xcodeproj \
+            -scheme ADE \
+            -destination "platform=iOS Simulator,id=$dest_id" \
+            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
+            -clonedSourcePackagesDirPath ~/spm-packages \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            -parallel-testing-enabled NO \
+            -quiet \
+            test-without-building
+
+      - name: Upload test results on failure
+        if: failure() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+
   validate-docs:
     needs: install
     runs-on: ubuntu-latest
@@ -625,6 +734,7 @@ jobs:
       - build
       - build-runtime-binaries
       - windows-foundation
+      - test-ios
       - validate-docs
     runs-on: ubuntu-latest
     steps:
