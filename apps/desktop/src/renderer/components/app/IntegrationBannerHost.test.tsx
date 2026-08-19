@@ -393,6 +393,35 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     expect(labels.some((label) => /reconnect|connect github|fix github|set up/i.test(label))).toBe(false);
   });
 
+  it("lets an unreadable credential store pierce the outage suppression", async () => {
+    // The unreadable store is a local, repairable fact that outlives any GitHub
+    // incident, and this banner is the discovery surface for the Repair path —
+    // an outage must not hide the one thing the user can actually fix.
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => makeAuth({ tokenStored: false })),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(
+        <IntegrationBannerHost
+          {...baseProps({
+            githubStatus: makeOutageStatus({
+              serviceHealth: OUTAGE_HEALTH,
+              credentialStoreUnreadable: true,
+            }),
+          })}
+        />,
+      );
+    });
+    await act(async () => {});
+
+    // Both facts are on screen: the incident notice AND the repairable one.
+    expect(screen.getByText("GitHub is down")).toBeTruthy();
+    expect(screen.getByText(/can't read your saved sign-in/i)).toBeTruthy();
+  });
+
   it("sends the outage action to the live incident, not ADE settings", async () => {
     const openExternal = vi.fn(async () => {});
     Object.defineProperty(window, "ade", {

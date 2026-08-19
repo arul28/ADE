@@ -10508,8 +10508,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Deliberately above the `!conn` gate: the report reads local files only,
       // so it still answers while the runtime is unreachable — the state a bug
       // report is most worth filing from.
-      // `--send` too: the CLI spelling is the one half these users already know.
-      const wantsSend = /^--?send$|^send$/.test(args.trim().toLowerCase());
+      // `--send` too: the CLI spelling is the one half these users already know,
+      // including alongside other flags they may carry over (`--open --send`).
+      const wantsSend = args
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .some((argument) => /^--?send$/.test(argument) || argument === "send");
       try {
         const { buildTuiDiagnosticReport, sendTuiDiagnosticReport } = await import("./reportIssue");
         const built = buildTuiDiagnosticReport({ projectRoot: project.projectRoot });

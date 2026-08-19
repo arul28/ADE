@@ -1,6 +1,6 @@
 -- A machine identifier that survives a full `~/.ade` wipe.
 --
--- Supersede-by-device dedup (0006's index, and the register path that uses it)
+-- Supersede-by-device dedup (0007's index, and the register path that uses it)
 -- assumed the device id outlives a reinstall. It does not: `sync-device-id`
 -- lives in `~/.ade/secrets` next to the machine key, so the user who deletes
 -- `~/.ade` and signs in again mints BOTH halves fresh. There is then nothing to

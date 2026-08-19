@@ -423,8 +423,11 @@ export function describeGithubCliBanner(status: GitHubStatus): {
   const outage = describeGithubOutage(status);
   // Targeted at the GitHub card like every other GitHub-blaming state: an
   // outage is not a credential-store problem, so Connections has nothing for
-  // it. (The Repair control there is only for a store ADE cannot read.)
-  if (outage) return { ...outage, target: "github-settings" };
+  // it. (The Repair control there is only for a store ADE cannot read.) The
+  // action label is rewritten because this shape drops `actionUrl` — a button
+  // that navigates in-app must not read as a link to githubstatus.com; the
+  // settings card itself carries the real external incident link.
+  if (outage) return { ...outage, action: "Open GitHub settings", target: "github-settings" };
   if (status.connected && !githubStatusHasWriteCredential(status)) {
     return {
       subState: "no-write-credential",
