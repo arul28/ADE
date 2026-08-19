@@ -383,7 +383,26 @@ commands such as `release:mac:local`, `dist:mac:universal:signed`,
 
 ### Create the release tag
 
-After release docs are committed on `main`:
+**The tag must point at a commit that already has a green `ci-pass` check run.**
+`release-core.yml`'s `verify` job is fail-closed on it: it looks up the `ci-pass`
+check run for the tagged SHA and exits 1 with
+`No ci-pass check run was found for <sha>. Run CI before releasing.` when the
+check is absent, still running, or red. Merging the release-docs PR and tagging
+immediately is exactly how you hit this — the squash-merge creates a brand-new
+commit on `main` whose CI has not started yet.
+
+Wait for it before tagging:
+
+```bash
+RELEASE_SHA=$(git rev-parse origin/main)
+gh api "repos/arul28/ADE/commits/$RELEASE_SHA/check-runs" \
+  --jq '.check_runs[] | select(.name=="ci-pass") | {status,conclusion,html_url}'
+```
+
+Tag only when that prints `completed` / `success`. An empty result means CI has
+not reported on the commit yet.
+
+After release docs are committed on `main` and `ci-pass` is green:
 
 ```bash
 git fetch origin --tags --prune
@@ -395,6 +414,14 @@ git rev-parse --verify "v<VERSION>" >/dev/null && {
 }
 git tag -a "v<VERSION>" "$RELEASE_SHA" -m "ADE v<VERSION>"
 git push origin "v<VERSION>"
+```
+
+If you tagged early and `verify` failed, the tag is still correct and nothing
+was published — do **not** delete or move it. Wait for `ci-pass` to go green on
+the same SHA, then rerun only the failed job:
+
+```bash
+gh run rerun "$RUN_ID" --repo arul28/ADE --failed
 ```
 
 The pushed tag triggers `.github/workflows/release.yml`, which calls
