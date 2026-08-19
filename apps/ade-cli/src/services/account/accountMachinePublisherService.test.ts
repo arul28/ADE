@@ -190,6 +190,49 @@ describe("account machine publisher health", () => {
     });
   });
 
+  it("confirms only its own superseded machine keys, and tolerates a directory that sends none", async () => {
+    const confirmSupersededMachineKeys = vi.fn((keys: readonly unknown[]) =>
+      (keys as string[]).filter((key) => key === "machine-old"));
+    const info = vi.fn();
+    const warn = vi.fn();
+    let body: BodyInit | null = JSON.stringify({
+      ok: true,
+      supersededMachineKeys: ["machine-old", "somebody-elses-machine"],
+    });
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      confirmSupersededMachineKeys,
+      fetchImpl: vi.fn(async () => new Response(body, {
+        status: 200,
+        headers: body ? { "content-type": "application/json" } : undefined,
+      })),
+      logger: { info, warn },
+    });
+
+    await service.publishNow();
+
+    expect(confirmSupersededMachineKeys).toHaveBeenCalledWith([
+      "machine-old",
+      "somebody-elses-machine",
+    ]);
+    expect(info).toHaveBeenCalledWith("account.machine_identity_superseded_confirmed", {
+      machineKey: "machine-studio",
+      previousMachineKeys: ["machine-old"],
+    });
+
+    // An older directory answers 204 with no body at all; the publish still
+    // succeeds and nothing is claimed.
+    confirmSupersededMachineKeys.mockClear();
+    body = null;
+    await service.publishNow();
+    expect(confirmSupersededMachineKeys).not.toHaveBeenCalled();
+    expect(service.getPublisherHealth().state).toBe("published");
+  });
+
   it("samples successful leg durations and escalates slow legs to warn", async () => {
     let clock = 0;
     let tokenDelayMs = 2;

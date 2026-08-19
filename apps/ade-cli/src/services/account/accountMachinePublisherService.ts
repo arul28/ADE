@@ -29,6 +29,10 @@ import {
   createMachineIdentitySigningStore,
   MACHINE_IDENTITY_SIGNING_FILE_NAME,
 } from "../sync/machineIdentitySigningStore";
+import {
+  createSyncCloudRelayStore,
+  SYNC_CLOUD_RELAY_FILE_NAME,
+} from "../sync/syncCloudRelayStore";
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
 
@@ -235,6 +239,26 @@ async function readMachineRevokedBounded(response: Response): Promise<{
 
 function readHttpReasonBounded(response: Response): Promise<string | null> {
   return boundedBodyRead(response, readAccountDirectoryHttpReason);
+}
+
+/**
+ * Read the keys a compatible directory says it retired for THIS device.
+ *
+ * Purely additive: a directory that predates the field, or answers 204, yields
+ * an empty list and nothing downstream changes. It exists so a rotation this
+ * machine performed can be confirmed as clean — the alternative is a roster
+ * where the owner cannot tell a retired key from a live one, which is how a
+ * working MacBook came to be deleted by hand.
+ */
+async function readSupersededMachineKeysBounded(response: Response): Promise<string[]> {
+  const keys = await boundedBodyRead(response, async (bounded) => {
+    const body: unknown = await bounded.clone().json();
+    if (!body || typeof body !== "object") return null;
+    const raw = (body as Record<string, unknown>).supersededMachineKeys;
+    if (!Array.isArray(raw)) return null;
+    return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+  });
+  return keys ?? [];
 }
 
 function failureLegForState(
@@ -483,6 +507,12 @@ export function createAccountMachinePublisherService(options: {
    * user's one proof on a request that has no use for it.
    */
   consumePairingGrant?: () => string | null;
+  /**
+   * Hand the directory's `supersededMachineKeys` to the identity store, which
+   * answers with the subset this machine actually retired. Optional so small
+   * and test publishers stay unaffected; absent means "do not reconcile".
+   */
+  confirmSupersededMachineKeys?: (keys: readonly unknown[]) => string[];
   directoryBaseUrl?: () => string | null | undefined;
   isSyncEnabled?: () => boolean;
   subscribeToSignIn?: (listener: () => void) => (() => void);
@@ -1165,6 +1195,26 @@ export function createAccountMachinePublisherService(options: {
         warnOnce("http_error", "http", legDurations, { status: response.status });
         return;
       }
+      // Read before draining. A directory that reports retired keys is telling
+      // this machine its rotation landed cleanly; nothing has to act on it, but
+      // an unexplained rotation is exactly what nobody could explain last time.
+      if (options.confirmSupersededMachineKeys) {
+        try {
+          const superseded = await readSupersededMachineKeysBounded(response);
+          const confirmed = superseded.length > 0
+            ? options.confirmSupersededMachineKeys(superseded)
+            : [];
+          if (confirmed.length > 0) {
+            options.logger?.info?.("account.machine_identity_superseded_confirmed", {
+              machineKey,
+              previousMachineKeys: confirmed,
+            });
+          }
+        } catch {
+          // An older directory sends no body at all; never fail a good publish
+          // over bookkeeping.
+        }
+      }
       await response.body?.cancel().catch(() => {});
       lastWarning = null;
       resetPublishCadence();
@@ -1481,6 +1531,13 @@ export function createBrainAccountMachinePublisherService(options: {
     filePath: path.join(options.secretsDir, MACHINE_IDENTITY_SIGNING_FILE_NAME),
     logger: options.logger,
   });
+  // Same file the machine key itself comes from, so a `supersededMachineKeys`
+  // answer is checked against the keys THIS machine retired rather than trusted
+  // wholesale. Reads reload the file, so a second instance is safe.
+  const cloudRelayStore = createSyncCloudRelayStore({
+    filePath: path.join(options.secretsDir, SYNC_CLOUD_RELAY_FILE_NAME),
+    logger: options.logger,
+  });
   return createAccountMachinePublisherService({
     getAccessToken: (tokenOptions) => getSignedInAccountAccessToken(
       accountAuthService,
@@ -1508,6 +1565,13 @@ export function createBrainAccountMachinePublisherService(options: {
     // Same shared auth service the access token comes from, so the grant a
     // device sign-in earned in this brain reaches the publish that needs it.
     consumePairingGrant: () => accountAuthService.consumePairingGrant(),
+    confirmSupersededMachineKeys: (keys) => {
+      try {
+        return cloudRelayStore.confirmSupersededMachineKeys(keys);
+      } catch {
+        return [];
+      }
+    },
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
       if (explicit?.trim()) {

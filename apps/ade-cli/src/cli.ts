@@ -95,6 +95,7 @@ import {
   startJsonRpcServer,
   type JsonRpcHandler,
   type JsonRpcId,
+  type JsonRpcInternalErrorReport,
   type JsonRpcRequest,
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
@@ -14141,6 +14142,21 @@ function reportContainedJsonRpcError(
   }
 }
 
+/**
+ * The full text behind a redacted `internalError` reply. It lands on stderr,
+ * which for the installed brain is `launchd.err.log` — one of the logs
+ * `ade report-issue` tails — so the `ref` the user was shown is searchable.
+ */
+function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
+  try {
+    process.stderr.write(
+      `ade jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
+    );
+  } catch {
+    // Stderr may be gone during shutdown; contained errors should stay contained.
+  }
+}
+
 function formatDiagnosticError(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
   if (typeof error === "string") return error;
@@ -14224,6 +14240,7 @@ function createHeadlessRpcServer(
     const stop = startJsonRpcServer(handler, transport, {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
       stop.notify(method, params),
@@ -16614,6 +16631,7 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
     stop = startJsonRpcServer(handler, createStdioTransport(), {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     unsubscribeNotifications = client.onAnyNotification((method, params) =>
       stop?.notify(method, params),
@@ -17187,8 +17205,16 @@ async function runServe(
   const machineCloudRelayFilePath = path.join(layout.secretsDir, "sync-cloud-relay.json");
   const machineCloudRelayStore = createSyncCloudRelayStore({
     filePath: machineCloudRelayFilePath,
+    // Every mint, rotation, and backup recovery of this machine's identity is
+    // logged here. A machine key that changes silently is how a live computer
+    // became a phantom row its owner deleted.
+    logger: headlessProjectLogger,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // Turns the "Reconnect this computer" button into something the machine can
+  // press for itself when the directory refuses it. Built below, next to the
+  // publisher it watches.
+  let machinePairingAutoRecovery: { start(): void; stop(): void } | null = null;
   // Held only while this brain hosts phone sync WITHOUT a project scope (a
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
@@ -17496,6 +17522,8 @@ async function runServe(
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    machinePairingAutoRecovery?.stop();
+    machinePairingAutoRecovery = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -17817,6 +17845,29 @@ async function runServe(
         reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
       });
     }
+    // A directory refusal used to dead-end: heartbeats stopped and the machine
+    // waited for a human to click "Reconnect this computer", which nobody ever
+    // sees on a headless box. This runs the identical repair on a slow, budgeted
+    // schedule. It reads the publisher through `getPublisher` rather than
+    // capturing it, because the publisher is destroyed and rebuilt whenever the
+    // sync host lease moves.
+    const { createMachinePairingAutoRecovery } = await import(
+      "./services/account/machinePairingAutoRecovery"
+    );
+    machinePairingAutoRecovery = createMachinePairingAutoRecovery({
+      getPublisher: () => accountMachinePublisher,
+      runRepair: () => repairMachinePairing(),
+      hasAccountSession: () => {
+        try {
+          return brainAccountAuthService.getStatus().signedIn === true;
+        } catch {
+          return false;
+        }
+      },
+      budget: machineCloudRelayStore,
+      logger: headlessProjectLogger,
+    });
+    machinePairingAutoRecovery.start();
   }
 
   process.stderr.write(
