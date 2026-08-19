@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MAX_DIAGNOSTIC_UPLOAD_BYTES } from "../../../desktop/src/shared/diagnosticsUpload";
 import {
   buildCliDiagnosticReport,
+  buildCliDiagnosticReportAsync,
   buildReportIssuePayload,
   describeDiagnosticUpload,
   openDiagnosticIssue,
@@ -30,6 +31,27 @@ function adeHome(analytics: Record<string, unknown> | null): string {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("buildCliDiagnosticReportAsync", () => {
+  // Two builders exist because the brain must not block its event loop on the
+  // collector's subprocesses, while the one-shot CLI has nothing to hold up.
+  // The only thing that keeps that split honest is that they produce the same
+  // report; a difference here is a report whose contents depend on which
+  // process sent it.
+  it("produces the same report as the synchronous builder", async () => {
+    const env = { ADE_HOME: adeHome({ identifiedUserHash: "hash-parity" }) };
+    const at = () => new Date("2026-08-19T22:30:00.000Z");
+
+    const sync = buildCliDiagnosticReport({ env, cliVersion: "1.2.62", now: at });
+    const async_ = await buildCliDiagnosticReportAsync({ env, cliVersion: "1.2.62", now: at });
+
+    expect(async_.report).toBe(sync.report);
+    expect(async_.installId).toBe(sync.installId);
+    expect(async_.issueUrl).toBe(sync.issueUrl);
+    expect(async_.reportsDir).toBe(sync.reportsDir);
+    expect(async_.secretsDir).toBe(sync.secretsDir);
+  });
 });
 
 describe("buildCliDiagnosticReport", () => {

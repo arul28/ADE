@@ -9,6 +9,7 @@ import {
 } from "../services/diagnostics/diagnosticReport";
 import {
   collectMachineDiagnosticSources,
+  collectMachineDiagnosticSourcesAsync,
   readDiagnosticJsonFile,
 } from "../services/diagnostics/diagnosticSources";
 import {
@@ -86,13 +87,20 @@ function readInstallId(secretsDir: string): string | null {
   return null;
 }
 
-export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): ReportIssueResult {
+/**
+ * The two builders below differ only in how they collect: a one-shot
+ * `ade report-issue` has nothing to hold up and stays synchronous, while a
+ * long-lived process must not block its event loop on the collector's
+ * subprocesses. Everything after collection is identical, so it lives here
+ * rather than being duplicated and drifting.
+ */
+function finishCliDiagnosticReport(
+  options: ReportIssueOptions,
+  inputs: { at: Date; projectRoot: string | null; surface: string },
+  sources: ReturnType<typeof collectMachineDiagnosticSources>,
+): ReportIssueResult {
+  const { at, projectRoot, surface } = inputs;
   const env = options.env ?? process.env;
-  const at = options.now?.() ?? new Date();
-  const projectRoot = options.projectRoot?.trim() || null;
-  const surface = options.surface?.trim() || "cli";
-
-  const sources = collectMachineDiagnosticSources({ env, projectRoot });
   const installId = readInstallId(sources.layout.secretsDir) ?? "unknown";
 
   const report = buildDiagnosticReport({
@@ -140,6 +148,43 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
       redaction: sources.redaction,
     }),
   };
+}
+
+function resolveCliReportInputs(options: ReportIssueOptions): {
+  at: Date;
+  projectRoot: string | null;
+  surface: string;
+} {
+  return {
+    at: options.now?.() ?? new Date(),
+    projectRoot: options.projectRoot?.trim() || null,
+    surface: options.surface?.trim() || "cli",
+  };
+}
+
+export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): ReportIssueResult {
+  const env = options.env ?? process.env;
+  const inputs = resolveCliReportInputs(options);
+  const sources = collectMachineDiagnosticSources({ env, projectRoot: inputs.projectRoot });
+  return finishCliDiagnosticReport(options, inputs, sources);
+}
+
+/**
+ * The builder for processes that stay alive. The brain sends automatic reports
+ * while it is serving RPC, and the collector shells out (`journalctl` on Linux,
+ * `Export-ScheduledTask` on Windows) with a 4s cap per command — synchronously,
+ * that is 4s of a frozen event loop for a report nobody asked for.
+ */
+export async function buildCliDiagnosticReportAsync(
+  options: ReportIssueOptions = {},
+): Promise<ReportIssueResult> {
+  const env = options.env ?? process.env;
+  const inputs = resolveCliReportInputs(options);
+  const sources = await collectMachineDiagnosticSourcesAsync({
+    env,
+    projectRoot: inputs.projectRoot,
+  });
+  return finishCliDiagnosticReport(options, inputs, sources);
 }
 
 /**
