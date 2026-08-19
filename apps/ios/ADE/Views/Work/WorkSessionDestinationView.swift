@@ -1559,7 +1559,6 @@ struct WorkSessionDestinationView: View {
       inputLockMessage: inputLockMessage,
       transitionNamespace: transitionNamespace,
       onOpenLane: openLaneAction,
-      onOpenParentSession: viewingSubagent ? nil : { openParentSession() },
       onSend: { text, attachments, mode in
         await sendMessage(text, attachments: attachments, deliveryMode: mode)
       },
@@ -1585,6 +1584,10 @@ struct WorkSessionDestinationView: View {
       onSelectRuntimeMode: selectRuntimeMode,
       onSelectEffort: selectReasoningEffort,
       onSelectCodexFastMode: selectCodexFastMode,
+      // Memberwise-init argument order follows property declaration order in
+      // WorkChatSessionView, where onOpenParentSession sits after the model
+      // controls.
+      onOpenParentSession: viewingSubagent ? nil : { openParentSession() },
       resolvedSessionStatus: resolvedSessionStatus,
       lanes: lanes,
       lanesRenderSignature: workLaneListRenderSignature(lanes),

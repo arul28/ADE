@@ -16113,7 +16113,9 @@ final class SyncService: ObservableObject {
     return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
   }
 
-  private func errorByClearingAmbiguousRouteAuthFailure(_ error: Error) -> Error {
+  // Pure NSError rewrite with no actor state; nonisolated so the connection
+  // race's task-group closures can call it off the main actor.
+  private nonisolated func errorByClearingAmbiguousRouteAuthFailure(_ error: Error) -> Error {
     let nsError = error as NSError
     var userInfo = nsError.userInfo
     userInfo[syncAmbiguousRouteAuthFailureKey] = false
