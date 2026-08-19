@@ -33,6 +33,9 @@ class FakeR2Bucket {
   /** Set to make every `put` reject, the way a bucket having a bad minute does. */
   putFailure: Error | null = null;
 
+  /** Same, for the listing the per-caller quota is counted from. */
+  listFailure: Error | null = null;
+
   async put(
     key: string,
     value: string | ArrayBuffer | ArrayBufferView,
@@ -56,6 +59,7 @@ class FakeR2Bucket {
     options?: { prefix?: string; limit?: number },
   ): Promise<{ objects: Array<{ key: string }>; truncated: boolean }> {
     this.listCalls.push({ prefix: options?.prefix, limit: options?.limit });
+    if (this.listFailure) throw this.listFailure;
     const prefix = options?.prefix ?? "";
     const keys = [...this.objects.keys()].filter((key) => key.startsWith(prefix)).sort();
     const limited = options?.limit === undefined ? keys : keys.slice(0, options.limit);
@@ -488,6 +492,34 @@ describe("diagnostics upload route", () => {
       status: 502,
       reason: "storage_write_failed",
       authenticated: false,
+    });
+  });
+
+  it("fails closed, and audibly, when the per-caller quota cannot be counted", async () => {
+    // A listing that throws used to escape as a bare 500 with no line at all,
+    // which is the one outcome support cannot tell from "the report never
+    // left the machine". It must also not spend a fleet slot on a report that
+    // was never going to be stored.
+    const env = makeEnv();
+    env.DIAGNOSTICS.listFailure = new Error("R2 unavailable");
+    const { result: response, lines } = await captureUploadLines(() =>
+      handleDiagnosticsRequest(
+        uploadRequest({ body: JSON.stringify({ report: REPORT }) }),
+        env,
+        FIXED_CLOCK,
+      ),
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "diagnostics upload unavailable" });
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(0);
+    expect(spentBudget(env)).toBe(0);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      outcome: "rejected",
+      status: 503,
+      reason: "quota_unavailable",
     });
   });
 

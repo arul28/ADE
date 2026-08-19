@@ -442,20 +442,30 @@ function parseUpload(contentType: string, raw: string, url: URL): ParsedUpload |
  * would let refusals the caller did not cause — a fleet budget that is out for
  * the day, a bucket having a bad minute — burn a quota that exists to bound how
  * much one caller can STORE, and lock an install out over nothing.
+ *
+ * `null` is "the quota could not be counted". FAILS CLOSED, exactly as the
+ * fleet budget does: a listing that throws would otherwise escape this function
+ * as a bare 500 with no `diagnostics_upload` line at all, and support could not
+ * tell that from a report that never left the machine.
  */
 async function spentToday(
   bucket: R2Bucket,
   identity: string,
   prefix: string,
   dayKey: string,
-): Promise<number> {
+): Promise<number | null> {
   const remembered = isolateUploadCounts.get(identity);
   const rememberedCount = remembered?.dayKey === dayKey ? remembered.count : 0;
   if (rememberedCount >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) return rememberedCount;
 
   // The durable half of the limit. `limit` stops one greedy prefix from
   // listing an unbounded page just to answer a yes/no question.
-  const listed = await bucket.list({ prefix, limit: MAX_DIAGNOSTIC_UPLOADS_PER_DAY + 1 });
+  let listed: R2Objects;
+  try {
+    listed = await bucket.list({ prefix, limit: MAX_DIAGNOSTIC_UPLOADS_PER_DAY + 1 });
+  } catch {
+    return null;
+  }
   const count = Math.max(listed.objects.length, rememberedCount);
   // A caller the listing shows is already full stays full for the rest of the
   // day, so remembering that saves a listing on each further attempt. Still a
@@ -567,6 +577,21 @@ export async function handleDiagnosticsRequest(
   const dayKey = utcDayKey(now);
   const prefix = `reports/${dayKey}/${identity}/`;
   const spent = await spentToday(bucket, identity, prefix, dayKey);
+  if (spent == null) {
+    // Nothing was claimed and nothing was stored — the fleet budget is not even
+    // touched, because a quota this route cannot count must not spend one.
+    logDiagnosticsUpload({
+      outcome: "rejected",
+      status: 503,
+      reason: "quota_unavailable",
+      identity,
+      authenticated: Boolean(userId),
+      bytes: parsed.report.length,
+      auto: parsed.auto,
+      failureCode: parsed.failureCode,
+    });
+    return json({ error: "diagnostics upload unavailable" }, { status: 503 });
+  }
   if (spent >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) {
     logDiagnosticsUpload({
       outcome: "rejected",

@@ -15,7 +15,7 @@ export function DiagnosticsSharingSection() {
   return (
     <ConsentToggleSection<DiagnosticsSharingStatus>
       id="diagnostics-sharing"
-      title="Diagnostics"
+      title="Diagnostics sharing"
       description="Send ADE a report when something breaks, so it can be fixed."
       icon={Lifebuoy}
       brandColor="#60A5FA"

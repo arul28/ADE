@@ -2635,11 +2635,17 @@ app.whenReady().then(async () => {
     // One call at the point the diagnosis is final. The service's own budget
     // makes a re-diagnosed screen cost nothing.
     onTerminalDiagnosis: ({ code, projectRoot }) => {
-      void autoDiagnosticsService.report({
-        failureCode: code,
-        surface: "project_recovery",
-        projectRoot,
-      });
+      // `report` is documented never to reject, and the same belt-and-braces
+      // catch the update transaction below carries applies here: a rejection
+      // from a path that is meant to be silent must not become an unhandled
+      // rejection in the main process.
+      void autoDiagnosticsService
+        .report({
+          failureCode: code,
+          surface: "project_recovery",
+          projectRoot,
+        })
+        .catch(() => undefined);
     },
   });
 
@@ -2716,10 +2722,12 @@ app.whenReady().then(async () => {
         // An update that half-landed is the failure people least often report
         // and the one hardest to reconstruct afterwards.
         if (failedStep) {
-          void autoDiagnosticsService.report({
-            failureCode: `update_${failedStep}`,
-            surface: "update_transaction",
-          });
+          void autoDiagnosticsService
+            .report({
+              failureCode: `update_${failedStep}`,
+              surface: "update_transaction",
+            })
+            .catch(() => undefined);
         }
       })
       .catch((error) => {

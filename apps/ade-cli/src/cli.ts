@@ -18008,11 +18008,16 @@ async function runServe(
         // dropped out of the account directory, and on a headless box there is
         // nobody to press "Report issue" about it.
         onSustainedFailure: ({ code }) => {
-          void brainAutoDiagnostics.report({
-            failureCode: code,
-            surface: "account_publisher",
-            headline: "This computer could not publish to your account",
-          });
+          // `report` is documented never to reject; the catch is what keeps a
+          // silent-by-design path from ever becoming an unhandled rejection
+          // that takes the brain down.
+          void brainAutoDiagnostics
+            .report({
+              failureCode: code,
+              surface: "account_publisher",
+              headline: "This computer could not publish to your account",
+            })
+            .catch(() => undefined);
         },
       });
       accountMachinePublisher.start();
@@ -18082,11 +18087,13 @@ async function runServe(
       logger: headlessProjectLogger,
       // The loop has stopped arguing and this computer is still disconnected.
       onGaveUp: ({ code }) => {
-        void brainAutoDiagnostics.report({
-          failureCode: code,
-          surface: "machine_pairing_recovery",
-          headline: "This computer could not reconnect to your account",
-        });
+        void brainAutoDiagnostics
+          .report({
+            failureCode: code,
+            surface: "machine_pairing_recovery",
+            headline: "This computer could not reconnect to your account",
+          })
+          .catch(() => undefined);
       },
     });
     machinePairingAutoRecovery.start();

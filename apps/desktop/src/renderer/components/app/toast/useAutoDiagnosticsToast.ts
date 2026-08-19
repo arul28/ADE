@@ -14,10 +14,14 @@ import { showToast } from "./toastStore";
  *
  * And this hook is the only thing that can honestly say a send was shown, so it
  * says it: every notice — live fast path or replayed on subscribe, they arrive
- * through the same callback — is acknowledged once its toast exists. Main keeps
- * offering anything unacknowledged, so a window that dies mid-render repeats
- * one toast rather than swallowing it, and a window that rendered it never sees
- * it again on the next launch.
+ * through the same callback — is acknowledged once its toast has been COMMITTED
+ * to the screen, not merely queued. `showToast` returns before React has
+ * rendered anything, so acknowledging there would claim delivery for a window
+ * that could still die before the toast appeared; `onRendered` fires from
+ * `ToastStack`'s own effect instead. Main keeps offering anything
+ * unacknowledged, so a window that dies mid-render repeats one toast rather
+ * than swallowing it, and a window that rendered it never sees it again on the
+ * next launch.
  */
 export function useAutoDiagnosticsToast(): void {
   useEffect(() => {
@@ -47,17 +51,39 @@ export function useAutoDiagnosticsToast(): void {
         secondaryAction: {
           label: "Turn off",
           onClick: () => {
-            void bridge.setSharing(false).catch(() => undefined);
+            // `ToastStack` dismisses this toast the moment the click returns,
+            // so a write that did not land would otherwise leave the user
+            // believing they turned auto-send off while it is still on. This is
+            // a consent control: it says so instead. `setSharing` answers with
+            // what was actually persisted, which is how a refused write shows
+            // up here — it resolves still-enabled rather than rejecting.
+            void bridge
+              .setSharing(false)
+              .then((status) => {
+                if (status?.enabled !== false) throw new Error("not_saved");
+              })
+              .catch(() => {
+                showToast({
+                  title: "ADE could not turn this off",
+                  message: "Try again in Settings → General.",
+                  tone: "error",
+                });
+              });
           },
         },
+        // The ack is the claim that the toast EXISTS, so it waits for the
+        // commit rather than firing beside the queueing call. Un-referenced
+        // notices cannot be acknowledged (nothing to name them by), but they
+        // also cannot occur — `pending` is only set alongside a successful
+        // upload, and a successful upload always carries a reference.
+        ...(reference
+          ? {
+              onRendered: () => {
+                void bridge.ackAutoSent([reference]).catch(() => undefined);
+              },
+            }
+          : {}),
       });
-      // After the toast, never before: the ack is the claim that it exists.
-      // Un-referenced notices cannot be acknowledged (nothing to name them by),
-      // but they also cannot occur — `pending` is only set alongside a
-      // successful upload, and a successful upload always carries a reference.
-      if (reference) {
-        void bridge.ackAutoSent([reference]).catch(() => undefined);
-      }
     });
   }, []);
 }

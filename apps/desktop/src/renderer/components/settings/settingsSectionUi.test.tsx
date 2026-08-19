@@ -79,6 +79,10 @@ describe("ConsentToggleSection", () => {
     renderToggle({ read: async () => ({ enabled: true, limit: 3 }), write });
 
     const toggle = await screen.findByRole("switch");
+    // The switch exists before `read` resolves and is disabled until it does; a
+    // click landing in that window calls nothing and the assertion below would
+    // time out on an alert that was never going to appear.
+    await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(false));
     fireEvent.click(toggle);
 
     await waitFor(() =>

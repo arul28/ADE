@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   LaneLifecycleEvent,
@@ -17,6 +17,7 @@ import {
   showToast,
   updateToast,
 } from "./toastStore";
+import { ToastStack } from "./ToastStack";
 import { useLaneEventToasts } from "./useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./useAutoDiagnosticsToast";
 import type { DiagnosticsAutoSentPayload } from "../../../../shared/types/diagnostics";
@@ -324,7 +325,14 @@ describe("useLaneEventToasts", () => {
 });
 
 describe("useAutoDiagnosticsToast", () => {
-  function AutoDiagnosticsHarness(): React.ReactElement | null {
+  /** The real pairing: the subscriber and the toast host, as `AppShell` mounts them. */
+  function AutoDiagnosticsHarness(): React.ReactElement {
+    useAutoDiagnosticsToast();
+    return React.createElement(ToastStack);
+  }
+
+  /** Subscriber with NO toast host — a notice that is queued and never shown. */
+  function SubscriberOnlyHarness(): React.ReactElement | null {
     useAutoDiagnosticsToast();
     return null;
   }
@@ -348,7 +356,13 @@ describe("useAutoDiagnosticsToast", () => {
     Object.defineProperty(window, "ade", { value: bridge, configurable: true, writable: true });
     return {
       bridge,
-      emit: (payload: DiagnosticsAutoSentPayload) => listener?.(payload),
+      // Wrapped in `act` because the store update this triggers re-renders the
+      // toast host, and the render is what reports delivery.
+      emit: (payload: DiagnosticsAutoSentPayload) => {
+        act(() => {
+          listener?.(payload);
+        });
+      },
     };
   }
 
@@ -395,6 +409,47 @@ describe("useAutoDiagnosticsToast", () => {
 
     expect(getToasts()).toHaveLength(1);
     expect(api.bridge.diagnostics.ackAutoSent).toHaveBeenCalledWith(["abcd1234"]);
+  });
+
+  it("acknowledges an automatic diagnostic only after the toast is rendered", () => {
+    // Regression: the ack used to fire beside `showToast`, which only queues.
+    // React had committed nothing at that point, so a window that died before
+    // the paint retired a notice the user never saw — and main, which trusts
+    // the ack completely, would never offer it again.
+    const api = installDiagnosticsApi();
+    render(React.createElement(SubscriberOnlyHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+
+    // Queued, not shown: nothing may claim delivery yet.
+    expect(getToasts()).toHaveLength(1);
+    expect(api.bridge.diagnostics.ackAutoSent).not.toHaveBeenCalled();
+
+    // The commit is the claim.
+    render(React.createElement(ToastStack));
+    expect(api.bridge.diagnostics.ackAutoSent).toHaveBeenCalledWith(["abcd1234"]);
+  });
+
+  it("says so when turning sharing off did not save", async () => {
+    // `ToastStack` dismisses the toast as soon as the click returns, so a
+    // refused write would otherwise leave the user believing auto-send is off.
+    const api = installDiagnosticsApi();
+    api.bridge.diagnostics.setSharing.mockResolvedValue({
+      enabled: true,
+      sendsInWindow: 1,
+      limit: 3,
+    });
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+    const [toast] = getToasts();
+    act(() => {
+      toast?.secondaryAction?.onClick();
+    });
+
+    await waitFor(() => {
+      expect(getToasts().some((entry) => entry.title === "ADE could not turn this off")).toBe(true);
+    });
   });
 
   it("shows one toast for a report delivered twice", () => {

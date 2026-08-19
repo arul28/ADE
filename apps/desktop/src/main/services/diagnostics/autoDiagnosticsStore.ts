@@ -443,6 +443,13 @@ export function claimAutoDiagnosticsSend(args: {
  * renderer and the desktop cannot tell whether one received its notice, so a
  * successful send is left pending either way, offered to the next renderer that
  * subscribes, and cleared only when one acknowledges having toasted it.
+ *
+ * Which is why `pending` REQUIRES a reference here rather than trusting the
+ * caller for it. The only thing that clears the flag is an ack naming the
+ * upload, so a pending entry with no reference could never be retired: it would
+ * be replayed to every renderer on every launch, forever. Both senders today
+ * only set `pending` alongside a successful upload (which always carries one),
+ * so this costs nothing and closes the trap for the next one.
  */
 export function completeAutoDiagnosticsSend(args: {
   filePath: string;
@@ -456,6 +463,8 @@ export function completeAutoDiagnosticsSend(args: {
   const now = args.now ?? Date.now;
   const code = normalizeAutoDiagnosticsFailureCode(args.failureCode);
   if (!code) return;
+  const reference = args.reference?.trim() || null;
+  const pending = args.pending && reference != null;
   mutate<void>(
     args.filePath,
     now,
@@ -466,8 +475,8 @@ export function completeAutoDiagnosticsSend(args: {
       sends[index] = {
         ...sends[index]!,
         reportPath: args.reportPath,
-        reference: args.reference,
-        pending: args.pending,
+        reference,
+        pending,
       };
       return { state: { ...state, sends }, result: undefined };
     },

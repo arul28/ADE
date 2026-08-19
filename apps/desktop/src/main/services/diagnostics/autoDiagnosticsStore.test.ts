@@ -197,6 +197,33 @@ describe("auto diagnostics budget", () => {
     });
   }
 
+  it("refuses to mark a send pending when nothing can ever acknowledge it", () => {
+    // An ack names an upload reference. A pending entry without one could never
+    // be retired, so it would be replayed to every renderer on every launch
+    // forever — the one failure mode worse than a missed toast.
+    for (const reference of [null, "", "   "]) {
+      const filePath = stateFile();
+      const claim = claimAutoDiagnosticsSend({
+        filePath,
+        failureCode: "snapshot_failed",
+        source: "brain",
+        now: () => T0,
+      });
+      expect(claim.allowed).toBe(true);
+      if (!claim.allowed) return;
+      completeAutoDiagnosticsSend({
+        filePath,
+        failureCode: "snapshot_failed",
+        atMs: claim.atMs,
+        reportPath: "/tmp/report.md",
+        reference,
+        pending: true,
+        now: () => T0,
+      });
+      expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([]);
+    }
+  });
+
   it("keeps offering a brain-side send until a renderer says it showed it", () => {
     const filePath = stateFile();
     recordPendingSend(filePath, "snapshot_failed", "abcd1234");

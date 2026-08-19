@@ -163,7 +163,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.diagnostics-sharing",
-    label: "Diagnostics",
+    // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
+    // and two identically named search hits pointing at different tabs is a
+    // coin flip for whoever is looking for the off switch.
+    label: "Diagnostics sharing",
     keywords: ["diagnostics", "crash", "report", "privacy", "error", "send", "opt out"],
     tab: "general",
     anchor: "diagnostics-sharing",
