@@ -11787,16 +11787,21 @@ describe("formatDiagnosticError", () => {
     // rejection that carried that request used to be JSON.stringify'd whole
     // into launchd.err.log, which `ade report-issue` tails into a report the
     // user is told to paste into a public GitHub issue.
+    // Assembled from segments so the working tree never carries a
+    // secret-shaped literal the secret scanner would flag (same convention as
+    // diagnosticReport.test.ts).
+    const fakeAdeToken = ["ade", "live", "9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c"].join("_");
+    const fakeSkToken = ["sk", "live", "abcdefghijklmnopqrstuvwxyz"].join("-");
     const thrown = {
       code: "ECONNREFUSED",
-      token: "ade_live_9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c",
-      body: { authorization: "Bearer sk-live-abcdefghijklmnopqrstuvwxyz" },
+      token: fakeAdeToken,
+      body: { authorization: `Bearer ${fakeSkToken}` },
     };
 
     const formatted = formatDiagnosticError(thrown);
 
-    expect(formatted).not.toContain("ade_live_9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c");
-    expect(formatted).not.toContain("sk-live-abcdefghijklmnopqrstuvwxyz");
+    expect(formatted).not.toContain(fakeAdeToken);
+    expect(formatted).not.toContain(fakeSkToken);
     // The shape still has to be diagnosable: the errno and the key names that
     // locate the throw site survive.
     expect(formatted).toContain("code=ECONNREFUSED");
@@ -11804,11 +11809,12 @@ describe("formatDiagnosticError", () => {
   });
 
   it("redacts a credential that an Error carried in its own message", () => {
+    const fakeUrlToken = ["6f1c", "8a2b", "4d9e", "7f30"].join("");
     const formatted = formatDiagnosticError(
-      new Error("connect failed: tcp://127.0.0.1:5051?token=6f1c8a2b4d9e7f30"),
+      new Error(`connect failed: tcp://127.0.0.1:5051?token=${fakeUrlToken}`),
     );
 
-    expect(formatted).not.toContain("6f1c8a2b4d9e7f30");
+    expect(formatted).not.toContain(fakeUrlToken);
     expect(formatted).toContain("token=<redacted>");
     // Loopback is the fact a maintainer needs and identifies nobody.
     expect(formatted).toContain("127.0.0.1");
