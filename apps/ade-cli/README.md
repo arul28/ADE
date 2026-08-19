@@ -376,7 +376,9 @@ ade code remote --target mac --route tailscale --project ADE
 ade code remote session --target mac --project ADE --session chat-1
                                    # open a remote chat or provider CLI terminal session
 ade login                          # sign in to the optional shared machine account
-ade machines list --text          # list account machines, including offline state
+ade machines list --text          # list account machines: dial status, plus a
+                                   # presence column (Connected/Online/Asleep/
+                                   # Offline and battery or wall power)
 ade machines rename <machine-key> "Build Mac"
                                    # set the account-wide display name
 ade machines rename <machine-key> --clear
@@ -459,7 +461,7 @@ ade login --headless                      # print verification URL + user code
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout
-ade machines list --text
+ade machines list --text                           # includes presence: asleep/online + battery or wall power
 ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
 ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity
 ade machines reconnect                             # re-pair THIS machine after it was removed
@@ -498,7 +500,7 @@ ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431 --no-parent
 ade chat list --personal --text
 ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan a trip"
-ade chat steer personal-session-id --personal --text "focus on the tradeoffs"
+ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
 ade chat actions --personal --text
@@ -549,9 +551,10 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
+ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude takes both, Cursor takes interrupt)
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
-ade session show session-id --text                          # settle/snooze state, and why a snoozed row came back
+ade session show session-id --text                          # status + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
 ade session snooze session-id --for 1h                      # 30m|1h|4h|1d|1.5h; a bare number means minutes; relative durations cap at 30d
 ade session snooze session-id --until 2026-07-26T18:00:00Z  # explicit ISO-8601 deadline (must be in the future)
 ade session snooze session-id --until-asked                 # open-ended, matching the desktop/iOS "Until I'm asked" preset: only a hand-raise brings it back
@@ -571,7 +574,7 @@ ade chat demote [session-id]                                     # take over a s
 ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
-ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); stays in source lane
+ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded
@@ -664,6 +667,15 @@ GitHub reads try credentials in environment → ADE GitHub App → GitHub CLI �
 stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
 reports the active read/write sources, per-credential failure/cooldown state,
 fallback details, and any background-refresh pause without exposing tokens.
+
+When GitHub itself is failing rather than rejecting the credential,
+`authFailure.kind` is `service_unavailable` (GitHub returned 5xx) — scripts must
+not treat that as a reason to re-auth or rotate a token. In that case, and for
+an unclassifiable failure, `github.getStatus` also consults githubstatus.com and
+attaches `serviceHealth` (`indicator`, `affected` components, `incidentUrl`)
+when a GitHub surface ADE depends on is confirmed down. `serviceHealth` is
+present only as positive corroboration: its absence never means the failure is
+local, so do not branch on it being missing.
 
 Pi sign-in has no typed command, the same way OpenCode's `ai.opencodeOAuth*`
 actions do not. `ai.piLoginStart` blocks until a human finishes Pi's own browser

@@ -15,6 +15,20 @@ import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
+/**
+ * One agent SDK process a session currently owns.
+ *
+ * Deliberately thin: a pid and when it started is enough to answer "what is
+ * this chat holding open, and for how long", which is the question `ps` was
+ * being used for. Command lines and environments are not reported — they carry
+ * paths and flags that have no business on a status surface.
+ */
+export type RuntimeProcessSummary = {
+  pid: number;
+  /** ISO instant ADE spawned it. */
+  startedAt: string;
+};
+
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed" | "detached";
 
 export type TerminalToolType =
@@ -260,6 +274,15 @@ export type TerminalSessionSummary = {
    * so the mobile roster and push publisher keep reading one number.
    */
   backgroundWork?: SessionBackgroundWork;
+  /**
+   * ISO instant the live background work began. The elapsed shown beside
+   * "Background work" counts from here rather than from `lastActivityAt`, which
+   * every provider frame refreshes and which therefore reported a job that had
+   * run for hours as seconds old.
+   */
+  backgroundWorkSince?: string | null;
+  /** Agent SDK processes this session owns right now. See `AgentChatSessionSummary`. */
+  runtimeProcesses?: RuntimeProcessSummary[];
   /** First tag mirrored from the backing Claude SDK session pointer. */
   claudeTag?: string | null;
   /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */

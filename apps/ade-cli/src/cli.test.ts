@@ -446,6 +446,34 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "account-machines",
     )).toContain("unreachable");
+    // A machine that announced its own suspend must read "Asleep" here, not
+    // "online" — the whole point of publishing the announcement is that the
+    // heartbeat window alone cannot tell a shut lid from a live machine. The
+    // battery slot is absent for a machine that reported none, so a desktop
+    // never renders as one at 0%.
+    const sleeping = formatOutput(
+      {
+        state: "ok",
+        message: null,
+        machines: [{
+          machineKey: "laptop",
+          deviceId: "device-laptop",
+          name: "MacBook Pro",
+          platform: "macOS",
+          deviceType: "desktop",
+          reachableEndpoints: [],
+          lastSeenAt: Date.now(),
+          online: true,
+          sleepState: "asleep",
+          sleepStateAt: Date.now(),
+          power: { batteryPercent: 82, charging: false, onExternalPower: false },
+        }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "account-machines",
+    );
+    expect(sleeping).toContain("Asleep · 82% battery");
+    expect(sleeping).toContain("wakes when you connect to it");
     const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
     expect(rawActionPlan.steps[0]).toMatchObject({
       method: "account.call",
@@ -2432,6 +2460,48 @@ describe("ADE CLI", () => {
     expect(maintenanceText).toContain("skipped: not due");
   });
 
+  it("ade session show reports what a session is DOING, not just its columns", () => {
+    // `runtime state` alone reads `idle` for a chat holding a warm agent
+    // process and two background jobs open — the state people were dropping to
+    // `ps` to diagnose. The words come from the shared presentation module, so
+    // this also pins that the CLI has not grown its own vocabulary.
+    const now = Date.now();
+    const text = formatOutput(
+      {
+        sessionId: "chat-1",
+        title: "Reap stale runtimes",
+        laneId: "lane-1",
+        status: "running",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+        startedAt: new Date(now - 3 * 60 * 60_000).toISOString(),
+        lastActivityAt: new Date(now - 3_000).toISOString(),
+        backgroundWorkSince: new Date(now - 2 * 60 * 60_000).toISOString(),
+        activeBackgroundTaskCount: 2,
+        backgroundWork: { workingCount: 1, monitoringCount: 1 },
+        runtimeProcesses: [{ pid: 59213, startedAt: new Date(now - 2 * 60 * 60_000).toISOString() }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    // Elapsed counts from when the work started, not from the last frame the
+    // provider happened to emit three seconds ago.
+    expect(text).toMatch(/^status\s+Background work \u00d72 2h$/mu);
+    expect(text).toContain("pid 59213 (2h)");
+  });
+
+  it("ade session show mutation acks carry no activity lines", () => {
+    // The same formatter renders snooze/wake acks, which have none of these
+    // fields. Every added line must disappear rather than render empty.
+    const text = formatOutput(
+      { sessionId: "chat-1", snoozedUntil: new Date(Date.now() + 3_600_000).toISOString(), ok: true },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    expect(text).not.toMatch(/^agent processes\s/mu);
+    expect(text).not.toMatch(/^status\s/mu);
+  });
+
   it("formats external session action results as text", () => {
     const plan = expectExecutePlan(buildCliPlan([
       "actions",
@@ -4092,6 +4162,57 @@ describe("ADE CLI", () => {
         },
       },
     });
+  });
+
+  it("passes chat steer --dispatch through without restating provider rules", () => {
+    // The host owns which providers honor which active-turn dispatch mode
+    // (`ACTIVE_TURN_DISPATCH_MODES`), so the CLI forwards the mode verbatim for
+    // every provider — Cursor's "interrupt" must not be filtered out here.
+    const interrupt = expectExecutePlan(buildCliPlan([
+      "chat",
+      "steer",
+      "chat-1",
+      "--text",
+      "switch to the other repro",
+      "--dispatch",
+      "interrupt",
+    ]));
+    expect(interrupt.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "steer",
+        args: { sessionId: "chat-1", text: "switch to the other repro", dispatchMode: "interrupt" },
+      },
+    });
+
+    const inline = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch-mode", "inline",
+    ]));
+    expect(inline.steps[0]?.params).toMatchObject({
+      arguments: { args: { dispatchMode: "inline" } },
+    });
+
+    const personal = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "personal-1", "--personal", "--text", "context", "--dispatch", "interrupt",
+    ]));
+    expect(personal.steps[0]).toMatchObject({
+      params: { action: "steer", args: { sessionId: "personal-1", text: "context", dispatchMode: "interrupt" } },
+    });
+
+    // Omitting the flag stages the message, so no mode reaches the host.
+    const staged = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context",
+    ]));
+    expect(
+      (staged.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })?.arguments?.args,
+    ).not.toHaveProperty("dispatchMode");
+
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "queue",
+    ])).toThrow(/stages the message for the next turn/);
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "later",
+    ])).toThrow(/must be inline or interrupt/);
   });
 
   it("routes queue-aware interruption and recovery for project and personal chats", () => {

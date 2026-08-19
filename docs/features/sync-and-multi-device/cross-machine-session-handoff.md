@@ -1,8 +1,22 @@
 # Cross-machine session handoff
 
-Cross-machine handoff lets a user stop work in one local ADE Work chat and continue the same task on another connected ADE machine. The source lane and chat remain intact; the destination receives a compatible lane (created or safely reused) and a deterministic handoff chat recreated from portable state.
+Cross-machine handoff lets a user stop work in one ADE Work chat and continue the same task on another connected ADE machine. The source lane and chat remain intact; the destination receives a compatible lane (created or safely reused) and a deterministic handoff chat recreated from portable state.
 
 This document defines the v1 product, transport, recovery, and security contract.
+
+## The source is the chat's machine, not the tab
+
+Handoff is a fact about the machine the **source chat** runs on, not about whichever project the tab it is being viewed from happens to be bound to. A local chat viewed from a remote-bound tab can still hand off; a chat pinned to a remote machine cannot, regardless of the tab. A Work tab unions chats from every machine on the account, so the tab's binding and the chat's binding routinely disagree, and reading the tab's is wrong in exactly the case that matters.
+
+Eligibility is therefore decided from the chat's effective binding — `chatRuntimePin ?? projectBinding`, derived once per pane by `useChatScopeDerivation` in `apps/desktop/src/renderer/components/chat/ChatRuntimeScope.tsx` and carried down the drawer subtree — never from the tab's binding. When that binding is remote, the **Continue on another machine** card is disabled and names the machine the chat runs on, so the user is told where to open the project rather than handed a control that would fail at confirm time.
+
+`CrossMachineHandoffModal` (`apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`) takes that binding as a `runtimePin?: OpenProjectBinding | null` prop — the machine the source chat runs on, or `null` when it runs on the machine this tab is bound to — and pins **every** source-side call to it: `lanes.list`, `git.getSyncStatus`, `git.getOriginRemote`, `git.push` behind **Publish branch**, `git.pull` behind **Update branch**, `agentChat.prepareCrossMachineHandoff`, `agentChat.validateCrossMachineSource`, and `agentChat.markCrossMachineHandoff`. Destination dispatch already routes by target id and is unaffected.
+
+The pin is held in a ref and frozen once per operation rather than read fresh after each await. Validation, the capsule preparation, and the source marker must all reach the same runtime; re-reading across a lane-index change could split one handoff between two machines.
+
+The lane picker's source lanes come from the chat's machine as well (`handoffLaneSourceLanes` — the pinned machine's slice of the cross-machine lane union, falling back to the tab's list only for an unpinned chat). A brief handoff lands in a lane on the chat's machine, so both the offered lanes and the auto-created one have to target that machine.
+
+The destination model, reasoning-effort, and permission pickers are unaffected by the source pin; they decide what the *destination* chat starts with, and are described under **Product flow** below.
 
 ## Product flow
 
@@ -88,7 +102,7 @@ If the 18 MiB main-history limit is exceeded, ADE returns a typed “too large�
 
 Cross-machine fork requires the same provider and a usable destination runtime or CLI. Claude, Codex, and OpenCode support it. Cursor and Droid are brief-only across machines, for different reasons. Local Droid fork works, but its machine-local session index and relocated-file resume behavior are not yet proven portable. Local Cursor fork also works, but it is ADE-side context seeding rather than a provider fork — there is no provider session file, thread id, or artifact of any kind to package — so a Cursor fork has nothing to transport.
 
-That distinction is encoded as `providerSupportsCrossMachineHandoffFork`, separate from the local-fork `providerSupportsHandoffFork`. Its backing list, `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS`, is derived from the local `HANDOFF_FORK_PROVIDERS` by filtering out Droid and every context-seeded provider (`providerForkIsContextSeeded`) rather than being restated, so adding a provider to one list cannot silently leave the other behind. The UI must gate its fork affordance on the cross-machine helper; gating on the local one leaves Droid's and Cursor's fork options selectable and guaranteed to throw at confirm time. `validateForkTransport` on the receiving side applies the same helper, so a provider whose fork produces no transportable artifact is refused by the provider gate rather than by the transport-kind allowlist. The destination applies it again when it computes `forkHandoffSupport`, so a refused provider is named with a plain reason instead of failing late.
+That distinction is encoded as `providerSupportsCrossMachineHandoffFork`, separate from the local-fork `providerSupportsHandoffFork`. Its backing list, `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS`, is derived from the local `HANDOFF_FORK_PROVIDERS` by filtering out Droid and every replay-forked provider (`providerForkReplaysTranscript`) rather than being restated, so adding a provider to one list cannot silently leave the other behind. The UI must gate its fork affordance on the cross-machine helper; gating on the local one leaves Droid's and Cursor's fork options selectable and guaranteed to throw at confirm time. `validateForkTransport` on the receiving side applies the same helper, so a provider whose fork produces no transportable artifact is refused by the provider gate rather than by the transport-kind allowlist. The destination applies it again when it computes `forkHandoffSupport`, so a refused provider is named with a plain reason instead of failing late.
 
 ## Destination contract
 
@@ -172,6 +186,16 @@ The handoff uses the existing authenticated remote runtime connection selected b
 
 The renderer follows live connection snapshots while setup is open. Final acceptance is bound to the exact reviewed route kind, and this sensitive action is not automatically replayed after a disconnect. A route change—especially an encrypted-to-LAN/relay downgrade—returns the user to review instead of sending silently.
 
+The source side is not desktop-only either. The `chat` action-domain actions
+`prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
+`markCrossMachineHandoff` are registered sync remote commands
+(`chat.prepareCrossMachineHandoff`, `chat.validateCrossMachineSource`,
+`chat.markCrossMachineHandoff`), alongside
+`chat.fastForwardCrossMachineHandoffLane` and
+`chat.acceptCrossMachineHandoff`. A non-Electron controller therefore drives
+the whole source half over the same command routing rather than needing preload
+methods; see [remote commands](./remote-commands.md).
+
 For a paired desktop destination, the action is multi-project runtime JSON-RPC
 carried through the sync WebSocket's `rpc_data` channel. The sync host forwards
 those channel frames; its remote-command responder timeout does not wrap the
@@ -200,6 +224,8 @@ Tests should cover:
 - a behind source branch rendering its reason and its pull action, and a diverged branch rendering a blocker with no one-click fix;
 - Droid cross-machine fork refused up front while local Droid fork still works;
 - destination lane clean-and-behind offering a fast-forward, and dirty/diverged/non-ancestor lanes refusing one;
+- a remote-pinned source chat refusing the cross-machine action from any tab, and a local chat viewed from a remote-bound tab still offering it;
+- every source-side call carrying the chat's pin, including after the lane index changes mid-send;
 - incompatible destination runtime;
 - timeout or disconnect after destination acceptance starts, including an
   unsuccessful reconnect, with unknown-outcome copy and no automatic replay;

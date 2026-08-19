@@ -2,6 +2,8 @@
 // Mirrors the daemon `account` action domain (#815) but only exposes the
 // token-free surface — the raw bearer never crosses into the renderer.
 
+import type { MachinePower, MachineSleepState } from "./power";
+
 /** Which identity provider signed this account in, when known. */
 export type AdeAccountProvider = "github" | "google" | "apple" | "email";
 
@@ -113,6 +115,20 @@ export type AdeAccountMachine = {
   reachableEndpoints: AdeAccountMachineEndpoint[];
   lastSeenAt: number | null;
   online: boolean;
+  /**
+   * Battery and wall power as the machine last reported them. Absent on hosts
+   * too old to publish power at all — which is why it is optional rather than
+   * nullable-required: "no reading" and "no battery" are different facts, and
+   * `MachinePower.battery` already carries the second one.
+   */
+  power?: MachinePower | null;
+  /**
+   * The machine's own last announcement about being awake. `resolveMachinePresence`
+   * is the only thing that should read this — never re-derive presence from it.
+   */
+  sleepState?: MachineSleepState | null;
+  /** Epoch ms at which `sleepState` last changed. */
+  sleepStateAt?: number | null;
 };
 
 /**

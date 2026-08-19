@@ -357,6 +357,10 @@ struct WorkChatSessionView: View {
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
 
+  /// Opens the parent chat for a standalone spawned child session. The nested
+  /// transcript viewer uses its own back control and leaves this unset.
+  var onOpenParentSession: (() -> Void)? = nil
+
   var resolvedSessionStatus: String? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
@@ -374,6 +378,8 @@ struct WorkChatSessionView: View {
   /// Tapping a subagent spawn/result timeline row opens the same detail surface
   /// the Chat Info roster row opens (full transcript takeover or expanded row).
   var onSelectSubagentRow: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Fork the current Claude thread in this lane (session-quota card).
+  var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
   /// Live "turn is running" signal from the sync layer (chat_subscribe ack +
@@ -417,6 +423,9 @@ struct WorkChatSessionView: View {
   /// Last blocking pending-input id we reacted to, so re-renders that keep the
   /// same gate open don't re-fire the haptic or re-scroll.
   @State var lastBlockingPendingInputId: String?
+  /// Light haptic when a Claude session-quota card first appears.
+  @State var quotaCardHapticToken = 0
+  @State var lastLiveQuotaCardId: String?
   /// Item ids of pending inputs the user just answered. They are hidden from the
   /// consolidated strip immediately (optimistic removal) so it advances to the
   /// next request without waiting for the host, and reconciled back out once the
@@ -628,6 +637,26 @@ struct WorkChatSessionView: View {
   var blockingPendingInputId: String? {
     guard isLive else { return nil }
     return primaryPendingInput?.id
+  }
+
+  var liveClaudeQuotaCardId: String? {
+    guard isLive else { return nil }
+    for entry in timelineSnapshot.timeline {
+      if case .adeCard(let card) = entry.payload,
+         card.variant == "claude_session_quota",
+         !card.isTerminal {
+        return card.id
+      }
+    }
+    return nil
+  }
+
+  @MainActor
+  func handleLiveQuotaCardChange(_ id: String?) {
+    guard id != lastLiveQuotaCardId else { return }
+    lastLiveQuotaCardId = id
+    guard id != nil else { return }
+    quotaCardHapticToken &+= 1
   }
 
   /// React to a newly-arrived blocking pending input: fire one light haptic.
@@ -895,6 +924,17 @@ struct WorkChatSessionView: View {
     // so the Accept / Decline actions are always in reach instead of scrolled
     // off the top of the transcript.
 
+    if let parentId = chatSummaryContext.orchestrationParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !parentId.isEmpty,
+       parentId != session.id,
+       let onOpenParentSession {
+      WorkSubagentLineageBreadcrumb(
+        parentTitle: chatSummaryContext.parentTitle,
+        onOpen: onOpenParentSession
+      )
+    }
+
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
     if let errorMessageSnapshot, !hostUnreachable {
@@ -1081,15 +1121,25 @@ struct WorkChatSessionView: View {
       let subagentCount = subagentSnapshots.count
       let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
       let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil
-      let showsSubagentBadge = inputLockMessage == nil && subagentCount > 0 && onOpenSubagents != nil
+      let showsSubagentBadge = inputLockMessage == nil
+        && subagentCount > 0
+        && onOpenSubagents != nil
       let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
       if showsChatInfoBadge || showsSubagentBadge || showsPrBadge {
         HStack(spacing: 8) {
           if showsChatInfoBadge, let onOpenChatInfo {
             WorkChatInfoActivePopup(count: activeScheduledWorkCount, onOpen: onOpenChatInfo)
           }
-          if showsSubagentBadge, let onOpenSubagents {
-            WorkSubagentActivePopup(count: subagentCount, onOpen: onOpenSubagents)
+          if showsSubagentBadge {
+            if subagentCount == 1,
+               let snapshot = subagentSnapshots.first,
+               let onSelectSubagentRow {
+              WorkSubagentActivePopup(count: subagentCount) {
+                Task { await onSelectSubagentRow(snapshot) }
+              }
+            } else if let onOpenSubagents {
+              WorkSubagentActivePopup(count: subagentCount, onOpen: onOpenSubagents)
+            }
           }
           if showsPrBadge, let prBadge, let onOpenPrDetails {
             WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
@@ -1510,6 +1560,8 @@ struct WorkChatSessionView: View {
           pendingCodexFastMode = nil
           lastBlockingPendingInputId = nil
           blockingPendingHapticToken = 0
+          lastLiveQuotaCardId = nil
+          quotaCardHapticToken = 0
           optimisticallyAnsweredInputIds.removeAll()
           collapsedPendingInputId = nil
           assistantLineBudgets.removeAll()
@@ -1555,7 +1607,11 @@ struct WorkChatSessionView: View {
         .onChange(of: blockingPendingInputId) { _, newId in
           handleBlockingPendingInputChange(newId)
         }
+        .onChange(of: liveClaudeQuotaCardId) { _, newId in
+          handleLiveQuotaCardChange(newId)
+        }
         .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
+        .sensoryFeedback(.impact(weight: .light), trigger: quotaCardHapticToken)
         .sheet(isPresented: $artifactDrawerPresented) {
           WorkArtifactDrawerSheet(
             artifacts: artifacts,
@@ -2369,6 +2425,54 @@ private struct WorkChatComposerDraftInput: View {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
   }
 
+  /// One capability lookup for the whole active-turn send affordance. See
+  /// `WorkActiveSendCapability` for the table it mirrors.
+  private var activeSendCapability: WorkActiveSendCapability {
+    WorkActiveSendCapability.forProvider(chatSummary.provider)
+  }
+
+  /// Derived rather than stored, so switching providers can never leave a mode
+  /// selected that the new provider cannot honor.
+  private var effectiveActiveSendMode: WorkActiveSendMode {
+    activeSendCapability.modes.contains(activeSendMode)
+      ? activeSendMode
+      : activeSendCapability.defaultMode
+  }
+
+  /// A single mode is not a choice: queue-only providers get the plain send
+  /// button, matching the desktop composer.
+  private var activeSendModePickerVisible: Bool {
+    activeSendModesAvailable && activeSendCapability.modes.count > 1
+  }
+
+  private var activeSendAgentLabel: String { activeSendCapability.agentLabel }
+
+  private var activeSendInterruptContinues: Bool { activeSendCapability.interruptContinues }
+
+  private func activeSendModeTitle(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "Send after turn"
+    case .interrupt: return activeSendInterruptContinues ? "Interrupt & continue" : "Interrupt & send"
+    case .inline: return "Send during turn"
+    }
+  }
+
+  private func activeSendModeDetail(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "Keep this message staged until the turn finishes."
+    case .interrupt: return "Stop and redirect \(activeSendAgentLabel) now."
+    case .inline: return "\(activeSendAgentLabel) picks this up after the current tool step."
+    }
+  }
+
+  private func activeSendModeIcon(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "clock"
+    case .interrupt: return "bolt.fill"
+    case .inline: return "arrow.turn.down.right"
+    }
+  }
+
   private var stashAvailable: Bool {
     !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
   }
@@ -2464,7 +2568,7 @@ private struct WorkChatComposerDraftInput: View {
       stopMode = UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") == AgentChatStopMode.stopOnly.rawValue
         ? .stopOnly
         : .stopAndClear
-      activeSendMode = .inline
+      activeSendMode = activeSendCapability.defaultMode
       sendOptionsPresented = false
       stopOptionsPresented = false
       draftState.bind(persistenceKey: draftPersistenceKey)
@@ -2476,12 +2580,12 @@ private struct WorkChatComposerDraftInput: View {
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
     .onChange(of: showInterrupt) { _, _ in
-      activeSendMode = .inline
+      activeSendMode = activeSendCapability.defaultMode
       sendOptionsPresented = false
       stopOptionsPresented = false
     }
     .onChange(of: chatSummary.provider) { _, _ in
-      activeSendMode = .inline
+      activeSendMode = activeSendCapability.defaultMode
       sendOptionsPresented = false
       stopOptionsPresented = false
       configureSuggestionController()
@@ -2527,7 +2631,7 @@ private struct WorkChatComposerDraftInput: View {
     if showInterrupt {
       if hasSendableDraftOrAttachment {
         stopButton()
-        if chatSummary.provider.lowercased() == "claude" && activeSendModesAvailable {
+        if activeSendModePickerVisible {
           activeTurnSendButton()
         } else {
           WorkChatComposerSendButton(
@@ -2570,11 +2674,11 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
-        accessibilityLabelText: activeSendModeTitle,
-        systemImageName: activeSendModeIcon,
+        accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
+        systemImageName: activeSendModeIcon(effectiveActiveSendMode),
         minimumTapTargetSize: 32,
         onSend: { text, attachments in
-          await onSend(text, attachments, activeSendMode)
+          await onSend(text, attachments, effectiveActiveSendMode)
         },
         onSent: onSent
       )
@@ -2590,30 +2694,19 @@ private struct WorkChatComposerDraftInput: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel("More send options")
-      .accessibilityValue(activeSendModeTitle)
-      .accessibilityHint("Choose whether this message sends during, after, or by interrupting the active Claude turn")
+      .accessibilityValue(activeSendModeTitle(effectiveActiveSendMode))
+      .accessibilityHint("Choose how this message reaches the active \(activeSendAgentLabel) turn")
       .popover(isPresented: $sendOptionsPresented, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: 0) {
-          activeSendOption(
-            mode: .inline,
-            title: "Send during turn",
-            detail: "Claude picks this up after the current tool step.",
-            systemImage: "arrow.turn.down.right"
-          )
-          Divider()
-          activeSendOption(
-            mode: .queue,
-            title: "Send after turn",
-            detail: "Keep this message staged until the turn finishes.",
-            systemImage: "clock"
-          )
-          Divider()
-          activeSendOption(
-            mode: .interrupt,
-            title: "Interrupt & send",
-            detail: "Stop the current model step and redirect Claude now.",
-            systemImage: "bolt.fill"
-          )
+          ForEach(Array(activeSendCapability.modes.enumerated()), id: \.element) { index, mode in
+            if index > 0 { Divider() }
+            activeSendOption(
+              mode: mode,
+              title: activeSendModeTitle(mode),
+              detail: activeSendModeDetail(mode),
+              systemImage: activeSendModeIcon(mode)
+            )
+          }
         }
         .frame(width: 270)
         .presentationCompactAdaptation(.popover)
@@ -2622,30 +2715,14 @@ private struct WorkChatComposerDraftInput: View {
     .clipShape(Capsule())
   }
 
-  private var activeSendModeTitle: String {
-    switch activeSendMode {
-    case .queue: return "Send after turn"
-    case .interrupt: return "Interrupt and send"
-    default: return "Send during turn"
-    }
-  }
-
-  private var activeSendModeIcon: String {
-    switch activeSendMode {
-    case .queue: return "clock"
-    case .interrupt: return "bolt.fill"
-    default: return "arrow.turn.down.right"
-    }
-  }
-
   private var activeTurnSendHint: String {
-    guard chatSummary.provider.lowercased() == "claude", activeSendModesAvailable else {
+    guard activeSendModePickerVisible else {
       return "Message will stage behind the active turn."
     }
-    switch activeSendMode {
+    switch effectiveActiveSendMode {
     case .queue: return "Message will send after the active turn."
-    case .interrupt: return "Message will interrupt and redirect Claude."
-    default: return "Message will reach Claude during the active turn."
+    case .interrupt: return "Message will interrupt and redirect \(activeSendAgentLabel)."
+    case .inline: return "Message will reach \(activeSendAgentLabel) during the active turn."
     }
   }
 
@@ -2669,7 +2746,7 @@ private struct WorkChatComposerDraftInput: View {
             .foregroundStyle(ADEColor.textSecondary)
         }
         Spacer(minLength: 4)
-        if activeSendMode == mode {
+        if effectiveActiveSendMode == mode {
           Image(systemName: "checkmark")
             .font(.caption.weight(.bold))
             .foregroundStyle(ADEColor.accent)
@@ -2891,6 +2968,55 @@ private struct WorkSubagentTakeoverBanner: View {
         .fill(ADEColor.accent.opacity(0.08))
     )
     .accessibilityElement(children: .contain)
+  }
+}
+
+private struct WorkSubagentLineageBreadcrumb: View {
+  let parentTitle: String?
+  let onOpen: () -> Void
+
+  private var sourceLabel: String {
+    let trimmed = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? "parent chat" : trimmed
+  }
+
+  var body: some View {
+    Button(action: onOpen) {
+      HStack(spacing: 8) {
+        Image(systemName: "arrow.turn.up.left")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Subagent chat")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+          Text("from \(sourceLabel)")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+
+        Spacer(minLength: 4)
+
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.18), lineWidth: 1)
+      )
+      .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Open parent chat, \(sourceLabel)")
+    .accessibilityHint("Returns to the chat that spawned this subagent.")
   }
 }
 

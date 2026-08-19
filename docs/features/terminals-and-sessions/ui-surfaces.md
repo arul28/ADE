@@ -36,11 +36,14 @@ selections) into the draft composer before a chat session exists.
 Context insertion is enabled for draft targets — the "no session open"
 disabled message no longer appears when a draft is active. The page
 also determines PTY context insertability through
-`isPtyContextInsertableToolType`, which covers all tracked agent CLI
-tool types: `claude`, `codex`, `cursor-cli`, `droid`, and `opencode`.
-The Terminal tab uses the same active `contextTarget` owner id, so `chat`
-targets attach to the chat session and `pty` targets attach to the running
-CLI session id.
+`isPtyContextInsertableToolType` (exported from
+`apps/desktop/src/renderer/lib/sessions.ts`), which covers all tracked agent
+CLI tool types: `claude`, `codex`, `cursor-cli`, `droid`, and `opencode`.
+The Terminal tab does **not** key off `contextTarget`: terminal ownership is
+an identity question, so it resolves the owner from the active session
+itself — a chat session, or a running CLI session with a `ptyId` and an
+insertable tool type — and falls back to the `contextTarget` sessionId only
+when no session is active.
 
 The same page is the subscriber for `ade:work:select-session`, the
 renderer event dispatched by orchestration and lineage navigation. The
@@ -311,14 +314,28 @@ These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
 is never scraped to infer plan mode. Working/Planning elapsed time ticks from
 the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
-reset it; legacy chat rows without that anchor, plus Background work, CLI, and
-Stale durations, use last activity. That makes the Background work elapsed a
-proxy, not the job's own runtime — the session summary does not carry per-job
-start times, so a job launched early in a long turn reads near zero the moment
-the turn ends. Waiting refreshes on a quiet 30-second cadence. On row hover or
+reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
+use last activity. Background work counts from `backgroundWorkSince` — when the
+session's live background set last went from empty to non-empty — which the
+runtime reports on the session summary. Anchoring it to last activity instead
+made it meaningless: every provider frame refreshes that column, so a job that
+had been running for two hours read "Background work ×2 3s", identical to one
+that started three seconds ago, and the row could not be judged by its own
+duration. It is still a session-level anchor rather than any single job's
+runtime — a second job joining a live set counts from the first one's start —
+and providers with no background-task level (Codex, Cursor) keep the last-activity
+fallback. All three anchors come from one shared helper, `sessionElapsedAnchor`,
+so the Work rows, `ade code`, and `ade session show` cannot report different
+durations for the same session. The desktop slot feeds the raw anchor to a
+ticking component; the two text surfaces take the already-formatted string from
+`sessionElapsedLabel`, which wraps the same anchor. Waiting refreshes on a quiet
+30-second cadence. On row hover or
 keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
-the context-appropriate Settle or Un-settle action. An open snooze menu pins the
-action slot visible. A row whose snooze ended early shows the shared Woke
+the context-appropriate Settle or Un-settle action. That button disables itself
+while its settle/un-settle call is in flight: settle teardown now does real
+provider work on the rows where it is offered, so a second click lands inside
+the window and the backend answers a joined settle with a raw session id. An
+open snooze menu pins the action slot visible. A row whose snooze ended early shows the shared Woke
 presentation until it is opened, at which point `TerminalsPage` clears the
 marker — opening is the acknowledgement.
 
@@ -532,6 +549,44 @@ suppressed there. `TerminalsPage` wraps the view + sidebar in a flex
 container with a 5 px draggable column separator; the sidebar width is
 persisted as `workSidebarWidthPct` (26–55%).
 
+### The pane follows the chat's machine
+
+`WorkSidebar` takes `runtimePin?: OpenProjectBinding | null` — the machine
+the active Work session actually runs on, `null` meaning this tab's bound
+machine. `TerminalsPage` supplies it from `activeWorkSessionRuntimePin`
+(`resolveSessionRuntimePin(activeWorkSession)`). Every tool in the pane
+follows the chat: a chat on another machine gets **that** machine's git,
+terminals, and files, not the tab's.
+
+- **Lane resolution.** A foreign chat's lane is absent from the tab-bound
+  `lanes` array, so the worktree path — and therefore the iOS / App Control
+  project root — resolved to null. The pane resolves the active lane against
+  `useLanesForPin(runtimePin)` (the pinned machine's slice of the
+  cross-machine lane union), falling back to `lanes` only for an unpinned
+  session. Lane-mismatch attribution messages are built from that same
+  scoped list, so a mismatch names lanes that actually exist on the pinned
+  machine.
+- **Machine-keyed remounts.** Every panel is mounted with a machine-keyed
+  React `key` — `work-git:<pinKey>:<laneId>`, `work-terminal:…`,
+  `work-files:…`, `work-ios:…`, `work-appcontrol:…`, `work-browser:…` — so a
+  foreign machine's tabs and panel state can never paint into the machine you
+  just switched to. Diff selection state (`selectedPath` / `selectedMode` /
+  `selectedCommit`) resets on a pin change as well as a lane change.
+- **Offline handling.** Pinned calls have no local fallback, so when the
+  pinned machine is known offline
+  (`useMachineEntryForBinding(runtimePin)?.online === false`) the git and
+  terminal tabs render one plain line naming the machine
+  (`"<machine> is offline."`) instead of a wall of rejected IPC, and the App
+  Control / iOS status probes are skipped entirely. Machine names come from
+  `machineNameForBinding` in `shared/machineIdentity.ts` and are absolute
+  ("This computer", "MacBook Pro (97)") — never "remote".
+- **Pinned calls made from the pane.** `appControl.getStatus(pin)` +
+  `appControl.onEvent(cb, pin)`, `iosSimulator.getStatus(pin)` +
+  `iosSimulator.onEvent(cb, pin)`, and `terminal.write(..., pin)` for context
+  insertion. `runtimePin` is forwarded to `LaneGitActionsPane`,
+  `LaneDiffPane`, `ChatTerminalDrawer`, `ChatIosSimulatorPanel`,
+  `ChatAppControlPanel`, `ChatBuiltInBrowserPanel`, and `FilesTab`.
+
 Tabs:
 
 - `git` — `LaneGitActionsPane` on top, `LaneDiffPane` underneath
@@ -542,8 +597,12 @@ Tabs:
   the `View lane` button, the editor theme toggle, the `Open In` menu,
   and the file count, and shrinks the workspace selector so the file
   tree fits a narrow column.
-- `ios` — `ChatIosSimulatorPanel` for the active lane (no chat scope).
-- `app-control` — `ChatAppControlPanel` for the active lane.
+- `terminal` — `ChatTerminalDrawer` in `panel` variant, attached to the
+  session that owns terminals (see below).
+- `ios` — `ChatIosSimulatorPanel` for the active lane (no chat scope),
+  driving the simulator on the pinned machine.
+- `app-control` — `ChatAppControlPanel` for the active lane, driving the
+  controlled app on the pinned machine.
 - `browser` — `ChatBuiltInBrowserPanel` over the built-in browser's
   `WebContentsView` tabs for the current ADE window. Unlike the other
   tabs the browser is not lane-scoped; each ADE window owns its own tab
@@ -576,7 +635,9 @@ selections formatted into prompt text by
 `formatAppControlContextForPrompt`,
 `formatBuiltInBrowserContextForPrompt`) and written into the PTY as a
 bracketed-paste payload (`\x1b[200~…\x1b[201~`) through
-`window.ade.pty.write`. After the write succeeds the sidebar dispatches
+`window.ade.terminal.write(..., runtimePin)` — PTY insertion is
+machine-addressed, so it works against a chat on another machine. After the
+write succeeds the sidebar dispatches
 `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
 (`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the active
 `TerminalView` can show a brief "context inserted" affordance. When no
@@ -589,6 +650,30 @@ launched from a different lane); lane mismatches are surfaced as an
 informational warning banner but no longer block context insertion —
 controls affect the running tool while inserted context goes to the
 current chat, draft, or CLI target.
+
+**Terminal ownership is an identity question, not a permission one.**
+`terminalOwnerSessionId` is derived from the active session directly, not
+from `contextTarget`: any chat session, or any *running* agent-CLI session
+with a `ptyId` whose tool type is context-insertable, can host attached
+terminals — including one on another machine. It falls back to the
+`contextTarget` sessionId only when there is no active session. Deriving it
+from `contextTarget` conflated identity with permission and showed foreign
+chats an "open a chat or running agent CLI session to attach terminals"
+empty state instead of a terminal.
+
+**Context-insertion gating is narrowed to the one path that cannot cross
+machines.** PTY context insertion is machine-addressed (`terminal.write`
+takes the pin), so it is allowed cross-machine. Only **chat** insertion
+fails closed for a foreign machine, because it is a DOM window event
+consumed by the chat pane and that path is not machine-addressed; the
+disabled reason is correspondingly "Tool context insertion is not available
+for chats on another machine." Failing closed for *any* session on another
+machine would take PTY insertion down with it.
+
+`isPtyContextInsertableToolType` lives in
+`apps/desktop/src/renderer/lib/sessions.ts` (shared by `TerminalsPage` and
+`WorkSidebar`): claude / codex / cursor-cli / droid / opencode. Shells are
+excluded — they host terminals but are not a context-insertion target.
 
 Toggling and tab selection go through `useWorkSessions` setters
 (`setWorkSidebarOpen`, `setWorkSidebarTab`, `setWorkSidebarWidthPct`).
@@ -856,13 +941,22 @@ The right-click menu uses one grouped, liquid-glass menu vocabulary:
 - **Copy** is a hover/keyboard submenu for the session ID and deep link.
 - Destructive Stop & delete / Delete chat / Delete session actions are fenced
   into the final red block.
-- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest,
-  **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
+- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest — "at rest"
+  being the negation of `sessionIsMidFlight` (`renderer/lib/terminalAttention.ts`),
+  the one predicate the row's hover slot and its right-click menu share. Note
+  mid-flight is narrower than the `running` phase: it is `stale`, or `running`
+  with `liveness === "turn"`. A session whose turn has ended but which still owns
+  background work is promoted back to `running` with a non-turn liveness, so it
+  is *not* mid-flight and must stay settleable — settle teardown is what stops
+  that work and releases the warm agent. Hiding Settle there left the one state
+  a user most wants to stop as the only state with no control. The chat block
+  also carries **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
-  and Settle/Unsettle when the runtime is not actively working. A tracked CLI's
+  and Settle/Unsettle when the runtime is not actively working (same shared
+  predicate). A tracked CLI's
   explicit `ade chat ask` marker can use **Dismiss & settle**; a raw native TUI
   prompt shows the disabled **Resolve input to settle** row.
 
@@ -1038,11 +1132,12 @@ nothing when no delta is available.
 
 - `apps/desktop/src/renderer/lib/sessions.ts` — `primarySessionLabel`,
   `preferredSessionLabel`, `shortToolTypeLabel`, `isChatToolType`,
-  `buildOptimisticChatSessionSummary`.
+  `isPtyContextInsertableToolType`, `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
   `canonicalInputFromSummary`, `sessionCanonicalUiState`,
   `sessionStatusBucket`, `sessionFilingBucket`, `sessionStatusDot`,
-  `sessionCapsuleBadge`,
+  `sessionCapsuleBadge`, `sessionIsMidFlight` (the shared Settle-affordance
+  predicate — see the context-menu section),
   `sessionNeedsYou`, `summarizeTerminalAttention`,
   `sessionInlineStatusLabel`, `sanitizeTerminalInlineText`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` —

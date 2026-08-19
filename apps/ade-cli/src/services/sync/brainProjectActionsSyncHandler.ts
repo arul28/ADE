@@ -53,6 +53,10 @@ import {
   type PairFailureSubject,
 } from "./syncPairFailureTracker";
 import {
+  applyPairedDeviceRejectionThrottle,
+  createPairedDeviceRejectionLimiter,
+} from "./pairedDeviceRejectionLimiter";
+import {
   createRelayAuthorizationLifecycle,
   SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
   type RelayAuthorizationLifecycle,
@@ -370,6 +374,7 @@ export function createBrainProjectActionsSyncHandler(
   const { pinStore, pairingStore, securityStore } =
     resolveBrainMachineSyncStores(args.secretsDir);
   const dpopNonceCache = createSyncDpopNonceCache();
+  const pairedDeviceRejectionLimiter = createPairedDeviceRejectionLimiter();
   // One in-flight account-hello commit per device, so two routes arriving
   // together cannot both write a pairing record for it.
   const accountHelloCommitLocks = new Map<string, Promise<unknown>>();
@@ -1363,10 +1368,19 @@ export function createBrainProjectActionsSyncHandler(
                 // caller whether a device id exists here turns the handshake
                 // into an existence oracle — and the user's next step is the
                 // same either way.
-                args.logger.warn("sync_ingress.paired_device_rejected", {
-                  deviceId: auth.deviceId,
-                  reason: knownRecord ? "secret_mismatch" : "unknown_device",
-                });
+                // Throttle is keyed only by device id — never by reason — so
+                // the delay and log cadence cannot leak existence either.
+                const throttle = pairedDeviceRejectionLimiter.record(auth.deviceId);
+                if (throttle.shouldLog) {
+                  args.logger.warn("sync_ingress.paired_device_rejected", {
+                    deviceId: auth.deviceId,
+                    reason: knownRecord ? "secret_mismatch" : "unknown_device",
+                    countInWindow: throttle.countInWindow,
+                    delayMs: throttle.delayMs,
+                  });
+                }
+                await applyPairedDeviceRejectionThrottle(throttle);
+                if (!isPeerCurrent(lifecycleGeneration)) return true;
                 return authFail(SYNC_REPAIR_REQUIRED_MESSAGE, "repair_required");
               }
               authenticatedPairingRecord = pairingStore.getPairingRecord(auth.deviceId);

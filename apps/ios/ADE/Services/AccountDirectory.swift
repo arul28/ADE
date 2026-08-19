@@ -16,6 +16,55 @@ struct AccountMachineEndpoint: Codable, Equatable, Hashable {
   let port: Int?
 }
 
+/// How a machine last said it was powered, mirroring the directory Worker's
+/// `MachinePowerState`.
+///
+/// Every field is independently optional and so is the whole record: a host
+/// built before this shipped sends none of it, and a machine with no battery — a
+/// Mac Studio, a Linux box — sends a null battery rather than a zero. Rendering
+/// "0%" on a desktop would be worse than rendering nothing, so nothing is what
+/// the presentation helpers below produce.
+struct AccountMachinePower: Codable, Equatable, Hashable {
+  let batteryPercent: Int?
+  let charging: Bool?
+  let onExternalPower: Bool?
+
+  init(batteryPercent: Int?, charging: Bool?, onExternalPower: Bool?) {
+    self.batteryPercent = batteryPercent
+    self.charging = charging
+    self.onExternalPower = onExternalPower
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    // Power is decoration on a record whose job is reachability. A nonsense
+    // value degrades to "unknown" rather than dropping a working machine off
+    // the roster over a cosmetic field.
+    let rawPercent = (try? container.decodeIfPresent(Double.self, forKey: .batteryPercent)) ?? nil
+    batteryPercent = rawPercent.flatMap { value in
+      guard value.isFinite, value >= 0, value <= 100 else { return nil }
+      return Int(value.rounded())
+    }
+    charging = (try? container.decodeIfPresent(Bool.self, forKey: .charging)) ?? nil
+    onExternalPower = (try? container.decodeIfPresent(Bool.self, forKey: .onExternalPower)) ?? nil
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case batteryPercent, charging, onExternalPower
+  }
+}
+
+/// What a machine last said about being awake.
+///
+/// `asleep` is a STATED fact — a host announces its suspend in the beat before
+/// the screen goes dark — and that is the only thing that reliably separates a
+/// sleeping Mac from an unreachable one, because the directory's own `online`
+/// flag is still true for as long as the last heartbeat stays fresh.
+enum AccountMachineSleepState: String, Codable, Equatable, Hashable, Sendable {
+  case awake
+  case asleep
+}
+
 /// One machine returned by `GET /account/machines`. Field names and types track
 /// the Worker's `MachineRecord` plus the computed `online` flag it appends to
 /// the list response. Timestamps are epoch-milliseconds (the Worker stores
@@ -32,6 +81,12 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   /// eligible only for the legacy Relay adoption path.
   let pubkey: String?
   let reachableEndpoints: [AccountMachineEndpoint]
+  /// Optional and additive: absent from every host built before power reporting
+  /// shipped, and the UI must read exactly the same as it did then when it is.
+  let power: AccountMachinePower?
+  let sleepState: AccountMachineSleepState?
+  /// Epoch-milliseconds at which `sleepState` last changed on the machine.
+  let sleepStateAt: Double?
   let lastSeenAt: Double?
   let createdAt: Double?
   let online: Bool
@@ -48,13 +103,21 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
     deviceType = try container.decodeIfPresent(String.self, forKey: .deviceType)
     pubkey = try container.decodeIfPresent(String.self, forKey: .pubkey)
     reachableEndpoints = try container.decodeIfPresent([AccountMachineEndpoint].self, forKey: .reachableEndpoints) ?? []
+    // Tolerant on purpose. A malformed power block, or a sleep word this build
+    // has never heard of, must leave the machine listed and connectable — it
+    // degrades to the pre-power behavior instead of failing the whole roster.
+    power = (try? container.decodeIfPresent(AccountMachinePower.self, forKey: .power)) ?? nil
+    let rawSleepState = (try? container.decodeIfPresent(String.self, forKey: .sleepState)) ?? nil
+    sleepState = rawSleepState.flatMap(AccountMachineSleepState.init(rawValue:))
+    sleepStateAt = (try? container.decodeIfPresent(Double.self, forKey: .sleepStateAt)) ?? nil
     lastSeenAt = try container.decodeIfPresent(Double.self, forKey: .lastSeenAt)
     createdAt = try container.decodeIfPresent(Double.self, forKey: .createdAt)
     online = try container.decodeIfPresent(Bool.self, forKey: .online) ?? false
   }
 
   private enum CodingKeys: String, CodingKey {
-    case machineKey, deviceId, name, customName, platform, deviceType, pubkey, reachableEndpoints, lastSeenAt, createdAt, online
+    case machineKey, deviceId, name, customName, platform, deviceType, pubkey, reachableEndpoints
+    case power, sleepState, sleepStateAt, lastSeenAt, createdAt, online
   }
 
   /// Human display name — falls back to the platform or a generic label so a
@@ -121,6 +184,93 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
 
 private struct AccountMachinesResponse: Codable {
   let machines: [AccountMachine]
+}
+
+/// The power half of a machine row's second line, or nil when the machine said
+/// nothing usable about power.
+///
+/// Returning nil is the important case: a Mac Studio has no battery, and a row
+/// that renders an empty slot — or "0%" — for it is worse than a row that says
+/// only where the machine is. Lowercase so it reads correctly appended after a
+/// state word ("Online · plugged in"); `accountMachineDetailLine` sentence-cases
+/// it when it leads.
+///
+/// Battery wins over wall power, following `machinePowerPhrase` in
+/// `apps/desktop/src/shared/machinePresence.ts`: "82% battery" tells the reader
+/// how long they have, "plugged in" only tells them nothing is running down. A
+/// docked MacBook at 82% used to say "plugged in" here and "82% battery" on the
+/// desktop, which is two answers to one question. A machine with no battery has
+/// no percentage to show and says where its power comes from instead.
+///
+/// Two deliberate differences from the desktop, both about not stating what was
+/// never reported:
+/// - The desktop treats a missing `onExternalPower` as "on battery", because
+///   its field is a plain boolean. Here it is optional, and a machine that told
+///   us nothing about power gets no clause at all rather than a guess. An
+///   explicit `false` is a real answer and does say "on battery".
+/// - `charging` counts as wall power. It cannot be true off the wall, and it is
+///   the only signal left when a battery read fails.
+func accountMachinePowerClause(_ power: AccountMachinePower?) -> String? {
+  guard let power else { return nil }
+  if let percent = power.batteryPercent { return "\(percent)% battery" }
+  if power.onExternalPower == true || power.charging == true {
+    return "plugged in"
+  }
+  if power.onExternalPower == false { return "on battery" }
+  return nil
+}
+
+/// The whole second line of a machine row: what the machine is doing, then how
+/// it is powered.
+///
+/// The state word is dropped for the attached machine because the CONNECTED
+/// pill beside its name already says it, and spending the only line on a
+/// repeat wastes the one place power can appear. A stale machine keeps its
+/// "last seen" line with no power clause at all — a battery level from three
+/// days ago is a number, not a fact.
+///
+/// That freshness rule is applied once, above the branch, on purpose. It used
+/// to sit only on the disconnected path, so being ATTACHED exempted a reading
+/// from having to be recent — and attachment is not evidence of freshness,
+/// because the power figure rides the account directory's heartbeat, not the
+/// channel the phone holds. A Mac reachable over the LAN with its internet down
+/// stops heartbeating while staying perfectly connected, and the row went on
+/// stating an hours-old battery percentage as fact.
+func accountMachineDetailLine(
+  isConnected: Bool,
+  isAsleep: Bool,
+  directoryOnline: Bool,
+  lastSeenAt: Date?,
+  power: AccountMachinePower?,
+  now: Date = Date()
+) -> String {
+  // Freshness, not the sleep word and not the connection, is what makes a power
+  // reading a fact. An announced suspend does not refresh the heartbeat that
+  // carried the reading, so gating on `isAsleep` kept rendering a charge for a
+  // machine that announced a suspend and then lost power days ago.
+  let clause = syncMachinePowerReadingIsFresh(
+    directoryOnline: directoryOnline,
+    lastSeenAt: lastSeenAt,
+    now: now
+  ) ? accountMachinePowerClause(power) : nil
+  if isConnected {
+    return clause.map(accountMachineSentenceCased) ?? "Connected"
+  }
+  let state = isAsleep
+    ? "Asleep"
+    : machineReachabilityText(
+      isConnected: false,
+      directoryOnline: directoryOnline,
+      lastSeenAt: lastSeenAt,
+      now: now
+    )
+  guard let clause else { return state }
+  return "\(state) · \(clause)"
+}
+
+func accountMachineSentenceCased(_ value: String) -> String {
+  guard let first = value.first else { return value }
+  return first.uppercased() + value.dropFirst()
 }
 
 func accountMachinePresentationName(

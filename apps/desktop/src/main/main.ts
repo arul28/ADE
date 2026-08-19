@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -121,6 +121,7 @@ import { installEditableContextMenu } from "./editorContextMenu";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
 import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLocalDatabase";
@@ -160,6 +161,7 @@ import {
   type RecentProjectInspection,
 } from "./services/projects/recentProjectSummary";
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
+import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
@@ -297,6 +299,9 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createKeepAwakeService } from "./services/power/keepAwakeService";
+import { getPowerStateService } from "./services/power/powerStateService";
+import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
 import { createAgentToolsCacheService } from "./services/tools/agentToolsCacheService";
@@ -304,6 +309,9 @@ import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersion
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
+
+/** One warm-runtime budget for every project context in this process. */
+const chatRuntimeBudget = createChatRuntimeBudget();
 
 type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -1601,6 +1609,30 @@ app.whenReady().then(async () => {
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
   const windowProjectTabRoots = new Map<number, Set<string>>();
+  /**
+   * Every local project root this window has actually opened during this
+   * session, kept as the window's local runtime scope.
+   *
+   * `windowProjectTabRoots` is replaced wholesale by the renderer on every tab
+   * change and `windowProjectRoots` is nulled the moment the tab binds to a
+   * remote machine, so neither can answer "was this window ever working in this
+   * local checkout?". A chat pinned to "This computer" is exactly that question:
+   * its lane lives on this machine no matter which machine the project tab is
+   * currently bound to, and rejecting it left cross-machine Work views unable to
+   * act on their own local sessions. Membership is only ever granted by the
+   * window opening the project itself, never by a renderer-supplied path.
+   */
+  const windowKnownLocalProjectRoots = new Map<number, Set<string>>();
+
+  const rememberWindowKnownLocalProjectRoot = (
+    windowId: number | null,
+    rootPath: string | null | undefined,
+  ): void => {
+    if (windowId == null || !rootPath) return;
+    const roots = windowKnownLocalProjectRoots.get(windowId) ?? new Set<string>();
+    roots.add(rootPath);
+    windowKnownLocalProjectRoots.set(windowId, roots);
+  };
   const windowPendingProjectRoots = new Map<number, Map<string, number>>();
   const windowProjectBindings = new Map<number, RemoteOpenProjectBinding>();
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
@@ -1683,6 +1715,19 @@ app.whenReady().then(async () => {
         });
       }
     },
+  });
+  // Carry this machine's OS-level suspend/resume into the brain, which has no
+  // such hook of its own and owns the account-directory publisher. Registered
+  // here rather than lazily so the beat is already wired the first time the lid
+  // closes, and disposed with the app below.
+  const machinePowerBrainBridge = createMachinePowerBrainBridge({
+    powerSource: getPowerStateService(),
+    logger: localRuntimeLogger,
+    report: ({ kind, budgetMs }) => localRuntimePool.callSync(
+      "machine.reportPowerTransition",
+      { kind, budgetMs },
+      { timeoutMs: budgetMs },
+    ),
   });
   const mirrorDesktopRecentProjectToMachineCatalog = (rootPath: string): void => {
     void localRuntimePool.ensureProject(rootPath, {
@@ -1814,14 +1859,19 @@ app.whenReady().then(async () => {
     rootPaths: string[],
   ): ProjectInfo[] => {
     if (windowId == null) return [];
-    const roots = new Set<string>();
-    for (const rootPath of rootPaths) {
-      const normalized = rootPath.trim() ? normalizeProjectRoot(rootPath) : "";
-      if (normalized) roots.add(normalized);
+    // The gate on what may join the window's local runtime scope lives in
+    // `resolveWindowTabRoots` (see it for why a renderer-named path is not
+    // enough), so it can be tested without standing up a window.
+    const { tabRoots, authorizedLocalRoots } = resolveWindowTabRoots({
+      rootPaths,
+      activeRoot: windowProjectRoots.get(windowId) ?? null,
+      normalizeRoot: normalizeProjectRoot,
+      isOpenedProjectRoot: (root) => projectForRoot(root) != null,
+    });
+    windowProjectTabRoots.set(windowId, tabRoots);
+    for (const root of authorizedLocalRoots) {
+      rememberWindowKnownLocalProjectRoot(windowId, root);
     }
-    const activeRoot = windowProjectRoots.get(windowId) ?? null;
-    if (activeRoot) roots.add(activeRoot);
-    windowProjectTabRoots.set(windowId, roots);
     scheduleProjectContextRebalance();
     return projectsForWindowTabs(windowId);
   };
@@ -1995,6 +2045,7 @@ app.whenReady().then(async () => {
         const tabRoots = windowProjectTabRoots.get(windowId) ?? new Set<string>();
         tabRoots.add(normalizedRoot);
         windowProjectTabRoots.set(windowId, tabRoots);
+        rememberWindowKnownLocalProjectRoot(windowId, normalizedRoot);
       }
       const win = BrowserWindow.fromId(windowId);
       if (win && !win.isDestroyed()) {
@@ -2461,6 +2512,20 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  // Opt-in, default off: ADE holds no power assertion until the user picks a
+  // level, and even then only while an agent turn is actually running. Turns
+  // live in the brain, so the live count is asked of the runtime pool.
+  const keepAwakeService = createKeepAwakeService({
+    globalStatePath,
+    powerSaveBlocker,
+    readActiveTurns: async () => (await localRuntimePool.activitySummary()).activeAgentTurns,
+    logger: {
+      info: (event, data) => updateLogger.info(event, data as Record<string, unknown> | undefined),
+      warn: (event, data) => updateLogger.warn(event, data as Record<string, unknown> | undefined),
+    },
+    productAnalyticsService,
+  });
+  keepAwakeService.start();
   // Pinned agent tools are fetched, not bundled. The brain kicks its own
   // background fetch on `ade serve`, but the desktop app can be launched
   // against a brain that is already running (or one that failed its fetch), so
@@ -3555,6 +3620,7 @@ app.whenReady().then(async () => {
     linearLiveStatusServiceRef = linearLiveStatusService;
 
     const agentChatService = createAgentChatService({
+      runtimeBudget: chatRuntimeBudget,
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
       fileService,
@@ -3566,6 +3632,10 @@ app.whenReady().then(async () => {
       linearCredentials: linearCredentialService,
       prService,
       diskPressureMonitor,
+      // Electron's `suspend` fires a beat BEFORE the machine goes down, which
+      // is the only moment a turn in flight can still be told why it is about
+      // to stall.
+      hostPowerSource: getPowerStateService(),
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
@@ -6158,7 +6228,17 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
+    try {
+      keepAwakeService?.dispose();
+    } catch {
+      // ignore
+    }
     disposeSharedTranscriptionService();
+    try {
+      machinePowerBrainBridge.dispose();
+    } catch {
+      // ignore
+    }
     try {
       localRuntimePool.dispose();
     } catch {
@@ -6260,6 +6340,11 @@ app.whenReady().then(async () => {
 
       try {
         autoUpdateService?.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        keepAwakeService?.dispose();
       } catch {
         // ignore
       }
@@ -6699,6 +6784,7 @@ app.whenReady().then(async () => {
     }
     windowProjectRoots.set(win.id, normalizedRoot);
     windowProjectTabRoots.set(win.id, normalizedRoot ? new Set([normalizedRoot]) : new Set());
+    rememberWindowKnownLocalProjectRoot(win.id, normalizedRoot);
     if (remoteBinding) {
       windowProjectBindings.set(win.id, remoteBinding);
     } else {
@@ -6731,6 +6817,7 @@ app.whenReady().then(async () => {
       const previousRoot = windowProjectRoots.get(win.id) ?? null;
       windowProjectRoots.delete(win.id);
       windowProjectTabRoots.delete(win.id);
+      windowKnownLocalProjectRoots.delete(win.id);
       windowPendingProjectRoots.delete(win.id);
       windowProjectBindings.delete(win.id);
       if (activeProjectRoot === previousRoot) {
@@ -6740,7 +6827,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -6749,8 +6836,12 @@ app.whenReady().then(async () => {
         binding: bindingForLocalProject(project),
         openProjectTabs: project ? [project] : [],
         pendingLocalProjectRoots: [],
+        knownLocalProjectRoots: project ? [project.rootPath] : [],
       };
     }
+    const knownLocalProjectRoots = Array.from(
+      windowKnownLocalProjectRoots.get(windowId) ?? [],
+    );
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {
       windowId,
@@ -6758,6 +6849,7 @@ app.whenReady().then(async () => {
       binding: remoteBinding,
       openProjectTabs: projectsForWindowTabs(windowId),
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
+      knownLocalProjectRoots,
     };
     const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
     return {
@@ -6766,6 +6858,7 @@ app.whenReady().then(async () => {
       binding: bindingForLocalProject(project),
       openProjectTabs: projectsForWindowTabs(windowId),
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
+      knownLocalProjectRoots,
     };
   };
 
@@ -7516,6 +7609,9 @@ app.whenReady().then(async () => {
       const ctx = getActiveContext();
       if (!ctx.autoUpdateService) {
         ctx.autoUpdateService = autoUpdateService;
+      }
+      if (!ctx.keepAwakeService) {
+        ctx.keepAwakeService = keepAwakeService;
       }
       if (!ctx.agentToolsCacheService) {
         ctx.agentToolsCacheService = agentToolsCacheService;

@@ -58,7 +58,8 @@ import {
 } from "../../../shared/types";
 import {
   isUnsupportedAgentChatRecoveryActionError,
-  providerForkIsContextSeeded,
+  providerForkReplaysTranscript,
+  supportsActiveTurnDispatchMode,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
@@ -88,7 +89,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
-import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -129,6 +130,8 @@ import {
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
+import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { useForeignSessionLaneId } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -168,6 +171,7 @@ import {
   readImportedFrom,
   providerDisplayName as externalProviderDisplayName,
   type ExternalSessionImportResult,
+  type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "../terminals/importSessions/contract";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
@@ -300,6 +304,11 @@ import {
   createHandoffLaunchJobId,
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
+import {
+  CLAUDE_SESSION_QUOTA_CARD_ACTION,
+  CLAUDE_SESSION_QUOTA_CARD_VARIANT,
+  CLAUDE_SESSION_QUOTA_FORK_NOTE,
+} from "../../../shared/claudeSessionQuota";
 import { summarizeNativeControls as summarizeNativeLaunchControls } from "../../lib/nativeLaunchControls";
 import {
   createAppControlContextInstanceId,
@@ -843,26 +852,6 @@ const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 // the lane picker's machine derivation re-run on every render.
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_REMOTE_PROJECT_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
-const EMPTY_CHAT_PIN_ARGS: readonly [] = [];
-/**
- * Spread form used at every chat-scoped call site. A chat on the tab's own
- * binding passes NO extra argument at all and allocates nothing, so the common
- * path is byte-for-byte the call it was before per-chat runtime routing.
- * Module-scope + ref so threading it through call sites perturbs no hook
- * dependency array.
- */
-function chatPinArgsFor(
-  ref: { current: OpenProjectBinding | null },
-): readonly [] | readonly [OpenProjectBinding] {
-  return chatPinArgsForBinding(ref.current);
-}
-
-function chatPinArgsForBinding(
-  pin: OpenProjectBinding | null,
-): readonly [] | readonly [OpenProjectBinding] {
-  return pin ? [pin] : EMPTY_CHAT_PIN_ARGS;
-}
-
 type DraftLaunchLaneTarget = {
   laneId: string;
   laneName: string;
@@ -3262,9 +3251,13 @@ export function AgentChatPane({
   onImportedSession?: (
     summary: ExternalSessionSummary,
     result: ExternalSessionImportResult,
+    source?: ExternalSessionSource,
   ) => void;
   /** Work draft surface: focus an already-imported ADE session instead of re-importing. */
-  onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
+  onOpenExistingImportedSession?: (
+    ref: { kind: "chat" | "cli"; sessionId: string },
+    source?: ExternalSessionSource,
+  ) => void;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
@@ -3288,7 +3281,6 @@ export function AgentChatPane({
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
-  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   // The originating project's binding, captured per launch so detached draft
   // work can keep targeting the project that started it after the user switches
   // to another project.
@@ -3821,6 +3813,7 @@ export function AgentChatPane({
     () => ({ ...initialNativeControls.cursorConfigValues }),
   );
   const [handoffNote, setHandoffNote] = useState("");
+  const pendingHandoffPrefillRef = useRef<{ note: string } | null>(null);
   // Two-view handoff tab: the landing menu (remote vs local) and the local
   // handoff surface (fork | brief). Both reset each time the tab is opened.
   const [handoffView, setHandoffView] = useState<"menu" | "local">("menu");
@@ -3942,22 +3935,37 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
-  const foreignSelectedLaneId = useRootAppStore((state) => {
-    if (!selectedSessionId || selectedSession) return null;
-    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
-      const session = machine.sessions.find((candidate) => candidate.id === selectedSessionId);
-      if (session) return session.laneId;
-    }
-    return null;
+  // Which atomic active-turn dispatch modes this session's backend accepts,
+  // read off the canonical table in shared/types/chat.ts rather than restated
+  // here.
+  const activeTurnInterruptSupported =
+    supportsActiveTurnDispatchMode(selectedSession?.provider, "interrupt");
+  const activeTurnInlineSupported =
+    supportsActiveTurnDispatchMode(selectedSession?.provider, "inline");
+  // Which machine is THIS chat on, and what does its lane look like there. One
+  // derivation, shared with the panel/drawer subtree through
+  // `ChatRuntimeScopeProvider` below, so the pane and its tools cannot disagree.
+  const {
+    chatScopeLaneId,
+    chatRuntimePin,
+    chatEffectiveBinding,
+    isRemoteChat,
+    chatMachineName,
+    handoffLaneSourceLanes,
+    chatLaneWorktreePath,
+  } = useChatScopeDerivation({
+    selectedSessionId,
+    selectedSession: selectedSession ? { laneId: selectedSession.laneId ?? null } : null,
+    laneId,
+    chatMachineRouter,
+    projectBinding,
+    lanes,
+    availableLanes,
   });
-  // The binding this chat's runtime calls must target, or null when the chat
-  // lives on the tab's own binding (the common case: identical to before).
-  // Held in a ref so call sites can read it without perturbing any existing
-  // effect/callback dependency array.
-  const chatRuntimePin = useMemo(
-    () => chatMachineRouter.pinForLane(selectedSession?.laneId ?? foreignSelectedLaneId ?? laneId),
-    [chatMachineRouter, foreignSelectedLaneId, laneId, selectedSession?.laneId],
-  );
+  // Held in a ref so the ~40 call sites below can read the pin without
+  // perturbing any existing effect/callback dependency array. Declared here,
+  // not returned by the hook, so `react-hooks/exhaustive-deps` still sees it
+  // as a `useRef` result and stops demanding it as a dependency.
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
   // Provided for the WHOLE pane, not just the transcript: the proposed-plan
@@ -3986,14 +3994,10 @@ export function AgentChatPane({
     ),
     [initialSessionSummary, renderedSessionId, sessions],
   );
-  const foreignRenderedLaneId = useRootAppStore((state) => {
-    if (!renderedSessionId || renderedSession) return null;
-    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
-      const session = machine.sessions.find((candidate) => candidate.id === renderedSessionId);
-      if (session) return session.laneId;
-    }
-    return null;
-  });
+  const foreignRenderedLaneId = useForeignSessionLaneId(
+    renderedSessionId,
+    Boolean(renderedSession),
+  );
   const renderedChatRuntimePin = useMemo(
     () => chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId),
     [chatMachineRouter, foreignRenderedLaneId, laneId, renderedSession?.laneId],
@@ -4051,12 +4055,12 @@ export function AgentChatPane({
       setAppControlAvailable(false);
       return;
     }
-    if (isRemoteProject && !effectiveAppControlOpen) {
-      setAppControlAvailable(false);
-      return;
-    }
+    // Support is a property of the machine the chat runs on, so ask that
+    // machine. The probe used to be skipped for a remote project entirely,
+    // which left the toggle permanently hidden — and hiding the toggle is what
+    // kept the panel from ever opening to un-skip it.
     let cancelled = false;
-    void api.getStatus()
+    void api.getStatus(chatRuntimePin)
       .then((status) => {
         if (cancelled) return;
         setAppControlAvailable(Boolean(status.supported));
@@ -4068,7 +4072,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [effectiveAppControlOpen, isRemoteProject, laneToolsVisible]);
+  }, [chatRuntimePin, laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -4159,12 +4163,8 @@ export function AgentChatPane({
     clearPromptSuggestionForSession(selectedSessionId);
   }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
 
-  const iosSimulatorProjectRoot = useMemo(() => {
-    const scopedLaneId = selectedSession?.laneId ?? laneId;
-    if (!scopedLaneId) return projectRoot;
-    const lane = lanes.find((entry) => entry.id === scopedLaneId);
-    return lane?.worktreePath ?? projectRoot;
-  }, [laneId, lanes, projectRoot, selectedSession?.laneId]);
+  const iosSimulatorProjectRoot = chatLaneWorktreePath
+    ?? (chatRuntimePin ? chatRuntimePin.rootPath : projectRoot);
   // `selectedSessionId` is internal state synced from props in an effect, so it
   // trails the incoming selection by one render. Deriving the transcript from
   // it painted the OUTGOING chat's events for a beat after the pane was pointed
@@ -4368,7 +4368,7 @@ export function AgentChatPane({
     void window.ade.agentChat
       .cancelDispatchedSteer(
         { sessionId: selectedSessionId, steerId },
-        ...chatPinArgsFor(chatRuntimePinRef),
+        chatRuntimePinRef.current,
       )
       .catch(() => { /* best-effort: already delivered or unknown steer */ });
   }, [selectedSessionId]);
@@ -4376,7 +4376,7 @@ export function AgentChatPane({
     (args: AgentChatRecoverContinuityArgs) =>
       window.ade.agentChat.recoverContinuity(
         args,
-        ...chatPinArgsFor(chatRuntimePinRef),
+        chatRuntimePinRef.current,
       ),
     [],
   );
@@ -4386,7 +4386,7 @@ export function AgentChatPane({
       const result = await window.ade.agentChat
         .restoreCancelledQueue(
           { sessionId: selectedSessionId, recoveryId },
-          ...chatPinArgsFor(chatRuntimePinRef),
+          chatRuntimePinRef.current,
         );
       return result.restored;
     } catch (error) {
@@ -4442,7 +4442,7 @@ export function AgentChatPane({
       });
       void killWorker(
         { sessionId: selectedSessionId, workerSessionId },
-        ...chatPinArgsFor(chatRuntimePinRef),
+        chatRuntimePinRef.current,
       )
         .catch((killError) => {
           // eslint-disable-next-line no-console
@@ -4594,7 +4594,7 @@ export function AgentChatPane({
           sessionId: selectedSessionId,
           agentId: subagentView.agentId ?? subagentView.taskId,
           taskId: subagentView.taskId,
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, chatRuntimePinRef.current);
         if (cancelled) return;
         if (result === null) {
           setSubagentTranscriptUnsupported(true);
@@ -4634,12 +4634,52 @@ export function AgentChatPane({
   }, [chatActionsOpen, subagentView]);
 
   useEffect(() => {
+    const applyLocalForkPrefill = (note: string) => {
+      pendingHandoffPrefillRef.current = { note };
+      if (chatActionsOpen && chatActionsTab === "handoff") {
+        pendingHandoffPrefillRef.current = null;
+        setHandoffNote(note);
+        setHandoffView("local");
+        setHandoffLocalMode("fork");
+        return;
+      }
+      setIosSimulatorOpen(false);
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+      setChatActionsTab("handoff");
+      setChatActionsOpen(true);
+    };
+    const isLocalForkDetail = (detail: {
+      actionId?: string;
+      variant?: string;
+      tab?: string;
+      view?: string;
+      mode?: string;
+    }) => detail.actionId === CLAUDE_SESSION_QUOTA_CARD_ACTION
+      || (detail.tab === "handoff" && detail.view === "local" && detail.mode === "fork")
+      || detail.variant === CLAUDE_SESSION_QUOTA_CARD_VARIANT;
+
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{
         sessionId?: string | null;
         taskId?: string | null;
+        tab?: string;
+        view?: string;
+        mode?: string;
+        actionId?: string;
+        variant?: string;
+        note?: string;
       }>).detail ?? {};
       if (detail.sessionId && selectedSessionId && detail.sessionId !== selectedSessionId) return;
+      if (isLocalForkDetail(detail)) {
+        applyLocalForkPrefill(
+          typeof detail.note === "string" && detail.note.trim()
+            ? detail.note.trim()
+            : CLAUDE_SESSION_QUOTA_FORK_NOTE,
+        );
+        return;
+      }
+      if (event.type !== "ade:chat:open-info") return;
       setChatActionsTab("agents");
       setIosSimulatorOpen(false);
       setAppControlOpen(false);
@@ -4661,9 +4701,13 @@ export function AgentChatPane({
         background: snapshot.background ?? false,
       });
     };
+    window.addEventListener("ade:chat:card-action", handler);
     window.addEventListener("ade:chat:open-info", handler);
-    return () => window.removeEventListener("ade:chat:open-info", handler);
-  }, [selectedSessionId, selectedSubagentSnapshots]);
+    return () => {
+      window.removeEventListener("ade:chat:card-action", handler);
+      window.removeEventListener("ade:chat:open-info", handler);
+    };
+  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots]);
 
   // Cheap probe for the subagents panel: does this agent actually have a
   // pullable transcript? It runs the EXACT same fetch the takeover view uses
@@ -4681,7 +4725,7 @@ export function AgentChatPane({
           agentId: args.agentId ?? args.taskId,
           taskId: args.taskId,
           limit: 1,
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, chatRuntimePinRef.current);
         return Array.isArray(result) && result.length > 0;
       } catch {
         return false;
@@ -4716,7 +4760,7 @@ export function AgentChatPane({
     try {
       await window.ade.agentChat.codex.setGoal(
         { sessionId, objective },
-        ...chatPinArgsFor(chatRuntimePinRef),
+        chatRuntimePinRef.current,
       );
     } catch (goalError) {
       setError(errorMessage(goalError));
@@ -4735,7 +4779,7 @@ export function AgentChatPane({
     try {
       await window.ade.agentChat.codex.clearGoal(
         { sessionId },
-        ...chatPinArgsFor(chatRuntimePinRef),
+        chatRuntimePinRef.current,
       );
     } catch (goalError) {
       setError(errorMessage(goalError));
@@ -4757,7 +4801,7 @@ export function AgentChatPane({
     try {
       await window.ade.agentChat.codex.setGoalStatus(
         { sessionId, status },
-        ...chatPinArgsFor(chatRuntimePinRef),
+        chatRuntimePinRef.current,
       );
     } catch (goalError) {
       setError(errorMessage(goalError));
@@ -5695,7 +5739,7 @@ export function AgentChatPane({
   // Cursor's same-family fork reseeds context rather than copying a provider
   // thread, so the panel must not promise the whole conversation comes along
   // verbatim on that path. Cross-family targets still get the full replay.
-  const handoffForkIsContextSeeded = providerForkIsContextSeeded(selectedSession?.provider);
+  const handoffForkReplaysTranscript = providerForkReplaysTranscript(selectedSession?.provider);
   const handoffForkModelFilter = useCallback((_descriptor: ModelDescriptor) => true, []);
   const handoffForkAvailableModelIds = handoffAvailableModelIds;
   const handoffNativeControlState = useMemo((): NativeControlState => ({
@@ -6032,7 +6076,7 @@ export function AgentChatPane({
       summary = initialSessionSummary;
       seededInitialSummaryRef.current = true;
     } else {
-      summary = await window.ade.agentChat.getSummary({ sessionId: lockSessionId }, ...chatPinArgsFor(chatRuntimePinRef));
+      summary = await window.ade.agentChat.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
     }
 
     setSessions(summary ? [summary] : []);
@@ -6303,7 +6347,6 @@ export function AgentChatPane({
     const historyPin = options && "pin" in options
       ? options.pin ?? null
       : chatRuntimePinRef.current;
-    const historyPinArgs = chatPinArgsForBinding(historyPin);
     if (options?.force) {
       loadedHistoryRef.current.delete(sessionId);
     }
@@ -6360,7 +6403,7 @@ export function AgentChatPane({
             sessionId,
             maxEvents: INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
             maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
-          }, ...historyPinArgs);
+          }, historyPin);
           if (snapshot?.sessionId === sessionId && snapshot.unavailable === true) {
             applyHistoryMiss({ unavailable: true });
             return;
@@ -6370,7 +6413,7 @@ export function AgentChatPane({
             return;
           }
           if (snapshot?.sessionId === sessionId && !snapshot.events?.length && snapshot.sessionFound !== true) {
-            const summary = await window.ade.agentChat.getSummary({ sessionId }, ...historyPinArgs).catch(() => null);
+            const summary = await window.ade.agentChat.getSummary({ sessionId }, historyPin).catch(() => null);
             if (!summary) {
               applyHistoryMiss({ unavailable: snapshot.unavailable });
               return;
@@ -6386,7 +6429,7 @@ export function AgentChatPane({
         usedSnapshotPath = false;
       }
       if (!usedSnapshotPath) {
-        const summary = await window.ade.sessions.get(sessionId, ...historyPinArgs);
+        const summary = await window.ade.sessions.get(sessionId, historyPin);
         if (!summary || !isChatToolType(summary.toolType)) {
           // Clear the loaded flag so a subsequent remount/tab switch can retry.
           // Without this, a transient lookup miss (e.g. session summary not yet
@@ -6399,7 +6442,7 @@ export function AgentChatPane({
           sessionId,
           maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
           raw: true
-        }, ...historyPinArgs);
+        }, historyPin);
         parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
       }
 
@@ -6562,7 +6605,7 @@ export function AgentChatPane({
           sessionId,
           beforeOffset,
           maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
-        }, ...chatPinArgsForBinding(pin)),
+        }, pin),
       });
       if (!batch || !isCurrentRequest()) return false;
       const { events: olderEvents, nextCursor } = batch;
@@ -6779,7 +6822,7 @@ export function AgentChatPane({
     window.ade.agentChat.warmupModel({
       sessionId: selectedSessionId,
       modelId: selectedSessionModelId,
-    }, ...chatPinArgsFor(chatRuntimePinRef)).then(() => refreshSessions()).catch(() => {});
+    }, chatRuntimePinRef.current).then(() => refreshSessions()).catch(() => {});
   }, [
     cursorModeId,
     refreshSessions,
@@ -7020,10 +7063,13 @@ export function AgentChatPane({
       setHandoffDroidPermissionMode(droidPermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
-      setHandoffNote("");
-      // Land on the menu each open; default the local mode to fork when the
+      const prefill = pendingHandoffPrefillRef.current;
+      pendingHandoffPrefillRef.current = null;
+      setHandoffNote(prefill?.note ?? "");
+      // Land on the menu each open; skip straight to local fork when a quota
+      // card asked for that form. Default the local mode to fork when the
       // source provider can fork, else brief. Seed lane + remote model.
-      setHandoffView("menu");
+      setHandoffView(prefill ? "local" : "menu");
       setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
       setRemoteHandoffModelId(
@@ -7295,7 +7341,7 @@ export function AgentChatPane({
     const previousTurnActive = sameSession ? sessionDeltaTurnActiveRef.current : false;
     sessionDeltaSessionIdRef.current = selectedSessionId;
     sessionDeltaTurnActiveRef.current = turnActive;
-    if (isRemoteProject) {
+    if (isRemoteChat) {
       const completedTurn =
         sameSession
         && previousTurnActive
@@ -7321,7 +7367,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [isRemoteProject, isTileActive, selectedSessionId, turnActive]);
+  }, [isRemoteChat, isTileActive, selectedSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -7587,7 +7633,7 @@ export function AgentChatPane({
         envelope.event.type === "user_message"
         || (envelope.event.type === "status" && envelope.event.turnStatus === "started")
       ) {
-        if (isRemoteProject && envelope.event.type === "status") {
+        if (isRemoteChat && envelope.event.type === "status") {
           remoteDeltaArmedSessionsRef.current.add(envelope.sessionId);
         }
         patchSessionSummary(
@@ -7700,7 +7746,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -7769,7 +7815,7 @@ export function AgentChatPane({
     // Try Codex fuzzy file search if we have an active Codex session
     if (trimmed.length && selectedSessionId && sessionProvider === "codex") {
       try {
-        const codexHits = await window.ade.agentChat.fileSearch({ sessionId: selectedSessionId, query: trimmed }, ...chatPinArgsFor(chatRuntimePinRef));
+        const codexHits = await window.ade.agentChat.fileSearch({ sessionId: selectedSessionId, query: trimmed }, chatRuntimePinRef.current);
         if (codexHits.length > 0) {
           return codexHits.map((hit) => ({
             path: hit.path,
@@ -7848,7 +7894,7 @@ export function AgentChatPane({
       const saved = await window.ade.agentChat.saveTempAttachment({
         data: stripDataUrlPrefix(args.dataUrl),
         filename: args.filename,
-      }, ...chatPinArgsForBinding(attachmentOwnerBinding));
+      }, attachmentOwnerBinding);
       const currentBinding = selectedSessionIdRef.current
         ? chatRuntimePinRef.current
         : draftExecutionBindingRef.current;
@@ -8122,7 +8168,7 @@ export function AgentChatPane({
       touchSession(sessionId);
       await refreshAvailableModels({ force: true });
       try {
-        await window.ade.agentChat.send({ sessionId, text, displayText, ...replayContext }, ...chatPinArgsFor(chatRuntimePinRef));
+        await window.ade.agentChat.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current);
       } catch (sendError) {
         if (!isTurnAlreadyActiveError(sendError)) throw sendError;
         rejectAuthRetry(sessionId);
@@ -8147,7 +8193,7 @@ export function AgentChatPane({
     try {
       setError(null);
       touchSession(sessionId);
-      await window.ade.agentChat.send({ sessionId, text: submission.text, displayText: submission.displayText }, ...chatPinArgsFor(chatRuntimePinRef));
+      await window.ade.agentChat.send({ sessionId, text: submission.text, displayText: submission.displayText }, chatRuntimePinRef.current);
       void refreshSessions().catch(() => {});
     } catch (mosaicSendError) {
       setError(mosaicSendError instanceof Error ? mosaicSendError.message : String(mosaicSendError));
@@ -9915,6 +9961,10 @@ export function AgentChatPane({
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked || handoffBusy) return;
     const sourceLaneId = selectedSession?.laneId ?? laneId;
     if (!sourceLaneId) return;
+    // Freeze routing for the whole operation. Lane creation and the handoff
+    // itself must land on the same machine, and a mid-flight lane-index change
+    // must not move the second call somewhere the first one's lane is unknown.
+    const handoffPin = chatRuntimePinRef.current;
     const jobId = createHandoffLaunchJobId();
     const patchHandoffJob = (patch: Partial<HandoffLaunchJob>) => {
       setHandoffLaunchJobs((current) => current.map((job) => (
@@ -9955,17 +10005,23 @@ export function AgentChatPane({
         if (isAutoCreateLaneOptionId(handoffTargetLaneId)) {
           const seed = trimmedHandoffNote || (selectedSession ? chatSessionTitle(selectedSession) : "") || "handoff";
           const laneName = createDeterministicAutoLaneName(seed, { genericSuffix: autoLaneGenericSuffix() });
-          const createdLane = await window.ade.lanes.create({ name: laneName });
+          // The handoff itself is pinned to this chat's machine, so the lane it
+          // targets has to be created there too — a lane made on the tab's
+          // machine is simply unknown to the runtime that runs the handoff.
+          const createdLane = await window.ade.lanes.create({ name: laneName }, handoffPin);
           resolvedTargetLaneId = createdLane.id;
           patchHandoffJob({ laneId: createdLane.id, laneName });
-          await refreshLanesStore().catch(() => {});
+          // Only the bound project's lane store is the one this refresh writes.
+          if (canRefreshPinnedProject(handoffPin)) {
+            await refreshLanesStore().catch(() => {});
+          }
         } else if (handoffTargetLaneId && handoffTargetLaneId !== sourceLaneId) {
           resolvedTargetLaneId = handoffTargetLaneId;
           // Re-home the sidebar placeholder to the lane the new chat will
           // actually appear in.
           patchHandoffJob({
             laneId: handoffTargetLaneId,
-            laneName: availableLanes?.find((lane) => lane.id === handoffTargetLaneId)?.name ?? handoffTargetLaneId,
+            laneName: handoffLaneSourceLanes.find((lane) => lane.id === handoffTargetLaneId)?.name ?? handoffTargetLaneId,
           });
         }
       }
@@ -9988,7 +10044,7 @@ export function AgentChatPane({
         ...(resolvedHandoffPermissionMode != null ? { permissionMode: resolvedHandoffPermissionMode } : {}),
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
-      }, ...chatPinArgsFor(chatRuntimePinRef));
+      }, handoffPin);
       setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
@@ -10029,10 +10085,11 @@ export function AgentChatPane({
       setHandoffBusy(false);
     }
   }, [
-    availableLanes,
+    canRefreshPinnedProject,
     canShowHandoff,
     handoffBlocked,
     handoffBusy,
+    handoffLaneSourceLanes,
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,
@@ -10072,7 +10129,7 @@ export function AgentChatPane({
     setDeletingChatSessionId(selectedSessionId);
     void window.ade.agentChat.delete(
       { sessionId: selectedSessionId },
-      ...chatPinArgsFor(chatRuntimePinRef),
+      chatRuntimePinRef.current,
     )
       .then(async () => {
         invalidateSessionListCache();
@@ -10097,7 +10154,7 @@ export function AgentChatPane({
 
   const handleArchiveChat = useCallback((sessionId: string) => {
     setError(null);
-    void window.ade.agentChat.archive({ sessionId }, ...chatPinArgsFor(chatRuntimePinRef))
+    void window.ade.agentChat.archive({ sessionId }, chatRuntimePinRef.current)
       .then(async () => {
         invalidateSessionListCache();
         invalidateCurrentChatSessionList();
@@ -10127,7 +10184,7 @@ export function AgentChatPane({
 
   const handleUnarchiveChat = useCallback((sessionId: string) => {
     setError(null);
-    void window.ade.agentChat.unarchive({ sessionId }, ...chatPinArgsFor(chatRuntimePinRef))
+    void window.ade.agentChat.unarchive({ sessionId }, chatRuntimePinRef.current)
       .then(async () => {
         invalidateSessionListCache();
         invalidateCurrentChatSessionList();
@@ -10173,7 +10230,7 @@ export function AgentChatPane({
         decision,
         responseText,
         ...(answers ? { answers } : {}),
-      }, ...chatPinArgsFor(chatRuntimePinRef));
+      }, chatRuntimePinRef.current);
       setPendingInputsBySession((prev) => ({
         ...prev,
         [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
@@ -10578,7 +10635,7 @@ export function AgentChatPane({
       draftsPerSessionRef.current.delete(selectedSessionId);
       try {
         touchSession(selectedSessionId);
-        await window.ade.agentChat.getContextUsage({ sessionId: selectedSessionId }, ...chatPinArgsFor(chatRuntimePinRef));
+        await window.ade.agentChat.getContextUsage({ sessionId: selectedSessionId }, chatRuntimePinRef.current);
       } catch (contextError) {
         setDraft((current) => (current.trim().length ? current : draft));
         setError(contextError instanceof Error ? contextError.message : String(contextError));
@@ -10605,7 +10662,7 @@ export function AgentChatPane({
           sessionId: selectedSessionId,
           text,
           displayText: text,
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, chatRuntimePinRef.current);
         void refreshSessions().catch(() => {});
       } catch (outputStyleError) {
         setDraft((current) => (current.trim().length ? current : draft));
@@ -10731,7 +10788,7 @@ export function AgentChatPane({
           reasoningEffort,
           ...(modelSupportsFastMode(desc) ? { fastMode } : {}),
           ...buildNativeControlPayload(provider),
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, chatRuntimePinRef.current);
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
         // No session yet — create one
@@ -10767,8 +10824,16 @@ export function AgentChatPane({
           displayText: finalDisplayText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
-          ...(sessionProvider === "claude" && activeTurnDispatchMode ? { dispatchMode: activeTurnDispatchMode } : {}),
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+          // Only send a dispatch mode the session's own backend accepts (see
+          // the canonical table in shared/types/chat.ts); otherwise this
+          // stages. The gate reads selectedSession.provider — the provider that
+          // actually receives the IPC call — not the picked model's provider,
+          // which diverges while a different model is selected mid-turn.
+          ...(activeTurnDispatchMode
+            && supportsActiveTurnDispatchMode(selectedSession?.provider, activeTurnDispatchMode)
+            ? { dispatchMode: activeTurnDispatchMode }
+            : {}),
+        }, chatRuntimePinRef.current);
       };
 
       const sendMessageOrSteerIfBusy = async (retryOnStaleSteer = true) => {
@@ -10792,7 +10857,7 @@ export function AgentChatPane({
             executionMode: launchModeEditable ? executionMode : null,
             interactionMode: sendInteractionMode,
             ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
-          }, ...chatPinArgsFor(chatRuntimePinRef));
+          }, chatRuntimePinRef.current);
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
@@ -10939,7 +11004,7 @@ export function AgentChatPane({
   // are atomic through steer({ dispatchMode }) and never enter the staged queue.
   const dispatchSteerSafely = useCallback(
     (args: { sessionId: string; steerId: string; mode: AgentChatDispatchSteerMode }) => {
-      void window.ade.agentChat.dispatchSteer(args, ...chatPinArgsFor(chatRuntimePinRef)).catch((error: unknown) => {
+      void window.ade.agentChat.dispatchSteer(args, chatRuntimePinRef.current).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         setError(`Couldn't deliver the message to the running turn: ${message}`);
       });
@@ -10976,7 +11041,7 @@ export function AgentChatPane({
         sessionId: selectedSessionId,
         userMessageId: request.messageId,
         dryRun: true,
-      }, ...chatPinArgsFor(chatRuntimePinRef));
+      }, chatRuntimePinRef.current);
       if (!preview.canRewind) {
         setError(preview.error ?? "No file checkpoint is available for that message.");
         return;
@@ -10995,7 +11060,7 @@ export function AgentChatPane({
         sessionId: selectedSessionId,
         userMessageId: request.messageId,
         dryRun: false,
-      }, ...chatPinArgsFor(chatRuntimePinRef));
+      }, chatRuntimePinRef.current);
       if (!result.canRewind) {
         setError(result.error ?? "File rewind failed.");
         return;
@@ -11038,14 +11103,14 @@ export function AgentChatPane({
           sessionId: args.sessionId,
           turnId: args.turnId,
           action,
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, chatRuntimePinRef.current);
         return {
           ...result,
           action: args.action,
         };
       } catch (error) {
         if (!isUnsupportedAgentChatRecoveryActionError(error)) throw error;
-        return window.ade.agentChat.recoverCodexTurn(args, ...chatPinArgsFor(chatRuntimePinRef));
+        return window.ade.agentChat.recoverCodexTurn(args, chatRuntimePinRef.current);
       }
     },
     [],
@@ -11071,7 +11136,7 @@ export function AgentChatPane({
           sessionId,
           steerId,
           action: "run_next",
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, chatRuntimePinRef.current);
         void refreshSessions().catch(() => {});
       } catch (runError) {
         const message = runError instanceof Error ? runError.message : String(runError);
@@ -11100,7 +11165,7 @@ export function AgentChatPane({
         sessionId,
         steerId,
         action: "dismiss",
-      }, ...chatPinArgsFor(chatRuntimePinRef));
+      }, chatRuntimePinRef.current);
       void refreshSessions().catch(() => {});
     },
     [refreshSessions],
@@ -11130,7 +11195,7 @@ export function AgentChatPane({
       touchSession(selectedSessionId);
       await window.ade.agentChat.interrupt(
         { sessionId: selectedSessionId, mode },
-        ...chatPinArgsFor(chatRuntimePinRef),
+        chatRuntimePinRef.current,
       );
     } catch (interruptError) {
       setError(interruptError instanceof Error ? interruptError.message : String(interruptError));
@@ -11198,7 +11263,7 @@ export function AgentChatPane({
         const updatedSession = await window.ade.agentChat.updateSession({
           sessionId: selectedSessionId,
           ...nextSummary,
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, chatRuntimePinRef.current);
         patchSessionSummary(selectedSessionId, {
           permissionMode: updatedSession.permissionMode,
           interactionMode: updatedSession.interactionMode ?? null,
@@ -11266,7 +11331,7 @@ export function AgentChatPane({
     void window.ade.agentChat.updateSession({
       sessionId: targetSessionId,
       reasoningEffort: nextReasoningEffort,
-    }, ...chatPinArgsFor(chatRuntimePinRef)).then((updatedSession) => {
+    }, chatRuntimePinRef.current).then((updatedSession) => {
       if (seq !== reasoningEffortUpdateCounterRef.current) return;
       const reconciled = updatedSession.reasoningEffort ?? null;
       patchSessionSummary(targetSessionId, { reasoningEffort: reconciled });
@@ -11320,7 +11385,7 @@ export function AgentChatPane({
       .then(() => window.ade.agentChat.updateSession({
         sessionId: targetSessionId,
         fastMode: enabled,
-      }, ...chatPinArgsFor(chatRuntimePinRef)))
+      }, chatRuntimePinRef.current))
       .then((updatedSession) => {
       if (updateId !== fastModeUpdateCounterRef.current) return;
       const reconciled = updatedSession.fastMode === true;
@@ -11414,6 +11479,70 @@ export function AgentChatPane({
     setDraftLaunchTargetId,
     setError,
   });
+  const importSources = useMemo<ExternalSessionSource[]>(() => {
+    const activeLanes = (availableLanes?.length ? availableLanes : lanes).map((lane) => ({
+      id: lane.id,
+      name: lane.name,
+      color: lane.color,
+      branchRef: lane.branchRef,
+      laneType: lane.laneType,
+    }));
+    const sources: ExternalSessionSource[] = [];
+    const seenMachineIds = new Set<string>();
+    const addSource = (source: ExternalSessionSource) => {
+      if (!source.lanes.length || seenMachineIds.has(source.machineId)) return;
+      seenMachineIds.add(source.machineId);
+      sources.push(source);
+    };
+
+    addSource({
+      machineId: boundLaneMachineId,
+      machineName: boundLaneMachineId === THIS_MACHINE_ID
+        ? THIS_MACHINE_NAME
+        : projectBinding?.kind === "remote"
+          ? projectBinding.runtimeName
+          : projectBinding?.displayName ?? boundLaneMachineId,
+      lanes: activeLanes,
+      binding: projectBinding,
+      runtimePin: projectBinding?.kind === "remote" ? projectBinding : null,
+      online: true,
+    });
+
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      if (!machine.binding) continue;
+      addSource({
+        machineId: machine.machineId,
+        machineName: machine.machineName,
+        lanes: machine.lanes.map((lane) => ({
+          id: lane.id,
+          name: lane.name,
+          color: lane.color,
+          branchRef: lane.branchRef,
+          laneType: lane.laneType,
+        })),
+        binding: machine.binding,
+        runtimePin: machine.binding.key === projectBinding?.key ? null : machine.binding,
+        online: machine.online,
+      });
+    }
+
+    sources.sort((left, right) => {
+      const localRank = Number(left.machineId !== THIS_MACHINE_ID) - Number(right.machineId !== THIS_MACHINE_ID);
+      if (localRank !== 0) return localRank;
+      const activeRank = Number(left.binding?.key !== projectBinding?.key) - Number(right.binding?.key !== projectBinding?.key);
+      return activeRank || left.machineName.localeCompare(right.machineName);
+    });
+    return sources;
+  }, [availableLanes, boundLaneMachineId, crossMachineLanesByMachineId, lanes, projectBinding]);
+  const importTargetSource = importSources.find((source) => source.machineId === THIS_MACHINE_ID)
+    ?? importSources[0]
+    ?? null;
+  const importTargetLanes = importTargetSource?.lanes ?? [];
+  const importTargetLane = importTargetLanes.find((lane) => lane.id === laneId)
+    ?? importTargetLanes.find((lane) => lane.laneType === "primary")
+    ?? importTargetLanes.find((lane) => lane.name.trim().toLowerCase() === "primary")
+    ?? importTargetLanes[0]
+    ?? null;
   // The shelf picks the machine separately, so its lane list is already scoped
   // to one machine — a flat list of bare lane ids rather than the grouped,
   // machine-qualified option ids the combined selector needed.
@@ -11485,14 +11614,17 @@ export function AgentChatPane({
    * The composer's machine, but only when it is NOT the one this window's
    * project tab is bound to.
    *
-   * Which models a prompt box offers, which of them are configured, and their
-   * thinking levels are facts about the machine that will run the turn — a
-   * Work tab unions chats from every machine on the account, so the bound
-   * machine is frequently not that machine. `null` keeps the bound path (and
-   * its shared catalog + local IPC fallback) exactly as before, which is the
-   * common case and costs nothing.
+   * Which models a prompt box offers, which of them are configured, their
+   * thinking levels, and which simulator/app the tool panels drive are facts
+   * about the machine that will run the turn — a Work tab unions chats from
+   * every machine on the account, so the bound machine is frequently not that
+   * machine. `null` keeps the bound path (and its shared catalog, status
+   * cache, project-transition guard and local IPC fallback) exactly as before,
+   * which is the common case and costs nothing. Handing the tab's own binding
+   * down as a "pin" would take the pinned path for every same-machine chat and
+   * silently drop all of that.
    */
-  const composerModelRuntimePin = useMemo(
+  const composerRuntimePin = useMemo(
     () => (
       activeComposerRuntimeBinding && activeComposerRuntimeBinding.key !== projectBinding?.key
         ? activeComposerRuntimeBinding
@@ -11500,7 +11632,7 @@ export function AgentChatPane({
     ),
     [activeComposerRuntimeBinding, projectBinding?.key],
   );
-  const composerModelCatalogScopeKey = composerModelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const composerModelCatalogScopeKey = composerRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -11567,15 +11699,15 @@ export function AgentChatPane({
       : draftAttachmentTransferPending
         ? "Moving attached images to the selected machine."
         : draftAttachmentTransferBlockedReason;
+  /**
+   * The tools drive the composer's machine directly now that every
+   * `iosSimulator.*` / `appControl.*` call carries a pin, so a machine that is
+   * simply not the tab's binding is routed to, not refused. The one thing left
+   * to say is that there is no machine to route to at all.
+   */
   const auxiliaryToolDisabledReason = !activeComposerRuntimeBinding
     ? "Reconnect the selected machine project before using this tool."
-    : !projectBinding || activeComposerRuntimeBinding.key !== projectBinding.key
-      ? `Switch this project tab to ${
-          activeComposerRuntimeBinding.kind === "remote"
-            ? activeComposerRuntimeBinding.runtimeName
-            : THIS_MACHINE_NAME
-        } before using this tool. Chat and attachments remain pinned to that machine.`
-      : null;
+    : null;
 
   useEffect(() => {
     if (!showDraftLaunchControls || !isTileActive) return;
@@ -11595,10 +11727,10 @@ export function AgentChatPane({
 
   const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
   const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
-  const handoffForkCopy = useMemo(() => (handoffForkIsContextSeeded
+  const handoffForkCopy = useMemo(() => (handoffForkReplaysTranscript
     ? {
-        subtitle: "Fork carries this conversation into a new chat. Brief summarizes it and starts fresh.",
-        body: <>{handoffSourceProviderLabel} models start a new chat seeded with this conversation&rsquo;s context — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
+        subtitle: "Fork carries this whole conversation into a new chat. Brief summarizes it and starts fresh.",
+        body: <>{handoffSourceProviderLabel} models start a new {handoffSourceProviderLabel} agent — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice — with the full transcript replayed verbatim. Any other model does the same{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
         footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
       }
     : {
@@ -11606,7 +11738,7 @@ export function AgentChatPane({
         body: <>Same-family models use {handoffSourceProviderLabel}&rsquo;s native fork. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
         footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
       }
-  ), [handoffForkIsContextSeeded, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
+  ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
 
   if (!laneId) {
     return (
@@ -11660,7 +11792,7 @@ export function AgentChatPane({
         void window.ade.agentChat.setScheduledWorkPaused({
           sessionId: selectedSessionId,
           paused,
-        }, ...chatPinArgsFor(chatRuntimePinRef)).then((result) => {
+        }, chatRuntimePinRef.current).then((result) => {
           patchSessionSummary(selectedSessionId, {
             scheduledWorkPaused: result.paused,
             nextWakeAt: result.nextWakeAt,
@@ -11673,7 +11805,7 @@ export function AgentChatPane({
         void window.ade.agentChat.cancelScheduledWork({
           sessionId: selectedSessionId,
           scheduleId: schedule.id,
-        }, ...chatPinArgsFor(chatRuntimePinRef)).then((result) => {
+        }, chatRuntimePinRef.current).then((result) => {
           const current = selectedSession?.scheduledWork ?? [];
           patchSessionSummary(selectedSessionId, {
             scheduledWork: result.providerCancellationConfirmed || result.schedule.status === "cancelled"
@@ -11737,11 +11869,10 @@ export function AgentChatPane({
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
-        allowLocalArtifactProtocol={!isRemoteProject}
+        allowLocalArtifactProtocol={!isRemoteChat}
       />
     </div>
   );
-  const handoffLaneSourceLanes = availableLanes ?? lanes;
   const handoffLaneOptions = handoffLaneSourceLanes.length
     ? [AUTO_CREATE_LANE_OPTION, ...handoffLaneSourceLanes]
     : [AUTO_CREATE_LANE_OPTION];
@@ -11886,8 +12017,10 @@ export function AgentChatPane({
             icon={Desktop}
             title="Continue on another machine"
             description="Move this chat to another computer running ADE."
-            disabled={isRemoteProject || handoffTurnGate}
-            footnote={isRemoteProject ? "Start this from the machine that owns the project." : null}
+            disabled={isRemoteChat || handoffTurnGate}
+            footnote={isRemoteChat
+              ? `This chat runs on ${chatMachineName}. Open that machine's project to start a cross-machine handoff.`
+              : null}
             onClick={() => setCrossMachineHandoffOpen(true)}
           />
           <HandoffMenuCard
@@ -11973,7 +12106,7 @@ export function AgentChatPane({
                 availableModelIds={handoffAvailableModelIds}
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
-                runtimePin={composerModelRuntimePin}
+                runtimePin={composerRuntimePin}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
@@ -12010,7 +12143,7 @@ export function AgentChatPane({
                 surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
-                runtimePin={composerModelRuntimePin}
+                runtimePin={composerRuntimePin}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
@@ -12110,6 +12243,7 @@ export function AgentChatPane({
       laneId={laneId}
       chatSessionId={selectedSessionId}
       revealRequest={terminalRevealRequest}
+      runtimePin={chatRuntimePin}
     />
   ) : null;
   const iosSimulatorPanelContent = (
@@ -12132,6 +12266,7 @@ export function AgentChatPane({
           </div>
         ) : (
           <ChatIosSimulatorPanel
+            key={activeComposerRuntimeBinding?.key ?? "bound"}
             sessionId={selectedSessionId}
             laneId={selectedSession?.laneId ?? laneId}
             projectRoot={iosSimulatorProjectRoot}
@@ -12139,7 +12274,7 @@ export function AgentChatPane({
             onInsertDraft={insertComposerDraft}
             onAddContext={addIosElementContext}
             drawerModeRequest={iosSimulatorDrawerModeRequest}
-            runtimePin={activeComposerRuntimeBinding}
+            runtimePin={composerRuntimePin}
           />
         )}
       </div>
@@ -12165,10 +12300,11 @@ export function AgentChatPane({
           </div>
         ) : (
           <ChatAppControlPanel
+            key={activeComposerRuntimeBinding?.key ?? "bound"}
             sessionId={selectedSessionId}
             laneId={laneId}
             projectRoot={iosSimulatorProjectRoot}
-            runtimePin={activeComposerRuntimeBinding}
+            runtimePin={composerRuntimePin}
             onAddAttachment={selectedSessionId ? addAttachment : undefined}
             onInsertDraft={insertComposerDraft}
             onShowTerminal={(terminal) => {
@@ -12595,7 +12731,7 @@ export function AgentChatPane({
           void window.ade.agentChat.updateSession({
             sessionId,
             spawnKind: "peer",
-          }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
+          }, chatRuntimePinRef.current).then((updated) => {
             patchSessionSummary(sessionId, {
               spawnKind: updated.spawnKind ?? "peer",
               subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
@@ -12616,7 +12752,7 @@ export function AgentChatPane({
           void window.ade.agentChat.updateSession({
             sessionId,
             subagentTakeoverPromptShown: true,
-          }, ...chatPinArgsFor(chatRuntimePinRef)).then((updated) => {
+          }, chatRuntimePinRef.current).then((updated) => {
             patchSessionSummary(sessionId, {
               spawnKind: updated.spawnKind,
               subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
@@ -12666,7 +12802,7 @@ export function AgentChatPane({
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
             cursorRuntime={cursorRuntime}
-            modelRuntimePin={composerModelRuntimePin}
+            modelRuntimePin={composerRuntimePin}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
@@ -12797,7 +12933,7 @@ export function AgentChatPane({
                   window.ade.agentChat.warmupModel({
                     sessionId: selectedSessionId,
                     modelId: nextModelId,
-                  }, ...chatPinArgsFor(chatRuntimePinRef)).catch(() => { /* warmup is best-effort */ });
+                  }, chatRuntimePinRef.current).catch(() => { /* warmup is best-effort */ });
                 }
                 return;
               }
@@ -12820,7 +12956,7 @@ export function AgentChatPane({
                 reasoningEffort: snapshot.nextReasoningEffort,
                 ...(modelSupportsFastMode(snapshot.nextDesc) ? { fastMode: fastModeRef.current } : {}),
                 ...nextNativeControlPayload,
-              }, ...chatPinArgsFor(chatRuntimePinRef)).then((updatedSession) => {
+              }, chatRuntimePinRef.current).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
                 patchSessionSummary(selectedSessionId, {
                   provider: updatedSession.provider,
@@ -12852,7 +12988,7 @@ export function AgentChatPane({
                   window.ade.agentChat.warmupModel({
                     sessionId: selectedSessionId,
                     modelId: nextModelId,
-                  }, ...chatPinArgsFor(chatRuntimePinRef)).catch(() => { /* warmup is best-effort */ });
+                  }, chatRuntimePinRef.current).catch(() => { /* warmup is best-effort */ });
                 }
                 void refreshSessions().catch(() => {});
               }).catch((err) => {
@@ -12905,7 +13041,7 @@ export function AgentChatPane({
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.cancelSteer({ sessionId: selectedSessionId, steerId }, ...chatPinArgsFor(chatRuntimePinRef));
+                void window.ade.agentChat.cancelSteer({ sessionId: selectedSessionId, steerId }, chatRuntimePinRef.current);
               }
             }}
             onEditSteer={(steerId, text, queuedAttachments, queuedContextAttachments) => {
@@ -12934,7 +13070,7 @@ export function AgentChatPane({
                 draftLaunchTargetId,
                 updatedAt: new Date().toISOString(),
               };
-              void window.ade.agentChat.cancelSteer({ sessionId, steerId, requireQueued: true }, ...chatPinArgsFor(chatRuntimePinRef)).then(() => {
+              void window.ade.agentChat.cancelSteer({ sessionId, steerId, requireQueued: true }, chatRuntimePinRef.current).then(() => {
                 setPendingSteersBySession((current) => ({
                   ...current,
                   [sessionId]: (current[sessionId] ?? []).filter((entry) => entry.steerId !== steerId),
@@ -12968,20 +13104,20 @@ export function AgentChatPane({
                 setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
               });
             }}
-            onDispatchSteerInline={selectedSession?.provider === "claude" ? (steerId) => {
+            onDispatchSteerInline={activeTurnInlineSupported ? (steerId) => {
               if (selectedSessionId) {
                 dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "inline" });
               }
             } : undefined}
-            onDispatchSteerInterrupt={selectedSession?.provider === "claude" ? (steerId) => {
+            onDispatchSteerInterrupt={activeTurnInterruptSupported ? (steerId) => {
               if (selectedSessionId) {
                 dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
               }
             } : undefined}
-            onSendSteerNow={selectedSession?.provider === "claude" ? () => {
+            onSendSteerNow={activeTurnInlineSupported ? () => {
               void submit("inline");
             } : undefined}
-            onSendSteerInterrupt={selectedSession?.provider === "claude" ? () => {
+            onSendSteerInterrupt={activeTurnInterruptSupported ? () => {
               void submit("interrupt");
             } : undefined}
             sessionId={composerSessionId}
@@ -13404,6 +13540,7 @@ export function AgentChatPane({
   ) : null;
 
   return (
+    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId}>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
@@ -13754,7 +13891,7 @@ export function AgentChatPane({
                         scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
-                        allowLocalProofArtifactProtocol={!isRemoteProject}
+                        allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                       />
                     </ChatInfoHostContext.Provider>
@@ -13958,14 +14095,14 @@ export function AgentChatPane({
                                       content={{
                                         label: "Import session",
                                         description: draftLaunchTargetIsAutoCreate
-                                          ? "Select a lane first — imports need a lane folder."
+                                          ? "Choose the destination lane after opening the importer."
                                           : "Continue a Claude, Codex, Cursor, Droid, OpenCode, or Pi chat here.",
                                       }}
                                     >
                                       <button
                                         type="button"
                                         className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
-                                        disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                                        disabled={!importTargetLane}
                                         data-draft-import-session
                                         aria-label="Import an external CLI session"
                                         onClick={() => setImportBrowserOpen(true)}
@@ -14023,7 +14160,7 @@ export function AgentChatPane({
                         {onImportedSession && !appPanelOpen ? (
                           <ImportFloatingBadge
                             projectRoot={projectRoot}
-                            disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                            disabled={!importTargetLane}
                             onOpen={() => setImportBrowserOpen(true)}
                           />
                         ) : null}
@@ -14058,6 +14195,7 @@ export function AgentChatPane({
           open={crossMachineHandoffOpen}
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
+          runtimePin={chatRuntimePin}
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}
@@ -14082,20 +14220,20 @@ export function AgentChatPane({
         />
       ) : null}
       <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
-      {onImportedSession && laneId ? (
+      {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser
           open={importBrowserOpen}
           onOpenChange={setImportBrowserOpen}
-          laneId={laneId}
-          laneName={
-            availableLanes?.find((lane) => lane.id === laneId)?.name ?? laneDisplayLabel ?? laneId
-          }
-          lanes={availableLanes ?? lanes}
+          laneId={importTargetLane.id}
+          laneName={importTargetLane.name}
+          lanes={importTargetLanes}
+          sources={importSources}
           onImported={onImportedSession}
           onOpenExisting={onOpenExistingImportedSession}
         />
       ) : null}
     </>
     </ChatWorkspacePathProvider>
+    </ChatRuntimeScopeProvider>
   );
 }

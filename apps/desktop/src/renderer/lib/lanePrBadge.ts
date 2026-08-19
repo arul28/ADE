@@ -1,5 +1,9 @@
 import type { LaneSummary, PrState, PrSummary } from "../../shared/types";
-import { selectLanePrs } from "../components/lanes/lanePageModel";
+import {
+  laneIsOnBaseBranch,
+  normalizeLanePrBranch,
+  selectLanePrs,
+} from "../components/lanes/lanePageModel";
 import { buildPrsRouteSearch } from "../components/prs/prsRouteState";
 import { COLORS } from "../components/lanes/laneDesignTokens";
 
@@ -67,12 +71,18 @@ export function selectPrimaryLanePr(
   prs: PrSummary[],
 ): PrSummary | null {
   const lanePrs = selectLanePrs(lane, prs);
+  if (lanePrs.length > 0) return pickPrimaryPr(lanePrs);
   // Older/remote bridges sometimes return a compact PR summary without branch
-  // fields. Keep that single-value compatibility path usable while the richer
-  // lane selectors continue to reject branchless rows as lane history.
-  const candidates = lanePrs.length > 0
-    ? lanePrs
-    : prs.filter((pr) => pr.laneId === lane.id && !pr.detached);
+  // fields. Keep that single-value compatibility path usable when the lane
+  // itself is also compact (so there is no branch to compare), but never let
+  // it bypass the primary lane's base-branch suppression or a known old branch.
+  if (laneIsOnBaseBranch(lane)) return null;
+  const laneBranch = normalizeLanePrBranch(lane.branchRef);
+  const candidates = prs.filter((pr) => (
+    pr.laneId === lane.id
+    && !pr.detached
+    && (!laneBranch || !normalizeLanePrBranch(pr.headBranch))
+  ));
   return pickPrimaryPr(candidates);
 }
 

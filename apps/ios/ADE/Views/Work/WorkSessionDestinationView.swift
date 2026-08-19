@@ -75,13 +75,20 @@ func workChatShouldSteerActiveTurn(
   normalizedWorkChatSessionStatus(session: session, summary: summary) == "active"
 }
 
-func workChatSupportsManualSteerDispatch(
+/// Which atomic dispatch modes an already-staged message can be promoted into
+/// on this session. Read off `WorkActiveSendCapability` — the hand mirror of
+/// the desktop's `ACTIVE_TURN_DISPATCH_MODES` — rather than restated here, so
+/// the staged strip and the composer's split send button can never disagree.
+/// Claude can fold a staged row into the live turn or interrupt with it; Cursor
+/// has no mid-run message API, so it gets interrupt only; everything else has
+/// nothing to promote into and keeps the plain staged row.
+func workChatManualSteerDispatchModes(
   session: TerminalSessionSummary?,
   summary: AgentChatSessionSummary?
-) -> Bool {
+) -> [WorkActiveSendMode] {
   let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
-  guard let provider else { return false }
-  return providerFamilyKey(provider) == "claude"
+  guard let provider else { return [] }
+  return WorkActiveSendCapability.forProvider(provider).atomicDispatchModes
 }
 
 func latestActiveTurnId(from transcript: [WorkChatEnvelope]) -> String? {
@@ -884,8 +891,8 @@ struct WorkSessionDestinationView: View {
     syncService.chatTurnActiveHint(sessionId: sessionId)
   }
 
-  var supportsManualSteerDispatch: Bool {
-    workChatSupportsManualSteerDispatch(session: session, summary: chatSummary)
+  var manualSteerDispatchModes: [WorkActiveSendMode] {
+    workChatManualSteerDispatchModes(session: session, summary: chatSummary)
   }
 
   /// Lane id the header menu acts on. Resolved against the loaded lane list so
@@ -1444,13 +1451,28 @@ struct WorkSessionDestinationView: View {
       ? "Viewing subagent transcript. Return to main chat to send."
       : nil
     let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
+    // Wired per mode, not per provider: Cursor accepts the interrupt promotion
+    // but has no inline channel, so it gets the Interrupt button and not
+    // "Send now". Matches the desktop pane, which gates each handler on the
+    // same table.
+    // Also host-gated: a brain that predates `chat.dispatchSteer` cannot
+    // promote a staged row at all, so the buttons would only ever produce an
+    // error toast.
+    let activeSendModesAvailable = syncService.supportsChatRemoteAction(
+      "chat.dispatchSteer",
+      sessionId: session.id
+    )
+    let manualDispatchModes = activeSendModesAvailable ? manualSteerDispatchModes : []
     let dispatchSteerInlineAction: (@MainActor (String) async -> Void)?
-    let dispatchSteerInterruptAction: (@MainActor (String) async -> Void)?
-    if supportsManualSteerDispatch {
-      dispatchSteerInlineAction = { text in await dispatchSteerInline(text) }
-      dispatchSteerInterruptAction = { text in await dispatchSteerInterrupt(text) }
+    if manualDispatchModes.contains(.inline) {
+      dispatchSteerInlineAction = { steerId in await dispatchSteerInline(steerId) }
     } else {
       dispatchSteerInlineAction = nil
+    }
+    let dispatchSteerInterruptAction: (@MainActor (String) async -> Void)?
+    if manualDispatchModes.contains(.interrupt) {
+      dispatchSteerInterruptAction = { steerId in await dispatchSteerInterrupt(steerId) }
+    } else {
       dispatchSteerInterruptAction = nil
     }
     let resolvedSessionStatus: String? = viewingSubagent ? "ended" : sessionStatus
@@ -1478,10 +1500,6 @@ struct WorkSessionDestinationView: View {
     )
     let queueAwareStopAvailable = syncService.supportsChatRemoteAction(
       "chat.interruptWithQueueMode",
-      sessionId: session.id
-    )
-    let activeSendModesAvailable = syncService.supportsChatRemoteAction(
-      "chat.dispatchSteer",
       sessionId: session.id
     )
     let canWriteSpawnKind = !viewingSubagent && syncService.supportsSpawnKindUpdate
@@ -1541,6 +1559,7 @@ struct WorkSessionDestinationView: View {
       inputLockMessage: inputLockMessage,
       transitionNamespace: transitionNamespace,
       onOpenLane: openLaneAction,
+      onOpenParentSession: viewingSubagent ? nil : { openParentSession() },
       onSend: { text, attachments, mode in
         await sendMessage(text, attachments: attachments, deliveryMode: mode)
       },
@@ -1577,10 +1596,29 @@ struct WorkSessionDestinationView: View {
       scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : workScheduledWorkSnapshotsRenderSignature(scheduledWorkSnapshots),
       selectedSubagentTaskId: subagentView?.taskId,
       onOpenChatInfo: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
-      // The subagent roster now lives inside the unified Chat Info sheet, so the
-      // composer badge and header menu both open Chat Info — no separate drawer.
+      // A singular badge opens its child directly; an aggregate badge opens
+      // Chat Info. Timeline-row selection stays scoped to the parent chat, so
+      // nested transcript state cannot accidentally fetch from itself.
       onOpenSubagents: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
       onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
+      onForkChatInLane: {
+        let modelId = (composerChatSummary?.modelId ?? composerChatSummary?.model ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelId.isEmpty else {
+          errorMessage = "Choose a model before forking this chat."
+          return
+        }
+        do {
+          try await syncService.handoffChatSession(
+            sourceSessionId: session.id,
+            targetModelId: modelId,
+            mode: "fork",
+            handoffNote: "Continuing after Claude session limit"
+          )
+        } catch {
+          errorMessage = error.localizedDescription
+        }
+      },
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
       liveTurnActiveHint: liveTurnActiveHint,

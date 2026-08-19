@@ -112,13 +112,59 @@ describe("buildMachinePickerRows", () => {
         bridge: null,
       }],
       targets: [target()],
-      accountMachines: [machine(), machine({ machineKey: "mk-tower", deviceId: "dev-tower", name: "Tower", online: false })],
+      accountMachines: [
+        machine(),
+        machine({
+          machineKey: "mk-tower",
+          deviceId: "dev-tower",
+          name: "Tower",
+          online: false,
+          lastSeenAt: Date.now() - 60 * 60_000,
+        }),
+      ],
       activeMachineKey: LOCAL_MACHINE_KEY,
     });
     expect(rows.map((row) => row.id)).toEqual([LOCAL_MACHINE_KEY, "mk-studio", "mk-tower"]);
     expect(rows[0]?.label).toContain("this session");
     expect(rows[1]?.kind).toBe("connected");
     expect(rows[2]?.detail).toContain("offline");
+  });
+
+  // A machine that announced a suspend must not read as merely "offline" here:
+  // the hop from this picker is what wakes it, and the row is the only warning
+  // the user gets. Presence and the power phrase come from the same shared
+  // module desktop and iOS render.
+  it("says asleep and carries the power phrase for an account machine", () => {
+    const rows = buildMachinePickerRows({
+      localLabel: "this machine",
+      localProjectRoot: "/repos/ADE",
+      pooled: [],
+      targets: [],
+      accountMachines: [machine({
+        machineKey: "mk-book",
+        deviceId: "dev-book",
+        name: "MacBook",
+        online: false,
+        sleepState: "asleep",
+        sleepStateAt: Date.now() - 60_000,
+        power: { battery: { percent: 82, charging: false }, onExternalPower: false },
+      })],
+      activeMachineKey: LOCAL_MACHINE_KEY,
+    });
+    expect(rows[1]?.detail).toBe("account · asleep · 82% battery");
+  });
+
+  // A desktop reports no battery at all, and must never render one.
+  it("says only wall power for a machine with no battery", () => {
+    const rows = buildMachinePickerRows({
+      localLabel: "this machine",
+      localProjectRoot: "/repos/ADE",
+      pooled: [],
+      targets: [],
+      accountMachines: [machine({ power: { onExternalPower: true } })],
+      activeMachineKey: LOCAL_MACHINE_KEY,
+    });
+    expect(rows[1]?.detail).toBe("account · online · plugged in");
   });
 });
 

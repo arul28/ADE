@@ -107,7 +107,7 @@ func makeRosterSessionStub(chat: RemoteRosterChat, lane: RemoteRosterLane?) -> T
   // terminal: CLI rows omit the PTY id, transcript offsets, and tracked state
   // required by TerminalSessionScreen. Let CLI activation hydrate its real
   // project row instead of manufacturing a terminal that cannot subscribe.
-  guard chat.isChatTool else { return nil }
+  guard chat.isChatTool, !chat.isIdentityChat else { return nil }
   return chat.asTerminalSessionSummary(laneName: lane?.name ?? chat.laneId)
 }
 

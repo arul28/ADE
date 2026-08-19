@@ -608,11 +608,21 @@ struct WorkSessionListRow: View {
 
   private var isChat: Bool { isChatSession(session) }
 
-  /// Mid-flight. Desktop hides Settle for all three of these
-  /// (`SessionContextMenu.tsx:196-199`): filing away a row the machine is still
-  /// working in claims an outcome that has not happened yet, and the row is
-  /// about to change state on its own anyway. iOS used to allow it, which let a
-  /// user settle a session mid-turn.
+  /// Mid-flight. Desktop hides Settle for these (`sessionIsMidFlight` in
+  /// `renderer/lib/terminalAttention.ts`): filing away a row the machine is
+  /// still working in claims an outcome that has not happened yet, and the row
+  /// is about to change state on its own anyway. iOS used to allow it, which
+  /// let a user settle a session mid-turn.
+  ///
+  /// Desktop's version carries one extra clause this deliberately does not:
+  /// there, live background work promotes a resting session back to `running`,
+  /// and such a row must still be settleable because settle teardown is what
+  /// stops that work. iOS has no background-work promotion — `liveness` is not
+  /// part of this file's `CanonicalSessionState` and no session-level
+  /// background count reaches the phone — so a background-only session already
+  /// reads `ready`/`idle` here and Settle is already offered. The two agree on
+  /// behaviour by different routes; if iOS ever gains the promotion, it must
+  /// gain the `liveness == .turn` clause with it.
   private var isActivelyRunning: Bool {
     canonicalPhase == .starting || canonicalPhase == .running || canonicalPhase == .stale
   }

@@ -292,10 +292,20 @@ next `CodeViewer` mount jumps to the matching line.
 
 ## Embedded Files In Work
 
-`WorkSidebar` mounts `FilesTab` with `preferredLaneId={laneId}` and
-`embedded={true}`. The embedded layout keeps the same service calls, editor
-groups, viewers, tree behavior, and search as the standalone route, but uses a
-narrower explorer column, compact explorer controls, and no workspace picker.
+`WorkSidebar` mounts `FilesTab` with `preferredLaneId={laneId}`,
+`embedded={true}`, and `pin={runtimePin}`. The embedded layout keeps the same
+service calls, editor groups, viewers, tree behavior, and search as the
+standalone route, but uses a narrower explorer column, compact explorer
+controls, and no workspace picker.
+
+`FilesTab` / `FilesWorkbench` take an optional `pin` — the machine the files
+live on, for hosts that already know it is not this tab's machine (the Work
+tools pane, following its chat). Null keeps the historical behavior: the tab's
+bound machine. The prop seeds `FilesWorkbench`'s `machinePin` state, and a
+host-supplied pin wins whenever it changes; identity is compared by binding key
+so an equal binding rebuilt each render does not thrash the roster. Navigation
+requests still repin as they did before — the prop only supplies the starting
+machine.
 
 The embedded mount is also the **only** listener on the
 `v2/filesOpenRequests.ts` channel: a filename clicked in a chat on this machine,

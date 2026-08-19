@@ -42,6 +42,9 @@ vi.mock("../../state/appStore", () => ({
   selectActiveProjectStateKey: (state: { project?: { rootPath?: string | null } | null }) =>
     state.project?.rootPath?.trim() || null,
   useAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
+  // The pinned-lane hooks read the union from the ROOT store; this harness has
+  // exactly one store, so both readings resolve to the same mock state.
+  useRootAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
 }));
 
 const LANE_BRANCH_REF = "feature/divergence";
@@ -173,7 +176,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
     await clickPush();
 
     await waitFor(() => {
-      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false });
+      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, null);
     });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -234,7 +237,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
     await userEvent.click(screen.getByRole("button", { name: "Push anyway" }));
 
     await waitFor(() => {
-      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false });
+      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, null);
     });
     expect(screen.queryByRole("dialog")).toBeNull();
   });

@@ -2557,10 +2557,10 @@ describe("createAdeWebAdapter", () => {
     expect(() => adapter.ade.pty.onExit(() => {}, pin)).toThrow(unsupported);
     await expect(adapter.ade.terminal.preview({ terminalId: "session-1" }, pin))
       .rejects.toThrow(unsupported);
-    expect(() => adapter.ade.agentChat.saveTempAttachment({
+    await expect(adapter.ade.agentChat.saveTempAttachment({
       data: "data:image/png;base64,aGVsbG8=",
       filename: "pinned.png",
-    }, pin)).toThrow(unsupported);
+    }, pin)).rejects.toThrow(unsupported);
 
     // The read shims on the cross-machine lane-discovery path fail the same
     // way: a pinned sessions/lanes read silently answering from the single web
@@ -2571,7 +2571,14 @@ describe("createAdeWebAdapter", () => {
       sessionId: "session-1",
       maxBytes: 1024,
     }, pin)).rejects.toThrow(unsupported);
-    expect(() => adapter.ade.lanes.list({}, pin)).toThrow(unsupported);
+    await expect(adapter.ade.lanes.list({}, pin)).rejects.toThrow(unsupported);
+    // Pin-capable mutations refuse the same way: declaring the parameter is
+    // what stops JS from dropping the pin and running the write here.
+    await expect(adapter.ade.sessions.delete({ sessionId: "session-1" }, pin))
+      .rejects.toThrow(unsupported);
+    await expect(adapter.ade.lanes.delete({ laneId: "lane-1" }, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.agentChat.send({ sessionId: "session-1", text: "hi" }, pin))
+      .rejects.toThrow(unsupported);
 
     expect(fake.commandCalls).toHaveLength(0);
     expect(fake.terminalSubscribeCalls).toHaveLength(0);

@@ -24,6 +24,12 @@ import {
   normalizeContextCompactEvent,
   toContextCompactChatEvent,
 } from "../../../shared/contextCompaction";
+import {
+  hostSleepNoticeMergeKey,
+  isHostResumedNoticeEvent,
+  isHostSleepNoticeEvent,
+  type HostSleepNoticeShape,
+} from "../../../shared/hostSleepNotice";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
@@ -2321,6 +2327,41 @@ export function appendCollapsedChatTranscriptEvent(
       key: `context-compact:${mergeKey}:${sequence}`,
       timestamp: envelope.timestamp,
       event: toContextCompactChatEvent(incoming),
+    });
+    return;
+  }
+
+  // ── Host sleep: ONE chip per sleep ──
+  // The paused half pushes a row; the resumed half replaces that same row
+  // instead of appending under it, so a machine that slept mid-turn never
+  // leaves two artifacts behind and never pushes the transcript around. The
+  // sleep id is the identity, so a second sleep in the same turn still gets its
+  // own chip rather than overwriting the first sleep's resolved one.
+  if (isHostSleepNoticeEvent(event)) {
+    const mergeKey = hostSleepNoticeMergeKey(event);
+    const rowKey = `host-sleep:${mergeKey}`;
+    const existingIndex = rows.findIndex((candidate) => candidate.key === rowKey);
+    if (existingIndex >= 0) {
+      // Resolved wins, whatever the arrival order. Last-wins alone would let a
+      // paused half delivered after its resume — a sequence inversion, or a host
+      // clock corrected across the wake — settle the row on "Paused" for a
+      // machine that is demonstrably awake, which is the exact class of lie this
+      // branch exists to remove. iOS applies the same guard.
+      const existingEvent = rows[existingIndex]!.event as HostSleepNoticeShape;
+      if (isHostResumedNoticeEvent(existingEvent) && !isHostResumedNoticeEvent(event)) {
+        return;
+      }
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event: event as ChatTranscriptVisibleEvent,
+      };
+      return;
+    }
+    rows.push({
+      key: rowKey,
+      timestamp: envelope.timestamp,
+      event: event as ChatTranscriptVisibleEvent,
     });
     return;
   }

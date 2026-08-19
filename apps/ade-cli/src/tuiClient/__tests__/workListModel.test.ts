@@ -382,6 +382,33 @@ describe("workListModel status", () => {
     expect(row!.elapsedLabel).toBe("8m");
     expect(row!.isActiveSession).toBe(true);
   });
+
+  it("shows background work's elapsed from when the WORK started, not last activity", () => {
+    // The turn is over. `lastActivityAt` is refreshed by every provider frame,
+    // so anchoring there reported a two-hour job as seconds old — identical to
+    // one that had just started. Same shared anchor the desktop row uses.
+    const model = build({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({
+          sessionId: "chat-bg",
+          laneId: "lane-1",
+          status: "idle",
+          runtimeState: "idle",
+          toolType: "claude-chat",
+          lastActivityAt: new Date(NOW - 3_000).toISOString(),
+          backgroundWorkSince: new Date(NOW - 2 * 60 * 60_000).toISOString(),
+          activeBackgroundTaskCount: 2,
+          backgroundWork: { workingCount: 2, monitoringCount: 0 },
+        }),
+      ],
+      activeSessionId: null,
+    });
+
+    const [row] = sessionRows(model);
+    expect(row!.status?.label).toBe("Background work \u00d72");
+    expect(row!.elapsedLabel).toBe("2h");
+  });
 });
 
 describe("getPreviewLine priority", () => {

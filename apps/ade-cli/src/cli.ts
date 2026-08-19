@@ -54,7 +54,22 @@ import {
   accountMachineConnectionState,
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
+import {
+  accountMachinePresence,
+  machineStatusLine,
+} from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
+import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import {
+  formatWorkingDuration,
+  sessionElapsedLabel,
+} from "../../desktop/src/shared/sessionStatusPresentation";
+import {
+  canonicalInputFromSummary,
+  sessionCanonicalUiState,
+  sessionStatusDisplay,
+} from "../../desktop/src/renderer/lib/terminalAttention";
 import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
@@ -1866,7 +1881,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   way to quiet a row you are waiting on — it hides the row without claiming
   the work is done, and a hand-raise wakes it early.
 
-    $ ade session show <id> --text                  Print settle/snooze state and the wake reason
+    $ ade session show <id> --text                  Print what the session is doing (status + elapsed), the agent
+                                                    processes it is holding open, settle/snooze state, and the wake reason
     $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
     $ ade session snooze <id> --until 2026-07-26T18:00:00Z
                                                     Snooze until an explicit ISO-8601 deadline
@@ -1916,6 +1932,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
+    $ ade chat steer <session> --text "context" --dispatch interrupt
+                                                    Deliver into the running turn: inline | interrupt.
+                                                    Omit --dispatch to stage for the next turn.
+                                                    Claude takes inline and interrupt; Cursor takes
+                                                    interrupt (cancel + resend on the same thread).
+                                                    Other providers reject the flag outright and nothing
+                                                    is sent; omit --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
@@ -2001,8 +2024,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     fork stays on the source provider and in the source lane; brief summarizes
     the chat, can switch provider, and accepts --target-lane.
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
-    Cursor has no fork surface, so ADE forks it by seeding a fresh Cursor agent
-    with this conversation's context instead of copying a provider thread.
+    Cursor has no fork surface, so ADE forks it by replaying this conversation
+    into a fresh Cursor agent instead of copying a provider thread; the oldest
+    turns drop if the transcript exceeds the target model's context window.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same
@@ -3460,6 +3484,28 @@ function normalizeChatMessageKind(value: string | null): "auto" | "queue" | "wak
   throw new CliUsageError(
     "chat message --kind must be auto, queue, wake, or interrupt-replace.",
   );
+}
+
+/**
+ * `chat steer --dispatch` asks for atomic delivery into the turn that is
+ * already running instead of staging the message for the next one. Which
+ * providers honor which mode is the host's call — the canonical table lives in
+ * desktop `shared/types/chat.ts` (`ACTIVE_TURN_DISPATCH_MODES`) and the chat
+ * service rejects an unsupported mode with a templated message — so the CLI
+ * only validates the shape and never restates the per-provider rules.
+ */
+function normalizeChatSteerDispatchMode(value: string | null): AgentChatDispatchSteerMode | null {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) return null;
+  if (normalized === "inline" || normalized === "now" || normalized === "send") return "inline";
+  if (normalized === "interrupt" || normalized === "replace") return "interrupt";
+  if (normalized === "queue" || normalized === "stage" || normalized === "next") {
+    throw new CliUsageError(
+      "chat steer stages the message for the next turn by default; omit --dispatch instead of passing 'queue'.",
+    );
+  }
+  throw new CliUsageError("chat steer --dispatch must be inline or interrupt.");
 }
 
 function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
@@ -7641,6 +7687,9 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "steer") {
     const imageUrl = readValue(args, ["--image-url"]);
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const steerText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
@@ -7656,6 +7705,7 @@ function buildChatPlan(args: string[]): CliPlan {
           withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: steerText,
+            ...(dispatchMode ? { dispatchMode } : {}),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
           }),
         ),
@@ -8335,6 +8385,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
   if (sub === "steer") {
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const text = requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text");
     const imageUrl = readValue(args, ["--image-url"]);
     return {
@@ -8343,6 +8396,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
         sessionId,
         text,
+        ...(dispatchMode ? { dispatchMode } : {}),
         ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
       }))],
     };
@@ -12213,6 +12267,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--depth",
   "--desc",
   "--device",
+  "--dispatch",
+  "--dispatch-mode",
   "--disk",
   "--disk-size",
   "--display",
@@ -17234,6 +17290,55 @@ async function runServe(
       "sync_disabled",
       "Account-directory publishing has not started.",
     );
+  /**
+   * The desktop's OS-level suspend/resume beat, arriving over RPC.
+   *
+   * The brain has no `powerMonitor` of its own — its native signal is the
+   * heartbeat gap, which is only observable AFTER the machine is back. This is
+   * the hop that makes "asleep" a stated fact: the shared monitor records the
+   * announcement (which the chat service and the publisher both read), and the
+   * suspend half then publishes it to the account directory inside a hard
+   * budget, because the window before the OS takes the machine down is short
+   * and nothing here may delay it.
+   *
+   * The answer is only `accepted` when there was a publisher to carry the
+   * announcement to the account directory. A brain whose publisher has not been
+   * built yet (or was released with its sync scope) still records the local
+   * announcement — the chat service reads it — but nothing reached the
+   * directory, and saying "accepted" for that is what let the desktop count an
+   * unpersisted beat as landed and skip its resume retry. It reuses the same
+   * `unsupported` reason the RPC already returns for an unwired brain rather
+   * than inventing a second vocabulary for "nowhere to publish".
+   */
+  const reportDesktopMachinePowerTransition = async (
+    input: { kind: "suspend" | "resume"; budgetMs?: number },
+  ): Promise<{ accepted: boolean; reason?: string }> => {
+    const { getSharedMachinePowerMonitor } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
+    const monitor = getSharedMachinePowerMonitor();
+    // Read once: the publisher can be released between the announcement and the
+    // write, and a null-check that disagrees with the call it guards is how a
+    // "published" answer gets returned for a publish that never ran.
+    const publisher = accountMachinePublisher;
+    if (input.kind === "resume") {
+      // A wake has all the time in the world, so it rides the publisher's own
+      // subscription (which republishes "awake" at once) rather than blocking
+      // the caller on a write.
+      monitor.noteAnnouncedResume();
+      // Retrying this is worth it: the publisher is built lazily when a sync
+      // scope appears, so a wake that lands a beat too early can still be
+      // delivered by the desktop's next attempt.
+      return publisher ? { accepted: true } : { accepted: false, reason: "unsupported" };
+    }
+    monitor.noteAnnouncedSuspend();
+    if (!publisher) return { accepted: false, reason: "unsupported" };
+    // The announcement above already asks the publisher for the pre-suspend
+    // write; awaiting the same coalesced attempt is what gives the desktop
+    // something real to bound its beat on instead of a fire-and-forget void.
+    await publisher.publishPowerStateNow(input.budgetMs);
+    return { accepted: true };
+  };
   // What this machine looks like when no project scope owns sync. Hosting is
   // the projectless lease AND a bound shared listener; the builder reports the
   // honest all-down shape otherwise.
@@ -17415,6 +17520,7 @@ async function runServe(
         logger: headlessProjectLogger,
         requestRestart: requestBrainServiceRestartFromServe,
       }),
+      reportMachinePowerTransition: reportDesktopMachinePowerTransition,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -17760,6 +17866,9 @@ async function runServe(
     const { createBrainAccountMachinePublisherService } = await import(
       "./services/account/accountMachinePublisherService"
     );
+    const { borrowSharedMachinePowerSource } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
     // Match the active sync-host/desktop project priority so a project Clerk
     // issuer cannot send the brain to a different directory Worker.
     const accountProjectRoots = () => {
@@ -17782,6 +17891,12 @@ async function runServe(
       accountMachinePublisher = createBrainAccountMachinePublisherService({
         secretsDir: layout.secretsDir,
         projectRoots: accountProjectRoots,
+        // The one monitor this brain has, shared with the chat service and with
+        // the desktop's forwarded suspend beat. Borrowed rather than owned: the
+        // publisher is rebuilt on every sync-host handoff, and disposing the
+        // machine's power tracking along with it would leave chats blind to
+        // sleep until the next one started.
+        powerSource: borrowSharedMachinePowerSource(),
         isSyncEnabled: () => syncEnabled,
         logger: headlessProjectLogger,
         getSnapshot: async () => {
@@ -19677,11 +19792,14 @@ function formatSessionLifecycle(value: unknown): string {
   const snoozed = Number.isFinite(snoozedUntilMs) && snoozedUntilMs > now;
   const wakeLabel = snoozed ? snoozeWakeLabel(snoozedUntil, now) : null;
   const indefinite = isIndefiniteSnooze(snoozedUntil, now);
+
   return renderKeyValues("ADE session lifecycle", [
     ["session", record.sessionId ?? record.id],
     ["title", record.title],
     ["lane", record.laneId],
+    ["status", sessionStatusLine(record, now, snoozed)],
     ["runtime state", record.runtimeState],
+    ["agent processes", sessionRuntimeProcessLine(record, now)],
     ["settled at", record.settledAt],
     ["settle override", record.settleOverride],
     ["status note", record.statusNote],
@@ -19695,6 +19813,61 @@ function formatSessionLifecycle(value: unknown): string {
     ["woke reason", record.wokeReason ?? record.reason],
     ["ok", record.ok],
   ]);
+}
+
+/**
+ * What `ade session show` says a session is DOING, as opposed to which columns
+ * it has. `runtime state` alone reads `idle` for a chat that is holding a warm
+ * agent process and two background jobs open — the state people were dropping
+ * to `ps` to diagnose.
+ *
+ * The word, its elapsed, and the snooze overlay all come from the shared
+ * presentation helpers the Work rows and `ade code` use, so this line and the
+ * `snoozed` / `wakes` lines below it cannot tell two different stories.
+ * Undefined for the mutation acks that share this formatter — they carry no
+ * `status`, and `renderKeyValues` drops the row.
+ */
+function sessionStatusLine(record: JsonObject, now: number, snoozed: boolean): string | undefined {
+  // `session.get` answers with a TerminalSessionSummary. The formatter takes an
+  // opaque record because it also renders acks, and `status` is what tells the
+  // two apart.
+  if (!asString(record.status)) return undefined;
+  const summary = record as unknown as TerminalSessionSummary;
+  const input = { ...canonicalInputFromSummary(summary), nowMs: now };
+  const canonical = sessionCanonicalUiState(input);
+  // Deliberately no `snoozeWakeLabel`: the shared module would then make the
+  // return ticket the whole status ("in 40 minutes"), which reads as a status
+  // nowhere else and duplicates the `wakes` line three rows down. The bare word
+  // is the status; the timing already has its own line.
+  const presentation = sessionStatusDisplay(input, { snoozed });
+  if (!presentation) return undefined;
+  const elapsed = sessionElapsedLabel(summary, presentation, canonical.phase, canonical.liveness, now);
+  return elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+}
+
+/**
+ * The agent SDK processes a session is holding open, with their ages.
+ *
+ * Reads the raw record rather than the summary type: these entries arrive as
+ * JSON over the action boundary, so their shape is a claim to check, not one to
+ * assert. A pid we cannot read is dropped rather than printed as `pid undefined`.
+ */
+function sessionRuntimeProcessLine(record: JsonObject, now: number): string | undefined {
+  const entries = Array.isArray(record.runtimeProcesses) ? record.runtimeProcesses : [];
+  const rendered = entries
+    .map((entry) => {
+      const info = isRecord(entry) ? entry : null;
+      const pid = typeof info?.pid === "number" && Number.isInteger(info.pid) ? info.pid : null;
+      if (pid == null) return null;
+      const startedMs = Date.parse(asString(info?.startedAt) ?? "");
+      const age = Number.isFinite(startedMs)
+        ? formatWorkingDuration(Math.max(0, now - startedMs))
+        : null;
+      return age ? `pid ${pid} (${age})` : `pid ${pid}`;
+    })
+    .filter((entry): entry is string => entry !== null)
+    .join(", ");
+  return rendered || undefined;
 }
 
 /**
@@ -20606,8 +20779,16 @@ function formatAccountMachines(value: unknown): string {
         return machine ? [machine] : [];
       })
     : [];
+  // `status` answers "can this be dialled"; `presence` answers "is it awake,
+  // and on what power" — the same second line the desktop machine row and the
+  // iOS roster render, from the same shared helper, so the three cannot
+  // disagree about whether a Mac with a shut lid is asleep or merely quiet.
+  // `connected` is deliberately not passed: this table marks no row as holding
+  // a live channel, and a surface that renders no such mark must not claim one.
+  let anyAsleep = false;
   const rows = machines.map((machine) => {
     const connectionState = accountMachineConnectionState(machine);
+    if (accountMachinePresence(machine) === "asleep") anyAsleep = true;
     const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
       ? new Date(machine.lastSeenAt).toLocaleString()
       : "never";
@@ -20615,17 +20796,23 @@ function formatAccountMachines(value: unknown): string {
       asString(machine.machineKey) ?? "—",
       accountMachineDisplayName(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
       connectionState,
+      machineStatusLine(machine) ?? "—",
       lastSeenAt,
     ];
   });
   return [
     renderTable(
-      ["machine key", "name", "status", "last seen"],
+      ["machine key", "name", "status", "presence", "last seen"],
       rows,
       "No machines are registered to this ADE account.",
     ),
     "",
     "Connect with: ade machines connect <machine-key>",
+    // Connecting IS what wakes a sleeping machine — the same thing the desktop
+    // row and the phone say by labelling the button "Wake". Stated only when a
+    // machine on this account is actually asleep, so the hint never becomes
+    // noise on a list of awake machines.
+    ...(anyAsleep ? ["A machine listed asleep wakes when you connect to it."] : []),
   ].join("\n");
 }
 

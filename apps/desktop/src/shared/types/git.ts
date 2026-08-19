@@ -2,6 +2,8 @@
 // Git types
 // ---------------------------------------------------------------------------
 
+import type { GitHubServiceHealth } from "../githubServiceHealth";
+
 export type GitSyncMode = "merge" | "rebase";
 export type GitPullMode = "ff-only" | "rebase" | "merge";
 
@@ -308,8 +310,52 @@ export type GitHubRateLimitState = {
 };
 
 export type GitHubAuthFailure = {
-  kind: "rate_limited" | "invalid_token" | "permission_denied" | "network" | "unknown";
+  // `service_unavailable` means GitHub itself returned 5xx. It is NOT a
+  // credential problem, and clients must not offer reconnect/re-auth for it —
+  // reconnecting during a GitHub outage cannot help and risks the user
+  // replacing a perfectly good token.
+  kind:
+    | "rate_limited"
+    | "invalid_token"
+    | "permission_denied"
+    | "service_unavailable"
+    | "network"
+    | "unknown";
   message: string;
+  retryAt: string | null;
+};
+
+export type GitHubAuthFailureKind = GitHubAuthFailure["kind"];
+
+/**
+ * What every *automatic* GitHub reader needs to know before it spends a
+ * request, delivered as data rather than as an error message — a rejection
+ * cannot carry it, because Electron IPC and the runtime's JSON-RPC both flatten
+ * an error to its message.
+ *
+ * Zero-network to produce, so it is safe to consult on a timer and while GitHub
+ * is refusing. Every field is optional-by-nullability: a runtime that does not
+ * implement the read leaves clients on their own local backoff rather than
+ * breaking them. See `docs/features/pull-requests/README.md`, "Keeping
+ * automatic GitHub reads inside the quota".
+ */
+export type GitHubRequestBudget = {
+  /**
+   * The quota reset instant, set once an available credential reaches the
+   * 500-request background reserve; null while requests may proceed. Callers
+   * resume by themselves because the value is the instant the quota refills.
+   */
+  pausedUntil: string | null;
+  /**
+   * The worst failure currently recorded on a PR-read resource — worst meaning
+   * the one that justifies the longest stand-down — or null when the most
+   * recent request succeeded, or when the failure is old enough that it no
+   * longer describes the request the caller just made. `service_unavailable` carries no `pausedUntil`
+   * (a GitHub 5xx must never park a credential) but still tells a poller to
+   * lengthen its cadence.
+   */
+  failureKind: GitHubAuthFailureKind | null;
+  /** Retry instant GitHub supplied for {@link failureKind}, when it gave one. */
   retryAt: string | null;
 };
 
@@ -379,6 +425,11 @@ export type GitHubStatus = {
   // flattened into "missing scopes" by clients.
   authFailure?: GitHubAuthFailure | null;
   rateLimit?: GitHubRateLimitState | null;
+  // Set only when a GitHub request failed AND githubstatus.com corroborates an
+  // incident on a surface ADE depends on. Present means "this failure is
+  // GitHub's, not the user's"; absent means ADE makes no claim either way (the
+  // status page lags real incidents, so absence proves nothing).
+  serviceHealth?: GitHubServiceHealth | null;
   // Optional for compatibility with older runtimes. These fields describe the
   // operation credential chain without exposing credential material.
   writeAuthSource?: Exclude<GitHubStatus["authSource"], "app">;

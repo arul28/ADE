@@ -68,6 +68,8 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
+import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import {
@@ -183,6 +185,9 @@ import {
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { createPrEventFanout } from "./prEventFanout";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
+
+/** One warm-runtime budget for every project scope this brain opens. */
+const chatRuntimeBudget = createChatRuntimeBudget();
 
 declare const __ADE_VERSION__: string | undefined;
 
@@ -1249,6 +1254,7 @@ export async function createAdeRuntime(args: {
   let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
   if (resolvedArgs.chatRuntime === "agent") {
     agentChatService = createAgentChatService({
+      runtimeBudget: chatRuntimeBudget,
       getOrchestrationService: () => orchestrationService,
       projectRoot,
       adeDir: paths.adeDir,
@@ -1260,6 +1266,10 @@ export async function createAdeRuntime(args: {
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
       diskPressureMonitor,
+      // Sleep is a machine fact, so every chat in this brain reads the one
+      // monitor. Borrowed: the chat service must not be able to dispose it out
+      // from under the account publisher, or vice versa.
+      hostPowerSource: borrowSharedMachinePowerSource(),
       getTestService: () => testService,
       ptyService,
       getAutomationService: () => automationServiceRef,

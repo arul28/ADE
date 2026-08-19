@@ -108,6 +108,7 @@ import type {
   GitRevertArgs,
   GitGetUserIdentityArgs,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubStatus,
   GitStashPushArgs,
   GitStashRefArgs,
@@ -2358,6 +2359,7 @@ function parseAgentChatListArgs(value: Record<string, unknown>): AgentChatListAr
     ...(asTrimmedString(value.laneId) ? { laneId: asTrimmedString(value.laneId)! } : {}),
     includeAutomation: asOptionalBoolean(value.includeAutomation),
     includeArchived: asOptionalBoolean(value.includeArchived),
+    includeIdentity: asOptionalBoolean(value.includeIdentity),
   };
 }
 
@@ -4451,6 +4453,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return agentChatService.listSessions(parsed.laneId, {
       includeAutomation: parsed.includeAutomation,
       includeArchived: parsed.includeArchived,
+      includeIdentity: parsed.includeIdentity,
     });
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
@@ -5336,6 +5339,11 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("github.getRemoteStatus", { viewerAllowed: true, observesAbort: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
     requireService(args.githubService, "GitHub service not available.").getRemoteStatus());
+  // The web client's PR timers run in the browser but spend THIS machine's
+  // quota. Without this registration its adapter falls back to an all-null
+  // budget and its 5-second checks loop never sees the reserve.
+  register("github.getRequestBudget", { viewerAllowed: true, observesAbort: true }, async (): Promise<GitHubRequestBudget> =>
+    requireService(args.githubService, "GitHub service not available.").getRequestBudget());
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
     const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
     return await requireService(args.githubService, "GitHub service not available.").publishCurrentProject({

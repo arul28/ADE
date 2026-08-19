@@ -15,6 +15,7 @@ import {
   deriveGithubRealtimeBlock,
   deriveGithubRepoConnectionState,
   describeGithubCliBanner,
+  describeGithubOutage,
   githubStatusHasWriteCredential,
   githubAccountIssueCopy,
   githubRepoIssueCopy,
@@ -264,6 +265,7 @@ export function IntegrationBannerHost({
       clearDismissal(`mock-provider:${currentProjectRoot}`);
     }
     if (relayOutage == null) clearDismissal("relay-offline");
+    if (!describeGithubOutage(githubStatus)) clearDismissal("github-outage");
   }, [
     currentProjectRoot,
     relayOutage,
@@ -281,6 +283,39 @@ export function IntegrationBannerHost({
   const models = useMemo<BannerModel[]>(() => {
     const list: BannerModel[] = [];
 
+    // 0) GitHub outage (NEW). When GitHub's own status page confirms an
+    // incident on a surface ADE uses, every GitHub banner below is a symptom of
+    // the SAME cause and would read as three separate accusations against the
+    // user's setup. Collapse them into one honest notice and stop offering
+    // fixes that cannot work — re-authorizing during a GitHub outage is how a
+    // user destroys a credential that was never broken.
+    const outage = describeGithubOutage(githubStatus);
+    if (currentProjectRoot && outage) {
+      list.push({
+        id: "github-outage",
+        // Informational: nothing here is the user's to fix, and it clears on
+        // its own. An error/warning tone would imply an action they don't have.
+        severity: "info",
+        title: outage.title,
+        detail: outage.detail,
+        actions: [
+          {
+            label: outage.action,
+            variant: "primary",
+            onClick: () => openExternalUrl(outage.actionUrl),
+          },
+        ],
+        // Outages are machine-wide, not per-project. Fingerprinted on the
+        // affected surfaces so a widening incident resurfaces a dismissed banner.
+        dismiss: { key: "github-outage", fingerprint: outage.fingerprint },
+      });
+    }
+    // Suppresses ONLY the GitHub-derived banners below. The AI-provider, mock-
+    // provider, and relay banners have nothing to do with GitHub and stay.
+    // Gated on the same condition that renders the outage banner, so the GitHub
+    // family can never be silenced without its replacement being shown.
+    const githubSuppressed = currentProjectRoot != null && outage != null;
+
     // 1) GitHub App real-time block (NEW). Only once a real read has landed FOR
     // the current project (loadedRoot === currentProjectRoot), so an unloaded/
     // absent API never masquerades as "not authorized" and a project switch
@@ -297,7 +332,7 @@ export function IntegrationBannerHost({
       && typeof rawInstall.appName === "string"
       && typeof rawInstall.relayConfigured === "boolean"
       && (!rawAuth || typeof rawAuth.configured === "boolean");
-    if (appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
+    if (!githubSuppressed && appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
       const account = deriveGithubAccountAuthState(appAuth);
       const repo = deriveGithubRepoConnectionState(appInstall);
       const block = deriveGithubRealtimeBlock(account, repo);
@@ -361,7 +396,8 @@ export function IntegrationBannerHost({
     // 2) gh CLI / PAT not connected (MIGRATED). A DISTINCT concern from the App
     // block: this is the token ADE uses for git & PR operations, not webhooks.
     if (
-      currentProjectRoot
+      !githubSuppressed
+      && currentProjectRoot
       && githubStatus
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
     ) {
@@ -470,7 +506,16 @@ export function IntegrationBannerHost({
     return models
       .map((model, index) => ({ model, index }))
       .filter(({ model }) => !(model.dismiss && dismissals.isDismissed(model.dismiss.key, model.dismiss.fingerprint)))
-      .sort((a, b) => SEVERITY_RANK[a.model.severity] - SEVERITY_RANK[b.model.severity] || a.index - b.index)
+      .sort((a, b) => {
+        // The outage notice is deliberately `info` (nothing here is the user's
+        // to fix), but severity ordering would then rank it last and the
+        // MAX_VISIBLE_BANNERS slice could push it into overflow — while it is
+        // still suppressing the GitHub banners. The GitHub complaints would
+        // vanish with their explanation hidden behind a toggle. Pin it first.
+        const pinned = Number(b.model.id === "github-outage") - Number(a.model.id === "github-outage");
+        if (pinned !== 0) return pinned;
+        return SEVERITY_RANK[a.model.severity] - SEVERITY_RANK[b.model.severity] || a.index - b.index;
+      })
       .map(({ model }) => model);
   }, [models, dismissals]);
 

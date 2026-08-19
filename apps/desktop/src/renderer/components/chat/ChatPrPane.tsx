@@ -24,7 +24,8 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
-import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { selectPrsForChat } from "../../lib/prChatScope";
@@ -440,13 +441,16 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
+  // Also rendered from the Work view area, which has no chat scope above it,
+  // so the scope is derived from the pin this pane is handed.
+  const scope = useChatRuntimeScopeForPin(runtimePin, laneId);
+  const projectRoot = scope.rootPath;
   // Keep the PR refresh callback keyed to the lane identity, not the lanes
   // collection. Lane status refreshes replace that array frequently, and
   // making it a dependency would tear down/recreate the PR event pump.
-  const laneType = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.laneType ?? "worktree");
-  const laneBranchRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.branchRef ?? null);
-  const laneBaseRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.baseRef ?? null);
+  const laneType = scope.lane?.laneType ?? "worktree";
+  const laneBranchRef = scope.lane?.branchRef ?? null;
+  const laneBaseRef = scope.lane?.baseRef ?? null;
   const laneForPr = useMemo(() => ({
     id: laneId,
     laneType,
@@ -458,12 +462,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
   const runtimePinKey = runtimePin?.key ?? null;
-  const machinesById = useRootAppStore((s) => s.crossMachineLanesByMachineId);
-  const pinMachineName = useMemo(() => {
-    if (!runtimePinKey) return null;
-    return Object.values(machinesById)
-      .find((machine) => machine.binding?.key === runtimePinKey)?.machineName ?? null;
-  }, [machinesById, runtimePinKey]);
+  const pinMachineName = useMachineEntryForBinding(runtimePin)?.machineName ?? null;
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const { copy, copied } = useCopyToClipboard();
@@ -504,7 +503,8 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           scopedPrs,
         );
       } else {
-        cached = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
       }
       if (!requestIsCurrent()) return;
       setCurrentPr(cached);

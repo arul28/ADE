@@ -247,6 +247,102 @@ export const EMPTY_CROSS_MACHINE_UNION: CrossMachineUnion = {
   foreignRows: EMPTY_ROWS,
   markersByLaneId: EMPTY_MARKERS,
 };
+const EMPTY_LANES: LaneSummary[] = [];
+
+/**
+ * The union slice owned by a pinned machine, or null when the pin is absent
+ * (the chat lives on the tab's own binding) or that machine has not been read
+ * into the union yet.
+ *
+ * A binding key — not a machine id — is the join: `machineId` is only known
+ * once a machine has answered, while a pin carries its routing target from the
+ * moment a chat is selected.
+ *
+ * `state` MUST be ROOT state. `crossMachineLanesByMachineId` is written only to
+ * the root store (every writer goes through `rootAppStoreApi`) and
+ * `createProjectAppStore` does not copy it, so a project-scoped store sees an
+ * empty record forever. React callers must use {@link useMachineEntryForBinding}
+ * rather than passing a `useAppStore` state here.
+ */
+export function machineEntryForBinding(
+  state: Pick<AppState, "crossMachineLanesByMachineId">,
+  pin: OpenProjectBinding | null | undefined,
+): CrossMachineMachineLanes | null {
+  if (!pin) return null;
+  for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
+    if (entry.binding?.key === pin.key) return entry;
+  }
+  return null;
+}
+
+function laneCacheKeyForPin(pin: OpenProjectBinding): string {
+  return pin.kind === "remote" ? pin.key : pin.rootPath;
+}
+
+/**
+ * The pinned machine's union slice, read from the ROOT store.
+ *
+ * This is the only correct React reading of {@link machineEntryForBinding}:
+ * under `AppStoreProvider` a plain `useAppStore` resolves to the project-scoped
+ * store, which never carries `crossMachineLanesByMachineId` at all.
+ */
+export function useMachineEntryForBinding(
+  pin: OpenProjectBinding | null | undefined,
+): CrossMachineMachineLanes | null {
+  return useRootAppStore((state) => machineEntryForBinding(state, pin));
+}
+
+/**
+ * A session's lane, found on some OTHER machine.
+ *
+ * A chat selected from another machine is absent from this tab's session list,
+ * so its lane — and with it its machine — is only knowable from the
+ * cross-machine union. `presentLocally` short-circuits the scan for the common
+ * case: the tab already holds the session, so its lane is already known.
+ */
+export function useForeignSessionLaneId(
+  sessionId: string | null,
+  presentLocally: boolean,
+): string | null {
+  return useRootAppStore((state) => {
+    if (!sessionId || presentLocally) return null;
+    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
+      const session = machine.sessions.find((candidate) => candidate.id === sessionId);
+      if (session) return session.laneId;
+    }
+    return null;
+  });
+}
+
+/**
+ * The ONLY lane list a pinned lane id may be resolved against: the pinned
+ * machine's own, from the live union or its warm cache.
+ *
+ * Never `state.lanes`. Lane ids are unique per machine, not globally, so
+ * falling back to the tab-bound machine's list can match a *different* lane
+ * that happens to share the id — and then hand its worktree path to a tool
+ * about to drive the other machine. An unread machine yields an empty list,
+ * which surfaces as "not found" rather than as the wrong lane.
+ *
+ * Returns null for an absent pin so callers keep their own unpinned source
+ * (`state.lanes`, `availableLanes`, …) explicitly rather than by accident.
+ *
+ * Each half is read from the store that actually owns it: the union from the
+ * root store, the warm lane cache from the surrounding (project-scoped) store.
+ * A single `useAppStore` read of both would resolve the union against a scoped
+ * store and see nothing at all.
+ */
+export function useLanesForPin(
+  pin: OpenProjectBinding | null | undefined,
+): LaneSummary[] | null {
+  const entry = useMachineEntryForBinding(pin);
+  const cached = useAppStore((state) =>
+    (pin ? state.laneCacheByProject[laneCacheKeyForPin(pin)] ?? null : null));
+  return useMemo(
+    () => (!pin ? null : entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
+    [cached, entry, pin],
+  );
+}
 
 /**
  * Immediately projects a foreign launch into its owning machine slice. The
@@ -264,9 +360,7 @@ export function seedCrossMachineOptimisticSession(
   binding: OpenProjectBinding,
 ): void {
   const store = rootAppStoreApi.getState();
-  const existing = Object.values(store.crossMachineLanesByMachineId).find(
-    (entry) => entry.binding?.key === binding.key,
-  ) ?? null;
+  const existing = machineEntryForBinding(store, binding);
   const machineId = existing?.machineId ?? (
     binding.kind === "remote" ? binding.targetId : THIS_MACHINE_ID
   );
@@ -327,9 +421,7 @@ export function cancelCrossMachineOptimisticChatSession(
     pendingForeignOptimisticSessionsByBinding.delete(binding.key);
   }
   const store = rootAppStoreApi.getState();
-  const existing = Object.values(store.crossMachineLanesByMachineId).find(
-    (entry) => entry.binding?.key === binding.key,
-  );
+  const existing = machineEntryForBinding(store, binding);
   if (existing?.sessions.some((session) => session.id === sessionId)) {
     store.mergeCrossMachineLanes({
       machineId: existing.machineId,

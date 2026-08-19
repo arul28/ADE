@@ -15,6 +15,7 @@
 import { RemoteTargetRegistry } from "../../../desktop/src/main/services/remoteRuntime/remoteTargetRegistry";
 import type { RemoteRuntimeProjectRecord, RemoteRuntimeTarget } from "../../../desktop/src/shared/types/remoteRuntime";
 import type { AdeAccountMachine } from "../../../desktop/src/shared/types/account";
+import { machineStatusLine } from "../../../desktop/src/shared/machinePresence";
 import { deriveProjectId } from "../services/projects/projectRegistry";
 import { AccountMachineDirectoryService } from "../services/account/accountMachineDirectoryService";
 import {
@@ -213,6 +214,22 @@ export type MachinePickerRow = {
   query: MachineQuery;
 };
 
+/**
+ * What an account machine's row says about itself.
+ *
+ * "online"/"offline" alone could not tell a user why a hop was about to hang:
+ * a sleeping Mac heartbeats recently enough to read as online, and a laptop at
+ * 8% is about to become a different problem. Presence and the power phrase come
+ * from `machinePresence`, the same module desktop and iOS render, so the three
+ * surfaces cannot disagree about whether a machine is awake. Lowercased to sit
+ * inside this picker's existing `kind · detail` convention.
+ */
+function accountMachineStatusDetail(machine: AdeAccountMachine): string {
+  const line = machineStatusLine(machine);
+  if (!line) return machine.online ? "online" : "offline";
+  return line.charAt(0).toLowerCase() + line.slice(1);
+}
+
 export function buildMachinePickerRows(args: {
   localLabel: string;
   localProjectRoot: string;
@@ -270,7 +287,7 @@ export function buildMachinePickerRows(args: {
     rows.push({
       id: machine.machineKey,
       label: name,
-      detail: machine.online ? "account · online" : "account · offline",
+      detail: `account · ${accountMachineStatusDetail(machine)}`,
       kind: "account",
       query: {
         machineKey: machine.machineKey,

@@ -208,6 +208,7 @@ export function toWorkSessionSummary(
     chatActivityMode: session.chatActivityMode ?? summary?.chatActivityMode ?? null,
     activeBackgroundTaskCount: session.activeBackgroundTaskCount ?? summary?.activeBackgroundTaskCount,
     backgroundWork: session.backgroundWork ?? summary?.backgroundWork,
+    backgroundWorkSince: session.backgroundWorkSince ?? summary?.backgroundWorkSince ?? null,
     claudeTag: session.claudeTag ?? summary?.claudeTag ?? null,
     chatSessionId: summary?.chatSessionId ?? session.sessionId,
     spawnKind: session.spawnKind ?? summary?.spawnKind,

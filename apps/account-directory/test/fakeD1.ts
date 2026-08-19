@@ -20,6 +20,9 @@ export type StoredMachine = {
   device_type: string | null;
   pubkey: string | null;
   reachable_endpoints: string | null;
+  power: string | null;
+  sleep_state: string | null;
+  sleep_state_at: number | null;
   last_seen_at: number | null;
   created_at: number | null;
 };
@@ -318,20 +321,23 @@ export class FakeD1Database {
       return before - this.revocations.length;
     }
     if (normalized.includes("insert into machines")) {
-      const retainRelayEndpoints = values[11] === 1;
+      const retainRelayEndpoints = values[14] === 1;
       const row: StoredMachine = {
         user_id: String(values[0]),
         machine_key: String(values[1]),
         device_id: values[2] == null ? null : String(values[2]),
-        hardware_id: values[10] == null ? null : String(values[10]),
+        hardware_id: values[13] == null ? null : String(values[13]),
         name: values[3] == null ? null : String(values[3]),
         custom_name: null,
         platform: values[4] == null ? null : String(values[4]),
         device_type: values[5] == null ? null : String(values[5]),
         pubkey: values[6] == null ? null : String(values[6]),
         reachable_endpoints: values[7] == null ? null : String(values[7]),
-        last_seen_at: values[8] == null ? null : Number(values[8]),
-        created_at: values[9] == null ? null : Number(values[9]),
+        power: values[8] == null ? null : String(values[8]),
+        sleep_state: values[9] == null ? null : String(values[9]),
+        sleep_state_at: values[10] == null ? null : Number(values[10]),
+        last_seen_at: values[11] == null ? null : Number(values[11]),
+        created_at: values[12] == null ? null : Number(values[12]),
       };
       const existing = this.rows.find((entry) =>
         entry.user_id === row.user_id && entry.machine_key === row.machine_key
@@ -359,6 +365,12 @@ export class FakeD1Database {
           // heartbeat that could not read an anchor must not erase the one this
           // row already has, or a single bad sample undoes the dedup.
           hardware_id: row.hardware_id ?? existing.hardware_id,
+          // Mirror the source's `coalesce(excluded.x, machines.x)` exactly, so
+          // a revert to a bare overwrite fails the old-host test here rather
+          // than being absorbed by the fake.
+          power: row.power ?? existing.power,
+          sleep_state: row.sleep_state ?? existing.sleep_state,
+          sleep_state_at: row.sleep_state_at ?? existing.sleep_state_at,
         });
       } else {
         this.rows.push(row);

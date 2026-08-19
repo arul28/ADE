@@ -16,6 +16,7 @@ import type {
   GitHubCredentialVerification,
   GitHubRateLimitState,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubStatus,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -47,6 +48,7 @@ import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
 } from "./githubRawRequest";
+import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
   classifyGitHubGraphqlCredentialFailure,
@@ -60,6 +62,7 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubRequestBudget,
   githubCredentialNonRateLimitCooldown,
   githubCredentialRateLimitCooldown,
   githubCredentialInventoryKey,
@@ -1425,6 +1428,26 @@ export function createGithubService({
         }
       }
 
+      // A request that never got an answer from GitHub — a hang, a timeout, a
+      // DNS or TLS failure, a body that stalls mid-stream — used to throw
+      // straight out of here recording nothing. That is the outage shape this
+      // lane targets, and with no record the request budget reported no failure
+      // kind, so the caller's ladder could not climb past its flat unclassified
+      // rung. Recorded with a null rate limit so it cannot clobber the real
+      // quota numbers, and the kinds this produces (`network` / `unknown`)
+      // carry no cooldown, so it can never park a credential the user's next
+      // action needs.
+      const recordTransportFailure: (error: unknown) => never = (error) => {
+        recordGithubOperationFailure(
+          candidate,
+          classifyGitHubAuthFailure({
+            message: error instanceof Error ? error.message : String(error),
+          }).authFailure,
+          null,
+        );
+        throw error;
+      };
+
       let response: Response;
       try {
         response = await fetchGitHub(url.toString(), {
@@ -1432,6 +1455,8 @@ export function createGithubService({
           headers,
           body: args.body != null ? JSON.stringify(args.body) : undefined,
         });
+      } catch (error) {
+        recordTransportFailure(error);
       } finally {
         releaseConditionalRequest?.();
       }
@@ -1450,10 +1475,12 @@ export function createGithubService({
           method: args.method,
           headers,
           body: args.body != null ? JSON.stringify(args.body) : undefined,
-        });
+        }).catch(recordTransportFailure);
       }
 
-      const text = await response.text();
+      // The body has its own timeout, so a response that stalls mid-stream
+      // fails here rather than above — same shape, same record.
+      const text = await response.text().catch(recordTransportFailure);
       let data: unknown = text;
       try {
         data = text.trim().length ? JSON.parse(text) : {};
@@ -1918,7 +1945,9 @@ export function createGithubService({
       if (!opts.forceRefresh) return await statusInFlight;
       await statusInFlight.catch(() => {});
     }
-    const work = computeStatus(opts);
+    // Corroborate a failing status against githubstatus.com. Shared with the
+    // headless (brain) service so both getStatus owners behave identically.
+    const work = computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger }));
     statusInFlight = work;
     try {
       return await work;
@@ -2406,6 +2435,18 @@ export function createGithubService({
         Date.now(),
         githubOperationCredentialCandidates(inventory.candidates, "read"),
       );
+    },
+
+    /**
+     * Zero-network read of the reserve + last classified failure, for automatic
+     * GitHub readers that must decide their cadence *before* spending a
+     * request. Callers poll this on a timer and on every failed poll group, so
+     * it deliberately does NOT resolve a credential inventory — see
+     * `githubRequestBudget` for why that is not free and why answering from
+     * every known credential is the safe direction.
+     */
+    async getRequestBudget(): Promise<GitHubRequestBudget> {
+      return githubRequestBudget();
     },
 
     getAppUserAuthStatus(): GitHubAppUserAuthStatus {

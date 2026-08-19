@@ -5,6 +5,12 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
+import type {
+  KeepAwakeFixResult,
+  KeepAwakeSnapshot,
+} from "../../../shared/types/keepAwake";
+import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import {
   buildGithubReleaseUrl,
@@ -255,6 +261,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -1050,6 +1057,7 @@ export type AppContext = {
   rpcSocketServer?: NetServer;
   rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  keepAwakeService?: KeepAwakeService | null;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
@@ -1669,7 +1677,7 @@ export function registerIpc({
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
-  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[] };
+  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[]; knownLocalProjectRoots?: string[] };
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
@@ -7621,12 +7629,16 @@ export function registerIpc({
       return [];
     }
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const listOptions = {
+      includeAutomation: Boolean(arg?.includeAutomation),
+      ...(arg?.includeIdentity === true ? { includeIdentity: true } : {}),
+    };
     return await (service as unknown as {
       listSessions: (
         laneId?: string,
-        options?: { includeAutomation?: boolean },
+        options?: { includeAutomation?: boolean; includeIdentity?: boolean },
       ) => Promise<AgentChatSessionSummary[]>;
-    }).listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
+    }).listSessions(laneId || undefined, listOptions);
   });
 
   ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
@@ -9705,6 +9717,12 @@ export function registerIpc({
     return ctx.githubService.clearAppUserAuth();
   });
 
+  // Zero-network read, so pollers can consult the reserve on a timer.
+  ipcMain.handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRequestBudget();
+  });
+
   const resolveGithubRepoRef = async (
     githubService: ReturnType<typeof createGithubService>,
     arg?: { owner?: string; name?: string } | null
@@ -11276,6 +11294,35 @@ export function registerIpc({
     requireAppContextServices(ctx, ["onboardingService"] as const);
     const detection = await ctx.onboardingService.detectDefaults().catch(() => null);
     return { detection };
+  });
+
+  // A renderer running against a main process without the service must still
+  // get a well-formed snapshot — and one that says "off", because a missing
+  // service holds no lock. The shape lives with the type so the four surfaces
+  // that report "no lock held" cannot drift apart.
+  ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
+    const service = getCtx().keepAwakeService;
+    return service ? await service.getSnapshot() : INERT_KEEP_AWAKE_SNAPSHOT;
+  });
+
+  ipcMain.handle(
+    IPC.keepAwakeSetLevel,
+    async (_event, level: unknown): Promise<KeepAwakeSnapshot> => {
+      const service = getCtx().keepAwakeService;
+      return service ? await service.setLevel(level) : INERT_KEEP_AWAKE_SNAPSHOT;
+    },
+  );
+
+  ipcMain.handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
+    const service = getCtx().keepAwakeService;
+    if (!service) {
+      return {
+        ok: false,
+        error: "ADE can't change this right now.",
+        snapshot: INERT_KEEP_AWAKE_SNAPSHOT,
+      };
+    }
+    return await service.fixSystemSleep();
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, () => {

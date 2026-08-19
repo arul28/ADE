@@ -51,6 +51,7 @@ import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runt
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
+  LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
   LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
@@ -1712,7 +1713,14 @@ export class LocalRuntimeConnectionPool {
   }
 
   async activitySummary(): Promise<RuntimeActivitySummary> {
-    return await this.callSync<RuntimeActivitySummary>("runtime.activitySummary");
+    // Explicitly bounded: see LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS. The
+    // client's ten-minute default is a work budget for real work, and counting
+    // in-memory turns is not that — it is the keep-awake poll's clock.
+    return await this.callSync<RuntimeActivitySummary>(
+      "runtime.activitySummary",
+      {},
+      { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
+    );
   }
 
   async syncStatusForRoot(rootPath: string, args: SyncGetStatusArgs = {}): Promise<SyncRoleSnapshot> {

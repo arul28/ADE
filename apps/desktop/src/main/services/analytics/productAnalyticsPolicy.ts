@@ -250,6 +250,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
     "partial", "failed", "idle_only", "immediate",
+    // Which keep-awake level an installation chose. The product question is
+    // whether people opt into ADE holding their machine awake at all, and how
+    // many go as far as the lid-closed level that needs a password. Three
+    // closed values; never the machine, the battery, or what it was running.
+    "keep_awake_never", "keep_awake_while_away", "keep_awake_lid_closed",
     // Settle teardown could not confirm a stop (design 3d). `timeout` above
     // covers the third case. Coarse on purpose: never the task or its error.
     "no_stop_control", "rejected",

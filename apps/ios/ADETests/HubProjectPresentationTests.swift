@@ -63,6 +63,28 @@ final class HubProjectPresentationTests: XCTestCase {
         XCTAssertNil(presentation.statusLine)
     }
 
+    func testIdentityChatsAreExcludedFromRowsAndDerivedCounts() {
+        var identity = chat(id: "cto-chat", status: .awaiting, awaitingInput: true)
+        identity.identityKey = "cto"
+        var identityChild = chat(id: "cto-shell", status: .running, awaitingInput: false)
+        identityChild.toolType = "shell"
+        identityChild.chatSessionId = identity.id
+        var roster = roster(attentionCount: 1, runningCount: 2)
+        roster.chats = [identity, identityChild, chat(id: "ordinary-chat", status: .running, awaitingInput: false)]
+
+        let presentation = buildHubProjectPresentation(
+            project: project(),
+            roster: roster,
+            isActive: false,
+            isSwitching: false
+        )
+
+        XCTAssertEqual(presentation.attentionCount, 0)
+        XCTAssertEqual(presentation.runningCount, 1)
+        XCTAssertEqual(presentation.chatCount, 1)
+        XCTAssertEqual(presentation.lanes.flatMap { $0.rows }.map(\.id), ["ordinary-chat"])
+    }
+
     // MARK: - Chat row status
 
     func testChatRowStatusLabelSpeaksOnlyWhenItHasSomethingToSay() {

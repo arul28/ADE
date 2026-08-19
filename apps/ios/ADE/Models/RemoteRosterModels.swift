@@ -54,6 +54,10 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var snoozedAt: String? = nil
   var wokeAt: String? = nil
   var wokeReason: String? = nil
+  /// CTO/identity sessions have a dedicated surface and must not enter the
+  /// ordinary project roster. The field is optional so older hosts remain
+  /// decodable; clients use it to reject stale or legacy leaked rows.
+  var identityKey: String? = nil
 }
 
 struct RemoteRosterLane: Codable, Equatable, Identifiable {
@@ -123,6 +127,7 @@ func resolveRosterSessionNavigationTarget(
   let normalizedBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
   let normalizedRepoOwner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines)
   let normalizedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let safeRosterProjects = rosterProjects.map { $0.excludingIdentityChats() }
 
   func catalogProjects(owner: String?, named name: String) -> [MobileProjectSummary] {
     projects.filter { project in
@@ -160,9 +165,9 @@ func resolveRosterSessionNavigationTarget(
   }
 
   let candidateRosterProjects: [RemoteRosterProject] = {
-    guard let scopedCatalogProject else { return rosterProjects }
+    guard let scopedCatalogProject else { return safeRosterProjects }
     let catalogRoot = syncNormalizedProjectRootScope(scopedCatalogProject.rootPath)
-    let exactMatches = rosterProjects.filter { project in
+    let exactMatches = safeRosterProjects.filter { project in
       if project.projectId == scopedCatalogProject.id { return true }
       guard let catalogRoot else { return false }
       return syncNormalizedProjectRootScope(project.rootPath) == catalogRoot
@@ -175,14 +180,14 @@ func resolveRosterSessionNavigationTarget(
     // the catalog, a same-named roster from another owner is never safe.
     if normalizedRepoOwner?.isEmpty == false { return [] }
     guard let normalizedRepoName else { return [] }
-    let nameMatches = rosterProjects.filter {
+    let nameMatches = safeRosterProjects.filter {
       $0.displayName.caseInsensitiveCompare(normalizedRepoName) == .orderedSame
     }
     return nameMatches.count == 1 ? nameMatches : []
   }()
 
   var rosterProject = candidateRosterProjects.first { project in
-    project.chats.contains { $0.id == sessionId }
+    project.chats.contains { $0.id == sessionId && !$0.isIdentityChat }
   }
   if rosterProject == nil, let normalizedLaneId, !normalizedLaneId.isEmpty {
     rosterProject = candidateRosterProjects.first { project in
@@ -219,7 +224,7 @@ func resolveRosterSessionNavigationTarget(
   }()
   guard let catalogProject else { return nil }
 
-  let resolvedRoster = rosterProject ?? rosterProjects.first { project in
+  let resolvedRoster = rosterProject ?? safeRosterProjects.first { project in
     project.projectId == catalogProject.id
       || (
         syncNormalizedProjectRootScope(project.rootPath) != nil
@@ -227,7 +232,7 @@ func resolveRosterSessionNavigationTarget(
             == syncNormalizedProjectRootScope(catalogProject.rootPath)
       )
   }
-  let rosterChat = resolvedRoster?.chats.first { $0.id == sessionId }
+  let rosterChat = resolvedRoster?.chats.first { $0.id == sessionId && !$0.isIdentityChat }
   let resolvedLane: RemoteRosterLane? = {
     guard let resolvedRoster else { return nil }
     // Once the authoritative chat exists, its lane owns the relationship.
@@ -317,16 +322,27 @@ func rosterApplyDelta(
   if delta.seq > currentSeq + 1 { return .needsSnapshot }
   var byId = [String: RemoteRosterProject]()
   for project in current {
-    byId[project.projectId] = project
+    byId[project.projectId] = project.excludingIdentityChats()
   }
   for projectId in delta.removed ?? [] { byId.removeValue(forKey: projectId) }
-  for project in delta.changed ?? [] { byId[project.projectId] = project }
+  for project in delta.changed ?? [] {
+    byId[project.projectId] = project.excludingIdentityChats()
+  }
   return .applied(projects: Array(byId.values), seq: delta.seq)
 }
 
 // MARK: - Convenience
 
 extension RemoteRosterChat {
+  /// Identity sessions (currently the per-project CTO) have their own tab and
+  /// attention endpoint. They are never ordinary Work or Hub rows.
+  var isIdentityChat: Bool {
+    guard let identityKey = identityKey?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+      return false
+    }
+    return !identityKey.isEmpty
+  }
+
   /// Only explicit chat tool types stream the chat-event surface. An unknown or
   /// missing toolType must NOT read as a chat: routing a CLI (terminal) session
   /// through the chat transcript path yields a permanently blank screen (CLI
@@ -405,18 +421,48 @@ extension RemoteRosterChat {
 }
 
 extension RemoteRosterProject {
+  /// Remove identity rows from any roster boundary and repair the derived
+  /// counts that older hosts may have computed before filtering them.
+  func excludingIdentityChats() -> RemoteRosterProject {
+    var identitySessionIds = Set(chats.filter(\.isIdentityChat).map(\.id))
+    var identityDescendantAdded = true
+    while identityDescendantAdded {
+      identityDescendantAdded = false
+      for chat in chats {
+        guard let parentId = chat.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !parentId.isEmpty,
+              identitySessionIds.contains(parentId) else { continue }
+        if identitySessionIds.insert(chat.id).inserted {
+          identityDescendantAdded = true
+        }
+      }
+    }
+    let filteredChats = chats.filter { chat in
+      !identitySessionIds.contains(chat.id)
+    }
+    guard filteredChats.count != chats.count else { return self }
+
+    var sanitized = self
+    sanitized.chats = filteredChats
+    sanitized.runningCount = filteredChats.filter(\.countsTowardRunning).count
+    sanitized.attentionCount = filteredChats.filter(\.needsAttention).count
+    return sanitized
+  }
+
   /// Chats for one lane, freshest first. Archived rows are filtered out for the
   /// hub's at-a-glance view.
   func chats(forLaneId laneId: String) -> [RemoteRosterChat] {
     chats
-      .filter { $0.laneId == laneId && $0.archived != true }
+      .filter { $0.laneId == laneId && $0.archived != true && !$0.isIdentityChat }
       .sorted { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
   }
 
   /// Lanes that actually have at least one non-archived chat, preserving the
   /// brain-provided order (primary lane first).
   var lanesWithChats: [RemoteRosterLane] {
-    lanes.filter { lane in chats.contains { $0.laneId == lane.id && $0.archived != true } }
+    lanes.filter { lane in
+      chats.contains { $0.laneId == lane.id && $0.archived != true && !$0.isIdentityChat }
+    }
   }
 }
 

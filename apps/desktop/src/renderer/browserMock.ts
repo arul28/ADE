@@ -69,8 +69,15 @@ import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_VERSION,
 } from "../shared/welcomeVideo";
+import {
+  INERT_KEEP_AWAKE_SNAPSHOT,
+  type KeepAwakeSnapshot,
+} from "../shared/types/keepAwake";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
+
+// The browser preview holds no power locks, so it reports the honest default.
+const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
 
 const noop = () => () => {};
 const resolved =
@@ -5965,6 +5972,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         checkedAt: new Date().toISOString(),
         error: null,
       }),
+      getRequestBudget: resolved({ pausedUntil: null, failureKind: null, retryAt: null }),
       detectRepo: resolved({ owner: "arul28", name: "ADE" }),
       getAppInstallationStatus: resolved({
         repo: { owner: "arul28", name: "ADE" },
@@ -6508,6 +6516,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       lastInstallFailed: null,
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
+    }),
+    keepAwakeGet: resolved(MOCK_KEEP_AWAKE_SNAPSHOT),
+    keepAwakeSetLevel: async (): Promise<KeepAwakeSnapshot> => MOCK_KEEP_AWAKE_SNAPSHOT,
+    keepAwakeFixSystemSleep: resolved({
+      ok: false,
+      error: "Not available in the browser preview.",
+      snapshot: MOCK_KEEP_AWAKE_SNAPSHOT,
     }),
     updateGetPreferences: resolved({ ...DEFAULT_AUTO_UPDATE_PREFERENCES }),
     updateSetPreferences: async (

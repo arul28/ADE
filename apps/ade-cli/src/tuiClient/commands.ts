@@ -1,4 +1,23 @@
-import type { AgentChatProvider, AgentChatSlashCommand } from "../../../desktop/src/shared/types/chat";
+import {
+  ACTIVE_TURN_DISPATCH_MODES,
+  type ActiveTurnSendMode,
+  type AgentChatProvider,
+  type AgentChatSlashCommand,
+} from "../../../desktop/src/shared/types/chat";
+
+/**
+ * Providers whose backend accepts this atomic active-turn dispatch mode, read
+ * off the canonical table rather than restated here — adding a provider there
+ * offers its /steer command in the TUI automatically.
+ */
+function providersSupporting(mode: ActiveTurnSendMode): AgentChatProvider[] {
+  return (Object.entries(ACTIVE_TURN_DISPATCH_MODES) as [AgentChatProvider, readonly ActiveTurnSendMode[]][])
+    .filter(([, modes]) => modes.includes(mode))
+    .map(([provider]) => provider);
+}
+
+const INLINE_STEER_PROVIDERS = providersSupporting("inline");
+const INTERRUPT_STEER_PROVIDERS = providersSupporting("interrupt");
 
 export type CommandPlacement = "inline" | "right" | "overlay" | "chat";
 
@@ -52,8 +71,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/quit", description: "Exit ade code", placement: "inline", category: "System" },
   { name: "/steer cancel", description: "Remove the latest staged steer message", placement: "inline", category: "Steer" },
   { name: "/steer edit", description: "Edit the latest staged steer message", placement: "inline", argumentHint: "<text>", category: "Steer" },
-  { name: "/steer send", description: "Send the latest staged steer into a Claude turn", placement: "inline", providers: ["claude"], category: "Steer" },
-  { name: "/steer interrupt", description: "Interrupt Claude and run the latest staged steer", placement: "inline", providers: ["claude"], category: "Steer" },
+  { name: "/steer send", description: "Send the latest staged steer into the active agent's turn", placement: "inline", providers: INLINE_STEER_PROVIDERS, category: "Steer" },
+  { name: "/steer interrupt", description: "Interrupt the agent and run the latest staged steer", placement: "inline", providers: INTERRUPT_STEER_PROVIDERS, category: "Steer" },
   { name: "/steer", description: "Show staged steer messages", placement: "right", category: "Steer" },
   { name: "/new lane", description: "Create a new lane", placement: "right", category: "Lanes" },
   { name: "/new chat", description: "Create a new chat in the current lane", placement: "right", argumentHint: "[title]", category: "Chats" },

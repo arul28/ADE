@@ -765,6 +765,61 @@ Runtime support files outside `services/sync/`:
   `"other"` rather than to null — "turned away for a reason this build cannot
   name" is exactly the fact the last incident needed — and the server's prose in
   `lastHttpReason` never travels past this function.
+- `apps/ade-cli/src/services/power/` — the machine's own power and sleep truth,
+  shared by the brain, the desktop main process, and tests.
+  `machinePowerReader.ts` reads battery/wall power per platform (macOS
+  `pmset -g batt`; Windows one PowerShell call over `root/wmi BatteryStatus`
+  with a `Win32_Battery` fallback, resolved through `resolveTrustedWindowsTool`
+  and spawned `windowsHide: true`; Linux by reading `/sys/class/power_supply`
+  with no process spawn at all). A machine with no battery reports `battery`
+  **absent** — never `0%` — and an unreadable read returns `null`, which
+  overwrites nothing; the constant used to be "plugged in", and one `pmset`
+  timeout then republished a 20%-on-battery laptop as on wall power.
+  `suspendGapDetector.ts` is the universal fallback: a 15-second tick that
+  declares a suspend when it fires more than 60 seconds late, reports the whole
+  absence (`overdueBy + tickMs`), and needs zero platform-specific code — which
+  is what gives Linux and any headless brain sleep detection at all.
+  `machinePowerMonitor.ts` combines the two into a `MachinePowerSource`
+  (`getPower`, `getSleepState`, `getSleepStateAt`, `getSuspendGapMs`,
+  `subscribe`) emitting `suspend` / `resume` / `power-change` events, each
+  carrying `announced` so a precise host hook is distinguishable from an
+  inferred gap; the poll is 60 seconds and an announced suspend is anchored
+  separately from the gap detector so a 40-second nap does not replay last
+  night's four-hour gap. `sharedMachinePowerMonitor.ts` keeps one monitor per
+  brain process — `getSharedMachinePowerMonitor()` owns the lifecycle and
+  `borrowSharedMachinePowerSource()` hands out a read/subscribe-only wrapper so
+  a borrower cannot dispose an instance others are subscribed to. Its three
+  consumers are the account-directory publisher, the chat service, and the RPC
+  method the desktop uses to forward its pre-suspend beat.
+- `apps/desktop/src/main/services/power/` — the desktop half.
+  `powerStateService.ts` wraps the shared monitor with Electron's
+  `powerMonitor` (`suspend` / `resume` / `on-ac` / `on-battery`) and is a
+  process singleton via `getPowerStateService()`. `machinePowerBrainBridge.ts`
+  forwards only `suspend` and `resume` to the brain as
+  `machine.reportPowerTransition` inside a 2-second budget: suspend gets exactly
+  one attempt because the machine is already going dark, resume retries four
+  times with 750 ms backoff, and a generation counter supersedes an in-flight
+  resume loop so a stale `resume` can never land after a newer `suspend`.
+  Battery changes are deliberately not forwarded — they ride the brain's own
+  poll. `keepAwakeService.ts` and `systemSleepConfig.ts` back the opt-in
+  keep-awake setting; see
+  [onboarding and settings](../onboarding-and-settings/README.md#keeping-the-machine-awake).
+- `apps/desktop/src/shared/types/power.ts` and
+  `apps/desktop/src/shared/machinePresence.ts` — the shared vocabulary every
+  client renders from. `MachinePower` is `{ battery?: { percent, charging };
+  onExternalPower }`, wire-flattened through `toMachinePowerRecord` /
+  `fromMachinePowerRecord`. `resolveMachinePresence` is the single decision:
+  a fresh `asleep` announcement outranks `connected` (a channel to a sleeping
+  machine does not report itself closed), then `connected`, then `online`, then
+  a heartbeat inside `MACHINE_SLEEP_INFERENCE_WINDOW_MS` (10 minutes) is
+  inferred `asleep`, otherwise `offline`. `machinePresence.ts` adds
+  `connectedMachineIds` (two sets — `machineKey` and `deviceId` — because only
+  `machine_key` is unique, and merging them renders two rows Connected off one
+  channel), `machinePowerPhrase` (`"82% battery"` → `"plugged in"` → `"on
+  battery"`, battery always winning), and `machineStatusLine` /
+  `machineActionLabel` (`"Wake"` when asleep, else `"Connect"`). The Swift twin
+  is `apps/ios/ADE/Services/SyncMachineWake.swift`, which must agree down to the
+  inclusive staleness boundary and the wording of the power phrase.
 - `apps/ade-cli/src/services/credentials/credentialStore.ts` — the per-machine
   credential store behind the account session. Two implementations share one
   interface. `EncryptedFileCredentialStore` owns the AES-GCM
@@ -1233,6 +1288,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   turn the handshake into an existence oracle for an unauthenticated caller.
   Connection arbitration and sealed adoption are options the brain leaves unset,
   which is the only genuine divergence between the two callers.
+- `pairedDeviceRejectionLimiter.ts` — per-`deviceId` throttle for repeated
+  paired-hello rejections. A phone that kept a pairing secret after the host
+  forgot the record will race LAN + Tailscale + Relay forever; without a cap
+  that is thousands of `paired_device_rejected` lines a day. The limiter
+  samples warn logs and delays later rejects. It never sees
+  `unknown_device` vs `secret_mismatch` — a different cadence per reason would
+  leak existence to an unauthenticated caller. Both ingresses share it.
 - `brainMachineSyncStores.ts` — the machine-level PIN / pairing / security
   stores for a brain hosting sync with no project scope
   (`sync-pin.json`, `sync-paired-devices.json`, `sync-security.json` under
@@ -1420,7 +1482,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `rosterBuilder.ts` — builds the machine-wide all-projects session roster
   (`SyncRosterProject[]`) consumed by the Hub: agent chats, their attached
   shell rows, and **standalone CLI (tracked terminal) sessions — live and
-  ended**. The roster is built only from projects
+  ended**. Identity-bound chats (including the per-project CTO) and their
+  attached descendants are excluded from this ordinary roster; the optional
+  `identityKey` wire marker remains only as a defensive signal for stale or
+  legacy payloads. The roster is built only from projects
   whose registry `catalogVisibility` is `"recent"`, **plus the host's own
   project** (matched by `hostProjectId`) which is always included even if it is
   a `"system"`-visibility entry — so the machine you are actively hosting never
@@ -2440,6 +2505,40 @@ surfaces therefore distinguish "no current heartbeat" from "no usable endpoint" 
 keep a row connectable while at least one directory-verified secure route
 remains. The authenticated hello is the final availability and identity check.
 
+Sleep is a **stated fact**, not an inference from silence. A closed laptop lid
+and a healthy laptop look identical from the directory's side — both stop
+heartbeating, and `last_seen_at` is equally recent for a few minutes either way
+— which is how a phone kept reporting "Connected" to an unconscious Mac.
+Migration `0006_machine_power.sql` adds three nullable columns to `machines`:
+
+- `power` — JSON `{"batteryPercent": 0-100 | null, "charging": bool | null,
+  "onExternalPower": bool | null}`. `batteryPercent` is null, never `0`, on a
+  machine with no battery.
+- `sleep_state` — `'awake' | 'asleep'`, as last announced by the machine itself.
+- `sleep_state_at` — epoch ms at which `sleep_state` last changed, deliberately
+  distinct from `last_seen_at`.
+
+All three are optional on the wire and the register upsert **coalesces** rather
+than overwrites them, so an old host heartbeating alongside a new one cannot
+blank what the new one stored, and one dropped field cannot erase known state.
+Power is advisory: a malformed value degrades to unknown and never rejects the
+machine registration. Because `sleep_state` coalesces forward it has no path
+back to NULL, which is why clients age the announcement rather than trusting it
+forever (`resolveMachinePresence`, above).
+
+The announcement happens in the beat *before* the machine goes dark. On a
+desktop host, Electron's `suspend` event reaches `machinePowerBrainBridge`,
+which calls the brain's `machine.reportPowerTransition` RPC (`cto` role
+required; `kind: "suspend" | "resume"`, optional `budgetMs` clamped to at least
+250 ms) inside a 2-second budget; the brain notes the announced suspend and
+awaits one bounded `publishPowerStateNow()` HTTPS write, coalesced so a single
+suspend produces a single write. On resume the brain notes the wake and lets
+the publisher's own subscription push an immediate "awake" rather than waiting
+out the 30-second heartbeat. A host with no wiring for this (a headless brain,
+a Linux box) answers `{accepted: false, reason: "unsupported"}` and falls back
+to the heartbeat-gap detector, which infers the same transition with no
+platform-specific code.
+
 Directory list, delete, rename, and publish operations retry one 401 with a
 forced access-token refresh. Only a repeated 401/403 is classified as
 `auth_expired`; timeouts, server failures, and temporary token-verifier/JWKS
@@ -2922,7 +3021,7 @@ payload.
 | File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to a logical-offset transcript snapshot plus live PTY output. The host installs a snapshot barrier before capture, queues concurrent data/exit events (256 events / 2 MB), trims overlap at UTF-8 boundaries, and recaptures up to four times when the snapshot did not reach the queued watermark; it closes instead of flushing a gap or unreconstructable overflow. Web/iOS clients drop duplicate ranges, trim overlap, and issue one guarded `sinceOffset` recovery subscribe when a live chunk starts beyond their watermark. A delta appends only the missing suffix; a full snapshot is authoritative replacement even when its end equals the current watermark. ACK-capable input uses stable `inputId`s and a bounded host dedupe ledger so reconnect/timeout retry cannot type twice; legacy hosts receive one-shot input with no ambiguous retry. Viewport resize remains subscription-scoped and the last desktop size is restored after the last mobile viewer detaches | iOS Work tab, hosted web Work terminal |
 | Chat stream | Agent chat transcript events plus subscribed byte-cursor scrollback. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session). The host carries sequence high-water marks through shared-listener rehydration and seeds a recreated buffer from the agent event sequence persisted in session metadata/transcript state, so it never reuses a `(sessionId, seq)` pair. The field remains optional and old clients keep working unchanged. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to an authoritative snapshot. Optional live sends are marked delivered only after the WebSocket accepts the frame; a backpressured peer keeps its transcript offset in place and the pump stops at the first failed event so later chunks cannot overtake the missing one. A per-session hydration barrier blocks both the live broadcaster and transcript pump while a snapshot is captured. The pump resumes after the ack from the logical byte offset recorded before capture, so appends racing a slow snapshot arrive after the ack without a gap; snapshot overlap is removed by the normal delivery-key dedupe. The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Modern acks also return `cursorKind: "byte"`, `tailStartOffset`, and authoritative `hasOlderHistory`. A host advertising `chatHistoryPaging` accepts `chat_history` only for an already-subscribed session and matching project/personal/foreign scope; it reads the same authorized transcript path without switching projects or booting a runtime. Transient failures return `unavailable: true` and preserve the requested cursor. Snapshot and older-page transcript reads use asynchronous filesystem/zlib work; same-session tail reads coalesce, while archived gzip inflations are globally admitted with only the active inflate and newest queued destination retained. Small archives use a bounded memory cache; a larger archive is inflated at most once into an unlinked, process-private temporary file under a 256 MiB logical-size/LRU budget and a temporary-volume free-space guard, after which pages are random-access disk reads. Request cancellation propagates through queued work, file reads, and inflates, so disconnected clients cannot leave expensive transcript jobs running. Both event-history paging and the legacy `chat.getTranscript` route use append-stable logical byte cursors; the latter advertises `cursorKind: "byte"` so clients do not treat an offset as a dense entry index. Hosted-web and iOS older pages are capped at 256 KiB and a failed read preserves its byte cursor for retry. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint). The additive foreign-scope protocol remains available to controller reads, but iOS Hub taps activate the owning project before opening the chat. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change also rides this stream, so a mode switch made on one client (desktop ↔ iOS) patches every subscribed client's cached summary and composer controls live without a refetch | iOS Work tab, iOS Hub, controller chat |
-| Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended — so the mobile Hub renders every project's sessions at once **without activating each project**. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Transcripts are excluded from the roster and load on demand after a row tap activates the owning project; the Hub cover exposes switching/hydration progress and an error with Retry instead of silently ignoring an unhydrated project. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
+| Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended — so the mobile Hub renders every project's sessions at once **without activating each project**. Identity-bound chats (including each project's CTO) and all attached descendants are excluded from this ordinary roster; the optional `identityKey` marker lets clients reject stale or legacy leaked rows. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Transcripts are excluded from the roster and load on demand after a row tap activates the owning project; the Hub cover exposes switching/hydration progress and an error with Retry instead of silently ignoring an unhydrated project. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.importExternalSession`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project hub |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project hub |

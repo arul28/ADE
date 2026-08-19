@@ -155,6 +155,18 @@ async function isStaleLocalPromptStashRequest(
   }
 }
 
+function promptStashErrorMessage(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message.trim() : "";
+  if (!raw) return fallback;
+  if (/requires elevated role|(?:list|create|delete)PromptStash/i.test(raw)) {
+    return "Stashed prompts are temporarily unavailable on this computer.";
+  }
+  return raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim() || fallback;
+}
+
 function StashImageThumbnail({
   attachment,
   composerMachineBinding,
@@ -257,7 +269,6 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
   const [saveReceiptKey, setSaveReceiptKey] = useState(0);
   const [saveReceiptVisible, setSaveReceiptVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 });
-  const [errorNoticePosition, setErrorNoticePosition] = useState({ left: 0, bottom: 0 });
   const stashableComposerAttachments = useMemo(
     () => attachments.filter(isStashableAttachment),
     [attachments],
@@ -303,7 +314,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         return;
       }
       if (sequence !== refreshSequenceRef.current) return;
-      setError(refreshError instanceof Error ? refreshError.message : "Could not load stashed prompts.");
+      setError(promptStashErrorMessage(refreshError, "Could not load stashed prompts."));
     }
   }, [composerMachineBinding]);
 
@@ -332,10 +343,10 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
   }, [menuOpen]);
 
   useEffect(() => {
-    if (menuOpen && hasComposerContent) {
+    if (menuOpen && hasComposerContent && !error) {
       setMenuOpen(false);
     }
-  }, [hasComposerContent, menuOpen]);
+  }, [error, hasComposerContent, menuOpen]);
 
   useEffect(() => {
     if (menuOpen && entries.length === 0 && !busy && !error) {
@@ -382,27 +393,6 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     };
   }, [entries.length, error, menuOpen]);
 
-  useLayoutEffect(() => {
-    if (!error || menuOpen) return;
-    const updatePosition = () => {
-      const anchor = rootRef.current?.getBoundingClientRect();
-      if (!anchor) return;
-      const width = Math.min(320, window.innerWidth - (STASH_MENU_VIEWPORT_MARGIN * 2));
-      const maxLeft = Math.max(STASH_MENU_VIEWPORT_MARGIN, window.innerWidth - width - STASH_MENU_VIEWPORT_MARGIN);
-      setErrorNoticePosition({
-        left: Math.min(Math.max(STASH_MENU_VIEWPORT_MARGIN, anchor.right - width), maxLeft),
-        bottom: Math.max(STASH_MENU_VIEWPORT_MARGIN, window.innerHeight - anchor.top + STASH_MENU_GAP),
-      });
-    };
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [error, menuOpen]);
-
   useEffect(() => {
     const handleFocus = () => {
       if ((active || menuOpen) && document.visibilityState === "visible") void refresh();
@@ -423,6 +413,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     const savedAttachments = savedComposerAttachments.filter(isStashableAttachment);
     if (savedAttachments.length > MAX_PROMPT_STASH_ATTACHMENTS) {
       setError(`You can stash up to ${MAX_PROMPT_STASH_ATTACHMENTS} images at a time.`);
+      setMenuOpen(true);
       return null;
     }
     if (!savedText.trim() && savedAttachments.length === 0) {
@@ -517,7 +508,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       }
       return created;
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Could not stash this prompt.");
+      setError(promptStashErrorMessage(saveError, "Could not stash this prompt."));
       setMenuOpen(true);
       return null;
     } finally {
@@ -570,7 +561,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         return;
       }
     } catch (restoreError) {
-      setError(restoreError instanceof Error ? restoreError.message : "Could not restore this prompt.");
+      setError(promptStashErrorMessage(restoreError, "Could not restore this prompt."));
     } finally {
       operationInFlightRef.current = false;
       setBusy(false);
@@ -604,7 +595,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       setHighlightedId((current) => current === entry.id ? null : current);
       return true;
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "Could not delete this prompt.");
+      setError(promptStashErrorMessage(deleteError, "Could not delete this prompt."));
       return false;
     } finally {
       operationInFlightRef.current = false;
@@ -797,23 +788,6 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
               {error}
             </div>
           ) : null}
-        </div>
-      ), document.body) : null}
-      {error && !menuOpen ? createPortal((
-        <div
-          role="alert"
-          className="fixed z-[120] flex w-[min(320px,calc(100vw-32px))] items-start gap-2 rounded-xl border border-red-300/[0.12] bg-[#171116]/98 px-3 py-2.5 font-sans text-[10.5px] leading-4 text-red-100/82 shadow-[0_18px_54px_-24px_rgba(0,0,0,0.95)] backdrop-blur-2xl"
-          style={{ left: errorNoticePosition.left, bottom: errorNoticePosition.bottom }}
-        >
-          <span className="min-w-0 flex-1">{error}</span>
-          <button
-            type="button"
-            aria-label="Dismiss stash error"
-            className="shrink-0 rounded px-1 text-red-100/45 transition-colors hover:bg-white/[0.05] hover:text-red-100/80"
-            onClick={() => setError(null)}
-          >
-            Close
-          </button>
         </div>
       ), document.body) : null}
     </div>

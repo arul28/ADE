@@ -839,6 +839,19 @@ extension WorkSessionDestinationView {
     syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
   }
 
+  /// Routes a standalone spawned chat back to its parent through the same
+  /// Work navigation request used by deeplinks and cross-surface opens.
+  func openParentSession() {
+    guard let parentId = composerChatSummary?.orchestrationParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !parentId.isEmpty
+    else { return }
+    syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+      sessionId: parentId,
+      laneId: (session ?? initialSession)?.laneId
+    )
+  }
+
   @MainActor
   func presentSessionRename() {
     sessionActionRenameText = (chatSummary?.title ?? session?.title ?? initialSession?.title ?? "")

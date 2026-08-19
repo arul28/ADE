@@ -1,4 +1,5 @@
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { assertWebRuntimePinRoutable, type RuntimePinArg as Pin } from "./runtimePinGuard";
 
 export type GitNamespaces = {
   git: AdeNamespace<"git">;
@@ -11,6 +12,40 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
 
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+  }
+
+  /**
+   * Every `git.*` and `diff.*` member takes a trailing runtime pin in the
+   * Electron contract, so each must refuse a pin this adapter cannot route
+   * rather than silently answering for the machine it happens to be bound to.
+   * `async` so an unroutable pin rejects the returned promise instead of
+   * throwing synchronously out of the caller's expression.
+   * (`conflicts.*` takes no pin in the preload contract, so it stays as-is.)
+   *
+   * The member name in the refusal is the action, which is the same string
+   * everywhere except the three `diff.*` members that call a `git.*` action —
+   * those go through {@link guardedAs}.
+   */
+  async function guardedAs<T>(
+    operation: string,
+    action: string,
+    args: unknown,
+    pin: Pin,
+    fallback: T,
+    idempotent = true,
+  ): Promise<T> {
+    assertWebRuntimePinRoutable(operation, pin, infra);
+    return await call<T>(action, args, fallback, idempotent);
+  }
+
+  function guarded<T>(
+    action: string,
+    args: unknown,
+    pin: Pin,
+    fallback: T,
+    idempotent = true,
+  ): Promise<T> {
+    return guardedAs(action, action, args, pin, fallback, idempotent);
   }
 
   const gitActionFallback = { operationId: "", preHeadSha: null, postHeadSha: null };
@@ -41,35 +76,42 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
 
   const git: Record<string, unknown> = {};
   for (const method of gitMethods) {
-    git[method] = (args: unknown) => call(`git.${method}`, args, gitActionFallback, false);
+    git[method] = (args: unknown, pin?: Pin) => guarded(`git.${method}`, args, pin, gitActionFallback, false);
   }
 
   Object.assign(git, {
-    generateCommitMessage: (args: unknown) => call("git.generateCommitMessage", args, { message: "", model: null }),
-    listRecentCommits: (args: unknown) => call("git.listRecentCommits", args, []),
-    listCommitFiles: (args: unknown) => call("git.listCommitFiles", args, []),
-    getCommitMessage: (args: unknown) => call("git.getCommitMessage", args, ""),
-    getCommit: (args: unknown) => call("git.getCommit", args, null),
-    isCommitInLaneHistory: (args: unknown) => call("git.isCommitInLaneHistory", args, false),
-    stashList: (args: unknown) => call("git.stashList", args, []),
-    stashClear: (args: unknown) => call("git.stashClear", args, gitActionFallback, false),
-    getSyncStatus: (args: unknown) => call("git.getSyncStatus", args, null),
-    getOriginRemote: (args: unknown) => call("git.getOriginRemote", args, { remoteUrl: null, branch: null }),
-    getOpenPrForBranch: (args: unknown) =>
-      call("git.getOpenPrForBranch", args, {
+    generateCommitMessage: (args: unknown, pin?: Pin) =>
+      guarded("git.generateCommitMessage", args, pin, { message: "", model: null }),
+    listRecentCommits: (args: unknown, pin?: Pin) => guarded("git.listRecentCommits", args, pin, []),
+    listCommitFiles: (args: unknown, pin?: Pin) => guarded("git.listCommitFiles", args, pin, []),
+    getCommitMessage: (args: unknown, pin?: Pin) => guarded("git.getCommitMessage", args, pin, ""),
+    getCommit: (args: unknown, pin?: Pin) => guarded("git.getCommit", args, pin, null),
+    isCommitInLaneHistory: (args: unknown, pin?: Pin) => guarded("git.isCommitInLaneHistory", args, pin, false),
+    stashList: (args: unknown, pin?: Pin) => guarded("git.stashList", args, pin, []),
+    stashClear: (args: unknown, pin?: Pin) => guarded("git.stashClear", args, pin, gitActionFallback, false),
+    getSyncStatus: (args: unknown, pin?: Pin) => guarded("git.getSyncStatus", args, pin, null),
+    getOriginRemote: (args: unknown, pin?: Pin) =>
+      guarded("git.getOriginRemote", args, pin, { remoteUrl: null, branch: null }),
+    getOpenPrForBranch: (args: unknown, pin?: Pin) =>
+      guarded("git.getOpenPrForBranch", args, pin, {
         prUrl: null,
         prNumber: null,
         title: null,
         headRefName: null,
       }),
-    getConflictState: (args: unknown) => call("git.getConflictState", laneRecord(args), { state: "clean" }),
-    rebaseContinue: (args: unknown) => call("git.rebaseContinue", laneRecord(args), gitActionFallback, false),
-    rebaseAbort: (args: unknown) => call("git.rebaseAbort", laneRecord(args), gitActionFallback, false),
-    mergeContinue: (args: unknown) => call("git.mergeContinue", laneRecord(args), gitActionFallback, false),
-    mergeAbort: (args: unknown) => call("git.mergeAbort", laneRecord(args), gitActionFallback, false),
-    listBranches: (args: unknown) => call("git.listBranches", args, []),
-    getUserIdentity: (args: unknown) =>
-      call("git.getUserIdentity", args, {
+    getConflictState: (args: unknown, pin?: Pin) =>
+      guarded("git.getConflictState", laneRecord(args), pin, { state: "clean" }),
+    rebaseContinue: (args: unknown, pin?: Pin) =>
+      guarded("git.rebaseContinue", laneRecord(args), pin, gitActionFallback, false),
+    rebaseAbort: (args: unknown, pin?: Pin) =>
+      guarded("git.rebaseAbort", laneRecord(args), pin, gitActionFallback, false),
+    mergeContinue: (args: unknown, pin?: Pin) =>
+      guarded("git.mergeContinue", laneRecord(args), pin, gitActionFallback, false),
+    mergeAbort: (args: unknown, pin?: Pin) =>
+      guarded("git.mergeAbort", laneRecord(args), pin, gitActionFallback, false),
+    listBranches: (args: unknown, pin?: Pin) => guarded("git.listBranches", args, pin, []),
+    getUserIdentity: (args: unknown, pin?: Pin) =>
+      guarded("git.getUserIdentity", args, pin, {
         name: null,
         email: null,
         source: "unsupported",
@@ -77,9 +119,12 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
   });
 
   const diff: Record<string, unknown> = {
-    getChanges: (args: unknown) => call("git.getChanges", args, { files: [] }),
-    getFile: (args: unknown) => call("git.getFile", args, null),
-    getFilePatch: (args: unknown) => call("git.getFilePatch", args, null),
+    getChanges: (args: unknown, pin?: Pin) =>
+      guardedAs("diff.getChanges", "git.getChanges", args, pin, { files: [] }),
+    getFile: (args: unknown, pin?: Pin) =>
+      guardedAs("diff.getFile", "git.getFile", args, pin, null),
+    getFilePatch: (args: unknown, pin?: Pin) =>
+      guardedAs("diff.getFilePatch", "git.getFilePatch", args, pin, null),
   };
 
   const conflicts: Record<string, unknown> = {

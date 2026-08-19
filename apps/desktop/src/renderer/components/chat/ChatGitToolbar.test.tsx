@@ -179,6 +179,23 @@ describe("ChatGitToolbar", () => {
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
 
+  it("hides a previous-branch PR from the legacy chat badge", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-old-branch",
+      laneId: "lane-1",
+      githubPrNumber: 91,
+      githubUrl: "https://github.com/acme/ade/pull/91",
+      title: "Merged old branch",
+      state: "merged",
+      headBranch: "old-branch",
+    } as any);
+
+    renderToolbar();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "PR" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /#91/ })).toBeNull();
+  });
+
   // The bug: every PR read routed to the machine the project TAB is bound to, so
   // a chat whose lane lives on another machine found no PR and showed the bare
   // "PR" create button for a session that already had one.
@@ -214,9 +231,26 @@ describe("ChatGitToolbar", () => {
     // lib/lanePrBadge.test.ts.)
     expect(await screen.findByRole("button", { name: /#91/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "PR" })).toBeNull();
-    // The dirty-file read is NOT pin-aware, so for a foreign lane it would only
-    // ask the bound machine about a lane it does not have.
+    // A remote machine is still skipped for the dirty count: it is a header
+    // decoration and not worth a bridge round-trip.
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
+  });
+
+  // The dirty count used to be skipped for ANY pinned lane, because
+  // `diff.getChanges` could only ask the bound machine about a lane it does not
+  // have. It is pin-aware now, so a foreign local checkout gets its count.
+  it("reads the dirty count from the lane's own machine when the pin is local", async () => {
+    const runtimePin = {
+      kind: "local",
+      key: "local:/repo-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    };
+
+    renderToolbar({ runtimePin });
+
+    await waitFor(() => expect(window.ade.diff.getChanges)
+      .toHaveBeenCalledWith({ laneId: "lane-1" }, runtimePin));
   });
 
   // CodeRabbit on #1012: creating a PR is impossible for a lane on another

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { isChatToolType } from "../../lib/sessions";
-import { sessionCanonicalUiState } from "../../lib/terminalAttention";
+import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
 import {
   isSessionSnoozed,
   resolveSnoozePresets,
@@ -195,9 +195,7 @@ function SessionContextMenuPanel({
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
   const canonicalPhase = sessionCanonicalUiState(session).phase;
-  const isActivelyRunning = canonicalPhase === "starting"
-    || canonicalPhase === "running"
-    || canonicalPhase === "stale";
+  const isActivelyRunning = sessionIsMidFlight(session);
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"
     || isChat

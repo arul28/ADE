@@ -582,7 +582,7 @@ struct HubScreen: View {
     merged.runningCount = merged.chats.filter(\.countsTowardRunning).count
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
-    return merged
+    return merged.excludingIdentityChats()
   }
 
   private func mergedHubChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
@@ -603,6 +603,7 @@ struct HubScreen: View {
     merged.model = nonEmpty(remote.model) ?? local.model
     merged.toolType = nonEmpty(remote.toolType) ?? local.toolType
     merged.chatSessionId = nonEmpty(remote.chatSessionId) ?? local.chatSessionId
+    merged.identityKey = nonEmpty(remote.identityKey) ?? local.identityKey
     merged.applyLocalSnoozeOverlay(local)
     return merged
   }

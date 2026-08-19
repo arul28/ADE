@@ -38,6 +38,9 @@ type MachineRow = {
   device_type: string | null;
   pubkey: string | null;
   reachable_endpoints: string | null;
+  power: string | null;
+  sleep_state: string | null;
+  sleep_state_at: number | null;
   last_seen_at: number | null;
   created_at: number | null;
 };
@@ -51,7 +54,8 @@ type MachineRow = {
  * list.
  */
 const MACHINE_ROW_COLUMNS = `user_id, machine_key, device_id, name, custom_name, platform, device_type,
-           pubkey, reachable_endpoints, last_seen_at, created_at`;
+           pubkey, reachable_endpoints, power, sleep_state, sleep_state_at,
+           last_seen_at, created_at`;
 
 type ReachableEndpoint = {
   kind: "lan" | "tailnet" | "relay";
@@ -59,6 +63,32 @@ type ReachableEndpoint = {
   host?: string;
   port?: number;
 };
+
+/**
+ * A machine's power state, as it reported it.
+ *
+ * Every field is independently nullable and the whole object is optional: a
+ * host built before this existed sends none of it, and a machine with no
+ * battery (a desktop, a server) sends `batteryPercent: null` rather than a
+ * zero. Reading "0%" off a Mac Studio would be worse than reading nothing.
+ */
+type MachinePowerState = {
+  batteryPercent: number | null;
+  charging: boolean | null;
+  onExternalPower: boolean | null;
+};
+
+/**
+ * What the machine last said about being awake.
+ *
+ * "asleep" is a STATED fact — a host announces its suspend in the beat before
+ * the machine goes dark — which is what lets a client distinguish a sleeping
+ * machine from an unreachable one instead of showing "Connected" to a laptop
+ * whose lid has been shut for an hour. Clients still infer sleep from recent
+ * silence when this is null, because the pre-suspend beat is best-effort by
+ * nature.
+ */
+type MachineSleepStateValue = "awake" | "asleep";
 
 type RegisterInput = {
   machineKey: string;
@@ -83,6 +113,9 @@ type RegisterInput = {
   deviceType: string;
   pubkey: string | null;
   reachableEndpoints: ReachableEndpoint[];
+  power: MachinePowerState | null;
+  sleepState: MachineSleepStateValue | null;
+  sleepStateAt: number | null;
   retainRelayEndpoints: boolean;
   /**
    * Set only for a deliberate, user-initiated link — never on the periodic
@@ -118,6 +151,10 @@ type MachineRecord = {
   deviceType: string | null;
   pubkey: string | null;
   reachableEndpoints: ReachableEndpoint[];
+  power: MachinePowerState | null;
+  sleepState: MachineSleepStateValue | null;
+  /** Epoch ms at which `sleepState` last changed on the machine. */
+  sleepStateAt: number | null;
   lastSeenAt: number | null;
   createdAt: number | null;
 };
@@ -236,6 +273,44 @@ function parseReachableEndpoints(value: unknown): ReachableEndpoint[] | null {
   return endpoints;
 }
 
+function optionalBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+/**
+ * Power is advisory decoration on a record whose job is reachability, so every
+ * malformed field degrades to null instead of rejecting the machine. A host
+ * that reports a nonsense battery level still has to stay in the directory —
+ * dropping it would take a working machine off the user's roster over a cosmetic
+ * value.
+ */
+function parseMachinePower(value: unknown): MachinePowerState | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) return null;
+  const rawPercent = value.batteryPercent;
+  const batteryPercent = typeof rawPercent === "number"
+    && Number.isFinite(rawPercent)
+    && rawPercent >= 0
+    && rawPercent <= 100
+    ? Math.round(rawPercent)
+    : null;
+  const charging = optionalBoolean(value.charging);
+  const onExternalPower = optionalBoolean(value.onExternalPower);
+  if (batteryPercent === null && charging === null && onExternalPower === null) return null;
+  return { batteryPercent, charging, onExternalPower };
+}
+
+function parseSleepState(value: unknown): MachineSleepStateValue | null {
+  return value === "awake" || value === "asleep" ? value : null;
+}
+
+/** Epoch ms, or null. Non-finite, negative, and non-integer values are noise. */
+function parseSleepStateAt(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : null;
+}
+
 function parseRegisterInput(value: unknown): RegisterInput | null {
   if (!isRecord(value)) return null;
   const machineKey = requiredString(value, "machineKey");
@@ -246,6 +321,9 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
   const deviceType = requiredString(value, "deviceType");
   const pubkey = optionalString(value, "pubkey");
   const reachableEndpoints = parseReachableEndpoints(value.reachableEndpoints);
+  const power = parseMachinePower(value.power);
+  const sleepState = parseSleepState(value.sleepState);
+  const sleepStateAt = parseSleepStateAt(value.sleepStateAt);
   const retainRelayEndpoints = value.retainRelayEndpoints ?? false;
   const pairing = value.pairing ?? false;
   const pairingGrant = optionalString(value, "pairingGrant");
@@ -277,6 +355,11 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
     deviceType,
     pubkey,
     reachableEndpoints,
+    power,
+    sleepState,
+    // A sleep state with no timestamp is still usable — the register's own
+    // `last_seen_at` bounds it — so default rather than discard it.
+    sleepStateAt: sleepState ? sleepStateAt ?? Date.now() : null,
     retainRelayEndpoints,
     pairing,
     pairingGrant,
@@ -306,7 +389,17 @@ function parseStoredEndpoints(value: string | null): ReachableEndpoint[] {
   }
 }
 
+function parseStoredPower(value: string | null): MachinePowerState | null {
+  if (!value) return null;
+  try {
+    return parseMachinePower(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
 function machineRecord(row: MachineRow): MachineRecord {
+  const sleepState = parseSleepState(row.sleep_state);
   return {
     machineKey: row.machine_key,
     deviceId: row.device_id,
@@ -316,6 +409,9 @@ function machineRecord(row: MachineRow): MachineRecord {
     deviceType: row.device_type,
     pubkey: row.pubkey,
     reachableEndpoints: parseStoredEndpoints(row.reachable_endpoints),
+    power: parseStoredPower(row.power),
+    sleepState,
+    sleepStateAt: sleepState ? parseSleepStateAt(row.sleep_state_at) : null,
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
   };
@@ -502,8 +598,9 @@ async function upsertMachine(
   await env.DB.prepare(`
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
-      reachable_endpoints, last_seen_at, created_at, hardware_id
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      reachable_endpoints, power, sleep_state, sleep_state_at,
+      last_seen_at, created_at, hardware_id
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict(user_id, machine_key) do update set
       device_id = excluded.device_id,
       -- coalesce, and not excluded.hardware_id: an anchor is optional on every
@@ -515,6 +612,12 @@ async function upsertMachine(
       platform = excluded.platform,
       device_type = excluded.device_type,
       pubkey = excluded.pubkey,
+      -- A host too old to report power omits these, and must not blank out what
+      -- a newer one already stored. Coalescing also means a single dropped
+      -- field on one heartbeat cannot erase the machine's known state.
+      power = coalesce(excluded.power, machines.power),
+      sleep_state = coalesce(excluded.sleep_state, machines.sleep_state),
+      sleep_state_at = coalesce(excluded.sleep_state_at, machines.sleep_state_at),
       reachable_endpoints = case
         when ? = 1
           and json_valid(machines.reachable_endpoints)
@@ -551,6 +654,9 @@ async function upsertMachine(
     input.deviceType,
     input.pubkey,
     JSON.stringify(input.reachableEndpoints),
+    input.power ? JSON.stringify(input.power) : null,
+    input.sleepState,
+    input.sleepStateAt,
     args.nowMs,
     args.nowMs,
     input.hardwareId,

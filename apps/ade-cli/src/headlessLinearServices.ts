@@ -17,6 +17,7 @@ import type { createLinearIssueTracker } from "../../desktop/src/main/services/c
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { resolveSmartLinkPreview } from "../../desktop/src/main/services/chat/smartLinkPreviewService";
+import { attachGitHubServiceHealth } from "../../desktop/src/main/services/github/githubStatusPage";
 import type { SmartLinkPreview } from "../../desktop/src/shared/smartLinks";
 import {
   getModelById,
@@ -36,6 +37,7 @@ import type {
   GitHubCredentialVerification,
   GitHubRepoRef,
   GitHubRateLimitState,
+  GitHubRequestBudget,
   GitHubStatus,
   CtoAttentionState,
 } from "../../desktop/src/shared/types";
@@ -92,6 +94,7 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubRequestBudget,
   githubCredentialNonRateLimitCooldown,
   githubCredentialRateLimitCooldown,
   githubCredentialInventoryKey,
@@ -621,6 +624,51 @@ function parseNextGitHubLink(linkHeader: string | null): string | null {
 }
 
 const GITHUB_API_TIMEOUT_MS = 20_000;
+const GITHUB_API_BODY_TIMEOUT_MS = 30_000;
+
+function githubTimeoutError(phase: "request" | "response body"): Error {
+  return new Error(
+    `GitHub API ${phase} timed out. Check network access on this machine.`,
+  );
+}
+
+/**
+ * Bound the body read on the same controller that owns the stream.
+ *
+ * The header timer is cleared the moment headers arrive, so without this a
+ * response whose body stalls mid-stream never settles: the caller's
+ * transport-failure record never runs, and the poller tick that awaited it
+ * never completes either. The desktop owner has always bounded this phase; the
+ * two owners have to agree, because the daemon is the one that actually polls
+ * in a packaged build.
+ */
+function boundGitHubResponseBody(
+  response: Response,
+  controller: AbortController,
+  release: () => void,
+): Response {
+  const readText = response.text.bind(response);
+  let bodyTimedOut = false;
+  Object.defineProperty(response, "text", {
+    configurable: true,
+    value: async (): Promise<string> => {
+      const timer = setTimeout(() => {
+        bodyTimedOut = true;
+        controller.abort();
+      }, GITHUB_API_BODY_TIMEOUT_MS);
+      try {
+        return await readText();
+      } catch (error) {
+        if (bodyTimedOut) throw githubTimeoutError("response body");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        release();
+      }
+    },
+  });
+  return response;
+}
 
 async function fetchGitHub(
   input: string | URL,
@@ -632,20 +680,25 @@ async function fetchGitHub(
   const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);
   if (upstreamSignal?.aborted) abortFromUpstream();
   else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
+  const release = (): void => {
+    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
+  };
   const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  let response: Response;
   try {
-    return await fetchImpl(input, { ...init, signal: controller.signal });
+    response = await fetchImpl(input, { ...init, signal: controller.signal });
   } catch (error) {
+    release();
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(
-        "GitHub API request timed out. Check network access on this machine.",
-      );
+      throw githubTimeoutError("request");
     }
     throw error;
   } finally {
     clearTimeout(timer);
-    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
   }
+  // `release` now runs when the body settles, not here — the upstream abort has
+  // to stay wired through the body phase for it to be cancellable at all.
+  return boundGitHubResponseBody(response, controller, release);
 }
 
 export function createHeadlessGitHubService(
@@ -1237,6 +1290,26 @@ export function createHeadlessGitHubService(
           releaseConditionalRequest = conditional.release;
         }
       }
+      // A request that never got an answer from GitHub — a hang, a timeout, a
+      // DNS or TLS failure, a body that stalls mid-stream — used to throw
+      // straight out of here recording nothing. That is the outage shape this
+      // lane targets, and with no record the request budget reported no failure
+      // kind, so the caller's ladder could not climb past its flat unclassified
+      // rung. Recorded with a null rate limit so it cannot clobber the real
+      // quota numbers, and the kinds this produces (`network` / `unknown`)
+      // carry no cooldown, so it can never park a credential the user's next
+      // action needs.
+      const recordTransportFailure: (error: unknown) => never = (error) => {
+        recordGithubOperationFailure(
+          candidate,
+          classifyGitHubAuthFailure({
+            message: error instanceof Error ? error.message : String(error),
+          }).authFailure,
+          null,
+        );
+        throw error;
+      };
+
       let response: Response;
       try {
         response = await requestGitHub(url, {
@@ -1244,6 +1317,8 @@ export function createHeadlessGitHubService(
           headers,
           body: args.body == null ? undefined : JSON.stringify(args.body),
         });
+      } catch (error) {
+        recordTransportFailure(error);
       } finally {
         releaseConditionalRequest?.();
       }
@@ -1259,9 +1334,13 @@ export function createHeadlessGitHubService(
           method: args.method,
           headers,
           body: args.body == null ? undefined : JSON.stringify(args.body),
-        });
+        }).catch(recordTransportFailure);
       }
-      const text = await response.text();
+      // The body is read after the header timer is cleared, so a socket error
+      // mid-body surfaces here rather than above — same shape, same record.
+      // (Unlike the desktop owner, this transport arms no body timeout, so a
+      // body that stalls without erroring simply never settles.)
+      const text = await response.text().catch(recordTransportFailure);
       let data: unknown = text;
       try {
         data = text.trim().length ? JSON.parse(text) : {};
@@ -1883,26 +1962,46 @@ export function createHeadlessGitHubService(
     }
   };
 
+  const resolveStatus = async (opts: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
+    const forceRefresh = opts.forceRefresh === true;
+    if (forcedStatusLookupInFlight?.generation === statusLookupGeneration) {
+      return await forcedStatusLookupInFlight.promise;
+    }
+    if (!forceRefresh) {
+      return await performStatusLookup(false, statusLookupGeneration);
+    }
+
+    invalidateStatusCache();
+    const generation = statusLookupGeneration;
+    const lookup = performStatusLookup(true, generation);
+    forcedStatusLookupInFlight = { generation, promise: lookup };
+    try {
+      return await lookup;
+    } finally {
+      if (forcedStatusLookupInFlight?.promise === lookup) forcedStatusLookupInFlight = null;
+    }
+  };
+
   service = {
     verifyStoredPat,
     async getStatus(opts: { forceRefresh?: boolean } = {}) {
-      const forceRefresh = opts.forceRefresh === true;
-      if (forcedStatusLookupInFlight?.generation === statusLookupGeneration) {
-        return await forcedStatusLookupInFlight.promise;
-      }
-      if (!forceRefresh) {
-        return await performStatusLookup(false, statusLookupGeneration);
-      }
-
-      invalidateStatusCache();
-      const generation = statusLookupGeneration;
-      const lookup = performStatusLookup(true, generation);
-      forcedStatusLookupInFlight = { generation, promise: lookup };
-      try {
-        return await lookup;
-      } finally {
-        if (forcedStatusLookupInFlight?.promise === lookup) forcedStatusLookupInFlight = null;
-      }
+      // Corroborate a failing status against githubstatus.com, exactly as the
+      // desktop in-process service does. The renderer reaches GitHub through
+      // whichever service owns the project, so applying this to only one of
+      // them would leave the outage attribution dead in the shipping,
+      // runtime-backed build. Wrapped at this single exit rather than inside
+      // `resolveStatus` so a cache hit still gets fresh corroboration — and so
+      // a future early return cannot skip it.
+      // `options.fetchImpl` is threaded through deliberately: it is the same
+      // seam every other GitHub call in this service uses, so a test that
+      // provokes a 5xx/unclassified failure stubs the status page instead of
+      // reaching the real githubstatus.com from the unit suite. Passed raw
+      // rather than via `requestGitHub`, which would replace the status-page
+      // lookup's own abort signal and defeat its timeout.
+      return await attachGitHubServiceHealth(await resolveStatus(opts), {
+        logger,
+        fetchImpl: options.fetchImpl,
+      });
     },
     async getBackgroundRequestPauseUntilMs() {
       const inventory = await readCredentialInventoryAsync();
@@ -1910,6 +2009,14 @@ export function createHeadlessGitHubService(
         Date.now(),
         githubOperationCredentialCandidates(inventory.candidates, "read"),
       );
+    },
+    /**
+     * Runtime-owned twin of the desktop service's budget read. The daemon owns
+     * GitHub access for runtime-bound windows, so implementing this only on the
+     * desktop side would leave the shipping build's poll governor un-gated.
+     */
+    async getRequestBudget(): Promise<GitHubRequestBudget> {
+      return githubRequestBudget();
     },
     async getRemoteStatus() {
       const origin = await readGitOriginAsync(projectRoot);

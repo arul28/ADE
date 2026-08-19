@@ -337,7 +337,27 @@ Shared types and IPC:
   SDK renames a type. Liveness is in-memory and deliberately empty after a
   restart — orphaned background work is not live work — and it sits BELOW
   failure, stopped, settled and stale in the precedence order, so a lingering
-  "Working" can never mask a failed session.
+  "Working" can never mask a failed session. The summary also carries
+  `backgroundWorkSince`, the instant the live set last went from empty to
+  non-empty, so the promoted row's elapsed counts from when the work started
+  rather than from a `lastActivityAt` that every provider frame refreshes. See
+  [ui-surfaces](ui-surfaces.md) for the three anchors and the shared
+  `sessionElapsedAnchor` helper. The promotion does not make the runtime behind
+  it immortal: once a background-only Claude runtime has been silent for
+  `SESSION_STALE_AFTER_MS` — the same threshold at which this module stops
+  calling the session live and starts calling it `stale` — the idle sweep
+  reclaims it anyway. The backstop reuses this constant on purpose so the two
+  cannot be set to different bars (each still reads its own clock: this module
+  the persisted `lastActivityAt`, the sweep the runtime's in-memory activity
+  stamp). See [chat](../chat/README.md).
+  Separately, `runtimeProcesses` (`RuntimeProcessSummary[]` — `pid` plus the ISO
+  `startedAt`) reports the agent SDK processes a session currently owns, sourced
+  from `claudeSubprocessReaper.recordsForSession` and projected by
+  `chatSessionProjection`. It is in-memory and host-local — empty after a
+  restart, never a liveness claim about work that escaped ADE's process tree —
+  and it carries no command lines or environments. `ade session show` is its
+  consumer; it exists so "this chat is holding a warm agent process open" is
+  answerable without dropping to `ps`.
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
   `"settled"` behaves like a declared settle, and `"active"` is an explicit
@@ -672,8 +692,8 @@ Renderer surfaces:
   same iOS / App Control / browser / attachment / draft
   payloads formatted into prompt text by
   `apps/desktop/src/renderer/lib/visualContextFormatting.ts` and
-  written into the PTY through `window.ade.pty.write` as a
-  bracketed-paste envelope. After each PTY insertion the sidebar
+  written into the PTY through `window.ade.terminal.write(..., runtimePin)`
+  as a bracketed-paste envelope. After each PTY insertion the sidebar
   dispatches `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
   (`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the
   matching `TerminalView` can briefly highlight the new content. When
@@ -685,6 +705,33 @@ Renderer surfaces:
   current chat, draft, or CLI target. The tab strip must stay reachable
   when the Work pane is narrow: labels collapse to accessible icon
   buttons while preserving stable hit targets and tooltips.
+
+  The pane follows the **chat's** machine, not the tab's. `runtimePin`
+  (supplied by `TerminalsPage` from `activeWorkSessionRuntimePin`) names the
+  machine the active Work session runs on; `null` means the tab's bound
+  machine. A chat on another machine gets that machine's git, terminals, and
+  files. Lanes resolve against `useLanesForPin(runtimePin)` — the pinned
+  machine's slice of the cross-machine lane union — because a foreign chat's
+  lane is absent from the tab-bound `lanes` array, which left the worktree
+  path (and therefore the iOS / App Control project root) null; the same
+  scoped list feeds lane-mismatch messages. Each panel gets a machine-keyed
+  React `key` (`work-git:<pinKey>:<laneId>`, `work-terminal:…`,
+  `work-files:…`, `work-ios:…`, `work-appcontrol:…`, `work-browser:…`) so a
+  foreign machine's state cannot paint into the machine you just switched to,
+  and diff selection resets on a pin change as well as a lane change. Pinned
+  calls have no local fallback, so a pinned machine that is known offline
+  (`useMachineEntryForBinding`) gets one plain line naming it
+  ("<machine> is offline.", via `machineNameForBinding`) on the git and
+  terminal tabs and skipped App Control / iOS status probes, instead of a
+  wall of rejected IPC. Terminal ownership is resolved from the active
+  session itself — any chat session, or any running agent-CLI session with a
+  `ptyId` and an insertable tool type, including one on another machine —
+  falling back to the `contextTarget` sessionId only when no session is
+  active. Context insertion into a PTY is machine-addressed and works
+  cross-machine; only **chat** insertion fails closed for a foreign machine
+  ("Tool context insertion is not available for chats on another machine."),
+  because it travels as a DOM window event the chat pane consumes and that
+  path carries no machine.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter, and two quiet tails: Snoozed and
@@ -1327,7 +1374,10 @@ Renderer surfaces:
   them, and invalidation removes in-flight entries so a post-mutation refresh
   cannot reuse a pre-mutation snapshot. Promise identity guards prevent a
   superseded response from repopulating the cache.
-- `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers
+- `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers,
+  `isChatToolType`, and `isPtyContextInsertableToolType` (claude / codex /
+  cursor-cli / droid / opencode; shells host terminals but are not a
+  context-insertion target), shared by `TerminalsPage` and `WorkSidebar`,
   plus `getStaleRunningCliSessionAgeHours`, a separate process-cleanup
   heuristic that returns a rounded age when a non-run, non-chat session
   has been `running` without output for at least
