@@ -20,10 +20,8 @@ import {
 import type { PublishProjectResult } from "../../../shared/types";
 import { extractCodeFromMessage } from "../../lib/codedError";
 import { extractError } from "../../lib/format";
-import {
-  GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
-  describeGithubPatVerification,
-} from "../../lib/githubIntegrationStatus";
+import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { fadeScale } from "../../lib/motion";
 import {
   COLORS,

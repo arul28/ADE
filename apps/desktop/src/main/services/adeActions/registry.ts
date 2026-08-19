@@ -148,56 +148,14 @@ import {
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 
-export const ADE_ACTION_DOMAIN_NAMES = [
-  "account",
-  "attention",
-  "lane",
-  "git",
-  "diff",
-  "conflicts",
-  "pr",
-  "tests",
-  "chat",
-  "keybindings",
-  "ai",
-  "onboarding",
-  "automation_planner",
-  "cto_state",
-  "cto_memory",
-  "session",
-  "operation",
-  "ade_project",
-  "project_config",
-  "project_secret",
-  "linear_credentials",
-  "linear_oauth",
-  "linear_issue_tracker",
-  "github",
-  "feedback",
-  "usage",
-  "analytics",
-  "storage",
-  "budget",
-  "update",
-  "file",
-  "pty",
-  "terminal",
-  "layout",
-  "tiling_tree",
-  "graph_state",
-  "computer_use_artifacts",
-  "ios_simulator",
-  "app_control",
-  "built_in_browser",
-  "automations",
-  "review",
-  "issue",
-  "orchestration",
-  "search",
-  "external-sessions",
-] as const;
+// The names themselves live in `./domains`, which has no imports, so consumers
+// that need only the vocabulary (the analytics policy) do not have to load this
+// module's whole service graph to get it. Re-exported here because this is
+// where every existing caller looks for them.
+import type { AdeActionDomain } from "./domains";
 
-export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
+export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
+export type { AdeActionDomain } from "./domains";
 
 export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "evaluator";
 

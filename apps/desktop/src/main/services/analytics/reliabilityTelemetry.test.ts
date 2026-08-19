@@ -3,7 +3,6 @@ import { createSyncAccountDirectoryHealth } from "../../../shared/types";
 import type { SyncAccountDirectoryHealth, SyncRoleSnapshot } from "../../../shared/types";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
-  brainActionDomainFromIpcArgs,
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
   machineRegisterRefusalCode,
@@ -21,32 +20,6 @@ const refused = (
   lastHttpStatus: status,
   lastHttpReason: reason,
 }));
-
-describe("brainActionDomainFromIpcArgs", () => {
-  it("reads the domain the renderer already sent", () => {
-    expect(brainActionDomainFromIpcArgs([{
-      rootPath: "/Users/alice/secret-project",
-      request: { domain: " lane ", action: "create" },
-    }])).toBe("lane");
-  });
-
-  it("returns null for anything malformed rather than guessing", () => {
-    for (const args of [
-      [],
-      [null],
-      ["not-an-object"],
-      [[{ request: { domain: "lane" } }]],
-      [{}],
-      [{ request: null }],
-      [{ request: [] }],
-      [{ request: { action: "create" } }],
-      [{ request: { domain: "   " } }],
-      [{ request: { domain: 7 } }],
-    ]) {
-      expect(brainActionDomainFromIpcArgs(args)).toBeNull();
-    }
-  });
-});
 
 describe("brainActionErrorCode", () => {
   it("takes the code the brain attached and leaves the message behind", () => {
@@ -96,8 +69,17 @@ describe("brainActionErrorCode", () => {
 describe("machineRegisterRefusalCode", () => {
   it("recognises both refusals the directory names", () => {
     expect(machineRegisterRefusalCode(refused(403, "machine_revoked"))).toBe("machine_revoked");
-    expect(machineRegisterRefusalCode(refused(401, "pairing_authentication_required")))
+    expect(machineRegisterRefusalCode(refused(403, "pairing_authentication_required")))
       .toBe("pairing_authentication_required");
+  });
+
+  it("is not fooled by a 401, which is an auth failure and not a refusal", () => {
+    // The directory answers a register refusal with 403. A 401 means the token
+    // this machine presented was not accepted — a different failure with a
+    // different repair, which `ade_publish_failing` already carries.
+    expect(machineRegisterRefusalCode(refused(401, "pairing_authentication_required")))
+      .toBeNull();
+    expect(machineRegisterRefusalCode(refused(401, "token expired"))).toBeNull();
   });
 
   it("reports an unnamed refusal as `other` instead of the server's prose", () => {
@@ -137,7 +119,7 @@ describe("createMachineRegisterRefusalObserver", () => {
     const onRefused = vi.fn();
     const observe = createMachineRegisterRefusalObserver(onRefused);
 
-    observe(refused(401, "pairing_authentication_required"));
+    observe(refused(403, "pairing_authentication_required"));
     observe(refused(403, "machine_revoked"));
 
     expect(onRefused.mock.calls.map(([code]) => code))

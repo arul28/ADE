@@ -127,15 +127,19 @@ function uploadRequest(args: {
   body: string;
   contentType?: string;
   token?: string;
-  ip?: string;
+  /** `null` omits the header entirely — what a request that never crossed Cloudflare looks like. */
+  ip?: string | null;
   url?: string;
+  headers?: Record<string, string>;
 }): Request {
+  const ip = args.ip === undefined ? nextIp() : args.ip;
   return new Request(args.url ?? UPLOAD_URL, {
     method: "POST",
     headers: {
       "content-type": args.contentType ?? "application/json",
-      "cf-connecting-ip": args.ip ?? nextIp(),
+      ...(ip ? { "cf-connecting-ip": ip } : {}),
       ...(args.token ? { authorization: `Bearer ${args.token}` } : {}),
+      ...(args.headers ?? {}),
     },
     body: args.body,
   });
@@ -222,6 +226,94 @@ describe("diagnostics upload route", () => {
     );
     expect(response.status).toBe(401);
     expect(env.DIAGNOSTICS.keys()).toHaveLength(0);
+  });
+
+  it("refuses an Authorization header it cannot parse instead of downgrading it", async () => {
+    const env = makeEnv();
+    // A client that believes it is signed in and is not. Storing this anonymously
+    // would hide the broken sign-in from the one user in a position to report it.
+    const response = await handleDiagnosticsRequest(
+      uploadRequest({
+        body: JSON.stringify({ report: REPORT }),
+        headers: { authorization: "Token abc123" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(401);
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(0);
+  });
+
+  it("answers 503, not 401, when this Worker has no Clerk configuration", async () => {
+    // A deployment fault, not a bad token: 401 would send the user to sign in
+    // again forever. The account routes classify it the same way.
+    const env = makeEnv({ CLERK_JWKS_URL: "" });
+    const response = await handleDiagnosticsRequest(
+      uploadRequest({ body: JSON.stringify({ report: REPORT }), token: await mintToken() }),
+      env,
+    );
+    expect(response.status).toBe(503);
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(0);
+  });
+
+  it("refuses a cross-site browser upload but not ADE's own renderer", async () => {
+    const env = makeEnv();
+    const hostile = await handleDiagnosticsRequest(
+      uploadRequest({
+        body: JSON.stringify({ report: REPORT }),
+        headers: { "sec-fetch-site": "cross-site", origin: "https://evil.test" },
+      }),
+      env,
+    );
+    expect(hostile.status).toBe(403);
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(0);
+
+    // Electron's renderer is cross-site to this Worker too: `file://` in a
+    // packaged build sends `Origin: null`, development sends loopback. Both are
+    // the real "Send to ADE" button and neither may be caught by this.
+    for (const origin of ["null", "http://localhost:5173"]) {
+      const renderer = await handleDiagnosticsRequest(
+        uploadRequest({
+          body: JSON.stringify({ report: REPORT }),
+          headers: { "sec-fetch-site": "cross-site", origin },
+        }),
+        env,
+      );
+      expect(renderer.status).toBe(200);
+    }
+    // The CLI and every other non-browser sender set no fetch-metadata header.
+    const cli = await handleDiagnosticsRequest(
+      uploadRequest({ body: JSON.stringify({ report: REPORT }) }),
+      env,
+    );
+    expect(cli.status).toBe(200);
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(3);
+  });
+
+  it("never lets a caller-set forwarding header buy a fresh quota", async () => {
+    // Off Cloudflare there is no trustworthy address, so everyone shares one
+    // bucket. Trusting `x-forwarded-for` would make the quota opt-out.
+    const env = makeEnv();
+    for (let attempt = 0; attempt < MAX_DIAGNOSTIC_UPLOADS_PER_DAY; attempt += 1) {
+      const accepted = await handleDiagnosticsRequest(
+        uploadRequest({
+          body: JSON.stringify({ report: REPORT }),
+          ip: null,
+          headers: { "x-forwarded-for": `198.51.100.${attempt}` },
+        }),
+        env,
+      );
+      expect(accepted.status).toBe(200);
+    }
+    const refused = await handleDiagnosticsRequest(
+      uploadRequest({
+        body: JSON.stringify({ report: REPORT }),
+        ip: null,
+        headers: { "x-forwarded-for": "198.51.100.99" },
+      }),
+      env,
+    );
+    expect(refused.status).toBe(429);
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(MAX_DIAGNOSTIC_UPLOADS_PER_DAY);
   });
 
   it("accepts a text/plain body with query metadata", async () => {

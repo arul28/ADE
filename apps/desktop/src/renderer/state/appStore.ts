@@ -7,7 +7,7 @@ import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { parseCodedErrorMessage } from "../lib/codedError";
-import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
+import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
@@ -1393,6 +1393,32 @@ function withPreservedLaneStatus(
     : lane;
 }
 
+/**
+ * What to say instead of the brain's own words, per coded failure.
+ *
+ * A code is listed here only when this screen can say something the brain's
+ * message does not. `storage_read_failed` is deliberately ABSENT: the brain
+ * builds that message with `storageUnreadableMessage`, which names the actual
+ * path that could not be read and the cloud provider holding it, and this file
+ * used to replace it with a paraphrase that named neither. An unlisted code
+ * still gets the generic line below, and no code at all falls through to the
+ * brain's message.
+ */
+const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = {
+  disk_full:
+    "Your computer ran out of storage while ADE was saving project data. Free up space, then try again.",
+  brain_crash_looping: "ADE's background service needs a repair before this project can open.",
+  migration_incomplete: "ADE's background service needs a repair before this project can open.",
+  migration_unknown_state: "ADE's background service needs a repair before this project can open.",
+  insufficient_headroom: "ADE's background service could not open this project.",
+  db_integrity: "ADE's background service could not open this project.",
+  brain_not_installed: "ADE's background service could not open this project.",
+  socket_stale_no_owner: "ADE's background service could not open this project.",
+  socket_owned_by_other: "ADE's background service could not open this project.",
+};
+
+const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";
+
 function formatProjectTransitionError(
   kind: "opening" | "switching" | "closing",
   error: unknown,
@@ -1421,25 +1447,9 @@ function formatProjectTransitionError(
     };
   }
   const code = toAdeRecoveryErrorCode(parsed.code);
-  const recoveryMessage = code === "disk_full"
-    ? "Your computer ran out of storage while ADE was saving project data. Free up space, then try again."
-    : code === "storage_read_failed"
-      // Never "try again": the files are in a cloud folder that isn't downloaded,
-      // and retrying reads the same placeholder.
-      ? "ADE couldn't read this project's data. If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again."
-    : code === "brain_crash_looping" || code === "migration_incomplete" || code === "migration_unknown_state"
-      ? "ADE's background service needs a repair before this project can open."
-      : code && [
-          "insufficient_headroom",
-          "db_integrity",
-          "brain_not_installed",
-          "socket_stale_no_owner",
-          "socket_owned_by_other",
-        ].includes(code)
-        ? "ADE's background service could not open this project."
-        : code
-          ? "ADE ran into a problem with this project."
-          : null;
+  const recoveryMessage = code
+    ? RECOVERY_MESSAGE_BY_CODE[code] ?? GENERIC_RECOVERY_MESSAGE
+    : null;
   const fallback = raw.length > 0 ? raw : "Project action failed.";
   return {
     message: recoveryMessage ?? fallback,

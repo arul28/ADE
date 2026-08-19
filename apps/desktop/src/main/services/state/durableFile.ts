@@ -2,7 +2,15 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export type AtomicWriteOptions = { fsync?: boolean };
+export type AtomicWriteOptions = {
+  fsync?: boolean;
+  /**
+   * Permission bits for the temp file, e.g. `0o600`. The rename carries them
+   * onto the target, so a secret never exists world-readable — not even for the
+   * instant between create and rename.
+   */
+  mode?: number;
+};
 
 function bestEffortUnlink(filePath: string): void {
   try {
@@ -20,6 +28,58 @@ function bestEffortFsync(fd: number): void {
   }
 }
 
+/**
+ * Rename failures a copy can actually fix.
+ *
+ * `EXDEV` is a temp file that landed on another device; the rest are the
+ * Windows shapes of "something else is holding the target open" — an indexer,
+ * an antivirus scanner, another ADE process reading it. Every one of them is a
+ * link-level refusal that says nothing about whether the bytes can be written.
+ *
+ * Deliberately NOT a catch-all. Retrying `ENOSPC` or `EIO` as a copy writes the
+ * payload a second time to a filesystem that just proved it cannot take it, and
+ * turns a clean "the write failed, the old file is intact" into a half-written
+ * target. A disk-full rename must stay terminal.
+ */
+const COPY_RECOVERABLE_RENAME_CODES = new Set(["EXDEV", "EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * Replace the target with the temp file.
+ *
+ * `rename` is the atomic path on every platform this ships to, including
+ * Windows: libuv implements `fs.rename` with `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`,
+ * which replaces an existing target in one step. Deleting the target first
+ * would NOT be "the Windows fix" — it would open a window in which the file
+ * simply does not exist, and a concurrent reader that looks during that window
+ * sees a missing file rather than either version of it.
+ *
+ * The copy fallback is the last resort and never the first move: it is not
+ * atomic, so it is reached only for the failures above, where the alternative
+ * is losing the write outright.
+ */
+function replaceViaRename(tempPath: string, filePath: string, mode?: number): void {
+  try {
+    fs.renameSync(tempPath, filePath);
+  } catch (renameError) {
+    const code = (renameError as NodeJS.ErrnoException).code;
+    if (!code || !COPY_RECOVERABLE_RENAME_CODES.has(code)) throw renameError;
+    try {
+      fs.copyFileSync(tempPath, filePath);
+      if (mode != null) {
+        try {
+          fs.chmodSync(filePath, mode);
+        } catch {
+          // Copying onto an existing file keeps that file's permissions; a
+          // platform without chmod simply keeps whatever it had.
+        }
+      }
+      bestEffortUnlink(tempPath);
+    } catch {
+      throw renameError;
+    }
+  }
+}
+
 export function writeFileAtomic(
   filePath: string,
   data: string | Buffer,
@@ -32,14 +92,18 @@ export function writeFileAtomic(
   );
   let fd: number | null = null;
   try {
-    fd = fs.openSync(tempPath, "wx");
+    fd = opts.mode != null
+      ? fs.openSync(tempPath, "wx", opts.mode)
+      : fs.openSync(tempPath, "wx");
     fs.writeFileSync(fd, data);
     if (opts.fsync) bestEffortFsync(fd);
     fs.closeSync(fd);
     fd = null;
-    fs.renameSync(tempPath, filePath);
+    replaceViaRename(tempPath, filePath, opts.mode);
 
-    if (opts.fsync) {
+    // Windows has no directory handle to flush; opening one fails outright, so
+    // the attempt is skipped rather than caught.
+    if (opts.fsync && process.platform !== "win32") {
       let dirFd: number | null = null;
       try {
         dirFd = fs.openSync(dir, "r");

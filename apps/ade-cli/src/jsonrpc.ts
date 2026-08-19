@@ -1,5 +1,11 @@
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
+import {
+  encodeCodedErrorMessage,
+  isErrnoLikeCode,
+  parseCodedErrorMessage,
+  UNKNOWN_SYSTEM_ERRNO_PATTERN,
+} from "../../desktop/src/shared/codedError";
 
 export type JsonRpcId = string | number | null;
 
@@ -94,21 +100,27 @@ function nextErrorId(): string {
  * Services signal known failures with a string `Error.code` (the same
  * convention the desktop's `codedError` uses). Those messages are authored for
  * people, so they may cross the boundary; everything else is an internal
- * detail — a libuv errno, a stack-bearing message, a path — and must not.
+ * detail — a libuv errno, a Node internal code, a stack-bearing message, a
+ * path — and must not.
+ *
+ * The wire format itself is not this file's to invent: the desktop parses these
+ * replies with `parseCodedErrorMessage`, so the same module both reads the
+ * incoming error and writes the outgoing message.
  */
-function readCodedErrorShape(error: unknown): { code: string; message: string } | null {
+function readCodedErrorShape(
+  error: unknown,
+): { code: string; message: string; rootPath?: string } | null {
   if (!(error instanceof Error)) return null;
-  const code = (error as Error & { code?: unknown }).code;
-  if (typeof code !== "string" || !code.trim()) return null;
-  if (ERRNO_CODE_PATTERN.test(code)) return null;
-  const message = error.message.startsWith(`${code}:`)
-    ? error.message.slice(code.length + 1).trim()
-    : error.message;
-  return { code, message };
+  const rawCode = (error as Error & { code?: unknown }).code;
+  if (typeof rawCode !== "string" || !rawCode.trim()) return null;
+  if (isErrnoLikeCode(rawCode)) return null;
+  const parsed = parseCodedErrorMessage(error);
+  return {
+    code: parsed.code ?? rawCode.trim(),
+    message: parsed.message,
+    ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
+  };
 }
-
-/** libuv/POSIX errno codes: `ENOENT`, `EDEADLK`, `ECONNRESET`, … */
-const ERRNO_CODE_PATTERN = /^E[A-Z0-9]+$/;
 
 /**
  * Whether the failure came from the runtime or the operating system rather
@@ -127,13 +139,11 @@ function isInternalRuntimeError(error: unknown): boolean {
   const raw = error as Error & { code?: unknown; errno?: unknown; syscall?: unknown };
   if (typeof raw.syscall === "string" && raw.syscall.length > 0) return true;
   if (typeof raw.errno === "number") return true;
-  if (typeof raw.code === "string" && ERRNO_CODE_PATTERN.test(raw.code)) return true;
+  if (isErrnoLikeCode(raw.code)) return true;
   if (UNKNOWN_SYSTEM_ERRNO_PATTERN.test(error.message)) return true;
   // Runtime faults (TypeError, RangeError, …) are always programming errors.
   return /^(?:Type|Range|Reference|Syntax|Eval|URI)Error$/.test(error.name);
 }
-
-const UNKNOWN_SYSTEM_ERRNO_PATTERN = /unknown system error\s+-?\d+/i;
 
 function writeMessage(
   message: JsonRpcResponse | JsonRpcResponse[] | JsonRpcNotification,
@@ -176,7 +186,11 @@ function toErrorResponse(
       id,
       error: {
         code: JsonRpcErrorCode.internalError,
-        message: `${coded.code}: ${coded.message}`,
+        message: encodeCodedErrorMessage(
+          coded.code,
+          coded.message,
+          coded.rootPath ? { rootPath: coded.rootPath } : undefined,
+        ),
         data: { code: coded.code },
       }
     };

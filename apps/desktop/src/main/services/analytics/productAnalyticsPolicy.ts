@@ -5,7 +5,7 @@ import {
   RENDERER_GONE_UNKNOWN_REASON,
 } from "../../rendererCrashRecovery";
 import type { ToolErrorKind } from "../../../shared/types";
-import type { AdeActionDomain } from "../adeActions/registry";
+import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -204,27 +204,16 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
 
 /**
- * The ADE action domains, mirrored from `ADE_ACTION_DOMAIN_NAMES` in
- * `services/adeActions/registry.ts`.
+ * The ADE action domains, taken from the one list that defines them.
  *
- * Mirrored rather than imported at runtime on purpose: that module pulls in the
- * whole runtime service graph (auth services, the CLI bootstrap) and this policy
- * is loaded by the analytics service, the exporters, and their tests. The
- * `Record<AdeActionDomain, true>` annotation is what keeps the copy honest — a
- * domain renamed OR added in the registry fails this file's type-check instead
- * of silently becoming an unreportable value.
+ * They come from `services/adeActions/domains` rather than from `registry.ts`
+ * precisely so this policy — loaded by the analytics service, the exporters, and
+ * their tests — does not drag in the registry's whole runtime service graph
+ * (auth services, the CLI bootstrap) just to learn 45 names. This file used to
+ * hand-copy them, which meant a domain added to the registry was silently
+ * unreportable until somebody noticed.
  */
-const ADE_ACTION_DOMAIN_ALLOWLIST: Readonly<Record<AdeActionDomain, true>> = {
-  account: true, attention: true, lane: true, git: true, diff: true, conflicts: true, pr: true,
-  tests: true, chat: true, keybindings: true, ai: true, onboarding: true, automation_planner: true,
-  cto_state: true, cto_memory: true, session: true, operation: true, ade_project: true,
-  project_config: true, project_secret: true, linear_credentials: true, linear_oauth: true,
-  linear_issue_tracker: true, github: true, feedback: true, usage: true, analytics: true,
-  storage: true, budget: true, update: true, file: true, pty: true, terminal: true, layout: true,
-  tiling_tree: true, graph_state: true, computer_use_artifacts: true, ios_simulator: true,
-  app_control: true, built_in_browser: true, automations: true, review: true, issue: true,
-  orchestration: true, search: true, "external-sessions": true,
-};
+const ADE_ACTION_DOMAIN_ALLOWLIST: ReadonlySet<string> = new Set(ADE_ACTION_DOMAIN_NAMES);
 
 /**
  * Structured failure codes (`codedError`, `Error.code`, and the `code:` prefix
@@ -332,7 +321,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "manifest", "unsupported-target", "network", "integrity", "disk-space", "extract",
     "lock-timeout", "filesystem",
   ]),
-  action_domain: new Set(Object.keys(ADE_ACTION_DOMAIN_ALLOWLIST)),
+  action_domain: ADE_ACTION_DOMAIN_ALLOWLIST,
   // The account directory's own two refusals, plus the honest bucket for a
   // refusal a newer directory names and this build has never heard of. The
   // brain's user-facing sentence is NOT a fallback: it is free text.

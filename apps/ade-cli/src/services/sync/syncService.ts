@@ -65,10 +65,10 @@ import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
 import {
-  buildSyncCloudRelayStatus,
   createSyncCloudRelayStore,
   type SyncCloudRelayStore,
 } from "./syncCloudRelayStore";
+import { buildSyncCloudRelayStatus } from "./syncCloudRelayStatus";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";

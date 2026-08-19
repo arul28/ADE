@@ -1,16 +1,25 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  canonicalAdeHomePath,
   HARDWARE_ANCHOR_DOMAIN,
   hardwareAnchorId,
   LINUX_MACHINE_ID_PATHS,
   normalizeHardwareAnchorUuid,
   parseIoregPlatformUuid,
   parseWindowsMachineGuid,
+  probeHardwareAnchorUuid,
   readAccountHardwareId,
   readHardwareAnchorUuid,
   resetHardwareAnchorCacheForTests,
 } from "./hardwareAnchor";
+
+/**
+ * The ADE home every install-agnostic assertion below anchors against, already
+ * in canonical form so the expected digests are the same on Windows (where
+ * canonicalisation lowercases) as on POSIX.
+ */
+const ADE_HOME = canonicalAdeHomePath("/home/ada/.ade");
 
 /**
  * Captured from `ioreg -rd1 -c IOPlatformExpertDevice` on Apple silicon. Kept
@@ -88,14 +97,14 @@ describe("hardware anchor parsers", () => {
 describe("hardware anchor lookup", () => {
   it("runs ioreg without a shell on macOS", () => {
     const runCommand = vi.fn(() => IOREG_OUTPUT);
-    expect(readHardwareAnchorUuid({ platform: "darwin", runCommand }))
+    expect(probeHardwareAnchorUuid({ platform: "darwin", runCommand }))
       .toBe("8f4e2c1a-9b3d-5e6f-a7b8-c9d0e1f2a3b4");
     expect(runCommand).toHaveBeenCalledWith("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
   });
 
   it("queries the Cryptography key on Windows", () => {
     const runCommand = vi.fn(() => REG_OUTPUT);
-    expect(readHardwareAnchorUuid({ platform: "win32", runCommand }))
+    expect(probeHardwareAnchorUuid({ platform: "win32", runCommand }))
       .toBe("4a9e1f52-3f4b-4c1d-9a70-1f2e3d4c5b6a");
     const [command, args] = runCommand.mock.calls[0] as unknown as [string, string[]];
     // Resolved through the trusted-tool path, never a bare "reg" off PATH.
@@ -111,7 +120,7 @@ describe("hardware anchor lookup", () => {
   it("falls back to the dbus machine-id on Linux", () => {
     const readFile = vi.fn((filePath: string) =>
       filePath === LINUX_MACHINE_ID_PATHS[1] ? LINUX_MACHINE_ID : null);
-    expect(readHardwareAnchorUuid({ platform: "linux", readFile }))
+    expect(probeHardwareAnchorUuid({ platform: "linux", readFile }))
       .toBe("b7d3f0a1c2e94d5f8a6b0c1d2e3f4a5b");
     expect(readFile).toHaveBeenCalledWith(LINUX_MACHINE_ID_PATHS[0]);
   });
@@ -119,49 +128,91 @@ describe("hardware anchor lookup", () => {
   it("returns null when the probe fails instead of throwing", () => {
     // A sandbox that refuses to spawn, a VM with no platform UUID, a hardened
     // image with no machine-id: all of them are "no anchor", never an error.
-    expect(readHardwareAnchorUuid({ platform: "darwin", runCommand: () => null })).toBeNull();
-    expect(readHardwareAnchorUuid({
+    expect(probeHardwareAnchorUuid({ platform: "darwin", runCommand: () => null })).toBeNull();
+    expect(probeHardwareAnchorUuid({
       platform: "darwin",
       runCommand: () => {
         throw new Error("EPERM");
       },
     })).toBeNull();
-    expect(readHardwareAnchorUuid({ platform: "linux", readFile: () => null })).toBeNull();
+    expect(probeHardwareAnchorUuid({ platform: "linux", readFile: () => null })).toBeNull();
   });
 });
 
 describe("account hardware id", () => {
-  it("hashes with the versioned domain and the account salt", () => {
+  /** The raw identifier a macOS probe would return, without touching the cache. */
+  const macUuid = (): string | null =>
+    probeHardwareAnchorUuid({ platform: "darwin", runCommand: () => IOREG_OUTPUT });
+
+  it("hashes with the versioned domain, the account salt, and the install path", () => {
     const expected = createHash("sha256")
-      .update(`${HARDWARE_ANCHOR_DOMAIN}:user_1:8f4e2c1a-9b3d-5e6f-a7b8-c9d0e1f2a3b4`)
+      .update(
+        `${HARDWARE_ANCHOR_DOMAIN}:user_1:8f4e2c1a-9b3d-5e6f-a7b8-c9d0e1f2a3b4:${ADE_HOME}`,
+      )
       .digest("hex");
 
-    expect(hardwareAnchorId("user_1", "8f4e2c1a-9b3d-5e6f-a7b8-c9d0e1f2a3b4")).toBe(expected);
-    expect(readAccountHardwareId("user_1", {
-      platform: "darwin",
-      runCommand: () => IOREG_OUTPUT,
-    })).toBe(expected);
+    expect(hardwareAnchorId("user_1", "8f4e2c1a-9b3d-5e6f-a7b8-c9d0e1f2a3b4", ADE_HOME))
+      .toBe(expected);
+    expect(readAccountHardwareId("user_1", ADE_HOME, macUuid)).toBe(expected);
   });
 
   it("never puts the raw identifier on the wire", () => {
-    const id = readAccountHardwareId("user_1", {
-      platform: "darwin",
-      runCommand: () => IOREG_OUTPUT,
-    });
+    const id = readAccountHardwareId("user_1", ADE_HOME, macUuid);
     expect(id).toMatch(/^[0-9a-f]{64}$/);
     expect(id).not.toContain("8f4e2c1a");
   });
 
   it("gives two accounts on one machine unrelated values", () => {
-    const deps = { platform: "darwin" as const, runCommand: () => IOREG_OUTPUT };
     // The point of the per-account salt: the directory can dedup within an
     // account and cannot join across accounts.
-    expect(readAccountHardwareId("user_1", deps)).not.toBe(readAccountHardwareId("user_2", deps));
+    expect(readAccountHardwareId("user_1", ADE_HOME, macUuid))
+      .not.toBe(readAccountHardwareId("user_2", ADE_HOME, macUuid));
+  });
+
+  it("separates two ADE installs that share one platform UUID", () => {
+    // Stable and Beta on one Mac, and a second OS user's `~/.ade`: the probe
+    // underneath returns the SAME identifier for all three, which is exactly
+    // why the hash cannot be built from it alone — they were superseding each
+    // other's directory row.
+    const stable = readAccountHardwareId("user_1", "/home/ada/.ade", macUuid);
+    const beta = readAccountHardwareId("user_1", "/home/ada/.ade-beta", macUuid);
+    const otherUser = readAccountHardwareId("user_1", "/home/bo/.ade", macUuid);
+    expect(new Set([stable, beta, otherUser]).size).toBe(3);
+  });
+
+  it("reproduces one install's anchor across a wipe and reinstall", () => {
+    // The north star: `~/.ade` is deleted and recreated, every secret in it is
+    // minted afresh, and the anchor still names the same machine.
+    expect(readAccountHardwareId("user_1", "/home/ada/.ade/", macUuid))
+      .toBe(readAccountHardwareId("user_1", "/home/ada/./.ade", macUuid));
+  });
+
+  it("treats a Windows home path case-insensitively and a POSIX one exactly", () => {
+    // NTFS is case-insensitive, so one directory must not hash as two installs.
+    expect(canonicalAdeHomePath("C:\\Users\\Ada\\.ade", "win32"))
+      .toBe(canonicalAdeHomePath("c:\\users\\ada\\.ade", "win32"));
+    expect(canonicalAdeHomePath("/home/Ada/.ade", "linux"))
+      .not.toBe(canonicalAdeHomePath("/home/ada/.ade", "linux"));
   });
 
   it("returns null with no account id and with no anchor", () => {
-    expect(readAccountHardwareId(null, { platform: "darwin", runCommand: () => IOREG_OUTPUT })).toBeNull();
-    expect(readAccountHardwareId("   ", { platform: "darwin", runCommand: () => IOREG_OUTPUT })).toBeNull();
-    expect(readAccountHardwareId("user_1", { platform: "linux", readFile: () => null })).toBeNull();
+    expect(readAccountHardwareId(null, ADE_HOME, macUuid)).toBeNull();
+    expect(readAccountHardwareId("   ", ADE_HOME, macUuid)).toBeNull();
+    expect(readAccountHardwareId("user_1", ADE_HOME, () => null)).toBeNull();
+  });
+});
+
+describe("hardware anchor cache", () => {
+  it("caches the public read and leaves the probe uncached", () => {
+    // The cache is unconditional now: it used to switch itself off whenever the
+    // caller passed any argument at all, which made "is this cached?" depend on
+    // how the call happened to be spelled.
+    const first = readHardwareAnchorUuid();
+    expect(readHardwareAnchorUuid()).toBe(first);
+
+    const runCommand = vi.fn(() => IOREG_OUTPUT);
+    probeHardwareAnchorUuid({ platform: "darwin", runCommand });
+    probeHardwareAnchorUuid({ platform: "darwin", runCommand });
+    expect(runCommand).toHaveBeenCalledTimes(2);
   });
 });

@@ -7,25 +7,9 @@
 // and what must be left behind — and those decisions are worth testing on their
 // own. Nothing in this file captures; the caller owns the event vocabulary.
 
+import { readAccountRefusalCode } from "../../../shared/accountMachineRefusal";
 import { parseCodedErrorMessage } from "../../../shared/codedError";
 import type { SyncRoleSnapshot } from "../../../shared/types";
-
-/**
- * The ADE action domain a failed `localRuntime.callAction` was addressed to.
- *
- * Read straight off the IPC argument the renderer already sent, so nothing new
- * has to be threaded through the runtime bridge. Returns null for a malformed
- * argument; the analytics policy re-checks the value against the closed domain
- * list anyway, so an unrecognised domain is dropped rather than reported.
- */
-export function brainActionDomainFromIpcArgs(args: readonly unknown[]): string | null {
-  const arg = args[0];
-  if (!arg || typeof arg !== "object" || Array.isArray(arg)) return null;
-  const request = (arg as { request?: unknown }).request;
-  if (!request || typeof request !== "object" || Array.isArray(request)) return null;
-  const domain = (request as { domain?: unknown }).domain;
-  return typeof domain === "string" && domain.trim() ? domain.trim() : null;
-}
 
 /**
  * The structured code of a brain action failure, and NEVER its message.
@@ -51,28 +35,25 @@ export function brainActionErrorCode(error: unknown, didTimeout: boolean): strin
  * Why the account directory refused to register THIS computer, as one of three
  * closed values — never the brain's user-facing sentence.
  *
- * Both refusals reach the desktop as `state: "http_error"` with the
- * machine-readable code in `lastHttpReason` (see the brain's
- * `accountMachinePublisherService`), and this status snapshot is the only place
- * the desktop can see them: it never talks to the directory itself. Any other
- * 401/403 is reported as `other`, because "the directory turned this machine
- * away for a reason this build has no name for" is still the fact the last
- * incident needed and could not get — while `lastHttpReason` on that path is
- * server-supplied prose and must not travel.
+ * The decode itself belongs to `readAccountRefusalCode`, which the brain's
+ * auto-recovery loop reads too: what counts as a refusal must not differ
+ * between the thing that repairs one and the thing that reports it. This
+ * status snapshot is simply the only place the desktop can see a refusal — it
+ * never talks to the directory itself.
  *
- * Anything else — a timeout, a 5xx, a transport failure — is not a refusal, and
- * is left to `ade_publish_failing`, which the brain already emits.
+ * Everything that is not a refusal — a timeout, a 5xx, a transport failure, and
+ * a 401, which is an authentication problem rather than the directory turning a
+ * valid caller away — is left to `ade_publish_failing`, which the brain emits.
  */
 export function machineRegisterRefusalCode(
   snapshot: SyncRoleSnapshot | null | undefined,
 ): string | null {
   const health = snapshot?.routeHealth?.accountDirectory;
+  // A snapshot is a state, not an event: only `http_error` means the status
+  // fields describe the attempt that is currently failing. Reporting a refusal
+  // off any other state would date-stamp an old rejection as a new incident.
   if (!health || health.state !== "http_error") return null;
-  if (health.lastHttpStatus !== 401 && health.lastHttpStatus !== 403) return null;
-  const reason = typeof health.lastHttpReason === "string" ? health.lastHttpReason.trim() : "";
-  return reason === "machine_revoked" || reason === "pairing_authentication_required"
-    ? reason
-    : "other";
+  return readAccountRefusalCode(health);
 }
 
 /**

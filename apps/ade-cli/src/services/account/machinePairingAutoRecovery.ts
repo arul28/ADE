@@ -1,3 +1,4 @@
+import { readAccountRefusalCode } from "../../../../desktop/src/shared/accountMachineRefusal";
 import type { SyncAccountDirectoryHealth } from "../../../../desktop/src/shared/types";
 import type { AccountMachinePairingRefusalCode } from "./accountMachinePublisherService";
 import type { MachinePairingRepairResult } from "./machinePairingRepair";
@@ -17,6 +18,11 @@ import type { MachinePairingRepairResult } from "./machinePairingRepair";
  * is allowed to do: it calls the identical brain action the button calls, so a
  * genuine removal is refused exactly as it is today and the user-facing state
  * is left untouched.
+ *
+ * One thing it must never do is argue with a removal the user just performed.
+ * A genuine removal stands for at least the freshness window; recovery
+ * afterwards requires the user's next interactive sign-in — because that is the
+ * only thing that mints the proof the directory will accept.
  */
 
 /**
@@ -31,6 +37,23 @@ export const PAIRING_AUTO_REPAIR_DELAYS_MS = [60_000, 5 * 60_000, 60 * 60_000] a
  * still binding) settle on their own.
  */
 export const PAIRING_AUTO_REPAIR_SNAPSHOT_GRACE_MS = 120_000;
+/**
+ * How long a fresh revocation is left alone before an episode may even start.
+ *
+ * Mirrors `PAIRING_AUTH_FRESHNESS_MS` in `apps/account-directory/src/directory.ts`
+ * (10 minutes) — deliberately the same number, and it must stay the same
+ * number. That is the window in which the directory still accepts the sign-in
+ * this machine authenticated with, so a repair sent inside it is the one repair
+ * that WOULD succeed: the user clicks "Remove this computer" seconds after
+ * signing in, and the machine quietly re-registers itself before the page
+ * finishes reloading. Waiting the window out means the only repair this loop
+ * can ever land is one the directory would grant on stale-but-valid grounds —
+ * a stale row, a key rotation, a directory hiccup — never a deliberate removal.
+ *
+ * Duplicated rather than imported because the directory is a Cloudflare Worker
+ * with its own build; the tie is this comment plus the test that pins the value.
+ */
+export const PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS = 10 * 60_000;
 const DEFAULT_POLL_MS = 15_000;
 
 /** What put this machine into a recovery episode. */
@@ -71,6 +94,7 @@ export type MachinePairingAutoRecoveryArgs = {
   pollMs?: number;
   delaysMs?: readonly number[];
   snapshotGraceMs?: number;
+  revocationQuietMs?: number;
   now?: () => number;
 };
 
@@ -90,26 +114,23 @@ export type MachinePairingAutoRecovery = {
   getState(): MachinePairingAutoRecoveryState;
 };
 
-const REFUSAL_CODES: readonly string[] = [
-  "machine_revoked",
-  "pairing_authentication_required",
-] satisfies readonly AccountMachinePairingRefusalCode[];
-
 /**
  * Which refusal, if any, the last publish attempt ended in.
  *
- * Read from `lastHttpStatus` + `lastHttpReason`, which is where the publisher
- * already records the directory's machine-readable `code`. Nothing new has to
- * be plumbed through the publisher, and an unrecognised code stays unrecognised
- * rather than being guessed at.
+ * The 403-vs-code decoding is `readAccountRefusalCode`'s job — one decoder for
+ * every surface that reads a directory refusal, so the desktop banner and this
+ * loop can never disagree about what a response meant. Narrowed here because a
+ * repair only knows how to answer the two named codes: `"other"` (an
+ * unrecognised 403) and `null` are both "no refusal I can act on", and guessing
+ * at either is how an auto-repair loop starts arguing with a response nobody
+ * has taught it to read.
  */
 function refusalCodeFrom(
   health: SyncAccountDirectoryHealth,
 ): AccountMachinePairingRefusalCode | null {
-  if (health.lastHttpStatus !== 403) return null;
-  const reason = health.lastHttpReason;
-  return typeof reason === "string" && REFUSAL_CODES.includes(reason)
-    ? reason as AccountMachinePairingRefusalCode
+  const code = readAccountRefusalCode(health);
+  return code === "machine_revoked" || code === "pairing_authentication_required"
+    ? code
     : null;
 }
 
@@ -121,6 +142,10 @@ export function createMachinePairingAutoRecovery(
   const pollMs = Math.max(1_000, Math.floor(args.pollMs ?? DEFAULT_POLL_MS));
   const delays = args.delaysMs?.length ? args.delaysMs : PAIRING_AUTO_REPAIR_DELAYS_MS;
   const snapshotGraceMs = Math.max(0, args.snapshotGraceMs ?? PAIRING_AUTO_REPAIR_SNAPSHOT_GRACE_MS);
+  const revocationQuietMs = Math.max(
+    0,
+    args.revocationQuietMs ?? PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS,
+  );
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = true;
@@ -166,6 +191,25 @@ export function createMachinePairingAutoRecovery(
       return { trigger: "snapshot_failed", code: "snapshot_failed" };
     }
     return null;
+  };
+
+  /**
+   * Is the latched revocation recent enough that repairing it would be undoing
+   * something the user just did?
+   *
+   * Only a revocation the directory actually timestamped can be judged: a
+   * `revokedAt` the directory omitted (older worker, or the
+   * `pairing_authentication_required` shape, which carries none) reads as NOT
+   * fresh and the loop behaves exactly as it did before this gate existed.
+   * Blocking on a missing timestamp would disable recovery for precisely the
+   * stale-row case this loop was built for.
+   */
+  const revocationIsFresh = (publisher: MachinePairingAutoRecoveryPublisher): boolean => {
+    const { revoked, revokedAt } = publisher.getMachineRevocation();
+    if (!revoked || !revokedAt) return false;
+    const revokedAtMs = Date.parse(revokedAt);
+    if (!Number.isFinite(revokedAtMs)) return false;
+    return now() - revokedAtMs < revocationQuietMs;
   };
 
   const runOneRepair = async (
@@ -245,6 +289,15 @@ export function createMachinePairingAutoRecovery(
     const observed = currentTrigger(publisher);
     if (!observed) {
       endEpisode("recovered");
+      return;
+    }
+    if (observed.trigger === "refusal" && revocationIsFresh(publisher)) {
+      // The user removed this computer moments ago. Repairing now would undo a
+      // deliberate action while their sign-in is still fresh enough for the
+      // directory to accept it — the one case where this loop could actually
+      // win an argument it has no business having. Stay idle; the poll keeps
+      // running, and once the removal has aged past the quiet window the
+      // episode may start on a later tick.
       return;
     }
     if (!episode || episode.trigger !== observed.trigger) {

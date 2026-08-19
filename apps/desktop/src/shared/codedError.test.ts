@@ -3,7 +3,9 @@ import {
   codedError,
   encodeCodedErrorMessage,
   extractCodeFromMessage,
+  isErrnoLikeCode,
   parseCodedErrorMessage,
+  UNKNOWN_SYSTEM_ERRNO_PATTERN,
 } from "./codedError";
 
 describe("codedError wire format", () => {
@@ -72,5 +74,46 @@ describe("codedError wire format", () => {
     expect(extractCodeFromMessage(codedError("plain text with no prefix", "socket_stale_no_owner")))
       .toBe("socket_stale_no_owner");
     expect(parseCodedErrorMessage(new Error("just a message")).code).toBeUndefined();
+  });
+});
+
+describe("isErrnoLikeCode", () => {
+  it("claims platform codes, including the Node internal ones that quote paths", () => {
+    for (const code of [
+      "ENOENT",
+      "EDEADLK",
+      "ECONNRESET",
+      "ERR_MODULE_NOT_FOUND",
+      "ERR_FS_EISDIR",
+      "ERR_INVALID_ARG_TYPE",
+      "MODULE_NOT_FOUND",
+    ]) {
+      expect(isErrnoLikeCode(code)).toBe(true);
+    }
+  });
+
+  it("leaves ADE's own verdicts alone, so they still cross a boundary intact", () => {
+    for (const code of [
+      "storage_read_failed",
+      "disk_full",
+      "brain_not_installed",
+      "migration_incomplete",
+      "",
+      "   ",
+      null,
+      undefined,
+      42,
+    ]) {
+      expect(isErrnoLikeCode(code)).toBe(false);
+    }
+  });
+});
+
+describe("UNKNOWN_SYSTEM_ERRNO_PATTERN", () => {
+  it("matches the errno libuv could not name, in either casing", () => {
+    expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("Unknown system error -11: Unknown system error -11, read"))
+      .toBe(true);
+    expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("unknown system error 11")).toBe(true);
+    expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("ADE couldn't read this project's data.")).toBe(false);
   });
 });

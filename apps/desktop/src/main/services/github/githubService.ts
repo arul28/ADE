@@ -42,6 +42,7 @@ import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cli
 import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
 import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
 import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
+import { readCredentialWithState } from "./credentialReadState";
 import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
@@ -616,14 +617,10 @@ export function createGithubService({
   };
 
   /**
-   * Records whether the credential file was readable on the read that just ran.
-   *
-   * MUST be called immediately after a `getSync`: `getLastReadState()` describes
-   * the store's most recent read, so asking at any other moment answers about
-   * somebody else's read.
+   * Records whether the credential file was readable on the read that just ran,
+   * warning once per transition into unreadable.
    */
-  const noteCredentialStoreReadState = (): boolean => {
-    const unreadable = credentialStore?.getLastReadState?.() === "unreadable";
+  const noteCredentialStoreReadState = (unreadable: boolean): boolean => {
     if (unreadable !== credentialStoreUnreadable) {
       credentialStoreUnreadable = unreadable;
       if (unreadable) {
@@ -637,29 +634,24 @@ export function createGithubService({
 
   const readMachineToken = (): string | null => {
     if (!credentialStore) return null;
-    try {
-      const token = credentialStore.getSync(MACHINE_TOKEN_KEY)?.trim() ?? "";
-      if (token.length > 0) {
-        noteCredentialStoreReadState();
-        machineTokenReadFailed = false;
-        return token;
-      }
-      // An undecryptable store returns an EMPTY view instead of throwing, so an
-      // absent token here means either "never connected" or "connected, but ADE
-      // cannot read it". Only the store knows which, and it does: ask it before
-      // the two collapse into the same "not connected" status.
-      machineTokenReadFailed = noteCredentialStoreReadState();
-      return null;
-    } catch (error) {
-      // A store that throws is unreadable too — the Electron safeStorage store
-      // reports decrypt failures this way rather than by returning `{}`.
-      machineTokenReadFailed = true;
-      credentialStoreUnreadable = true;
-      logger.warn("github.machine_token_read_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
+    // The read and the readability verdict come back together: an undecryptable
+    // store returns an EMPTY view instead of throwing, so an absent token means
+    // either "never connected" or "connected, but ADE cannot read it", and only
+    // the store's own read state tells the two apart.
+    const read = readCredentialWithState(credentialStore, MACHINE_TOKEN_KEY, {
+      onError: (error) => {
+        logger.warn("github.machine_token_read_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+    const unreadable = noteCredentialStoreReadState(read.unreadable);
+    if (read.value) {
+      machineTokenReadFailed = false;
+      return read.value;
     }
+    machineTokenReadFailed = unreadable;
+    return null;
   };
 
   const persistMachineToken = (token: string | null): void => {

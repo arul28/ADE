@@ -131,6 +131,15 @@ clients are unaffected. Three rules bound it:
 - **At most 5 rows per call** across both identifiers, oldest-seen first. The
   rest go on the next proven re-pair.
 
+It **folds**, it does not merely delete: the one thing a superseded row holds
+that the new one cannot rebuild is `custom_name`, the name the user typed. The
+most recently seen superseded name is carried onto the surviving row, and only
+when that row has no name of its own — a name set on the new row is the fresher
+statement of intent. The carry-forward and the deletes go out as a single
+`DB.batch()`, because the pairing grant is already spent by the time they run
+and a half-finished loop would leave phantoms behind with no credential left to
+clear them.
+
 Superseded keys get **no** `revoked_machines` row. The physical device holds the
 new key, and blocking the old one would trapdoor any client that rolls its
 identity file back into a permanent refusal; an absent key simply registers
@@ -191,9 +200,10 @@ commands and paste output is where most of them stalled.
 | Method | `POST` (plus `OPTIONS` preflight; anything else is `405`) |
 | Body | `text/plain` — the report itself; or `application/json` — `{ report, installId?, appVersion? }` |
 | Metadata on `text/plain` | `?installId=` / `?appVersion=` query parameters |
-| Auth | **Optional** `Authorization: Bearer <Clerk token>`, verified exactly as the account routes verify it. Absent, the upload is anonymous. A token that is sent and does not verify is `401` — never silently downgraded |
+| Auth | **Optional** `Authorization: Bearer <Clerk token>`, verified exactly as the account routes verify it. Absent, the upload is anonymous. A header that is sent and does not verify — or does not even parse as `Bearer <token>` — is `401`, never silently downgraded. A Worker with no Clerk configuration answers `503`, exactly as the account routes do |
+| Origin | `403` when the browser reports `sec-fetch-site: cross-site` from a real remote origin. ADE's own senders are unaffected: the CLI sends no fetch-metadata header, and the Electron renderer's `null` (packaged `file://`) and loopback (development) origins are exempt |
 | Size | `413` above 512 KB. `content-length` is checked first, then the stream is counted as it arrives, so a missing or dishonest length changes nothing |
-| Rate limit | 5 per UTC day per user (signed in) or per caller IP (anonymous) → `429` with `retry-after: 86400` |
+| Rate limit | 5 per UTC day per user (signed in) or per `cf-connecting-ip` (anonymous) → `429` with `retry-after: 86400`. Off Cloudflare there is no trustworthy address, so anonymous callers share one bucket; `x-forwarded-for` is caller-controlled and is never read |
 | Success | `200 {"ok": true, "id": "<uuid>"}`. The report is **never** echoed back |
 | Storage | `reports/<utc-date>/<userIdOrAnon>/<uuid>.md` in the `DIAGNOSTICS` R2 bucket, with `userId` / `installId` / `appVersion` as custom metadata |
 | No binding | `503`, and the in-app button says sending is unavailable |
@@ -264,10 +274,22 @@ deployment:
 
    The binding is optional in code, so an already-deployed Worker whose bucket
    was removed answers `503` on `/diagnostics/upload` and keeps every other
-   route working. Set a lifecycle rule on both buckets to expire objects after
-   the support window you actually want to keep reports for; nothing in the
-   Worker deletes them.
-4. Apply the remote migrations and deploy the Worker. Use
+   route working.
+4. Give both diagnostics buckets an expiry lifecycle rule. **Nothing in the
+   Worker ever deletes a report**, so without this the bucket grows forever and
+   every report a user ever sent stays readable indefinitely. Ninety days is the
+   default because it is far longer than any support thread and far shorter than
+   "forever" — shorten it if your retention policy says so:
+
+   ```sh
+   npx wrangler r2 bucket lifecycle add ade-diagnostics \
+     expire-reports reports/ --expire-days 90
+   npx wrangler r2 bucket lifecycle add ade-diagnostics-production \
+     expire-reports reports/ --expire-days 90
+   ```
+
+   Confirm with `npx wrangler r2 bucket lifecycle list <bucket>`.
+5. Apply the remote migrations and deploy the Worker. Use
    `npm run d1:migrate:production` and `npm run deploy:production` for the
    production environment. Each deploy script validates only the environment it
    is about to publish, so an unconfigured development Worker cannot block a

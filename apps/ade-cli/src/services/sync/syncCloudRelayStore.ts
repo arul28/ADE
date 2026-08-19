@@ -2,12 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
+import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/accountDirectory";
-import type { SyncCloudRelayStatus } from "../../../../desktop/src/shared/types";
-import {
-  RELAY_SIGN_IN_REQUIRED_MESSAGE,
-  type SyncTunnelClientStatus,
-} from "./syncTunnelClientService";
 
 const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 
@@ -353,65 +349,27 @@ export function createSyncCloudRelayStore(args: {
 
   /**
    * Atomic AND durable: 0o600 temp file, fsync, rename, then fsync the
-   * directory so the rename itself survives a power loss. `writeTextAtomic`
-   * does the rename but not the fsyncs, and an identity that reappears empty
-   * after a crash is exactly the loss this store exists to prevent.
+   * directory so the rename itself survives a power loss.
+   *
+   * `writeFileAtomic` is the repo's one durable writer, and using it is the
+   * whole point: it renames straight onto the target on every platform (libuv's
+   * `MOVEFILE_REPLACE_EXISTING`), so the identity file is never briefly absent.
+   * A store that deleted the target first would hand a concurrent reader with a
+   * damaged primary a MISSING backup — and that reader mints a phantom machine,
+   * which is the exact failure this module exists to prevent.
    */
-  const writeDurable = (target: string, text: string): void => {
+  const writeIdentityFile = (target: string, text: string): void => {
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    const tempPath = `${target}.tmp-${randomBytes(8).toString("hex")}`;
-    try {
-      const fd = fs.openSync(tempPath, "w", 0o600);
-      try {
-        fs.writeFileSync(fd, text, "utf8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      // Windows `rename` fails onto an existing target; POSIX replaces silently.
-      if (process.platform === "win32") {
-        try {
-          fs.unlinkSync(target);
-        } catch {
-          // first write, or already gone
-        }
-      }
-      fs.renameSync(tempPath, target);
-    } catch (error) {
-      try {
-        fs.unlinkSync(tempPath);
-      } catch {
-        // best effort
-      }
-      throw error;
-    }
-    if (process.platform !== "win32") {
-      try {
-        const dirFd = fs.openSync(path.dirname(target), "r");
-        try {
-          fs.fsyncSync(dirFd);
-        } finally {
-          fs.closeSync(dirFd);
-        }
-      } catch {
-        // Directory fsync is unsupported on some filesystems; the rename still
-        // happened and the temp file was already flushed.
-      }
-    }
-    try {
-      fs.chmodSync(target, 0o600);
-    } catch {
-      // ignore chmod failures on platforms that don't support it
-    }
+    writeFileAtomic(target, text, { fsync: true, mode: 0o600 });
   };
 
   const write = (state: SyncCloudRelayState): void => {
     const text = serialize(state);
-    writeDurable(args.filePath, text);
+    writeIdentityFile(args.filePath, text);
     // The backup follows the primary, never leads it: a reader that falls back
     // to the backup must find the last identity that was actually in force.
     try {
-      writeDurable(backupPath, text);
+      writeIdentityFile(backupPath, text);
       backupVerifiedFor = state.config.machineKey;
     } catch (error) {
       backupVerifiedFor = null;
@@ -727,7 +685,7 @@ export function createSyncCloudRelayStore(args: {
       return;
     }
     try {
-      writeDurable(backupPath, serialize(state));
+      writeIdentityFile(backupPath, serialize(state));
       backupVerifiedFor = state.config.machineKey;
     } catch (error) {
       log?.warn?.("sync_cloud_relay.identity_backup_write_failed", {
@@ -872,22 +830,6 @@ export function createSyncCloudRelayStore(args: {
       };
     },
 
-    getIdentityRotationBudget(): SyncCloudRelayBudgetStatus {
-      return budgetStatus(
-        load().identityRotations,
-        IDENTITY_ROTATION_WINDOW_MS,
-        MAX_IDENTITY_ROTATIONS_PER_WINDOW,
-      );
-    },
-
-    getPairingAutoRepairBudget(): SyncCloudRelayBudgetStatus {
-      return budgetStatus(
-        load().pairingAutoRepairs,
-        PAIRING_AUTO_REPAIR_WINDOW_MS,
-        MAX_PAIRING_AUTO_REPAIRS_PER_WINDOW,
-      );
-    },
-
     /**
      * Spend one automatic pairing repair from the persisted 6-hour budget.
      *
@@ -963,46 +905,4 @@ export function createSyncCloudRelayStore(args: {
       return deriveRelayWssConnectUrl(relayUrl ?? defaultRelayUrl(), machineKey);
     },
   };
-}
-
-/**
- * The relay status the desktop and the CLI read, built the same way whether a
- * project scope owns sync or the brain answers for the bare machine.
- *
- * Both surfaces had their own copy of this projection and they had already
- * drifted apart in whitespace only — one edit away from drifting in meaning,
- * which would show two different relay stories for one machine.
- *
- * `accountSignedIn` is the gate: without it the live fields collapse to their
- * off values and the error becomes the sign-in prompt, so a signed-out machine
- * never reports a connection it cannot have.
- */
-export function buildSyncCloudRelayStatus(args: {
-  cloudRelayStore: Pick<SyncCloudRelayStore, "getConfig" | "getRelayUrl" | "getRelayWssUrl">;
-  tunnelStatus: SyncTunnelClientStatus | null;
-  accountSignedIn: boolean;
-}): SyncCloudRelayStatus {
-  const { cloudRelayStore, tunnelStatus, accountSignedIn } = args;
-  // Built as a variable, not returned inline: the relay self-probe fields below
-  // are not in `SyncCloudRelayStatus` yet and both original copies passed them
-  // through. Dropping them here would quietly blank the desktop's probe row.
-  const status = {
-    relayWssUrl: cloudRelayStore.getRelayWssUrl(),
-    machineKey: cloudRelayStore.getConfig().machineKey,
-    relayUrl: cloudRelayStore.getRelayUrl(),
-    connected: accountSignedIn && (tunnelStatus?.connected ?? false),
-    activeTunnels: accountSignedIn ? tunnelStatus?.activeTunnels ?? 0 : 0,
-    relayBridgeValidated: accountSignedIn && (tunnelStatus?.relayBridgeValidated ?? false),
-    lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
-    lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
-    lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
-    relayEndToEndVerifiedAt: tunnelStatus?.relayEndToEndVerifiedAt ?? null,
-    relayEndToEndFailure: tunnelStatus?.relayEndToEndFailure ?? null,
-    relayEndToEndRoundTripMs: tunnelStatus?.relayEndToEndRoundTripMs ?? null,
-    lastControlError: tunnelStatus?.lastControlError ?? null,
-    lastError: accountSignedIn
-      ? tunnelStatus?.lastError ?? null
-      : RELAY_SIGN_IN_REQUIRED_MESSAGE,
-  };
-  return status;
 }

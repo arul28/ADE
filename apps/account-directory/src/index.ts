@@ -1,4 +1,5 @@
-import { cleanupExpiredPairingGrants, handleRequest, type Env } from "./directory";
+import { handleRequest, type Env } from "./directory";
+import { cleanupExpiredPairingGrants } from "./pairingGrants";
 import { cleanupExpiredDeviceAuthorizations } from "./deviceAuthorization";
 import { handleDiagnosticsRequest, isDiagnosticsRequest, type DiagnosticsEnv } from "./diagnostics";
 

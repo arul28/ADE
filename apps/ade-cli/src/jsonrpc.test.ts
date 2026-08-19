@@ -366,6 +366,29 @@ describe("internal error replies", () => {
     expect((await failWith("boom")).error.message).not.toContain("boom");
   });
 
+  it("redacts Node's own internal codes, which quote absolute paths", async () => {
+    // A packaged build that lost a file reaches the boundary as a plain Error
+    // whose code is a Node internal one — not an errno — and whose message
+    // names the path. Both shapes must take the reference path, not the
+    // "service verdict" path that forwards the message verbatim.
+    for (const code of ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "ERR_FS_EISDIR"]) {
+      const reports: JsonRpcInternalErrorReport[] = [];
+      const error = Object.assign(
+        new Error("Cannot find module '/Users/someone/ADE/apps/ade-cli/dist/brain.js'"),
+        { code },
+      );
+      const response = await failWith(error, {
+        onInternalError: (report) => reports.push(report),
+      });
+
+      expect(response.error.message).not.toContain("/Users/someone");
+      expect(response.error.message).toMatch(/^Internal error in ade\/actions\/call \(ref [0-9a-f]+\)$/);
+      expect(response.error.data?.code).toBeUndefined();
+      expect(reports).toHaveLength(1);
+      expect(reports[0]?.error).toBe(error);
+    }
+  });
+
   it("forwards a service's coded verdict so the caller can act on it", async () => {
     const response = await failWith(Object.assign(
       new Error("ADE couldn't read this project's data at /tmp/p/.ade/ade.db."),

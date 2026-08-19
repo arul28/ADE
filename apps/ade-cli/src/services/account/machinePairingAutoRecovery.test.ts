@@ -4,6 +4,7 @@ import type { SyncAccountDirectoryHealth } from "../../../../desktop/src/shared/
 import {
   createMachinePairingAutoRecovery,
   PAIRING_AUTO_REPAIR_DELAYS_MS,
+  PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS,
   PAIRING_AUTO_REPAIR_SNAPSHOT_GRACE_MS,
   type MachinePairingAutoRecoveryPublisher,
 } from "./machinePairingAutoRecovery";
@@ -41,6 +42,8 @@ const REPAIR_OK: MachinePairingRepairResult = {
 function harness(options: {
   health: () => SyncAccountDirectoryHealth;
   revoked: () => boolean;
+  /** ISO removal timestamp, as the directory reports it. Absent by default. */
+  revokedAt?: () => string | null;
   repair: () => Promise<MachinePairingRepairResult>;
   hasAccountSession?: () => boolean;
   budgetLimit?: number;
@@ -50,7 +53,10 @@ function harness(options: {
   const limit = options.budgetLimit ?? 3;
   const publisher: MachinePairingAutoRecoveryPublisher = {
     getPublisherHealth: options.health,
-    getMachineRevocation: () => ({ revoked: options.revoked(), revokedAt: null }),
+    getMachineRevocation: () => ({
+      revoked: options.revoked(),
+      revokedAt: options.revokedAt?.() ?? null,
+    }),
   };
   const recovery = createMachinePairingAutoRecovery({
     getPublisher: () => publisher,
@@ -213,6 +219,59 @@ describe("machinePairingAutoRecovery", () => {
     clock += 1;
     await recovery.tick();
     expect(recovery.getState().trigger).toBe("snapshot_failed");
+  });
+
+  it("leaves a removal the user just performed alone", async () => {
+    // The user clicked "Remove this computer" seconds ago, while the sign-in
+    // that authorised it is still fresh enough for the directory to accept a
+    // re-registration. This is the ONE case where an auto-repair would win the
+    // argument, and it is the one case where it must not have it.
+    const revokedAt = "2026-08-18T12:00:00.000Z";
+    let clock = Date.parse(revokedAt) + 1_000;
+    const repair = vi.fn(async () => REPAIR_OK);
+    const { recovery, spentRepairs } = harness({
+      health: () => REFUSED_HEALTH("machine_revoked"),
+      revoked: () => true,
+      revokedAt: () => revokedAt,
+      repair,
+      now: () => clock,
+    });
+
+    // No episode even opens, so nothing is scheduled and nothing is spent.
+    await recovery.tick();
+    expect(recovery.getState().trigger).toBe(null);
+    clock += PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS - 2_000;
+    await recovery.tick();
+    await recovery.tick();
+    expect(repair).not.toHaveBeenCalled();
+    expect(spentRepairs()).toBe(0);
+    expect(recovery.getState().trigger).toBe(null);
+  });
+
+  it("starts an episode once the removal has aged past the quiet window", async () => {
+    const revokedAt = "2026-08-18T12:00:00.000Z";
+    let clock = Date.parse(revokedAt) + PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS;
+    const repair = vi.fn(async () => REPAIR_FAILED);
+    const { recovery } = harness({
+      health: () => REFUSED_HEALTH("machine_revoked"),
+      revoked: () => true,
+      revokedAt: () => revokedAt,
+      repair,
+      now: () => clock,
+    });
+
+    await recovery.tick();
+    expect(recovery.getState().trigger).toBe("refusal");
+    clock += PAIRING_AUTO_REPAIR_DELAYS_MS[0];
+    await recovery.tick();
+    expect(repair).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins the quiet window to the directory's pairing-auth freshness bound", () => {
+    // `PAIRING_AUTH_FRESHNESS_MS` in apps/account-directory/src/directory.ts.
+    // The worker builds separately, so this value is duplicated rather than
+    // imported; this assertion is what keeps the duplicate honest.
+    expect(PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS).toBe(10 * 60_000);
   });
 
   it("leaves an unrecognised 403 alone", async () => {

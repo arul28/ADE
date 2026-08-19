@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GitHubAppInstallationStatus, GitHubStatus } from "../../shared/types";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
 import {
-  GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
   deriveGithubRepoConnectionState,
   describeGithubAuthFailure,
   describeGithubCliBanner,
@@ -149,7 +149,9 @@ describe("describeGithubCliBanner", () => {
 
     expect(banner.subState).toBe("no-token");
     expect(banner.title).toBe("GitHub CLI or token not connected");
-    expect(banner.target).toBeUndefined();
+    // Every banner states its destination; only the unreadable store leaves the
+    // GitHub card, so a caller never has to re-derive the default.
+    expect(banner.target).toBe("github-settings");
   });
 
   it("does not tell a signed-in rate-limited user to reconnect", () => {

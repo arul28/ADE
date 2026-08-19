@@ -53,13 +53,67 @@ describe("durableFile", () => {
       expect(tempLeftovers()).toEqual([]);
     });
 
-    it("leaves the destination untouched when rename fails", () => {
+    const renameError = (code: string): Error =>
+      Object.assign(new Error(`${code}: rename refused`), { code });
+
+    it.each(["EXDEV", "EBUSY", "EPERM", "EACCES"])(
+      "falls back to a copy when rename is refused with %s",
+      (code) => {
+        // A temp file on another device, or a target an indexer/antivirus is
+        // holding open on Windows. The link cannot be made; the bytes are fine.
+        fs.writeFileSync(filePath, "before");
+        injectFsFault({ op: "renameSync", error: () => renameError(code) });
+
+        writeFileAtomic(filePath, "after");
+        expect(fs.readFileSync(filePath, "utf8")).toBe("after");
+        expect(tempLeftovers()).toEqual([]);
+      },
+    );
+
+    it("leaves the destination untouched when rename fails on a full disk", () => {
+      // ENOSPC is NOT retried as a copy: the filesystem just proved it cannot
+      // take these bytes, and a second attempt would only half-write the
+      // target. A failed durable write must leave the old file intact.
       fs.writeFileSync(filePath, "before");
+      const copy = vi.spyOn(fs, "copyFileSync");
       injectFsFault({ op: "renameSync" });
 
       expect(() => writeFileAtomic(filePath, "after")).toThrow(/no space/i);
+      expect(copy).not.toHaveBeenCalled();
       expect(fs.readFileSync(filePath, "utf8")).toBe("before");
       expect(tempLeftovers()).toEqual([]);
+    });
+
+    it("reports the rename failure when the copy fallback fails too", () => {
+      fs.writeFileSync(filePath, "before");
+      injectFsFault({ op: "renameSync", error: () => renameError("EXDEV") });
+      injectFsFault({ op: "copyFileSync" });
+
+      expect(() => writeFileAtomic(filePath, "after")).toThrow(/EXDEV/);
+      expect(fs.readFileSync(filePath, "utf8")).toBe("before");
+      expect(tempLeftovers()).toEqual([]);
+    });
+
+    // Windows has no POSIX mode bits to assert on; the mode is still passed and
+    // is simply ignored by the filesystem there.
+    it.skipIf(process.platform === "win32")("creates the temp file with the requested mode so a secret is never briefly readable", () => {
+      writeFileAtomic(filePath, "secret", { fsync: true, mode: 0o600 });
+      expect(fs.readFileSync(filePath, "utf8")).toBe("secret");
+      // The rename carries the temp file's mode onto the target.
+      expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
+    });
+
+    it("never removes the destination before the replacement is in place", () => {
+      // The pre-unlink some writers use as "the Windows fix" opens a window in
+      // which the file simply does not exist, and a concurrent reader that
+      // looks during it sees neither version. `rename` replaces in one step on
+      // every platform, so `unlink` has no business being on this path.
+      fs.writeFileSync(filePath, "before");
+      const unlink = vi.spyOn(fs, "unlinkSync");
+
+      writeFileAtomic(filePath, "after", { fsync: true });
+      expect(unlink.mock.calls.map(([target]) => String(target)))
+        .not.toContain(filePath);
     });
   });
 

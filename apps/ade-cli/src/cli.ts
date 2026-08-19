@@ -164,6 +164,7 @@ import {
   PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
 } from "./services/account/accountMachinePublisherService";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
+import type { MachinePairingAutoRecovery } from "./services/account/machinePairingAutoRecovery";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
 import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
@@ -17217,7 +17218,7 @@ async function runServe(
   // Turns the "Reconnect this computer" button into something the machine can
   // press for itself when the directory refuses it. Built below, next to the
   // publisher it watches.
-  let machinePairingAutoRecovery: { start(): void; stop(): void } | null = null;
+  let machinePairingAutoRecovery: MachinePairingAutoRecovery | null = null;
   // Held only while this brain hosts phone sync WITHOUT a project scope (a
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
@@ -17799,6 +17800,18 @@ async function runServe(
           return brainSyncHostLease ? projectlessSyncSnapshot() : null;
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+        // The SAME store instance the machine key above comes from, so a
+        // `supersededMachineKeys` answer is checked against the keys this brain
+        // actually retired. The publisher used to build a private second store
+        // over the same file, which is one identity guarded by two independent
+        // readers for no benefit at all.
+        confirmSupersededMachineKeys: (keys) => {
+          try {
+            return machineCloudRelayStore.confirmSupersededMachineKeys(keys);
+          } catch {
+            return [];
+          }
+        },
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);

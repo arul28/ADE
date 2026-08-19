@@ -1358,6 +1358,7 @@ describe("brain account machine publisher directory policy", () => {
       isSyncEnabled: () => true,
       getSnapshot: async () => snapshot(),
       getMachineKey: () => "machine-studio",
+      confirmSupersededMachineKeys: () => [],
       directoryBaseUrl: () => DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
       logger: { info: vi.fn(), warn: vi.fn() },
     });

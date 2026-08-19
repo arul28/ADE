@@ -520,7 +520,7 @@ rides the clipboard.
 | IPC | `IPC.diagnosticsOpenIssue` |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
 | Headless equivalent | `ade report-issue [--open] [--send]` |
-| Upload (opt-in) | `POST /diagnostics/upload` on the account directory Worker (`apps/account-directory/src/diagnostics.ts`); client in `apps/ade-cli/src/services/diagnostics/diagnosticUpload.ts` and its renderer mirror `apps/desktop/src/main/services/diagnostics/diagnosticsUpload.ts` |
+| Upload (opt-in) | `POST /diagnostics/upload` on the account directory Worker (`apps/account-directory/src/diagnostics.ts`); one client for every surface (renderer, main process, CLI) in `apps/desktop/src/shared/diagnosticsUpload.ts` |
 
 `ade report-issue` and the desktop button read the same machine sources through
 `collectMachineDiagnosticSources`, so a log added for one appears in both; the

@@ -212,11 +212,13 @@ describe("syncCloudRelayStore", () => {
     const third = rotateOnce();
     expect(third.rotated).toBe(false);
     expect(third.budgetExhausted).toBe(true);
-    expect(createSyncCloudRelayStore({ filePath }).getIdentityRotationBudget()).toMatchObject({
-      count: 2,
-      limit: 2,
-      exhausted: true,
-    });
+    expect(third.rotationsInWindow).toBe(2);
+    // And a fourth restart still reads the spent window off disk rather than
+    // handing the fresh process a fresh allowance.
+    const fourth = rotateOnce();
+    expect(fourth.rotated).toBe(false);
+    expect(fourth.budgetExhausted).toBe(true);
+    expect(fourth.rotationsInWindow).toBe(2);
   });
 
   it("reopens the rotation budget once the 24-hour window has passed", () => {
@@ -240,11 +242,9 @@ describe("syncCloudRelayStore", () => {
     expect(spend()).toMatchObject({ allowed: true, countInWindow: 1 });
     expect(spend()).toMatchObject({ allowed: true, countInWindow: 2 });
     expect(spend()).toMatchObject({ allowed: true, countInWindow: 3 });
-    expect(spend()).toMatchObject({ allowed: false, limit: 3 });
-    expect(createSyncCloudRelayStore({ filePath }).getPairingAutoRepairBudget()).toMatchObject({
-      count: 3,
-      exhausted: true,
-    });
+    // Still refused after another simulated restart: the window lives in the
+    // file, so a brain that reboots every minute cannot buy more repairs.
+    expect(spend()).toMatchObject({ allowed: false, countInWindow: 3, limit: 3 });
   });
 
   it("confirms only the superseded machine keys this machine actually retired", () => {

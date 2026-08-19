@@ -6,8 +6,6 @@ import type {
 } from "../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
 
-export { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY };
-
 export type GithubCredentialPresentation = {
   tokenTypeLabel: string;
   permissionMode: "auth-failure" | "app" | "fine-grained" | "scopes";
@@ -310,7 +308,8 @@ export function describeGithubCliBanner(status: GitHubStatus): {
   title: string;
   detail: string;
   action: string;
-  target?: GithubBannerTarget;
+  /** Always stated: an omitted target left every caller to re-derive the default. */
+  target: GithubBannerTarget;
 } {
   // First, and ahead of `!tokenStored`: an unreadable store returns an EMPTY
   // view, so every other conclusion below is drawn from credentials ADE could
@@ -326,6 +325,7 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       title: "GitHub CLI or token not connected",
       detail: "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
       action: "Connect GitHub",
+      target: "github-settings",
     };
   }
   if (status.connected && !githubStatusHasWriteCredential(status)) {
@@ -334,11 +334,14 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       title: "GitHub write access isn't connected",
       detail: "The ADE GitHub App can keep pull request data fresh, but GitHub CLI or a personal access token is needed for create, update, and merge actions.",
       action: "Connect GitHub",
+      target: "github-settings",
     };
   }
   const authFailure = describeGithubAuthFailure(status);
+  // Every auth failure is fixed on the GitHub card: the credential ADE holds is
+  // readable, it is the account behind it that GitHub has an objection to.
   if (authFailure) {
-    return authFailure;
+    return { ...authFailure, target: "github-settings" };
   }
   if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
     const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repository";
@@ -347,6 +350,7 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       title: `GitHub token can't access ${repoLabel}`,
       detail: "Your fine-grained token is valid but hasn't been granted this repository. Update its repository access.",
       action: "Fix GitHub auth",
+      target: "github-settings",
     };
   }
   return {
@@ -354,6 +358,7 @@ export function describeGithubCliBanner(status: GitHubStatus): {
     title: "GitHub token is missing permissions",
     detail: "Your GitHub token lacks the scopes ADE needs. Reconnect it with repo and workflow access.",
     action: "Fix GitHub auth",
+    target: "github-settings",
   };
 }
 

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 
 /**
@@ -18,15 +19,22 @@ import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
  * `/etc/machine-id` on Linux. Anchoring on that closes the gap without asking
  * the user for anything.
  *
- * TWO RULES GOVERN EVERYTHING BELOW.
+ * THREE RULES GOVERN EVERYTHING BELOW.
  *
  * 1. The raw identifier NEVER leaves this process. What goes on the wire is
- *    `sha256("ade-machine-anchor-v1:" + userId + ":" + rawUuid)`, salted with
- *    the account id, so the same computer signed into two accounts produces two
- *    unrelated values and no server-side join can correlate them. A raw
- *    platform UUID is a stable, cross-application device fingerprint; a
+ *    `sha256("ade-machine-anchor-v2:" + userId + ":" + rawUuid + ":" + adeHome)`,
+ *    salted with the account id, so the same computer signed into two accounts
+ *    produces two unrelated values and no server-side join can correlate them.
+ *    A raw platform UUID is a stable, cross-application device fingerprint; a
  *    per-account hash of one is not.
- * 2. It is OPTIONAL end to end. VMs with no platform UUID, hardened Linux
+ * 2. An anchor identifies an ADE INSTALL, not a chassis. The platform UUID is
+ *    shared by every ADE on the box — Stable in `~/.ade`, Beta in `~/.ade-beta`,
+ *    a second OS user's `~/.ade` — and hashing it alone made all of them one
+ *    machine that took turns superseding each other's directory row. Folding in
+ *    the ADE home path separates them while preserving the north star: a wipe
+ *    and reinstall lands on the SAME path, so it still reproduces the same
+ *    anchor, which is the entire reason this file exists.
+ * 3. It is OPTIONAL end to end. VMs with no platform UUID, hardened Linux
  *    images with no machine-id, a sandbox that refuses to spawn `ioreg` — all
  *    of them return null and every caller carries on with exactly the behavior
  *    it had before this existed. An anchor is an improvement to dedup, never a
@@ -38,10 +46,16 @@ import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
  *
  * Versioned because the recipe is a wire contract with the directory: rows
  * carry the hash, so changing the salt, the separator, or the digest silently
- * orphans every anchor already stored. A future recipe gets a `-v2` and lands
- * as a deliberate migration, not as an edit to this string.
+ * orphans every anchor already stored.
+ *
+ * `-v2` adds the ADE home path to the recipe. NO MIGRATION IS SHIPPED and none
+ * is needed: a v1-hashed row simply stops matching anything this client sends,
+ * so it dedups on `device_id` exactly as a pre-anchor client's row always did,
+ * and ages out with the device or by the owner removing it. The cost of a
+ * stale, unmatched anchor column is nil; the cost of two installs claiming one
+ * row is the bug this bump fixes.
  */
-export const HARDWARE_ANCHOR_DOMAIN = "ade-machine-anchor-v1";
+export const HARDWARE_ANCHOR_DOMAIN = "ade-machine-anchor-v2";
 
 /**
  * Where Linux keeps its stable machine identifier, in preference order.
@@ -201,39 +215,73 @@ function probeAnchorUuid(deps: HardwareAnchorDeps): string | null {
 }
 
 /**
- * The raw per-machine identifier, or null when this host has none to give.
+ * Run the probe once with explicit dependencies, bypassing the cache.
  *
- * Exported for tests and diagnostics of the parsers; product code wants
- * `readAccountHardwareId`, which is the only form allowed to leave the process.
+ * This is the test and diagnostics seam. It exists so `readHardwareAnchorUuid`
+ * does not have to guess whether it is being called by a test — the previous
+ * `Object.keys(deps).length === 0` check made "cached or not" a property of how
+ * the caller happened to spell the argument, which is exactly the kind of
+ * implicit mode a cache should never have.
  */
-export function readHardwareAnchorUuid(deps: HardwareAnchorDeps = {}): string | null {
-  const useCache = Object.keys(deps).length === 0;
-  if (useCache && cachedAnchorUuid) return cachedAnchorUuid.value;
-  let value: string | null;
+export function probeHardwareAnchorUuid(deps: HardwareAnchorDeps = {}): string | null {
   try {
-    value = probeAnchorUuid(deps);
+    return probeAnchorUuid(deps);
   } catch {
     // The no-throw guarantee is the module's contract, not a property of the
     // individual probes: this sits on the account-publish path, and an anchor
     // this host cannot produce must never be the reason a machine stops
-    // publishing. A throw is simply "no anchor", cached like any other.
-    value = null;
+    // publishing. A throw is simply "no anchor".
+    return null;
   }
-  if (useCache) cachedAnchorUuid = { value };
+}
+
+/**
+ * The raw per-machine identifier, or null when this host has none to give.
+ *
+ * Always cached, including the null. Product code wants `readAccountHardwareId`,
+ * which is the only form allowed to leave the process.
+ */
+export function readHardwareAnchorUuid(): string | null {
+  if (cachedAnchorUuid) return cachedAnchorUuid.value;
+  const value = probeHardwareAnchorUuid();
+  cachedAnchorUuid = { value };
   return value;
 }
 
 /**
- * The wire value: this machine's anchor as seen by ONE account.
+ * The ADE home path as it goes into the hash.
+ *
+ * Resolved so `~/.ade`, `~/.ade/`, and a relative `ADE_HOME` all agree, and
+ * lowercased on Windows because NTFS is case-insensitive: `C:\Users\Ada\.ade`
+ * and `c:\users\ada\.ade` are one directory and must not be two machines.
+ * Case is preserved everywhere else, where two spellings really are two paths.
+ */
+export function canonicalAdeHomePath(
+  adeHomePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const resolved = path.resolve(adeHomePath);
+  return platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/**
+ * The wire value: this ADE install's anchor as seen by ONE account.
  *
  * Salting with the account id is what makes the field safe to send. The
  * directory can compare two registrations from the same user and see the same
- * machine; it cannot compare two users and learn they share a computer, because
+ * install; it cannot compare two users and learn they share a computer, because
  * the two hashes have no relationship it can compute.
  */
-export function hardwareAnchorId(userId: string, rawUuid: string): string {
+export function hardwareAnchorId(
+  userId: string,
+  rawUuid: string,
+  adeHomePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   return createHash("sha256")
-    .update(`${HARDWARE_ANCHOR_DOMAIN}:${userId}:${rawUuid}`)
+    .update(
+      `${HARDWARE_ANCHOR_DOMAIN}:${userId}:${rawUuid}:${canonicalAdeHomePath(adeHomePath, platform)}`,
+    )
     .digest("hex");
 }
 
@@ -245,13 +293,21 @@ export function hardwareAnchorId(userId: string, rawUuid: string): string {
  * neither is logged — the caller simply omits the field, and the directory
  * falls back to matching on device id exactly as it does for every client that
  * predates this.
+ *
+ * `adeHomePath` is the install this publisher speaks for. The caller already
+ * knows it (it is the parent of the secrets directory every other credential
+ * comes out of), so it is passed rather than re-derived from the environment —
+ * a brain launched with a different `ADE_HOME` than the one it is serving would
+ * otherwise anchor as the wrong install.
  */
 export function readAccountHardwareId(
   userId: string | null | undefined,
-  deps: HardwareAnchorDeps = {},
+  adeHomePath: string,
+  /** Test seam: supply the raw identifier instead of probing (and caching) it. */
+  readUuid: () => string | null = readHardwareAnchorUuid,
 ): string | null {
   const account = userId?.trim();
   if (!account) return null;
-  const rawUuid = readHardwareAnchorUuid(deps);
-  return rawUuid ? hardwareAnchorId(account, rawUuid) : null;
+  const rawUuid = readUuid();
+  return rawUuid ? hardwareAnchorId(account, rawUuid, adeHomePath) : null;
 }

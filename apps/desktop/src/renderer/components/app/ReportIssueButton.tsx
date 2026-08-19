@@ -5,9 +5,10 @@ import type {
 } from "../../../shared/types/diagnostics";
 import {
   describeDiagnosticUploadFailure,
+  resolveDiagnosticsUploadBaseUrl,
   uploadDiagnosticReport,
   type DiagnosticUploadResult,
-} from "../../../main/services/diagnostics/diagnosticsUpload";
+} from "../../../shared/diagnosticsUpload";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   ERROR_DISCLOSURE_CARET,
@@ -99,9 +100,14 @@ export function ReportIssueButton({
         // "unknown" is the report's stand-in for "analytics is switched off";
         // sending it as an install id would attach a value that matches nothing.
         installId: result.installId === "unknown" ? null : result.installId,
-        baseUrl: typeof import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL === "string"
-          ? import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL
-          : null,
+        // Resolved here rather than inside the upload: the CLI resolves its own
+        // origin the way the brain does, so the client itself takes a base URL
+        // its caller already decided on.
+        baseUrl: resolveDiagnosticsUploadBaseUrl(
+          typeof import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL === "string"
+            ? import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL
+            : null,
+        ),
       }));
     } finally {
       setSending(false);

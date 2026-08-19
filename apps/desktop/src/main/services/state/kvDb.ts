@@ -4,7 +4,7 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import { codedError } from "../../../shared/codedError";
+import { codedError, UNKNOWN_SYSTEM_ERRNO_PATTERN } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
@@ -89,14 +89,10 @@ const STORAGE_READ_ERRNO_CODES = new Set([
 ]);
 
 /**
- * libuv can only name the errnos it has a mapping for. macOS returns EDEADLK
- * (errno 11) for a File-Provider read it cannot satisfy, which libuv does not
- * map, so the error reaches us as the uninterpretable "Unknown system error
- * -11: Unknown system error -11, read". Anything in that shape is a raw
- * filesystem failure, never a SQLite-level verdict.
+ * An unnameable platform errno (see `UNKNOWN_SYSTEM_ERRNO_PATTERN` in
+ * `shared/codedError`) is a raw filesystem failure here, never a SQLite-level
+ * verdict — which is why it is classified ahead of the integrity bucket below.
  */
-const UNKNOWN_SYSTEM_ERRNO_PATTERN = /unknown system error\s+-?\d+/i;
-
 function isStorageReadError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const raw = error as { code?: unknown; errno?: unknown; syscall?: unknown };

@@ -1,4 +1,5 @@
-import { verifyCallerToken, type Env } from "./directory";
+import { isAuthenticationUnavailableError, verifyCallerToken } from "./callerToken";
+import type { Env } from "./directory";
 
 /**
  * `POST /diagnostics/upload` — the one-click destination for ADE's already
@@ -60,12 +61,14 @@ type DailyUploadCount = { dayKey: string; count: number };
  */
 const isolateUploadCounts = new Map<string, DailyUploadCount>();
 
-function json(value: unknown, status = 200): Response {
+/** Same `(value, init)` shape as `directory.ts`'s `json`, so the name means one thing here. */
+function json(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
-    status,
+    ...init,
     headers: {
       "content-type": "application/json",
       ...corsHeaders(),
+      ...(init.headers ?? {}),
     },
   });
 }
@@ -92,10 +95,36 @@ export function isDiagnosticsRequest(url: URL): boolean {
   return url.pathname.replace(/\/+$/, "") === DIAGNOSTICS_UPLOAD_PATH;
 }
 
+/**
+ * Cloudflare sets `cf-connecting-ip` and a client cannot influence it. Off
+ * Cloudflare — a local dev run, a proxy in front — there is no trustworthy
+ * address at all, so everyone shares one bucket rather than falling back to
+ * `x-forwarded-for`: a quota keyed on a header the caller writes is not a quota.
+ */
 function clientIdentity(request: Request): string {
-  return request.headers.get("cf-connecting-ip")?.trim()
-    || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || "unknown-client";
+  return request.headers.get("cf-connecting-ip")?.trim() || "unknown-client";
+}
+
+/**
+ * A drive-by POST from some other site's page, which no real ADE client is.
+ *
+ * `sec-fetch-site` is attached by the browser and cannot be set by the page, so
+ * it is the one honest signal here. ADE's own senders are unaffected: the CLI
+ * and any non-browser fetch send no such header at all, and the desktop button
+ * runs in Electron's renderer, whose two origin shapes — `null` from `file://`
+ * in a packaged build and loopback in development — are exempted rather than
+ * named by hostname, because that renderer is cross-site to this Worker too.
+ */
+function isCrossSiteBrowserUpload(request: Request): boolean {
+  if (request.headers.get("sec-fetch-site")?.trim().toLowerCase() !== "cross-site") return false;
+  const origin = request.headers.get("origin")?.trim() ?? "";
+  if (!origin || origin === "null") return false;
+  try {
+    const { hostname } = new URL(origin);
+    return !(hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]");
+  } catch {
+    return true;
+  }
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -283,26 +312,37 @@ export async function handleDiagnosticsRequest(
       },
     });
   }
-  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+  if (request.method !== "POST") return json({ error: "method not allowed" }, { status: 405 });
+  if (isCrossSiteBrowserUpload(request)) {
+    return json({ error: "cross-site upload not allowed" }, { status: 403 });
+  }
 
   const bucket = env.DIAGNOSTICS;
   if (!bucket) {
     // The bucket is created as a deploy step (see the README). Until it exists
     // the button must fail politely rather than 500.
-    return json({ error: "diagnostics upload unavailable" }, 503);
+    return json({ error: "diagnostics upload unavailable" }, { status: 503 });
   }
 
   // Authentication is OPTIONAL, but a token that was SENT and does not verify
   // is an error rather than a downgrade: silently storing that report as
   // anonymous would hide a broken sign-in from the very user reporting it.
+  // That applies to the header shape as much as to the signature — an
+  // `Authorization` this route cannot parse is a client that believes it is
+  // signed in, so it is refused rather than quietly demoted to anonymous.
   let userId: string | null = null;
-  const authorization = request.headers.get("authorization") ?? "";
+  const authorization = request.headers.get("authorization")?.trim() ?? "";
   const bearer = authorization.match(/^Bearer\s+(\S+)\s*$/i)?.[1] ?? null;
+  if (authorization && !bearer) return json({ error: "invalid token" }, { status: 401 });
   if (bearer) {
     try {
       userId = await verifyCallerToken(bearer, env);
-    } catch {
-      return json({ error: "invalid token" }, 401);
+    } catch (error) {
+      // A Worker with no JWKS URL configured is a deployment fault, not a bad
+      // token; the account routes answer 503 for it and so does this one.
+      return isAuthenticationUnavailableError(error)
+        ? json({ error: "authentication unavailable" }, { status: 503 })
+        : json({ error: "invalid token" }, { status: 401 });
     }
   }
 
@@ -317,7 +357,7 @@ export async function handleDiagnosticsRequest(
       authenticated: Boolean(userId),
       bytes: MAX_DIAGNOSTIC_REPORT_BYTES,
     });
-    return json({ error: "report too large" }, 413);
+    return json({ error: "report too large" }, { status: 413 });
   }
 
   const url = new URL(request.url);
@@ -331,7 +371,7 @@ export async function handleDiagnosticsRequest(
       authenticated: Boolean(userId),
       bytes: body.text.length,
     });
-    return json({ error: "missing report" }, 400);
+    return json({ error: "missing report" }, { status: 400 });
   }
 
   const now = options.now?.() ?? Date.now();
@@ -346,17 +386,10 @@ export async function handleDiagnosticsRequest(
       authenticated: Boolean(userId),
       bytes: parsed.report.length,
     });
-    return new Response(
-      JSON.stringify({ error: "rate limited" }),
-      {
-        status: 429,
-        headers: {
-          "content-type": "application/json",
-          "retry-after": "86400",
-          ...corsHeaders(),
-        },
-      },
-    );
+    return json({ error: "rate limited" }, {
+      status: 429,
+      headers: { "retry-after": "86400" },
+    });
   }
 
   const id = options.randomId?.() ?? crypto.randomUUID();

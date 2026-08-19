@@ -12,7 +12,7 @@ import {
 import {
   uploadDiagnosticReport,
   type DiagnosticUploadResult,
-} from "../services/diagnostics/diagnosticUpload";
+} from "../../../desktop/src/shared/diagnosticsUpload";
 import { DEFAULT_ADE_ACCOUNT_DIRECTORY_URL } from "../../../desktop/src/shared/accountDirectory";
 import { getSignedInAccountAccessToken } from "../services/account/accountAuthService";
 import {

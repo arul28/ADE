@@ -22,8 +22,8 @@ import {
   describeGithubPatVerification,
   describeGithubAuthFailure,
   githubCredentialPresentation,
-  GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
 } from "../../lib/githubIntegrationStatus";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 
 type TokenType = "classic" | "fine-grained" | "unknown";

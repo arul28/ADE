@@ -14,6 +14,44 @@ export function codedError<TCode extends string>(message: string, code: TCode): 
   return Object.assign(new Error(message), { code });
 }
 
+/**
+ * libuv can only name the errnos it has a mapping for. macOS returns EDEADLK
+ * (errno 11) for a File-Provider read it cannot satisfy, which libuv does not
+ * map, so the error reaches us as the uninterpretable "Unknown system error
+ * -11: Unknown system error -11, read". Anything in that shape is a raw
+ * platform failure, never a verdict a service authored.
+ */
+export const UNKNOWN_SYSTEM_ERRNO_PATTERN = /unknown system error\s+-?\d+/i;
+
+/** libuv/POSIX errno codes: `ENOENT`, `EDEADLK`, `ECONNRESET`, … */
+const ERRNO_CODE_PATTERN = /^E[A-Z0-9]+$/;
+
+/**
+ * Node's own internal codes: `ERR_MODULE_NOT_FOUND`, `ERR_FS_EISDIR`,
+ * `ERR_INVALID_ARG_TYPE`, … plus the one legacy code that predates the prefix.
+ *
+ * They belong with the errnos and not with service verdicts: their messages are
+ * written for whoever is reading a stack trace and routinely quote an absolute
+ * path ("Cannot find module '/Users/…'"), so a boundary that treats them as
+ * authored copy forwards a filesystem path to a caller that must never see one.
+ */
+const NODE_INTERNAL_CODE_PATTERN = /^ERR_[A-Z0-9_]+$/;
+const LEGACY_NODE_MODULE_NOT_FOUND_CODE = "MODULE_NOT_FOUND";
+
+/**
+ * Whether an `Error.code` was attached by the platform rather than chosen by
+ * ADE. ADE's own codes are lowercase snake_case (`storage_read_failed`), so the
+ * two vocabularies cannot collide.
+ */
+export function isErrnoLikeCode(code: unknown): boolean {
+  if (typeof code !== "string") return false;
+  const trimmed = code.trim();
+  if (!trimmed) return false;
+  return ERRNO_CODE_PATTERN.test(trimmed)
+    || NODE_INTERNAL_CODE_PATTERN.test(trimmed)
+    || trimmed === LEGACY_NODE_MODULE_NOT_FOUND_CODE;
+}
+
 export function encodeCodedErrorMessage(code: string, message: string, meta?: { rootPath?: string }): string {
   const base = `${code}: ${message}`;
   return meta?.rootPath ? `${base}${ROOT_PATH_DELIMITER}${meta.rootPath}` : base;

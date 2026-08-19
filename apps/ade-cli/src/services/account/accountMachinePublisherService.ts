@@ -29,10 +29,6 @@ import {
   createMachineIdentitySigningStore,
   MACHINE_IDENTITY_SIGNING_FILE_NAME,
 } from "../sync/machineIdentitySigningStore";
-import {
-  createSyncCloudRelayStore,
-  SYNC_CLOUD_RELAY_FILE_NAME,
-} from "../sync/syncCloudRelayStore";
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
 import { readAccountHardwareId } from "./hardwareAnchor";
@@ -1561,6 +1557,15 @@ export function createBrainAccountMachinePublisherService(options: {
   isSyncEnabled: () => boolean;
   getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
+  /**
+   * Passed in rather than built here, from the ONE relay store the caller
+   * already holds. Two instances over one identity file is two of everything
+   * that file protects — two backup reconcilers, two rotation-lock clients —
+   * and the machine key this publisher reports comes from the caller's instance
+   * anyway, so a private second one could confirm a supersession against a
+   * different read of the same file.
+   */
+  confirmSupersededMachineKeys: (keys: readonly unknown[]) => string[];
   directoryBaseUrl?: () => string | null | undefined;
   logger: BrainAccountMachinePublisherLogger;
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
@@ -1572,13 +1577,6 @@ export function createBrainAccountMachinePublisherService(options: {
   });
   const signingStore = createMachineIdentitySigningStore({
     filePath: path.join(options.secretsDir, MACHINE_IDENTITY_SIGNING_FILE_NAME),
-    logger: options.logger,
-  });
-  // Same file the machine key itself comes from, so a `supersededMachineKeys`
-  // answer is checked against the keys THIS machine retired rather than trusted
-  // wholesale. Reads reload the file, so a second instance is safe.
-  const cloudRelayStore = createSyncCloudRelayStore({
-    filePath: path.join(options.secretsDir, SYNC_CLOUD_RELAY_FILE_NAME),
     logger: options.logger,
   });
   return createAccountMachinePublisherService({
@@ -1608,18 +1606,20 @@ export function createBrainAccountMachinePublisherService(options: {
     // Same shared auth service the access token comes from, so the grant a
     // device sign-in earned in this brain reaches the publish that needs it.
     consumePairingGrant: () => accountAuthService.consumePairingGrant(),
-    confirmSupersededMachineKeys: (keys) => {
-      try {
-        return cloudRelayStore.confirmSupersededMachineKeys(keys);
-      } catch {
-        return [];
-      }
-    },
+    confirmSupersededMachineKeys: options.confirmSupersededMachineKeys,
     // The only identity input that does not come out of `secretsDir`, which is
     // the entire point: everything else in this composition is destroyed by the
     // `~/.ade` wipe this anchor exists to survive. Cached for the process, so
     // the heartbeat pays for the lookup once.
-    readAccountHardwareId: (userId) => readAccountHardwareId(userId),
+    //
+    // The ADE home path is what keeps a Beta install from claiming Stable's
+    // row: the platform UUID underneath is shared by every ADE on the box, and
+    // the install's own home directory is the thing that differs. It is the
+    // parent of `secretsDir` by construction (`<adeHome>/secrets`), so the
+    // publisher anchors the install it actually serves rather than whatever
+    // `ADE_HOME` this process happened to launch with.
+    readAccountHardwareId: (userId) =>
+      readAccountHardwareId(userId, path.dirname(options.secretsDir)),
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
       if (explicit?.trim()) {

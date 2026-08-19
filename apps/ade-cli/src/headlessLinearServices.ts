@@ -24,6 +24,10 @@ import {
   resolveModelAlias,
 } from "../../desktop/src/shared/modelRegistry";
 import { parseGitHubScopeHeaders } from "../../desktop/src/shared/githubScopes";
+import {
+  readCredentialWithState,
+  readCredentialWithStateAsync,
+} from "../../desktop/src/main/services/github/credentialReadState";
 import type {
   GitHubAuthFailure,
   GitHubAppDeviceAuthPollResult,
@@ -697,26 +701,16 @@ export function createHeadlessGitHubService(
     statusLookupGeneration += 1;
   };
 
-  /**
-   * MUST run immediately after a store read: `getLastReadState()` describes the
-   * store's most recent read, so asking later answers about a different one.
-   */
-  const noteCredentialStoreReadState = (): boolean => {
-    credentialStoreUnreadable = credentialStore.getLastReadState() === "unreadable";
+  const noteCredentialStoreReadState = (unreadable: boolean): boolean => {
+    credentialStoreUnreadable = unreadable;
     return credentialStoreUnreadable;
   };
 
   const readStoredPatToken = (): string | null => {
     if (tokenOverride != null) return tokenOverride;
-    try {
-      const stored = credentialStore.getSync(tokenKey);
-      tokenDecryptionFailed = noteCredentialStoreReadState();
-      if (stored?.trim()) return stored.trim();
-    } catch {
-      tokenDecryptionFailed = true;
-      credentialStoreUnreadable = true;
-    }
-    return null;
+    const read = readCredentialWithState(credentialStore, tokenKey);
+    tokenDecryptionFailed = noteCredentialStoreReadState(read.unreadable);
+    return read.value;
   };
 
   const readToken = (): HeadlessGitHubTokenLookup => {
@@ -750,15 +744,9 @@ export function createHeadlessGitHubService(
 
   const readStoredPatTokenAsync = async (): Promise<string | null> => {
     if (tokenOverride != null) return tokenOverride;
-    try {
-      const stored = await credentialStore.get(tokenKey);
-      tokenDecryptionFailed = noteCredentialStoreReadState();
-      if (stored?.trim()) return stored.trim();
-    } catch {
-      tokenDecryptionFailed = true;
-      credentialStoreUnreadable = true;
-    }
-    return null;
+    const read = await readCredentialWithStateAsync(credentialStore, tokenKey);
+    tokenDecryptionFailed = noteCredentialStoreReadState(read.unreadable);
+    return read.value;
   };
 
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {

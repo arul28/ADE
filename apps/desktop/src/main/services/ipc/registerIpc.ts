@@ -83,7 +83,6 @@ import {
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import {
-  brainActionDomainFromIpcArgs,
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
@@ -729,7 +728,7 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
-import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
+import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
 import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
@@ -2364,7 +2363,9 @@ export function registerIpc({
           // mutation row per brain call and redefine what "interaction" counts.
           if (channel === IPC.localRuntimeCallAction) {
             try {
-              const actionDomain = brainActionDomainFromIpcArgs(args);
+              // The analytics policy re-checks this against the closed domain
+              // list, so an unrecognised domain is dropped rather than reported.
+              const actionDomain = readRuntimeActionRequest(args)?.domain ?? null;
               const errorCode = brainActionErrorCode(error, didTimeout);
               productAnalyticsService?.captureInternal({
                 event: "ade_brain_action_failed",
