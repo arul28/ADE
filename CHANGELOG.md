@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.61] - 2026-08-19
+
+### Account and machines
+
+- Machine identity is anchored to the hardware it runs on, so reinstalling and signing back in reconnects the existing machine instead of stranding a duplicate; existing duplicates are merged.
+- Pairing refusals now recover automatically in the background while signed in, and respect a machine you removed on purpose.
+- Machine identity is written durably with a backup, and a corrupt identity file is repaired instead of lost.
+
+### GitHub connection
+
+- An unreadable saved GitHub sign-in reports itself as unreadable and routes to Repair, instead of looking identical to a fresh install.
+- GitHub outages are distinguished from broken credentials.
+- Foreground PR polling no longer consumes the hourly GitHub API quota: failures arm an exponential stand-down, a request reserve is held for user actions, and recovery is automatic.
+- Failed check, comment, and review reads are reported as failures instead of rendering as "no checks ran".
+
+### Errors and diagnostics
+
+- Storage and startup failures carry coded, plain-language errors instead of raw system errnos.
+- Projects stored in iCloud or Dropbox are detected before they fail.
+- One-click "Send to ADE" for the redacted diagnostic report, on the desktop app, `ade report-issue --send`, and `ade code` — working even when the brain is down.
+
+### Machine sleep
+
+- Hosts announce suspend and resume, with a heartbeat-gap fallback, so "Asleep" is stated rather than inferred; machine rows carry battery, charging, and wall-power state.
+- A turn interrupted by sleep pauses and resumes in place instead of failing; session deeplinks carry their owning machine and offer to wake it.
+- Opt-in keep-awake setting with three levels, default off.
+
+### Work and chat
+
+- Cursor SDK chats recover from an in-stream token expiry by resuming the same agent in a fresh worker.
+- Claude chats recover after a session-limit reject without forking, with a quota card and a local-lane fork.
+- Cursor forks replay the full fitted transcript instead of a short conversation tail.
+- Cursor chats support mid-turn steering (interrupt and continue, or send after turn).
+- Chat runtimes no longer outlive the background work that pinned them; background-work elapsed is measured from when the work started, and Settle stays available on background-promoted rows.
+- Handoff, the tools pane, Git/diff/terminal, iOS simulator, app control, and browser panels act on the chat's machine rather than the tab's binding.
+- The @ mention popover dismisses when its query stops matching.
+
+### Connections and sync
+
+- Unknown-device sync rejection storms are throttled, and a pairing is dropped once every connection hop agrees it is gone.
+- Lane PR badges are scoped to the current branch.
+- Windows uninstall teardown retries locked files.
+
+### iOS
+
+- Mobile Work session cards polished.
+- The iOS app is built and tested on every PR.
+
 ## [1.2.60] - 2026-08-17
 
 ### Startup and recovery
@@ -1576,7 +1624,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.61...HEAD
+[1.2.61]: https://github.com/arul28/ADE/compare/v1.2.60...v1.2.61
 [1.2.60]: https://github.com/arul28/ADE/compare/v1.2.59...v1.2.60
 [1.2.59]: https://github.com/arul28/ADE/compare/v1.2.58...v1.2.59
 [1.2.58]: https://github.com/arul28/ADE/compare/v1.2.57...v1.2.58
