@@ -132,11 +132,22 @@ Track:
       "ade-push-relay": { "changed": false, "action": "skip|ci|manual", "status": "pending|deployed|verified|blocked", "migrationsApplied": null, "note": null }
     },
     "accountState": {
-      "r2BucketsExist": null,
-      "r2LifecycleRules": null,
-      "d1DatabasesExist": null,
-      "requiredSecretsBound": null,
-      "requiredVarsBound": null
+      "r2": {
+        "ade-diagnostics": { "exists": null, "lifecycle30d": null, "devUrlDisabled": null, "customDomains": null },
+        "ade-diagnostics-production": { "exists": null, "lifecycle30d": null, "devUrlDisabled": null, "customDomains": null }
+      },
+      "d1": {
+        "ade-account-directory-production": { "exists": null, "idMatchesConfig": null, "migrationsPending": null },
+        "ade-github-relay": { "exists": null, "idMatchesConfig": null, "migrationsPending": null },
+        "ade-push-relay": { "exists": null, "idMatchesConfig": null, "migrationsPending": null, "triggersPresent": null }
+      },
+      "config": {
+        "ade-account-directory-production": { "secretsBound": null, "varsSet": null, "unverified": [] },
+        "ade-push-relay": { "secretsBound": null, "varsSet": null, "unverified": [] }
+      },
+      "cronTriggers": { "ade-account-directory-production": null, "ade-push-relay": null },
+      "durableObjectMigrations": { "ade-github-webhook-relay": null, "ade-tunnel-relay": null },
+      "productEnablement": { "r2": null }
     },
     "rollbacks": []
   },
@@ -722,18 +733,60 @@ not deployment**: find the `Deploy Web Surfaces` run for the release SHA and
 confirm each in-scope job succeeded. Deploy by hand only when that run failed,
 was skipped, or the release commit predates it.
 
-```bash
-LAST_TAG=<previous desktop tag>
-for d in apps/account-directory apps/webhook-relay apps/tunnel-relay apps/push-relay; do
-  echo "$d: $(git log $LAST_TAG..origin/main --oneline -- $d | wc -l) commits"
-done
-# Web client scope, matching deploy-web.yml's paths-filter exactly:
-git log $LAST_TAG..origin/main --oneline -- \
-  apps/desktop/src/renderer apps/desktop/src/shared apps/desktop/vite.webclient.config.ts
+**The Cloudflare baseline is not the desktop tag.** This tier ships on merge, on
+its own cadence; a desktop tag says nothing about what is live on Cloudflare. If
+a web change landed before the last desktop tag and its `deploy-web.yml` job
+failed or never ran, a `LAST_TAG..origin/main` diff reports that surface
+unchanged forever. Derive each surface's baseline from what actually deployed —
+the newest run whose **job for that surface** concluded `success`. Job names are
+`webclient`, `account-directory`, `webhook-relay`, `tunnel-relay`, `push-relay`;
+a skipped job is not a success and does not appear in `jobs` at all.
 
-gh run list --repo arul28/ADE --workflow deploy-web.yml \
-  --json databaseId,headSha,status,conclusion,url --limit 20
-gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,jobs
+```bash
+runs="$(gh run list --repo arul28/ADE --workflow deploy-web.yml --branch main \
+  --json databaseId --limit 20 --jq '.[].databaseId')"
+for surface in webclient account-directory webhook-relay tunnel-relay push-relay; do
+  base=""
+  for id in $runs; do
+    sha="$(gh run view "$id" --repo arul28/ADE --json headSha,jobs \
+      --jq "if any(.jobs[]; .name==\"$surface\" and .conclusion==\"success\") then .headSha else empty end")"
+    if [ -n "$sha" ]; then base="$sha"; break; fi
+  done
+  echo "$surface baseline=${base:-UNKNOWN}"
+done
+```
+
+`UNKNOWN` means nothing in the last 20 runs proves that surface is current.
+Treat it as **changed** and reconcile it fully; never treat an unknown baseline
+as "unchanged". Run this in `bash` — `zsh` does not word-split `$runs`.
+
+Then diff each surface against its own baseline (`$base` from above), using
+`deploy-web.yml`'s paths-filter verbatim:
+
+```bash
+git log <base>..origin/main --oneline -- apps/account-directory   # account-directory
+git log <base>..origin/main --oneline -- apps/webhook-relay       # webhook-relay
+git log <base>..origin/main --oneline -- apps/tunnel-relay        # tunnel-relay
+git log <base>..origin/main --oneline -- apps/push-relay          # push-relay
+git log <base>..origin/main --oneline -- \
+  apps/desktop/src/renderer apps/desktop/src/shared apps/desktop/vite.webclient.config.ts  # webclient
+```
+
+The desktop-tag diff (`git log $LAST_TAG..origin/main -- apps/...`) is a
+secondary signal only — useful for the release note, never for the deploy
+decision.
+
+Now confirm the run for the release commit itself. Resolve `RUN_ID` from the
+release SHA and fail loudly when there is no match — no matching run means CI
+never deployed this commit, which is a manual-deploy case, not a pass:
+
+```bash
+RELEASE_SHA="$(git rev-parse origin/main)"
+RUN_ID="$(gh run list --repo arul28/ADE --workflow deploy-web.yml \
+  --json databaseId,headSha --limit 50 \
+  --jq "[.[] | select(.headSha == \"$RELEASE_SHA\")] | .[0].databaseId // empty")"
+[ -n "$RUN_ID" ] || echo "no deploy-web.yml run for $RELEASE_SHA — deploy by hand"
+[ -n "$RUN_ID" ] && gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,jobs
 ```
 
 A `workflow_dispatch` run deploys **every** surface — use it as the manual full
@@ -743,8 +796,10 @@ reconcile when the automatic run is untrustworthy:
 gh workflow run deploy-web.yml --repo arul28/ADE
 ```
 
-Record each surface's `changed` and `action` (`skip` / `ci` / `manual`) in the
-state file before doing anything else.
+Any surface whose baseline came back `UNKNOWN` goes through that dispatch.
+
+Record each surface's baseline SHA, `changed`, and `action` (`skip` / `ci` /
+`manual`) in the state file before doing anything else.
 
 ### Step 2: Inventory — what each surface actually declares
 
@@ -753,7 +808,7 @@ release changes one; do not trust this table over the file.
 
 | Surface | Config | Bindings and account resources | Deploy entry point |
 |---|---|---|---|
-| `ade-web-client` (Pages) | none in repo; built by `apps/desktop/vite.webclient.config.ts` | custom domain `app.ade-app.dev`, Pages URL `ade-web-client.pages.dev` | `npx wrangler pages deploy apps/desktop/dist/web-client --project-name ade-web-client` |
+| `ade-web-client` (Pages) | none in repo; built by `apps/desktop/vite.webclient.config.ts` | custom domain `app.ade-app.dev`, Pages URL `ade-web-client.pages.dev` | `npx wrangler@4.105.0 pages deploy apps/desktop/dist/web-client --project-name ade-web-client` |
 | `ade-account-directory` / `ade-account-directory-production` | `apps/account-directory/wrangler.jsonc` | D1 `DB` → `ade-account-directory` (`215bebd4-6601-4705-ab6e-e6f2d1397156`) / `ade-account-directory-production` (`38ebe0bb-ac4d-4b39-b73e-bab2f0092971`), `migrations_dir: migrations` (`0001`–`0009`); R2 `DIAGNOSTICS` → `ade-diagnostics` / `ade-diagnostics-production`; vars `ONLINE_WINDOW_MS`, `WEB_CLIENT_ORIGIN`, `PUSH_RELAY_URL`, `DIAGNOSTICS_DAILY_GLOBAL_LIMIT`; secrets `DIRECTORY_AUTH_SECRET`, `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`; cron `* * * * *`; observability on | `npm run deploy:production` |
 | `ade-github-webhook-relay` | `apps/webhook-relay/wrangler.jsonc` | D1 `DB` → `ade-github-relay` (`65e81b4d-2894-444f-9546-390815533b3b`), `migrations_dir: migrations` (`0001`–`0007`); Durable Object `REPO_EVENTS` → `RepoEventsDurableObject`, migration tag `v1` (`new_sqlite_classes`); no vars, no secrets in config | `npm run deploy` |
 | `ade-tunnel-relay` | `apps/tunnel-relay/wrangler.jsonc` | Durable Object `TUNNEL` → `TunnelDurableObject`, migration tag `v1` (`new_sqlite_classes`); `version_metadata` binding `CF_VERSION_METADATA`; no D1, no R2, no vars, no secrets; observability on | `npm run deploy` |
@@ -779,31 +834,39 @@ deploying, and verify it post-deploy.
 
 ### Step 3: Drift preflight — declared bindings vs the account
 
-Run this **before** any deploy, from the app directory so the pinned wrangler is
-used (`4.105.0` in `apps/account-directory`, `4.112.0` in `apps/tunnel-relay`,
-`^4.53.0` in the other two). Every subcommand below is verified against
-wrangler 4.x.
+Run this **before** any deploy. Every command runs inside an app directory whose
+`node_modules` is installed, because that is the only thing that pins the
+version: bare `npx wrangler` from the repo root has no wrangler dependency to
+resolve and silently fetches whatever is newest on npm. Install first, then keep
+every invocation wrapped:
 
 ```bash
-npx wrangler --version
-npx wrangler whoami          # confirms CLOUDFLARE_ACCOUNT_ID resolves to the right account
+(cd apps/account-directory && npm ci)
+(cd apps/account-directory && npx wrangler --version)   # expect 4.105.0
+(cd apps/account-directory && npx wrangler whoami)      # CLOUDFLARE_ACCOUNT_ID → right account
 ```
+
+Pinned versions: `4.105.0` in `apps/account-directory`, `4.112.0` in
+`apps/tunnel-relay`, `^4.53.0` in the other two. Account-level reads (R2, D1,
+`whoami`) are account-scoped, not app-scoped — run them from
+`apps/account-directory` so the exact pin is the one talking to the account.
+Every subcommand below is verified against wrangler 4.105.0.
 
 R2 — buckets must exist before the deploy that first binds them:
 
 ```bash
-npx wrangler r2 bucket list
-npx wrangler r2 bucket info ade-diagnostics --json
-npx wrangler r2 bucket info ade-diagnostics-production --json
+(cd apps/account-directory && npx wrangler r2 bucket list)
+(cd apps/account-directory && npx wrangler r2 bucket info ade-diagnostics --json)
+(cd apps/account-directory && npx wrangler r2 bucket info ade-diagnostics-production --json)
 ```
 
 D1 — databases must exist, and IDs must match the config:
 
 ```bash
-npx wrangler d1 list --json
-npx wrangler d1 info ade-account-directory-production --json
-npx wrangler d1 info ade-github-relay --json
-npx wrangler d1 info ade-push-relay --json
+(cd apps/account-directory && npx wrangler d1 list --json)
+(cd apps/account-directory && npx wrangler d1 info ade-account-directory-production --json)
+(cd apps/account-directory && npx wrangler d1 info ade-github-relay --json)
+(cd apps/account-directory && npx wrangler d1 info ade-push-relay --json)
 ```
 
 Secrets — names only; wrangler never prints values, so this is safe to run and
@@ -856,8 +919,8 @@ inside R2's 10 GB free tier — and it is the one term the repository cannot
 enforce in code.
 
 ```bash
-npx wrangler r2 bucket lifecycle list ade-diagnostics
-npx wrangler r2 bucket lifecycle list ade-diagnostics-production
+(cd apps/account-directory && npx wrangler r2 bucket lifecycle list ade-diagnostics)
+(cd apps/account-directory && npx wrangler r2 bucket lifecycle list ade-diagnostics-production)
 ```
 
 Both buckets must show a rule expiring the `reports/` prefix after 30 days. The
@@ -867,10 +930,10 @@ worked example at `apps/account-directory/README.md` uses the name
 the name. If a rule is missing:
 
 ```bash
-npx wrangler r2 bucket lifecycle add ade-diagnostics \
-  expire-reports-30d reports/ --expire-days 30
-npx wrangler r2 bucket lifecycle add ade-diagnostics-production \
-  expire-reports-30d reports/ --expire-days 30
+(cd apps/account-directory && npx wrangler r2 bucket lifecycle add ade-diagnostics \
+  expire-reports-30d reports/ --expire-days 30)
+(cd apps/account-directory && npx wrangler r2 bucket lifecycle add ade-diagnostics-production \
+  expire-reports-30d reports/ --expire-days 30)
 ```
 
 Lengthening the window moves the ceiling with it — 90 days is roughly 18 GB and
@@ -889,13 +952,18 @@ custom domain. `r2 bucket info` does **not** report this; two separate commands
 do, and both must answer negatively for both buckets:
 
 ```bash
-npx wrangler r2 bucket dev-url get ade-diagnostics-production
-npx wrangler r2 bucket domain list ade-diagnostics-production
+(cd apps/account-directory && npx wrangler r2 bucket dev-url get ade-diagnostics)
+(cd apps/account-directory && npx wrangler r2 bucket domain list ade-diagnostics)
+(cd apps/account-directory && npx wrangler r2 bucket dev-url get ade-diagnostics-production)
+(cd apps/account-directory && npx wrangler r2 bucket domain list ade-diagnostics-production)
 ```
 
-Expect `Public access via the r2.dev URL is disabled.` and no connected custom
-domains. Anything else means user-submitted failure reports are world-readable,
-and that is a release blocker, not a note.
+Both buckets, all four commands. The development bucket takes real reports from
+anyone running a development build, so "it is only dev" is not a reason to skip
+it. Expect `Public access via the r2.dev URL is disabled.` and
+`There are no custom domains connected to this bucket.` Anything else means
+user-submitted failure reports are world-readable, and that is a release
+blocker, not a note.
 
 **Subscription enablement.** R2 was the case that bit us, but the class is
 general: a product that is not enabled on the account makes every resource of
@@ -915,8 +983,10 @@ run from the release commit on `main`.
 
 ```bash
 # Hosted web client (Cloudflare Pages project ade-web-client)
+# Pinned: the repo root has no wrangler dependency, so an unpinned npx here
+# resolves to whatever npm publishes that day.
 (cd apps/desktop && npm ci && npm run build:webclient)
-npx wrangler pages deploy apps/desktop/dist/web-client \
+npx wrangler@4.105.0 pages deploy apps/desktop/dist/web-client \
   --project-name ade-web-client --branch main \
   --commit-hash "$(git rev-parse origin/main)" --commit-dirty=false
 
@@ -927,11 +997,24 @@ npx wrangler pages deploy apps/desktop/dist/web-client \
 (cd apps/push-relay && npm ci && npm run deploy)
 ```
 
+`deploy-web.yml` still runs the Pages step as floating `npx wrangler@4`
+(`.github/workflows/deploy-web.yml:77`), so CI and a hand deploy can be on
+different 4.x minors. Known and accepted for Pages, which uploads static assets;
+if a Pages deploy ever behaves differently by hand than in CI, check that first.
+
 What each entry point actually guards, so you know what you lose by bypassing it:
 
 - `apps/account-directory` `deploy:production` = `verify-deployment-config.mjs production`
   (asserts `DIRECTORY_AUTH_SECRET` is bound and `PUSH_RELAY_URL` is set **for that
   environment**) → `d1:migrate:production` → `wrangler deploy --env production`.
+  **Known coverage gap:** that preflight checks one of the four secrets and one
+  of the four vars. `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`,
+  `ONLINE_WINDOW_MS`, `WEB_CLIENT_ORIGIN`, and
+  `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` are unchecked by any script and unchecked by
+  `/health`, which answers `{"ok":true}` before touching config. Confirm them
+  by hand from Step 3's `secret list` and the deployed `env.production` vars,
+  and list anything you could not confirm in `accountState.config[...].unverified`
+  rather than reporting the surface verified.
 - `apps/push-relay` `deploy` = `validate:migrations` → `verify:auth-preflight`
   (all seven required secrets) → `d1:migrate:remote` (migrations **and**
   `attention_triggers.sql`) → `wrangler deploy` → `verify:auth-health` →
@@ -999,6 +1082,21 @@ any other route, run them explicitly:
 (cd apps/push-relay && npx wrangler d1 migrations list ade-push-relay --remote)
 ```
 
+`migrations list` only reports unapplied files in `migrations/`. It is blind to
+`schema/attention_triggers.sql`, which `d1:migrate:remote` applies as a sidecar
+and which nothing else verifies. Ask the database directly — read-only, safe to
+run any time:
+
+```bash
+(cd apps/push-relay && npx wrangler d1 execute ade-push-relay --remote --json \
+  --command "SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")
+```
+
+Both `attention_device_ownership_reject_stale` and
+`attention_devices_enforce_user_limit` must come back. They are the per-user
+device cap and the stale-ownership rejection; missing, the Worker looks healthy
+and enforces neither. Put the returned names in the push-relay report line.
+
 `verify:auth-account` needs the Clerk smoke credentials in the environment. If
 they are absent, say so in the release report — an unverified authenticated path
 is not a verified one.
@@ -1041,8 +1139,11 @@ name under the existing `v1` tag is how you lose a Durable Object's stored state
 
 ### Step 7: Rollback and blockers
 
-A Worker deploy that verifies badly rolls back to the previous version; it does
-not sit broken while you debug.
+A Worker deploy that verifies badly is rolled back to the previous version; it
+does not sit broken while you debug. Rollback is an **attempt**, not a
+guarantee — Cloudflare refuses it when the target version binds a resource that
+no longer exists, or when a Durable Object class lifecycle changed between the
+two versions. Try it, and if it is refused, fix forward.
 
 ```bash
 (cd apps/account-directory && npx wrangler versions list --env production)
@@ -1057,11 +1158,27 @@ things it does **not** do:
   schema before rolling back, and if it does not, fix forward instead.
 - It does not revert Durable Object migrations or R2 objects.
 
-Pages rolls back through its own deployment history:
+**Fix forward when rollback is unavailable.** If the previous version cannot
+tolerate the new schema, if the rollback is refused, or if the DO class changed:
+revert the offending commit on `main`, let `deploy-web.yml` redeploy, and verify
+with Step 6 — same guarded entry points, same checks. Do not hand-patch
+production with raw `wrangler deploy` to escape a failed rollback, and do not
+hand-write a "down" migration for D1; migrations here are forward-only. Record
+the fix-forward commit in `cloudflare.rollbacks` the same way you would a
+version id.
+
+Pages has **no rollback subcommand** — `wrangler pages deployment` is
+list/create/tail/delete only (verified on 4.105.0). Listing tells you which
+deployment to go back to; it does not restore it:
 
 ```bash
-npx wrangler pages deployment list --project-name ade-web-client --environment production
+npx wrangler@4.105.0 pages deployment list --project-name ade-web-client --environment production
 ```
+
+Record the target deployment id, then restore it from the Cloudflare dashboard
+(Pages → `ade-web-client` → Deployments → *Rollback to this deployment*), or
+rebuild the previous good commit and `pages deploy` it. Either way the id goes
+in the report — "rolled back Pages" without one is not a record of anything.
 
 Record every rollback in the state file's `cloudflare.rollbacks`.
 
@@ -1125,15 +1242,27 @@ Report:
 - Cloudflare, one line per surface (`ade-web-client`,
   `ade-account-directory-production`, `ade-github-webhook-relay`,
   `ade-tunnel-relay`, `ade-push-relay`), each stating:
-  - the decision — changed or not, and deployed by CI, deployed manually, or skipped
+  - the decision — changed or not, and deployed by CI, deployed manually, or
+    skipped — plus the deployment baseline SHA it was decided against, or
+    `UNKNOWN` if none was resolvable
   - the verification outcome — what was actually checked, not just that `/health`
     was green: live bundle hash for Pages, `d1 migrations list` showing nothing
-    pending for each D1-backed Worker, `/diagnostics/upload` returning `400` for
-    the account directory's R2 binding, `workerVersion.tag` matching the release
-    SHA for tunnel-relay, and the auth smokes for push-relay
-- Cloudflare account state: both diagnostics buckets exist, both carry a 30-day
-  `reports/` expiry lifecycle rule, and required secrets/vars are bound per
-  environment — or which of these is not true
+    pending for each D1-backed Worker, both `sqlite_master` triggers present for
+    push-relay, `/diagnostics/upload` returning `400` for the account directory's
+    R2 binding, `workerVersion.tag` matching the release SHA for tunnel-relay,
+    and the auth smokes for push-relay
+- Cloudflare account state, from `cloudflare.accountState`, per resource and
+  environment — not one aggregate sentence:
+  - each diagnostics bucket: exists, 30-day `reports/` lifecycle rule, r2.dev
+    dev URL disabled, zero custom domains
+  - each D1 database: exists, id matches the config, nothing pending
+  - cron triggers listed in the deploy output for `ade-account-directory-production`
+    (`* * * * *`) and `ade-push-relay` (`17 * * * *`)
+  - Durable Object migrations: what the deploy output said for
+    `ade-github-webhook-relay` and `ade-tunnel-relay`
+  - per environment, which secrets and vars were confirmed bound — and name
+    every one that was **not** confirmed rather than implying coverage the
+    preflights do not have
 - any Cloudflare rollback performed, with the version id
 - any blocked surface, its failing check, and the recovery command
 - any skipped surface and why
