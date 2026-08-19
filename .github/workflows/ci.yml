@@ -645,8 +645,8 @@ jobs:
             -clonedSourcePackagesDirPath ~/spm-packages \
             -skipMacroValidation \
             -skipPackagePluginValidation \
-            CODE_SIGNING_ALLOWED=NO \
-            build-for-testing | tail -40
+            -quiet \
+            build-for-testing
 
       - name: Run ADETests
         if: steps.gate.outputs.run == 'true'
@@ -669,8 +669,17 @@ jobs:
             -skipMacroValidation \
             -skipPackagePluginValidation \
             -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO \
-            test-without-building 2>&1 | tail -60
+            -quiet \
+            test-without-building
+
+      - name: Upload test results on failure
+        if: failure() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
 
   validate-docs:
     needs: install
