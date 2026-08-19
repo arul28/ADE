@@ -16,6 +16,7 @@ import {
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticSources";
 import { readVolumeSpace } from "../storage/volume";
 import { readLastFailure } from "../runtime/lastFailureStore";
+import { resolvePathWithinRoot } from "../shared/utils";
 
 export {
   buildDiagnosticIssueUrl,
@@ -24,6 +25,46 @@ export {
   /** Writes the report next to the app's other user data. Best effort. */
   writeDiagnosticReportFile,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticReport";
+
+/**
+ * The two directories automatic reports are written to.
+ *
+ * There are two because there are two senders: the desktop saves beside the
+ * app's user data, and the brain — which has no `app.getPath` — saves under the
+ * machine's `~/.ade`. The toast's "View" has to reach BOTH, and the brain's are
+ * the ones a user most wants, since a headless send is the one nobody was there
+ * for.
+ */
+export function diagnosticReportRoots(args: { userDataDir: string; adeDir: string }): string[] {
+  return [
+    path.join(args.userDataDir, "diagnostic-reports"),
+    path.join(args.adeDir, "diagnostic-reports"),
+  ];
+}
+
+/**
+ * The absolute path to reveal, or `null` when it is not one of ours.
+ *
+ * Same `roots.some(...)` shape as `appRevealPath`'s allowlist check, and for
+ * the same reason: a renderer hands over a string, and the only paths this may
+ * ever open are the ones ADE itself wrote. Anything else — `~/.ssh/id_rsa`, a
+ * `..` walk out of a reports directory — is refused rather than revealed.
+ */
+export function resolveRevealableDiagnosticReport(
+  roots: readonly string[],
+  candidate: string,
+): string | null {
+  const normalized = path.resolve(candidate);
+  const allowed = roots.some((root) => {
+    try {
+      resolvePathWithinRoot(root, normalized);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  return allowed ? normalized : null;
+}
 
 export type DiagnosticReportRequest = DiagnosticReportContext & {
   /** Verbatim `UpdateTransactionResult` (or anything JSON) from the caller. */

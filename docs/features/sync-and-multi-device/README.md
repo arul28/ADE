@@ -945,8 +945,21 @@ Runtime support files outside `services/sync/`:
   directory's exact-origin CORS rule and 404-on-unknown-`OPTIONS` fit neither an
   unauthenticated Electron renderer nor a CLI. Authentication is optional but
   never silently downgraded, the body is capped at 512 KB by both
-  `content-length` and a counted stream, and the quota is five a day per signed-
-  in user or per `cf-connecting-ip`. See
+  `content-length` and a counted stream, and there are **two** quotas, because
+  they bound different things. The per-caller one is five a day per signed-in
+  user or per `cf-connecting-ip`. The fleet one —
+  `DIAGNOSTICS_DAILY_GLOBAL_LIMIT`, default 400 stored reports per UTC day
+  across every caller, claimed from `diagnostics_upload_days` (migration
+  `0009`) by the same single upsert idiom `device_approval_rate_limits` uses,
+  refunded when the `put` then fails, and failing **closed** to `503` when D1 is
+  unavailable — exists because clients now send reports *automatically* on
+  failure, so one bug firing across the install base multiplies "five each" by
+  the install base and no per-caller limit can see that coming. The two `429`s
+  carry **distinct** bodies (`rate limited` versus
+  `daily diagnostics budget exhausted`) on purpose: an auto-sender that read a
+  fleet-wide stop as its own quota would retry forever. Uploads also carry
+  optional `auto` / `failureCode` metadata so automatic and hand-pressed
+  reports stay separable in the bucket. See
   [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-report-issue)
   for the client half, and `apps/account-directory/README.md` for the full
   contract and the R2 bucket + lifecycle setup the deploy does not do for you.

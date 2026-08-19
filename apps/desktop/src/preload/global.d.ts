@@ -725,7 +725,12 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
-import type { DiagnosticReportPayload, DiagnosticReportRequestPayload } from "../shared/types/diagnostics";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsSharingStatus,
+} from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
 import type {
   ProductAnalyticsCapture,
@@ -899,11 +904,30 @@ declare global {
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
       };
       /**
-       * Absent on older preloads: every call site must tolerate `undefined`
-       * and simply not offer the button.
+       * Optional as a GROUP, because an older preload has no `diagnostics` at
+       * all: every call site must tolerate `undefined` and simply not offer the
+       * button. The members inside are not optional — they all shipped
+       * together, so a build that exposes the group exposes all of them, and
+       * marking them individually optional would only teach call sites to write
+       * `?.()` chains that can never fire.
        */
       diagnostics?: {
         openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
+        /**
+         * Ask main to consider ONE automatic send for a failure the renderer
+         * detected. Main owns the setting and the budget, so this is a request,
+         * not an instruction, and its answer is deliberately uninteresting.
+         */
+        autoReport: (context: DiagnosticReportRequestPayload) => Promise<void>;
+        getSharing: () => Promise<DiagnosticsSharingStatus>;
+        setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
+        revealReport: (reportPath: string) => Promise<void>;
+        onAutoSent: (cb: (payload: DiagnosticsAutoSentPayload) => void) => () => void;
+        /**
+         * Confirms these references reached the screen, so main stops offering
+         * them on the next subscribe. Called after the toast is rendered.
+         */
+        ackAutoSent: (references: string[]) => Promise<void>;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;

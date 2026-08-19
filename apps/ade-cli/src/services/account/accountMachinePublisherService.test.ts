@@ -606,6 +606,51 @@ describe("account machine publisher health", () => {
     expect(captureAnalytics).toHaveBeenCalledTimes(2);
   });
 
+  it("reports a sustained publish failure once per episode, five minutes in", async () => {
+    let clock = 0;
+    let succeeds = false;
+    const onSustainedFailure = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async () => succeeds
+        ? new Response(null, { status: 204 })
+        : new Response(null, { status: 503 })),
+      now: () => clock,
+      onSustainedFailure,
+    });
+
+    await service.publishNow();
+    // Four minutes of failing is a bad afternoon, not yet a broken machine.
+    clock = 240_000;
+    await service.publishNow();
+    expect(onSustainedFailure).not.toHaveBeenCalled();
+
+    clock = 301_000;
+    await service.publishNow();
+    expect(onSustainedFailure).toHaveBeenCalledTimes(1);
+    expect(onSustainedFailure).toHaveBeenCalledWith({ code: "http_error" });
+
+    // Still failing: one report per episode, never one per attempt.
+    clock = 600_000;
+    await service.publishNow();
+    expect(onSustainedFailure).toHaveBeenCalledTimes(1);
+
+    // Recovered and broken again: a genuinely new episode may report again.
+    succeeds = true;
+    clock = 700_000;
+    await service.publishNow();
+    succeeds = false;
+    clock = 800_000;
+    await service.publishNow();
+    clock = 1_101_000;
+    await service.publishNow();
+    expect(onSustainedFailure).toHaveBeenCalledTimes(2);
+  });
+
   it("captures one account-session-unreadable event per unreadable episode", async () => {
     let sessionReadState: "available" | "unreadable" = "unreadable";
     const captureAnalytics = vi.fn();

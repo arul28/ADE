@@ -16948,6 +16948,17 @@ async function runServe(
       runtimeMode: "brain",
     }),
   );
+  /**
+   * The brain's half of automatic diagnostics. It shares the desktop's consent
+   * flag and daily budget on disk, and reads the machine's credential store, so
+   * a report from a headless box lands attributed to the account.
+   */
+  const { createBrainAutoDiagnostics } = await import("./services/diagnostics/autoDiagnosticsSender");
+  const brainAutoDiagnostics = createBrainAutoDiagnostics({
+    cliVersion: VERSION,
+    logger: headlessProjectLogger,
+    capture: (input) => brainProductAnalytics.capture(input),
+  });
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
@@ -17993,6 +18004,21 @@ async function runServe(
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);
         },
+        // A machine that has been unable to publish for minutes has silently
+        // dropped out of the account directory, and on a headless box there is
+        // nobody to press "Report issue" about it.
+        onSustainedFailure: ({ code }) => {
+          // `report` is documented never to reject; the catch is what keeps a
+          // silent-by-design path from ever becoming an unhandled rejection
+          // that takes the brain down.
+          void brainAutoDiagnostics
+            .report({
+              failureCode: code,
+              surface: "account_publisher",
+              headline: "This computer could not publish to your account",
+            })
+            .catch(() => undefined);
+        },
       });
       accountMachinePublisher.start();
     };
@@ -18059,6 +18085,16 @@ async function runServe(
       },
       budget: machineCloudRelayStore,
       logger: headlessProjectLogger,
+      // The loop has stopped arguing and this computer is still disconnected.
+      onGaveUp: ({ code }) => {
+        void brainAutoDiagnostics
+          .report({
+            failureCode: code,
+            surface: "machine_pairing_recovery",
+            headline: "This computer could not reconnect to your account",
+          })
+          .catch(() => undefined);
+      },
     });
     machinePairingAutoRecovery.start();
   }

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   LaneLifecycleEvent,
@@ -17,7 +17,10 @@ import {
   showToast,
   updateToast,
 } from "./toastStore";
+import { ToastStack } from "./ToastStack";
 import { useLaneEventToasts } from "./useLaneEventToasts";
+import { useAutoDiagnosticsToast } from "./useAutoDiagnosticsToast";
+import type { DiagnosticsAutoSentPayload } from "../../../../shared/types/diagnostics";
 
 // The store is a module-level singleton with no reset hook; each test clears
 // the stack it created so state doesn't leak between cases.
@@ -318,5 +321,164 @@ describe("useLaneEventToasts", () => {
       message: "conflict on package-lock.json",
       tone: "error",
     });
+  });
+});
+
+describe("useAutoDiagnosticsToast", () => {
+  /** The real pairing: the subscriber and the toast host, as `AppShell` mounts them. */
+  function AutoDiagnosticsHarness(): React.ReactElement {
+    useAutoDiagnosticsToast();
+    return React.createElement(ToastStack);
+  }
+
+  /** Subscriber with NO toast host — a notice that is queued and never shown. */
+  function SubscriberOnlyHarness(): React.ReactElement | null {
+    useAutoDiagnosticsToast();
+    return null;
+  }
+
+  function installDiagnosticsApi() {
+    let listener: ((payload: DiagnosticsAutoSentPayload) => void) | null = null;
+    const bridge = {
+      diagnostics: {
+        openIssue: vi.fn(),
+        onAutoSent: vi.fn((cb: (payload: DiagnosticsAutoSentPayload) => void) => {
+          listener = cb;
+          return () => {
+            listener = null;
+          };
+        }),
+        revealReport: vi.fn(async () => {}),
+        setSharing: vi.fn(async () => ({ enabled: false, sendsInWindow: 1, limit: 3 })),
+        ackAutoSent: vi.fn(async () => {}),
+      },
+    };
+    Object.defineProperty(window, "ade", { value: bridge, configurable: true, writable: true });
+    return {
+      bridge,
+      // Wrapped in `act` because the store update this triggers re-renders the
+      // toast host, and the render is what reports delivery.
+      emit: (payload: DiagnosticsAutoSentPayload) => {
+        act(() => {
+          listener?.(payload);
+        });
+      },
+    };
+  }
+
+  beforeEach(() => {
+    // The store is a module singleton and the suites above leave toasts behind.
+    cleanup();
+    clearAll();
+  });
+
+  afterEach(() => {
+    delete (window as { ade?: unknown }).ade;
+  });
+
+  it("tells the user what was sent, and offers the report and the off switch", () => {
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+
+    const [toast] = getToasts();
+    expect(toast).toMatchObject({
+      title: "A diagnostic report was sent to ADE",
+      message: "Reference abcd1234",
+    });
+    expect(toast?.action?.label).toBe("View");
+    expect(toast?.secondaryAction?.label).toBe("Turn off");
+
+    toast?.action?.onClick();
+    expect(api.bridge.diagnostics.revealReport).toHaveBeenCalledWith("/reports/x.md");
+    toast?.secondaryAction?.onClick();
+    expect(api.bridge.diagnostics.setSharing).toHaveBeenCalledWith(false);
+  });
+
+  it("tells main the toast exists, so the next launch does not repeat it", () => {
+    // The ack is the ONLY thing that retires a notice: main cannot tell that
+    // `webContents.send` reached a live toast host, and listing the pending
+    // ones on subscribe deliberately clears nothing. It goes out after the
+    // toast, so a renderer that dies mid-render repeats one rather than
+    // swallowing it.
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+
+    expect(getToasts()).toHaveLength(1);
+    expect(api.bridge.diagnostics.ackAutoSent).toHaveBeenCalledWith(["abcd1234"]);
+  });
+
+  it("acknowledges an automatic diagnostic only after the toast is rendered", () => {
+    // Regression: the ack used to fire beside `showToast`, which only queues.
+    // React had committed nothing at that point, so a window that died before
+    // the paint retired a notice the user never saw — and main, which trusts
+    // the ack completely, would never offer it again.
+    const api = installDiagnosticsApi();
+    render(React.createElement(SubscriberOnlyHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+
+    // Queued, not shown: nothing may claim delivery yet.
+    expect(getToasts()).toHaveLength(1);
+    expect(api.bridge.diagnostics.ackAutoSent).not.toHaveBeenCalled();
+
+    // The commit is the claim.
+    render(React.createElement(ToastStack));
+    expect(api.bridge.diagnostics.ackAutoSent).toHaveBeenCalledWith(["abcd1234"]);
+  });
+
+  it("says so when turning sharing off did not save", async () => {
+    // `ToastStack` dismisses the toast as soon as the click returns, so a
+    // refused write would otherwise leave the user believing auto-send is off.
+    const api = installDiagnosticsApi();
+    api.bridge.diagnostics.setSharing.mockResolvedValue({
+      enabled: true,
+      sendsInWindow: 1,
+      limit: 3,
+    });
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
+    const [toast] = getToasts();
+    act(() => {
+      toast?.secondaryAction?.onClick();
+    });
+
+    await waitFor(() => {
+      expect(getToasts().some((entry) => entry.title === "ADE could not turn this off")).toBe(true);
+    });
+  });
+
+  it("shows one toast for a report delivered twice", () => {
+    // Main keeps a successful send marked pending REGARDLESS of whether a
+    // window was sent the notice, because `webContents.send` cannot report that
+    // anything received it. So the fast-path send and the replay on subscribe
+    // can both arrive; keying on the reference is what makes that safe, and the
+    // repeated ack is a no-op on main.
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    const payload = { failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" };
+    api.emit(payload);
+    api.emit(payload);
+
+    expect(getToasts()).toHaveLength(1);
+    expect(getToasts()[0]?.id).toBe("diagnostics-auto-sent-abcd1234");
+  });
+
+  it("still offers the off switch when the local copy could not be written", () => {
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    api.emit({ failureCode: "disk_full", reportPath: "", reference: "abcd1234" });
+
+    const [toast] = getToasts();
+    // Nothing to reveal, so no dead "View" button — but turning it off must
+    // always be one click away from the message that says it happened.
+    expect(toast?.action).toBeUndefined();
+    expect(toast?.secondaryAction?.label).toBe("Turn off");
   });
 });

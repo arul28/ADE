@@ -743,6 +743,7 @@ import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
@@ -811,11 +812,17 @@ import { openExternalUrl } from "../shared/externalLinks";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   collectDiagnosticReport,
+  diagnosticReportRoots,
+  resolveRevealableDiagnosticReport,
   writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
+import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
+import { MAX_AUTO_DIAGNOSTICS_PER_WINDOW } from "../diagnostics/autoDiagnosticsStore";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
@@ -1662,6 +1669,7 @@ export function registerIpc({
   releaseRepository = DEFAULT_RELEASE_REPOSITORY,
   builtInBrowserService,
   productAnalyticsService,
+  autoDiagnosticsService,
   publishAttentionNotchSnapshot,
   publishAttentionNotchToast,
   updateAttentionNotchSettings,
@@ -1707,6 +1715,11 @@ export function registerIpc({
   releaseRepository?: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
+  /**
+   * Owns the auto-send setting, the budget and the send itself. Absent only in
+   * tests and in runtime modes that never built one; every call site guards.
+   */
+  autoDiagnosticsService?: AutoDiagnosticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
@@ -4779,6 +4792,123 @@ export function registerIpc({
         copied,
         opened,
       };
+    },
+  );
+
+  /**
+   * The renderer's failure surfaces (the crash boundaries) asking for one
+   * automatic send. Main decides: the setting, the budget and the send all live
+   * there, so a renderer that fires this repeatedly changes nothing.
+   *
+   * `projectRoot` is deliberately NOT taken from the payload. It selects which
+   * project's log directory gets read into the report, and a renderer is the
+   * one participant here that must not choose that — the only caller
+   * (`RendererErrorBoundary`) never sends one anyway. Main uses the project it
+   * already has open, or none. The manual `openIssue` path is unchanged: there
+   * a person is choosing to file about the screen they are looking at.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsAutoReport,
+    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<void> => {
+      const code = typeof arg?.code === "string" ? arg.code : "";
+      if (!autoDiagnosticsService || !code.trim()) return;
+      await autoDiagnosticsService.report({
+        failureCode: code,
+        surface: typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown",
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string"
+          ? arg.technicalDetail.slice(0, 16_000)
+          : null,
+        projectRoot: getCtx().project?.rootPath ?? null,
+      });
+    },
+  );
+
+  const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>
+    autoDiagnosticsService?.getStatus()
+    ?? { enabled: true, sendsInWindow: 0, limit: MAX_AUTO_DIAGNOSTICS_PER_WINDOW };
+
+  ipcMain.handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
+    diagnosticsSharingStatus());
+
+  ipcMain.handle(
+    IPC.diagnosticsSetSharing,
+    async (_event, arg: { enabled?: boolean } | undefined): Promise<DiagnosticsSharingStatus> => {
+      autoDiagnosticsService?.setEnabled(arg?.enabled === true);
+      return diagnosticsSharingStatus();
+    },
+  );
+
+  /**
+   * Hands over the notices nobody has been shown, and clears NOTHING.
+   *
+   * Clearing here would record "asked" as "displayed" — the same mistake the
+   * fast path already cannot make — and this handler is the one place where the
+   * difference is visible: the window can vanish between this loop and the
+   * toast. The renderer acknowledges each reference once it has rendered it
+   * (`diagnosticsAckAutoSent`), and that is the only thing that retires a
+   * notice.
+   */
+  ipcMain.handle(IPC.diagnosticsFlushAutoSent, async (event): Promise<void> => {
+    const pending = autoDiagnosticsService?.listPendingNotices() ?? [];
+    for (const notice of pending) {
+      try {
+        event.sender.send(IPC.diagnosticsAutoSent, {
+          failureCode: notice.failureCode,
+          reportPath: notice.reportPath ?? "",
+          reference: notice.reference ?? "",
+        } satisfies DiagnosticsAutoSentPayload);
+      } catch {
+        // A window that went away simply does not get the toast; the report was
+        // still sent, and it stays pending for the next window to show.
+      }
+    }
+  });
+
+  ipcMain.handle(
+    IPC.diagnosticsAckAutoSent,
+    async (_event, arg: { references?: unknown } | undefined): Promise<void> => {
+      const references = Array.isArray(arg?.references)
+        ? arg.references
+            .filter((value): value is string => typeof value === "string")
+            // A renderer only ever holds the handful it was just sent; the cap
+            // is here so a malformed caller cannot hand this a huge array.
+            .slice(0, 64)
+        : [];
+      autoDiagnosticsService?.ackNotices(references);
+    },
+  );
+
+  /**
+   * Reveals a saved auto-report, and nothing else.
+   *
+   * Deliberately NOT `appRevealPath`: that one validates against the project
+   * root and the user's Downloads/Documents/temp, and diagnostic reports live
+   * outside all of those. Widening that allowlist for every caller to serve one
+   * toast button would be the wrong trade; this handler carries the two
+   * directories it needs instead.
+   *
+   * BOTH senders write reports, to different places — the desktop under
+   * `userData/diagnostic-reports`, the brain under
+   * `<adeHome>/diagnostic-reports` — and the brain's are precisely the ones a
+   * user is most likely to want, since a headless send is the one they were not
+   * present for. Allowing only the desktop's root left "View" on every brain
+   * toast throwing on click.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsRevealReport,
+    async (_event, arg: { reportPath?: string } | undefined): Promise<void> => {
+      const raw = typeof arg?.reportPath === "string" ? arg.reportPath.trim() : "";
+      if (!raw) return;
+      const resolved = resolveRevealableDiagnosticReport(
+        diagnosticReportRoots({
+          userDataDir: app.getPath("userData"),
+          adeDir: resolveMachineAdeLayout().adeDir,
+        }),
+        raw,
+      );
+      if (!resolved) throw new Error("Path is outside allowed directories.");
+      shell.showItemInFolder(resolved);
     },
   );
 

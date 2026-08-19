@@ -162,6 +162,21 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Privacy",
   },
   {
+    id: "general.diagnostics-sharing",
+    // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
+    // and two identically named search hits pointing at different tabs is a
+    // coin flip for whoever is looking for the off switch.
+    label: "Diagnostics sharing",
+    keywords: ["diagnostics", "crash", "report", "privacy", "error", "send", "opt out"],
+    tab: "general",
+    anchor: "diagnostics-sharing",
+    scope: "machine",
+    // Machine-local consent written into `~/.ade/secrets` by the main process;
+    // a browser has no such file, so the toggle is not offered there.
+    web: "hidden",
+    group: "Privacy",
+  },
+  {
     id: "general.about",
     label: "About ADE",
     keywords: ["version", "build", "license", "logs", "support"],

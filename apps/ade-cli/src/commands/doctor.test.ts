@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   compareDoctorVersions,
@@ -5,6 +8,7 @@ import {
   evaluateDoctorRows,
   parseWindowsDesktopInstallProbe,
   probeDoctorBrain,
+  readAutoDiagnosticsSharingForDoctor,
   type DoctorInput,
 } from "./doctor";
 import { createSyncAccountDirectoryHealth } from "../../../desktop/src/shared/types/sync";
@@ -190,6 +194,7 @@ describe("doctor row evaluation", () => {
       ["relay", "ok"],
       ["account", "ok"],
       ["credentials", "ok"],
+      ["diagnostics", "ok"],
     ]);
   });
 
@@ -441,6 +446,71 @@ describe("doctor row evaluation", () => {
 
     expect(relay?.status).toBe("fail");
     expect(relay?.detail).toBe("Relay echo never came back.");
+  });
+
+  it("states diagnostics sharing as a preference, never as a problem", () => {
+    const on = healthyInput();
+    on.diagnostics = { enabled: true, sendsInWindow: 1, limit: 3 };
+    const off = healthyInput();
+    off.diagnostics = { enabled: false, sendsInWindow: 0, limit: 3 };
+
+    expect(evaluateDoctorRows(on).find((row) => row.key === "diagnostics")).toEqual({
+      key: "diagnostics",
+      label: "Diagnostics sharing",
+      status: "ok",
+      detail: "on · 1 of 3 automatic reports sent today",
+    });
+    // "Off" is a choice the user made, so it stays green: a diagnostic that
+    // paints a respected preference yellow trains people to ignore the colour.
+    expect(evaluateDoctorRows(off).find((row) => row.key === "diagnostics")).toEqual({
+      key: "diagnostics",
+      label: "Diagnostics sharing",
+      status: "ok",
+      detail: "off · no automatic reports are sent",
+    });
+    // Omitted by a caller that did not read the ledger: say so, do not guess.
+    expect(evaluateDoctorRows(healthyInput()).find((row) => row.key === "diagnostics"))
+      .toMatchObject({ status: "ok", detail: "not checked" });
+  });
+
+  it("reads diagnostics sharing off the shared ledger, defaulting on when it is absent or unreadable", () => {
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-doctor-diagnostics-"));
+    try {
+      const statePath = path.join(adeDir, "secrets", "diagnostics-autosend.json");
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+
+      // Never auto-sent: the setting is on and the budget is untouched.
+      expect(readAutoDiagnosticsSharingForDoctor(adeDir, {})).toEqual({
+        enabled: true,
+        sendsInWindow: 0,
+        limit: 3,
+      });
+
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          enabled: false,
+          sends: [{ code: "brain_wedge", atMs: Date.now(), source: "brain", pending: false }],
+        }),
+      );
+      expect(readAutoDiagnosticsSharingForDoctor(adeDir, {})).toMatchObject({
+        enabled: false,
+        sendsInWindow: 1,
+      });
+
+      // Unreadable is reported as the default the next auto-send would act on,
+      // rather than as a failure of the machine's health.
+      fs.rmSync(statePath);
+      fs.writeFileSync(statePath, "{ not json");
+      expect(readAutoDiagnosticsSharingForDoctor(adeDir, {})).toEqual({
+        enabled: true,
+        sendsInWindow: 0,
+        limit: 3,
+      });
+    } finally {
+      fs.rmSync(adeDir, { recursive: true, force: true });
+    }
   });
 
   it("compares release versions without depending on tag formatting", () => {

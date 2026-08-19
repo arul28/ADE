@@ -73,6 +73,12 @@ export function logDirectoryRefusal(args: {
  * The route stores bytes it never parses, so this line is the only record that
  * an upload happened at all — and the only way to tell "the user's report never
  * arrived" from "it arrived and was refused for being too large".
+ *
+ * `auto` and `failureCode` are what make the automatic senders legible: without
+ * them a spike in this line is indistinguishable from a spike in users pressing
+ * a button, and "which failure is generating all this traffic" — the question
+ * asked the day the fleet budget is first exhausted — has no answer at all.
+ * They are absent on the paths that reject before the body is parsed.
  */
 export function logDiagnosticsUpload(args: {
   outcome: "stored" | "rejected";
@@ -81,6 +87,9 @@ export function logDiagnosticsUpload(args: {
   identity: string;
   authenticated: boolean;
   bytes: number;
+  /** Omitted where the route refused before it could know. */
+  auto?: boolean;
+  failureCode?: string;
 }): void {
   console.log(JSON.stringify({
     ts: new Date().toISOString(),
@@ -94,6 +103,11 @@ export function logDiagnosticsUpload(args: {
     identity: args.identity.slice(0, 24),
     authenticated: args.authenticated,
     bytes: args.bytes,
+    // Emitted whenever it is known, false included: "how many of today's
+    // uploads were automatic" is a ratio, and a field that only appears on one
+    // side of it cannot be counted.
+    ...(args.auto === undefined ? {} : { auto: args.auto }),
+    ...(args.failureCode ? { failureCode: args.failureCode } : {}),
   }));
 }
 

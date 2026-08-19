@@ -77,6 +77,7 @@ import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { showToast, useToasts } from "./toast/toastStore";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
+import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
 import { useCtoAttention } from "../../hooks/useCtoAttention";
@@ -286,6 +287,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const shellMainRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
   useLaneEventToasts(navigate);
+  useAutoDiagnosticsToast();
   const setProject = useAppStore((s) => s.setProject);
   const setProjectHydrated = useAppStore((s) => s.setProjectHydrated);
   const setProjectBinding = useAppStore((s) => s.setProjectBinding);

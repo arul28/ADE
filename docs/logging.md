@@ -298,16 +298,50 @@ installation per UTC day, inside the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 The dashboard spec is deliberately untouched: no card asks this question yet.
 
+When ADE hits a failure it already classified, it sends that same redacted
+report by itself, and that decision records the same `ade_feature_used` event at
+the owner boundary — the auto-diagnostics service, where the outcome is known —
+with `feature: "connections"`, `action: "auto_sent"`, and one of three coarse
+outcomes: `completed` when the upload succeeded, `skipped_budget` when the
+client's own daily ceiling refused it, `failed` when it was attempted and did
+not land (including a `429` from either the per-user or the fleet budget). The
+product question is only whether the thing that fires without anyone asking
+works and whether its guardrail holds, so nothing else crosses: not the failure
+code that triggered it, not the surface, not the upload reference, not the saved
+report path, and not whether the user then turned the feature off — that is a
+setting, not an event. Two of the five outcomes `runAutoDiagnosticsSend` can
+return deliberately emit nothing. `skipped_disabled`: an installation that has
+withdrawn consent emits nothing at all, so counting its non-sends would be the
+one measurement it declined. `skipped_ineligible` — an unusable failure code, or
+a send already in flight — because nothing was built, spent or refused, so there
+is no outcome to report; it is a caller bug or a race, and it belongs in the
+local log, which is where it goes. A per-outcome one-hour
+deduplication key bounds the worst case to 24 accepted events per outcome — 72
+across all three — per installation per UTC day, and the client budget of three
+sends a day makes the real number far smaller; this sits inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling, and no ceiling was raised. The brain emits the same event for its own
+automatic sends through the same shared service — under `surface: "api"`, since
+nobody was at the keyboard — and shares the persisted deduplication state, so an
+installation's counts are one number rather than two. The dashboard spec is
+deliberately untouched: no card asks this question yet.
+
 The diagnostic report itself is a **local** artifact and is not analytics. It
 deliberately includes the PostHog `distinct_id` for this installation
 (`productAnalyticsService.getDistinctId()` — the identified account hash when
 signed in, otherwise the random anonymous install token) so a report someone
 files by hand can be matched to the events the installation already sent.
-Nothing flows the other way: the report is written to disk and copied to the clipboard, and only
-the person filing it decides where it goes. Its body is redacted before it is
+Nothing flows the other way: no part of a report reaches PostHog, on either
+path. A report the user files is written to disk and copied to the clipboard and
+only they decide where it goes; a report ADE sends by itself goes to the
+diagnostics upload route and nowhere else, and the analytics boundary learns
+only that a send happened and how it ended. Its body is redacted before it is
 written (home directory, project paths, usernames, hostnames and tailnet names,
-emails, credentials and routable IP addresses), and the GitHub issue title and
-stub body are redacted with the same context.
+emails, credentials and routable IP addresses) — the same bytes on both paths,
+because redaction happens once in the builder — and the GitHub issue title and
+stub body are redacted with the same context. Automatic sending is a separate
+consent from analytics: it has its own Settings toggle (default on) and its own
+persisted flag, so turning one off does not silently turn off the other.
 
 Clicking "Reconnect this computer" on the Account pane's removed-machine banner
 records the existing `ade_feature_used` event at the IPC owner boundary (the

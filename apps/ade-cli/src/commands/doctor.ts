@@ -20,6 +20,10 @@ import {
   inspectCredentialStoreHealth,
   type CredentialStoreHealth,
 } from "../services/credentials/credentialStore";
+import {
+  readAutoDiagnosticsState,
+  resolveAutoDiagnosticsStateFile,
+} from "../../../desktop/src/main/services/diagnostics/autoDiagnosticsStore";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { readBrainStartupState } from "../services/runtime/brainStartupState";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
@@ -38,7 +42,8 @@ export type DoctorRow = {
     | "publish"
     | "relay"
     | "account"
-    | "credentials";
+    | "credentials"
+    | "diagnostics";
   label: string;
   status: DoctorRowStatus;
   detail: string;
@@ -97,7 +102,18 @@ export type DoctorInput = {
    * running brain to answer would be silent in exactly the case it is for.
    */
   credentials: CredentialStoreHealth | null;
+  /**
+   * Automatic diagnostics sharing: the consent flag and today's spend, read off
+   * the same ledger both senders account against.
+   *
+   * OPTIONAL on purpose. This is an additive input, and a caller that does not
+   * supply it gets a truthful "not checked" row rather than a fabricated one.
+   */
+  diagnostics?: DoctorDiagnosticsSharing | null;
 };
+
+/** What the shared auto-diagnostics ledger says, verbatim. */
+export type DoctorDiagnosticsSharing = ReturnType<typeof readAutoDiagnosticsState>;
 
 export type DoctorCommandOptions = {
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
@@ -158,6 +174,7 @@ export type DoctorCommandResult = {
   relayHealth: DoctorInput["relayHealth"];
   account: DoctorInput["account"];
   credentials: DoctorInput["credentials"];
+  diagnostics: DoctorInput["diagnostics"];
 };
 
 type DoctorBrainProbe = {
@@ -864,6 +881,47 @@ function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
   };
 }
 
+/**
+ * The consent flag and today's spend, read off disk through the store itself.
+ *
+ * Deliberately NOT a second parser: `readAutoDiagnosticsState` is the same
+ * reader the desktop settings pane and both senders use, and its documented
+ * degradation — an absent or unparseable ledger reads as the default (on, no
+ * sends spent) — is the honest answer here too, because that is exactly what
+ * the next auto-send would act on.
+ */
+export function readAutoDiagnosticsSharingForDoctor(
+  adeDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): DoctorDiagnosticsSharing | null {
+  try {
+    return readAutoDiagnosticsState(resolveAutoDiagnosticsStateFile(adeDir, env));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A preference, not a health check, so it is never `warn` or `fail`.
+ *
+ * "Off" is a state the user chose, and a diagnostic that paints a respected
+ * choice yellow teaches people to ignore the colour.
+ */
+function diagnosticsRow(sharing: DoctorInput["diagnostics"]): DoctorRow {
+  const label = "Diagnostics sharing";
+  if (!sharing) {
+    return { key: "diagnostics", label, status: "ok", detail: "not checked" };
+  }
+  return {
+    key: "diagnostics",
+    label,
+    status: "ok",
+    detail: sharing.enabled
+      ? `on · ${sharing.sendsInWindow} of ${sharing.limit} automatic reports sent today`
+      : "off · no automatic reports are sent",
+  };
+}
+
 export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
   return [
     appRow(input.app),
@@ -874,6 +932,7 @@ export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
     relayRow(input.relayHealth),
     accountRow(input.account),
     credentialsRow(input.credentials),
+    diagnosticsRow(input.diagnostics),
   ];
 }
 
@@ -948,6 +1007,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     relayHealth,
     account: brainProbe.account,
     credentials: readCredentialStoreHealthForDoctor(layout.secretsDir),
+    diagnostics: readAutoDiagnosticsSharingForDoctor(layout.adeDir),
   };
   const rows = evaluateDoctorRows(input);
   return {
@@ -964,5 +1024,6 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     relayHealth,
     account: input.account,
     credentials: input.credentials,
+    diagnostics: input.diagnostics,
   };
 }

@@ -107,9 +107,34 @@ export type DiagnosticUploadRequest = {
   token?: string | null;
   /** Already resolved by the caller; see `resolveDiagnosticsUploadBaseUrl`. */
   baseUrl: string;
+  /**
+   * True when ADE decided to send this, rather than a person pressing a button.
+   *
+   * The route stores it so the two populations stay separable: an automatic
+   * report is one nobody chose to file, and reading them as if a user had
+   * would badly misread which failures people actually care about.
+   */
+  auto?: boolean;
+  /**
+   * The failure that triggered an automatic send — a short code such as
+   * `brain_crash_looping`, never text. Shape is `/^[a-z][a-z0-9_-]{0,47}$/`;
+   * anything else is dropped here rather than sent for the Worker to refuse.
+   */
+  failureCode?: string | null;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 };
+
+/**
+ * Mirror of the account directory route's `failureCode` shape.
+ *
+ * Exported because the auto-send ledger has to reject a code BEFORE it spends
+ * one of the day's three sends on a request this uploader would then strip. The
+ * Worker keeps its own copy (`apps/account-directory/src/diagnostics.ts`) on
+ * purpose — it is a separate deploy unit and must not import from the app — but
+ * inside this process there is exactly one.
+ */
+export const FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
 
 export async function uploadDiagnosticReport(
   request: DiagnosticUploadRequest,
@@ -117,10 +142,13 @@ export async function uploadDiagnosticReport(
   const report = request.report;
   if (!report.trim()) return { ok: false, reason: "rejected" };
 
+  const failureCode = request.failureCode?.trim() ?? "";
   const body = JSON.stringify({
     report,
     ...(request.installId ? { installId: request.installId } : {}),
     ...(request.appVersion ? { appVersion: request.appVersion } : {}),
+    ...(request.auto ? { auto: true } : {}),
+    ...(FAILURE_CODE_PATTERN.test(failureCode) ? { failureCode } : {}),
   });
   // Checked here as well as on the Worker so an oversized report fails without
   // spending one of the user's few daily uploads on a doomed request. The exact

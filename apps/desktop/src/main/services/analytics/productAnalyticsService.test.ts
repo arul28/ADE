@@ -1498,6 +1498,31 @@ describe("product analytics producers", () => {
     })).not.toHaveProperty("outcome");
   });
 
+  it("keeps only the three coarse outcomes of an automatic diagnostic send", () => {
+    // Auto-send answers one question: does the thing that fires without anyone
+    // asking actually go, get held back by its own budget, or fail. The failure
+    // code that triggered it, the surface, the upload reference and the saved
+    // report path are the local artifact and the toast — never the event.
+    for (const outcome of ["completed", "skipped_budget", "failed"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "connections",
+        action: "auto_sent",
+        outcome,
+      })).toEqual({ feature: "connections", action: "auto_sent", outcome });
+    }
+
+    const leaky = sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "connections",
+      action: "auto_sent",
+      outcome: "completed",
+      code: "brain_crash_looping",
+      surface: "project_recovery",
+      reference: "abcd1234",
+      report_path: "/Users/ada/Library/Application Support/ADE/diagnostic-reports/x.md",
+    });
+    expect(leaky).toEqual({ feature: "connections", action: "auto_sent", outcome: "completed" });
+  });
+
   it("maps automation completion and failed chat turns into canonical bounded outcomes", () => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);

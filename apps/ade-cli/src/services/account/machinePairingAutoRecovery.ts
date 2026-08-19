@@ -90,6 +90,19 @@ export type MachinePairingAutoRecoveryArgs = {
   hasAccountSession: () => boolean;
   budget: MachinePairingAutoRecoveryBudget;
   logger?: AutoRecoveryLogger;
+  /**
+   * The episode ended without recovering: the budget ran out, or the single
+   * allowed `snapshot_failed` cycle did not fix it. This is the point where the
+   * loop stops arguing and a machine stays disconnected with nobody at the
+   * console to notice, which is exactly the report worth having.
+   *
+   * Called at most once per episode, and never for an episode that recovered.
+   *
+   * Carries only the refusal code. `trigger` and `attempts` are already in the
+   * episode's own log lines, and a notification callback that ships the whole
+   * episode invites a listener to start making decisions from it.
+   */
+  onGaveUp?: (input: { code: string }) => void;
   /** Test seams. */
   pollMs?: number;
   delaysMs?: readonly number[];
@@ -160,6 +173,14 @@ export function createMachinePairingAutoRecovery(
   const delayFor = (attempt: number): number =>
     delays[Math.min(attempt, delays.length - 1)] ?? delays[delays.length - 1] ?? DEFAULT_POLL_MS;
 
+  const reportGaveUp = (code: string): void => {
+    try {
+      args.onGaveUp?.({ code });
+    } catch {
+      // A listener must never change what the recovery loop does next.
+    }
+  };
+
   const endEpisode = (reason: string): void => {
     if (!episode) return;
     const previous = episode;
@@ -229,6 +250,7 @@ export function createMachinePairingAutoRecovery(
           code,
           limit: spend.limit,
         });
+        reportGaveUp(code);
       }
       return;
     }
@@ -274,6 +296,7 @@ export function createMachinePairingAutoRecovery(
       // One cycle only: a publish leg that cannot read a snapshot is not a
       // pairing problem, and repeating the request will not make it one.
       episode.settled = true;
+      reportGaveUp(code);
       return;
     }
     episode.nextAttemptAtMs = now() + delayFor(episode.attempts);

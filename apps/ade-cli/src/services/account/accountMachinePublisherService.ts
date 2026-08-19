@@ -62,6 +62,16 @@ const PUBLISH_INFO_INTERVAL = 10;
  */
 const PRE_SUSPEND_PUBLISH_BUDGET_MS = 2_000;
 export const PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS = 120_000;
+/**
+ * How long the publish leg must keep failing before it is worth a diagnostic
+ * report rather than just a coarse analytics event.
+ *
+ * Deliberately its own constant rather than a reuse of the analytics threshold
+ * above: that one is tuned to "measurable", this one to "a human would call
+ * this broken", and the analytics event's `failing_minutes` floor is coupled to
+ * its own number.
+ */
+export const PUBLISH_FAILURE_DIAGNOSTICS_THRESHOLD_MS = 5 * 60_000;
 
 export type AccountMachineRegistration = {
   machineKey: string;
@@ -619,6 +629,17 @@ export function createAccountMachinePublisherService(options: {
   now?: () => number;
   logger?: AccountMachinePublisherLogger;
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
+  /**
+   * The publish leg has been failing for longer than a person would tolerate.
+   * Fired once per failure episode with the health state as the code, so
+   * automatic diagnostics can send one report for a machine that has quietly
+   * dropped out of the account directory.
+   *
+   * Carries only the code. How long it had been failing is already on the
+   * episode's log line and on the analytics event beside it, and the threshold
+   * that decides "long enough" lives here rather than in a listener.
+   */
+  onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
 }) {
   const heartbeatMs = Math.max(1_000, Math.floor(options.heartbeatMs ?? ACCOUNT_MACHINE_HEARTBEAT_MS));
   const relayStatePollMs = Math.max(
@@ -692,6 +713,8 @@ export function createAccountMachinePublisherService(options: {
     "Account-directory publishing has not started.",
   );
 
+  /** Edge-triggered like the analytics episode, on its own longer threshold. */
+  let sustainedFailureReported = false;
   const captureAnalytics = () => options.captureAnalytics;
   const publishFailureAnalytics = createEpisodeAnalytics({
     event: "ade_publish_failing",
@@ -830,7 +853,22 @@ export function createAccountMachinePublisherService(options: {
     };
     if (health.failingSinceMs == null) {
       publishFailureAnalytics.end();
-    } else if (args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS) {
+      sustainedFailureReported = false;
+    } else {
+      const failingMs = args.attemptAt - health.failingSinceMs;
+      if (!sustainedFailureReported && failingMs >= PUBLISH_FAILURE_DIAGNOSTICS_THRESHOLD_MS) {
+        // Set before the call so a throwing listener still consumes the
+        // episode: this must never become a per-attempt loop.
+        sustainedFailureReported = true;
+        try {
+          options.onSustainedFailure?.({ code: state });
+        } catch {
+          // Best effort; health recording is what matters here.
+        }
+      }
+    }
+    if (health.failingSinceMs != null
+      && args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS) {
       publishFailureAnalytics.report({
         dedupeValue: health.failingSinceMs,
         properties: {
@@ -1739,6 +1777,8 @@ export function createBrainAccountMachinePublisherService(options: {
   directoryBaseUrl?: () => string | null | undefined;
   logger: BrainAccountMachinePublisherLogger;
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
+  /** See the same option on `createAccountMachinePublisherService`. */
+  onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
   /**
    * Override the machine power source. Tests pass `null` to keep the brain's
    * poll and gap timers out of a suite; a host with a precise suspend hook can
@@ -1822,5 +1862,6 @@ export function createBrainAccountMachinePublisherService(options: {
     subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
     logger: options.logger,
     captureAnalytics: options.captureAnalytics,
+    onSustainedFailure: options.onSustainedFailure,
   });
 }
