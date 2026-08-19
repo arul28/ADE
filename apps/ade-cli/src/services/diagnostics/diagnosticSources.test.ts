@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildDiagnosticReport } from "./diagnosticReport";
 import {
   collectMachineDiagnosticSources,
+  collectMachineDiagnosticSourcesAsync,
   readFileHead,
   resolveMostRecentProjectRoot,
   type DiagnosticCommandRunner,
@@ -171,6 +172,98 @@ describe("collectMachineDiagnosticSources — service output streams", () => {
 
     expect(run).not.toHaveBeenCalled();
     expect(journal?.error).toBe("(not present)");
+  });
+});
+
+/**
+ * The same report, gathered without stopping the process that asks for it.
+ *
+ * These commands are the only part of the collection that can take seconds — a
+ * PowerShell `Export-ScheduledTask`, a `journalctl` — and the desktop runs the
+ * collection on Electron's main process, where a synchronous spawn freezes
+ * every window and every IPC call for the duration.
+ */
+describe("collectMachineDiagnosticSourcesAsync", () => {
+  function collectAsync(args: {
+    home: string;
+    platform?: NodeJS.Platform;
+    runCommandAsync?: (
+      command: string,
+      commandArgs: readonly string[],
+    ) => Promise<{ status: number | null; stdout: string } | null>;
+  }) {
+    return collectMachineDiagnosticSourcesAsync({
+      env: { ADE_HOME: path.join(args.home, ".ade") },
+      homeDir: args.home,
+      platform: args.platform ?? "darwin",
+      projectRoot: null,
+      readVolume: () => null,
+      runCommandAsync: args.runCommandAsync
+        ?? (async () => {
+          throw new Error("no command was expected");
+        }),
+    });
+  }
+
+  it("renders a command's output from the answer it awaited, not a blocking spawn", async () => {
+    const { home } = machineHome();
+    writeSystemdUnit(home);
+    const run = vi.fn(async (_command: string, _args: readonly string[]) => ({
+      status: 0,
+      stdout: "Aug 19 12:00:00 host ade[1]: brain.started\n",
+    }));
+
+    const sources = await collectAsync({ home, platform: "linux", runCommandAsync: run });
+    const journal = sources.logs.find((log) => log.label === "Background service (journal)");
+
+    // The prefetch and the collector have to agree on the exact command, or the
+    // report would say "(could not be read)" about a source that read fine.
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith(
+      "journalctl",
+      ["--user-unit", "com.ade.runtime.service", "--no-pager", "--lines", "200"],
+    );
+    expect(journal?.text).toContain("brain.started");
+  });
+
+  it("runs the Windows scheduled-task export ahead of the collection", async () => {
+    const { home } = machineHome();
+    const run = vi.fn(async (_command: string, _args: readonly string[]) => ({
+      status: 0,
+      stdout: "<Task><Actions><Exec><Command>powershell.exe</Command></Exec></Actions></Task>",
+    }));
+
+    const sources = await collectAsync({ home, platform: "win32", runCommandAsync: run });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(sources.serviceDefinition[1]?.text).toContain("<Command>powershell.exe</Command>");
+  });
+
+  it("spawns nothing on a platform or a machine with no command to run", async () => {
+    // macOS keeps every source in a file, and a Linux box with no unit
+    // installed has nothing to ask journald about. Either way the collection
+    // must not pay for a subprocess — the seam above throws if one is started.
+    const darwin = machineHome();
+    await expect(collectAsync({ home: darwin.home })).resolves.toBeTruthy();
+
+    const linux = machineHome();
+    const sources = await collectAsync({ home: linux.home, platform: "linux" });
+    expect(sources.logs.find((log) => log.label === "Background service (journal)")?.error)
+      .toBe("(not present)");
+  });
+
+  it("degrades to a noted absence when the prefetched command could not run", async () => {
+    const { home } = machineHome();
+    writeSystemdUnit(home);
+
+    const sources = await collectAsync({
+      home,
+      platform: "linux",
+      runCommandAsync: async () => null,
+    });
+
+    expect(sources.logs.find((log) => log.label === "Background service (journal)")?.error)
+      .toBe("(could not be read)");
   });
 });
 

@@ -169,10 +169,28 @@ describe("uploadDiagnosticReport", () => {
     await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl: fleet.fetchImpl }))
       .resolves.toEqual({ ok: false, reason: "unavailable" });
 
-    // A body that cannot be read falls back to the caller-scoped reading: the
-    // conservative one, since it only ever asks the user to wait.
+    // An EMPTY body falls back to the caller-scoped reading: the conservative
+    // one, since it only ever asks the user to wait.
     const unreadable = capture(new Response(null, { status: 429 }));
     await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl: unreadable.fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: "rate_limited" });
+  });
+
+  it("falls back to the caller's own limit when the 429 body throws instead of arriving", async () => {
+    // `new Response(null, …)` above is an empty body, not an unreadable one:
+    // its `text()` resolves to "" and never enters the catch. A stream that
+    // aborts mid-read does, and it has to reach the same conservative answer
+    // rather than an exception on a screen that is already showing a failure.
+    const rejectingBody = {
+      status: 429,
+      ok: false,
+      text: async () => {
+        throw new Error("aborted");
+      },
+    } as unknown as Response;
+    const { fetchImpl } = capture(rejectingBody);
+
+    await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl }))
       .resolves.toEqual({ ok: false, reason: "rate_limited" });
   });
 

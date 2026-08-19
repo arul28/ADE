@@ -11,7 +11,7 @@ import {
   type DiagnosticVolumeSpace,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticReport";
 import {
-  collectMachineDiagnosticSources,
+  collectMachineDiagnosticSourcesAsync,
   readLogTail,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticSources";
 import { readVolumeSpace } from "../storage/volume";
@@ -171,14 +171,6 @@ export async function collectDiagnosticReport(
   const env = deps.env ?? process.env;
   const at = deps.now?.() ?? new Date();
   const projectRoot = request.projectRoot?.trim() || null;
-  // Logs, volumes, notes and the redaction context are the same set the
-  // headless `ade report-issue` collects; the Electron-only extras below are
-  // the only thing this report adds.
-  const sources = collectMachineDiagnosticSources({
-    env,
-    projectRoot,
-    readVolume: volumeEntry,
-  });
 
   // Both optional steps ask the very subsystem the user is reporting as broken
   // -- the local runtime, and a recovery diagnosis that probes the brain's
@@ -186,7 +178,17 @@ export async function collectDiagnosticReport(
   // leave the "Report issue" button spinning, which is exactly the outcome
   // this collector promises can never happen. A synchronous throw out of
   // either one is caught here for the same reason.
-  const [osProductVersion, localRuntimeStatus, recoveryDiagnosis] = await Promise.all([
+  //
+  // The machine sources go in the same batch, and through the ASYNC collector:
+  // logs, volumes, notes and the redaction context are the same set the
+  // headless `ade report-issue` collects, but this is Electron's main process,
+  // so the platform commands behind them (a PowerShell `Export-ScheduledTask`,
+  // a `journalctl`) may not be spawned synchronously — they would freeze every
+  // window and every IPC call for as long as they take, on a report the user
+  // often did not ask for. The Electron-only extras below are the only thing
+  // this report adds.
+  const [sources, osProductVersion, localRuntimeStatus, recoveryDiagnosis] = await Promise.all([
+    collectMachineDiagnosticSourcesAsync({ env, projectRoot, readVolume: volumeEntry }),
     readMacProductVersion().catch(() => null),
     bestEffortStep(() => deps.getLocalRuntimeStatus?.() ?? null, deps.stepTimeoutMs),
     projectRoot && deps.diagnoseProject

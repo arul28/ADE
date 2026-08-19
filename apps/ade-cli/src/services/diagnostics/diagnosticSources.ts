@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -123,6 +123,10 @@ export type DiagnosticCommandRunner = (
   args: readonly string[],
 ) => { status: number | null; stdout: string } | null;
 
+/** Every diagnostic command runs under the same bounds, sync or async. */
+const DIAGNOSTIC_COMMAND_TIMEOUT_MS = 4_000;
+const DIAGNOSTIC_COMMAND_MAX_BUFFER = 2 * 1024 * 1024;
+
 export function runDiagnosticCommand(
   command: string,
   args: readonly string[],
@@ -130,16 +134,56 @@ export function runDiagnosticCommand(
   try {
     const result = spawnSync(command, [...args], {
       encoding: "utf8",
-      timeout: 4_000,
+      timeout: DIAGNOSTIC_COMMAND_TIMEOUT_MS,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 2 * 1024 * 1024,
+      maxBuffer: DIAGNOSTIC_COMMAND_MAX_BUFFER,
     });
     if (result.error) return null;
     return { status: result.status, stdout: typeof result.stdout === "string" ? result.stdout : "" };
   } catch {
     return null;
   }
+}
+
+/**
+ * The same command, the same bounds, off the event loop.
+ *
+ * Same answers as {@link runDiagnosticCommand}, deliberately: a nonzero exit is
+ * an answer the report renders as "(not present)", while a spawn failure, a
+ * timeout or an overrun buffer is `null` — "(could not be read)". `execFile`
+ * reports all four through one `error`, so the exit code is what tells them
+ * apart (it is a number only when the process actually ran and exited).
+ */
+export function runDiagnosticCommandAsync(
+  command: string,
+  args: readonly string[],
+): Promise<{ status: number | null; stdout: string } | null> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        command,
+        [...args],
+        {
+          encoding: "utf8",
+          timeout: DIAGNOSTIC_COMMAND_TIMEOUT_MS,
+          windowsHide: true,
+          maxBuffer: DIAGNOSTIC_COMMAND_MAX_BUFFER,
+        },
+        (error, stdout) => {
+          const text = typeof stdout === "string" ? stdout : "";
+          if (!error) {
+            resolve({ status: 0, stdout: text });
+            return;
+          }
+          const code = (error as NodeJS.ErrnoException & { code?: unknown }).code;
+          resolve(typeof code === "number" ? { status: code, stdout: text } : null);
+        },
+      );
+    } catch {
+      resolve(null);
+    }
+  });
 }
 
 /** A command's output as a report entry, with the same absence semantics. */
@@ -280,6 +324,126 @@ function projectLogsDir(projectRoot: string): string {
 }
 
 /**
+ * One external command the collector may need, named once.
+ *
+ * Both command sources are described HERE rather than at the site that renders
+ * them, because the desktop pre-runs them asynchronously (see
+ * {@link collectMachineDiagnosticSourcesAsync}) and a prefetch that decided on
+ * its own which commands to run would eventually run a different set than the
+ * collector asks for — and answer "(could not be read)" for a source that was
+ * perfectly readable.
+ */
+type DiagnosticCommandPlan = {
+  /** How the report names the source it could not read. */
+  display: string;
+  command: string;
+  args: string[];
+};
+
+/**
+ * The Windows scheduled task export, or null when we cannot even name it.
+ *
+ * Both the task name (which folds in the Windows user) and locating PowerShell
+ * can throw on a broken box; neither may take the report with it, and the
+ * reader still has to be told we looked.
+ */
+function windowsScheduledTaskPlan(env: NodeJS.ProcessEnv): DiagnosticCommandPlan | null {
+  try {
+    const taskName = resolveWindowsTaskName({ serviceName: resolveRuntimeServiceName(env) });
+    return {
+      display: `Export-ScheduledTask -TaskName "${taskName}"`,
+      command: windowsPowerShellCommand(),
+      args: buildWindowsExportTaskArgs(taskName),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The journald read, and whether the unit that would justify it is installed.
+ *
+ * The display name exists either way: a machine that never installed the
+ * service is never charged a subprocess to be told nothing, but the report
+ * still names the source it skipped.
+ */
+function journalPlan(
+  env: NodeJS.ProcessEnv,
+  homeDir: string,
+): DiagnosticCommandPlan & { installed: boolean } {
+  const serviceName = resolveRuntimeServiceName(env);
+  const unit = `${serviceName}.service`;
+  return {
+    display: `journalctl --user-unit ${unit}`,
+    command: "journalctl",
+    args: ["--user-unit", unit, "--no-pager", "--lines", "200"],
+    installed: fs.existsSync(systemdUnitPath(homeDir, serviceName)),
+  };
+}
+
+/** Every command this platform's report would run. At most one, today. */
+function planMachineDiagnosticCommands(args: {
+  env: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  homeDir: string;
+}): DiagnosticCommandPlan[] {
+  if (args.platform === "darwin") return [];
+  if (args.platform === "win32") {
+    const task = windowsScheduledTaskPlan(args.env);
+    return task ? [task] : [];
+  }
+  const journal = journalPlan(args.env, args.homeDir);
+  return journal.installed ? [journal] : [];
+}
+
+function diagnosticCommandKey(command: string, args: readonly string[]): string {
+  return JSON.stringify([command, ...args]);
+}
+
+/**
+ * Runs this machine's diagnostic commands up front and hands back a runner that
+ * answers from what they returned.
+ *
+ * The point is WHERE the waiting happens. The collector is synchronous by
+ * design — it is the one thing that has to work on a machine where nothing else
+ * does, and a headless `ade report-issue` wants it simple — but `spawnSync`
+ * inside it stops the whole process for as long as the command takes, and on
+ * Windows that command is a PowerShell `Export-ScheduledTask` bounded only by
+ * the 4s cap. In the desktop that process is Electron's main process, which
+ * means every IPC call, every window and every menu freezes with it, for a
+ * report the user very often did not ask for.
+ */
+export async function prefetchDiagnosticCommands(args: {
+  env: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  homeDir: string;
+  /** Test seam; production spawns for real. */
+  run?: (
+    command: string,
+    args: readonly string[],
+  ) => Promise<{ status: number | null; stdout: string } | null>;
+}): Promise<DiagnosticCommandRunner> {
+  const run = args.run ?? runDiagnosticCommandAsync;
+  const answers = new Map<string, { status: number | null; stdout: string } | null>();
+  await Promise.all(
+    planMachineDiagnosticCommands(args).map(async (plan) => {
+      let answer: { status: number | null; stdout: string } | null = null;
+      try {
+        answer = await run(plan.command, plan.args);
+      } catch {
+        answer = null;
+      }
+      answers.set(diagnosticCommandKey(plan.command, plan.args), answer);
+    }),
+  );
+  // A command that was not planned reads as unreadable rather than silently
+  // falling back to a blocking spawn, which would give back the freeze this
+  // exists to remove. The plan and the collector share the builders above, so
+  // there is nothing to miss.
+  return (command, commandArgs) => answers.get(diagnosticCommandKey(command, commandArgs)) ?? null;
+}
+
+/**
  * How this machine's background service is defined, per platform.
  *
  * macOS and Linux keep it in one file. Windows keeps it in two — the generated
@@ -306,27 +470,13 @@ function collectServiceDefinition(args: {
         resolveWindowsServiceLauncherPath({ env: args.env, serviceName }),
       ),
     ];
-    // Both the task name (which folds in the Windows user) and locating
-    // PowerShell can throw on a broken box; neither may take the report with
-    // it, and the reader still has to be told we looked.
-    const task = (() => {
-      try {
-        const taskName = resolveWindowsTaskName({ serviceName });
-        return {
-          taskName,
-          shell: windowsPowerShellCommand(),
-          args: buildWindowsExportTaskArgs(taskName),
-        };
-      } catch {
-        return null;
-      }
-    })();
+    const task = windowsScheduledTaskPlan(args.env);
     entries.push(
       task
         ? readCommandOutput(
           "Scheduled task",
-          `Export-ScheduledTask -TaskName "${task.taskName}"`,
-          task.shell,
+          task.display,
+          task.command,
           task.args,
           args.run,
           { maxBytes: SERVICE_DEFINITION_MAX_BYTES },
@@ -376,21 +526,19 @@ function collectServiceOutputLogs(args: {
       readLogTail("Background service (stdout)", path.join(args.runtimeDir, "launchd.out.log")),
     ];
   }
-  const serviceName = resolveRuntimeServiceName(args.env);
-  const unit = `${serviceName}.service`;
-  const display = `journalctl --user-unit ${unit}`;
+  const journal = journalPlan(args.env, args.homeDir);
   // Gated on the unit file, so a machine that never installed the service is
   // never charged a subprocess to be told nothing — the definition section
   // already reports the missing unit, which is the more useful fact anyway.
-  if (!fs.existsSync(systemdUnitPath(args.homeDir, serviceName))) {
-    return [{ label: "Background service (journal)", path: display, error: "(not present)" }];
+  if (!journal.installed) {
+    return [{ label: "Background service (journal)", path: journal.display, error: "(not present)" }];
   }
   return [
     readCommandOutput(
       "Background service (journal)",
-      display,
-      "journalctl",
-      ["--user-unit", unit, "--no-pager", "--lines", "200"],
+      journal.display,
+      journal.command,
+      journal.args,
       args.run,
     ),
   ];
@@ -503,4 +651,37 @@ export function collectMachineDiagnosticSources(
     notes,
     redaction: diagnosticRedactionContext(projectRoot),
   };
+}
+
+/**
+ * The same sources, without stopping the process to gather them.
+ *
+ * Identical output to {@link collectMachineDiagnosticSources} — the file reads
+ * are the same synchronous ones, and they are measured in milliseconds — but
+ * the external commands are run first and awaited, so nothing here blocks for
+ * the seconds a PowerShell `Export-ScheduledTask` or a `journalctl` can take.
+ * This is the entry point for a process that is serving something else while a
+ * report is built — today Electron's main process, where the block froze every
+ * window and every IPC call. A one-shot `ade report-issue` has nothing to hold
+ * up and keeps the plain synchronous one.
+ *
+ * The platform inputs are resolved here, once, and handed to both halves, so
+ * the commands that are pre-run are exactly the commands that get asked for.
+ */
+export async function collectMachineDiagnosticSourcesAsync(
+  options: MachineDiagnosticSourceOptions & {
+    /** Test seam for the prefetch; production spawns for real. */
+    runCommandAsync?: (
+      command: string,
+      args: readonly string[],
+    ) => Promise<{ status: number | null; stdout: string } | null>;
+  } = {},
+): Promise<MachineDiagnosticSources> {
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const homeDir = options.homeDir ?? os.homedir();
+  const runCommand = options.runCommand
+    ? options.runCommand
+    : await prefetchDiagnosticCommands({ env, platform, homeDir, run: options.runCommandAsync });
+  return collectMachineDiagnosticSources({ ...options, env, platform, homeDir, runCommand });
 }

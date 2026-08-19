@@ -113,6 +113,34 @@ describe("DiagnosticsSharingSection manual send", () => {
     }
   });
 
+  it("does not claim a local report copy exists when an oversized report cannot be saved", async () => {
+    // The local copy is written before the upload is attempted, so a `too_large`
+    // refusal usually comes back with a path — and then the sentence about
+    // opening it is true and the button that does so is there.
+    mountSection({
+      sendManual: async () => ({ ok: false, reason: "too_large", reportPath: "/tmp/report.md" }),
+    });
+    await pressSend();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain("It's saved on this computer");
+    });
+    expect(screen.getByRole("button", { name: "View report" })).toBeTruthy();
+    cleanup();
+
+    // When the copy could not be written the main process answers without one,
+    // and telling this user to open a file sends them looking for something
+    // that is not there.
+    mountSection({ sendManual: async () => ({ ok: false, reason: "too_large" }) });
+    await pressSend();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain(
+        "This report is too big to send, and ADE couldn't save a copy on this computer.",
+      );
+    });
+    expect(screen.getByRole("status").textContent).not.toContain("It's saved on this computer");
+    expect(screen.queryByRole("button", { name: "View report" })).toBeNull();
+  });
+
   it("says out loud that a click does not turn automatic reports back on", async () => {
     mountSection({ sharing: { ...SHARING_ON, enabled: false } });
 

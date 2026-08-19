@@ -82,7 +82,14 @@ function describeManualSendFailure(result: Extract<DiagnosticsManualSendResult, 
     case "unavailable":
       return "ADE isn't accepting reports right now. Try again later.";
     case "too_large":
-      return "This report is too big to send. It's saved on this computer — open it and attach it to a GitHub issue.";
+      // Two situations, and only one of them leaves the user something to do.
+      // The local copy is written before the upload is attempted, so it usually
+      // exists — but when it could not be written the main process answers
+      // without a path, and telling someone to open a file that is not there
+      // sends them looking for it. The offer is made only when it is real.
+      return result.reportPath
+        ? "This report is too big to send. It's saved on this computer — open it and attach it to a GitHub issue."
+        : "This report is too big to send, and ADE couldn't save a copy on this computer.";
     default:
       return "ADE couldn't send the report. Check your connection and try again.";
   }

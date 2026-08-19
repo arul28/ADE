@@ -335,6 +335,44 @@ describe("manual diagnostics budget", () => {
     expect(isAutoDiagnosticsEnabled(filePath)).toBe(false);
   });
 
+  it("completes distinct manual reservations claimed in the same millisecond", () => {
+    const filePath = stateFile();
+
+    // Manual sends have no failure class, so they ALL carry `user_requested`
+    // and the timestamp is the only thing left to tell two of them apart. Two
+    // that shared one would be a single reservation as far as completion is
+    // concerned: the second annotation would land on the first one's entry,
+    // overwriting its path and reference and leaving its own blank.
+    const first = claimManual(filePath, T0);
+    const second = claimManual(filePath, T0);
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(true);
+    if (!first.allowed || !second.allowed) return;
+    expect(second.atMs).not.toBe(first.atMs);
+
+    const complete = (atMs: number, reportPath: string, reference: string) =>
+      completeAutoDiagnosticsSend({
+        filePath,
+        failureCode: "user_requested",
+        atMs,
+        reportPath,
+        reference,
+        // Manual sends are never pending in production — the person is looking
+        // at the answer. It is set here only because the pending list is the
+        // one readback for what a completion actually recorded.
+        pending: true,
+        kind: "manual",
+        now: () => T0,
+      });
+    complete(first.atMs, "/tmp/first.md", "aaaa1111");
+    complete(second.atMs, "/tmp/second.md", "bbbb2222");
+
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([
+      { failureCode: "user_requested", reportPath: "/tmp/first.md", reference: "aaaa1111" },
+      { failureCode: "user_requested", reportPath: "/tmp/second.md", reference: "bbbb2222" },
+    ]);
+  });
+
   it("only annotates an entry of the kind that was claimed", () => {
     const filePath = stateFile();
     expect(claimManual(filePath, T0).allowed).toBe(true);

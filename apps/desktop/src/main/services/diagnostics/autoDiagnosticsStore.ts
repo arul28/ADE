@@ -513,9 +513,26 @@ export function claimManualDiagnosticsSend(args: {
       if (recent.filter((entry) => entry.kind === "manual").length >= MAX_MANUAL_DIAGNOSTICS_PER_WINDOW) {
         return { state: null, result: { allowed: false, reason: "daily_limit" } };
       }
+      // A reservation is identified by (code, atMs, kind) — that triple is what
+      // `completeAutoDiagnosticsSend` finds its entry by. Automatic sends are
+      // unique in it by construction, since at most one per code exists in a
+      // window. Manual ones are not: they ALL carry `user_requested`, so two
+      // claimed in the same millisecond would be indistinguishable, and the
+      // second completion would land on the first one's entry — overwriting its
+      // path and reference and leaving its own blank. Stepping past a collision
+      // costs nothing against a 24-hour window and keeps every reservation
+      // individually completable.
+      let atMs = nowMs;
+      while (recent.some((entry) =>
+        entry.kind === "manual"
+        && entry.code === MANUAL_DIAGNOSTICS_FAILURE_CODE
+        && entry.atMs === atMs)
+      ) {
+        atMs += 1;
+      }
       const entry: AutoDiagnosticsSend = {
         code: MANUAL_DIAGNOSTICS_FAILURE_CODE,
-        atMs: nowMs,
+        atMs,
         source: args.source,
         kind: "manual",
         reportPath: null,
@@ -524,7 +541,7 @@ export function claimManualDiagnosticsSend(args: {
       };
       return {
         state: { ...state, sends: [...recent, entry].slice(-MAX_RETAINED_SENDS) },
-        result: { allowed: true, atMs: nowMs },
+        result: { allowed: true, atMs },
       };
     },
     () => ({ allowed: false, reason: "state_unavailable" }),
@@ -533,6 +550,12 @@ export function claimManualDiagnosticsSend(args: {
 
 /**
  * Records the result of a claimed send.
+ *
+ * The reservation is found by (code, atMs, kind) — the triple both claims mint
+ * uniquely, the automatic one because a code gets a single slot per window and
+ * the manual one because it steps past a timestamp already taken. Nothing here
+ * can restore that uniqueness after the fact, which is why it is established
+ * where the entry is written rather than guessed at here.
  *
  * `pending` is how a send reaches the user's screen at all. The brain has no
  * renderer and the desktop cannot tell whether one received its notice, so a

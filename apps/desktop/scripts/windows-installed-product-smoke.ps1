@@ -72,41 +72,85 @@ function Stop-LaunchedApp {
   $script:launchedApp = $null
 }
 
+# Is this process the installed product's own executable?
+#
+# A function rather than an inline filter because the question is asked TWICE
+# about the same PID - once to decide what to kill, and again to decide whether
+# a failed kill actually left something behind - and two spellings of "is this
+# ours" is how the second one drifts into accepting anything.
+function Test-IsInstalledAppProcess($Process, [string]$NormalizedAppExe) {
+  $executablePath = [string]$Process.ExecutablePath
+  if ([string]::IsNullOrWhiteSpace($executablePath)) { return $false }
+  try {
+    return [string]::Equals(
+      [IO.Path]::GetFullPath($executablePath),
+      $NormalizedAppExe,
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  } catch {
+    # A path this cannot even normalize is not the one we installed.
+    return $false
+  }
+}
+
+# Same question for the channel's brain supervisor, which is identified by the
+# launcher it was started with rather than by its image path.
+function Test-IsChannelSupervisorProcess($Process, [string]$LauncherPrefix) {
+  if (([string]$Process.Name) -notmatch '^powershell(?:\.exe)?$') { return $false }
+  return ([string]$Process.CommandLine).IndexOf($LauncherPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
+# Re-reads one PID after a `taskkill` that reported failure.
+#
+# `Readable` is the part that matters: an empty answer and an unreadable process
+# table are the same value out of `Get-CimInstance`, and treating "we could not
+# look" as "it is gone" would let a kill this script never verified pass as a
+# success. So the two are reported apart, and the caller fails closed on the
+# second. The process itself comes back rather than a verdict because Windows
+# hands a freed PID to whoever asks next: only the caller's own ownership test
+# can say whether the thing wearing the number is the thing it tried to kill.
+function Get-ProcessAfterKill([string]$TargetProcessId) {
+  try {
+    $found = @(Get-CimInstance Win32_Process -Filter "ProcessId = $TargetProcessId" -ErrorAction Stop)
+  } catch {
+    return @{ Readable = $false; Process = $null }
+  }
+  return @{ Readable = $true; Process = $(if ($found.Count -gt 0) { $found[0] } else { $null }) }
+}
+
 function Stop-InstalledProductProcesses {
   $normalizedAppExe = [IO.Path]::GetFullPath($appExe)
   $channelAdeHome = Join-Path ([Environment]::GetFolderPath("UserProfile")) $homeName
   $launcherPrefix = Join-Path $channelAdeHome "runtime\brain-service-"
   $allProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-  $supervisors = @($allProcesses | Where-Object {
-    $_.Name -match '^powershell(?:\.exe)?$' -and
-      ([string]$_.CommandLine).IndexOf($launcherPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0
-  })
+  $supervisors = @($allProcesses | Where-Object { Test-IsChannelSupervisorProcess $_ $launcherPrefix })
   foreach ($supervisor in $supervisors) {
     if ((Invoke-TaskKill ([string]$supervisor.ProcessId)) -ne 0) {
       # The process list is a snapshot, so a supervisor can exit on its own
       # between the snapshot and the kill - which is the state we wanted. Only
       # a PID that is still there AND still the channel-owned supervisor is a
       # real failure.
-      $remaining = Get-CimInstance Win32_Process -Filter "ProcessId = $($supervisor.ProcessId)" -ErrorAction SilentlyContinue
-      if ($remaining -and ([string]$remaining.CommandLine).IndexOf($launcherPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      $after = Get-ProcessAfterKill ([string]$supervisor.ProcessId)
+      if (-not $after.Readable) {
+        throw "Could not verify that ADE supervisor $($supervisor.ProcessId) stopped before repair."
+      }
+      if ($after.Process -and (Test-IsChannelSupervisorProcess $after.Process $launcherPrefix)) {
         throw "Could not stop channel-owned ADE supervisor $($supervisor.ProcessId) before repair."
       }
     }
   }
-  $processes = @($allProcesses | Where-Object {
-    try {
-      -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
-        [string]::Equals(
-          [IO.Path]::GetFullPath([string]$_.ExecutablePath),
-          $normalizedAppExe,
-          [StringComparison]::OrdinalIgnoreCase
-        )
-    } catch { $false }
-  })
+  $processes = @($allProcesses | Where-Object { Test-IsInstalledAppProcess $_ $normalizedAppExe })
   foreach ($process in $processes) {
     if ((Invoke-TaskKill ([string]$process.ProcessId)) -ne 0) {
-      $remaining = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ProcessId)" -ErrorAction SilentlyContinue
-      if ($remaining) {
+      # Same snapshot race, and the same rule as the loop above: "some process
+      # has this PID" is not "our process is still running", because the PID may
+      # have been recycled the moment it exited. Only the installed product's
+      # own executable is a real failure here.
+      $after = Get-ProcessAfterKill ([string]$process.ProcessId)
+      if (-not $after.Readable) {
+        throw "Could not verify that ADE process $($process.ProcessId) stopped before repair."
+      }
+      if ($after.Process -and (Test-IsInstalledAppProcess $after.Process $normalizedAppExe)) {
         throw "Could not stop channel-owned ADE process $($process.ProcessId) before repair."
       }
     }
