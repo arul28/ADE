@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.62] - 2026-08-19
+
+### Automatic diagnostic reports
+
+- Failures now send the redacted diagnostic report on their own: project recovery, renderer crash, failed update, pairing give-up, and stuck machine publish.
+- Every automatic send announces itself with a message offering View (read the exact report) and Turn off (stop future sends).
+- On by default, with a Diagnostics sharing section in Settings and a truthful row in `ade doctor`; turning it off takes effect immediately across the app and the CLI.
+- Budgets bound the volume: one report per failure kind per day and a small daily cap per machine, plus a fleet-wide server ceiling that refuses quietly rather than surfacing an error.
+- Reports carry the same redaction as the manual report, and a refused or failed send is never shown to the user as a failure.
+
 ## [1.2.61] - 2026-08-19
 
 ### Account and machines
@@ -1624,7 +1634,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.61...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.62...HEAD
+[1.2.62]: https://github.com/arul28/ADE/compare/v1.2.61...v1.2.62
 [1.2.61]: https://github.com/arul28/ADE/compare/v1.2.60...v1.2.61
 [1.2.60]: https://github.com/arul28/ADE/compare/v1.2.59...v1.2.60
 [1.2.59]: https://github.com/arul28/ADE/compare/v1.2.58...v1.2.59
