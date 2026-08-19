@@ -205,7 +205,13 @@ function Remove-ChannelStartupWithoutPackagedCli(
       if ($supervisorPid -gt 0) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId = $supervisorPid" -ErrorAction SilentlyContinue
         if ($process -and ([string]$process.CommandLine).IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+          # Best effort: the supervisor may already be gone, and taskkill exits
+          # nonzero when it is. This is the only native command in the script and
+          # nothing after it resets `$LASTEXITCODE`, so leaving it set would make
+          # the uninstall cleanup report failure for a process that is already
+          # stopped - exactly the state it wanted.
           & taskkill.exe /PID $supervisorPid /T /F | Out-Null
+          $global:LASTEXITCODE = 0
         }
       }
     } catch {

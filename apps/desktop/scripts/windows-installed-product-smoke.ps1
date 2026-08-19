@@ -48,9 +48,26 @@ function Invoke-Uninstaller([bool]$BestEffort = $false) {
   }
 }
 
+# Native executables set `$LASTEXITCODE`, and a `pwsh` GitHub Actions step ends
+# with `exit $LASTEXITCODE` - so whichever native command this script happened to
+# run last decides the step result, no matter what the script itself concluded.
+# `taskkill.exe` is the only native command here, and it exits nonzero for the
+# benign "there is no running instance of the task" case, which is exactly the
+# state a cleanup kill wants. Every call therefore goes through this helper: it
+# hands the exit code to the caller that cares and always leaves `$LASTEXITCODE`
+# at 0, so a passing smoke cannot be failed by its own teardown.
+function Invoke-TaskKill([string]$TargetProcessId) {
+  & taskkill.exe /PID $TargetProcessId /T /F | Out-Null
+  $exitCode = $LASTEXITCODE
+  $global:LASTEXITCODE = 0
+  return $exitCode
+}
+
 function Stop-LaunchedApp {
   if ($launchedApp -and -not $launchedApp.HasExited) {
-    & taskkill.exe /PID $launchedApp.Id /T /F | Out-Null
+    # Cleanup only: the intent is "it is not running", so a kill that fails
+    # because the process (or a child in its tree) already exited is success.
+    [void](Invoke-TaskKill ([string]$launchedApp.Id))
   }
   $script:launchedApp = $null
 }
@@ -65,8 +82,7 @@ function Stop-InstalledProductProcesses {
       ([string]$_.CommandLine).IndexOf($launcherPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0
   })
   foreach ($supervisor in $supervisors) {
-    & taskkill.exe /PID ([string]$supervisor.ProcessId) /T /F | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-TaskKill ([string]$supervisor.ProcessId)) -ne 0) {
       throw "Could not stop channel-owned ADE supervisor $($supervisor.ProcessId) before repair."
     }
   }
@@ -81,8 +97,7 @@ function Stop-InstalledProductProcesses {
     } catch { $false }
   })
   foreach ($process in $processes) {
-    & taskkill.exe /PID ([string]$process.ProcessId) /T /F | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-TaskKill ([string]$process.ProcessId)) -ne 0) {
       $remaining = Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ProcessId)" -ErrorAction SilentlyContinue
       if ($remaining) {
         throw "Could not stop channel-owned ADE process $($process.ProcessId) before repair."
