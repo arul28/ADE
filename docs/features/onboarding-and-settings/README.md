@@ -385,6 +385,17 @@ Renderer — settings:
   never exposes or accepts credentials. Native iOS is independently default-on
   without an in-app preference; hosted web keeps its own affirmative browser
   choice. See [logging and product analytics](../../logging.md).
+- `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx`
+  — the second Privacy consent control (`general.diagnostics-sharing`, anchored
+  `#diagnostics-sharing`): **"Share diagnostics with ADE when something
+  breaks"**, default **on**, machine-scoped. It is the off switch for the
+  automatic redacted report ADE sends by itself when it hits a failure it has
+  already classified; the same switch appears on the toast that announces each
+  send. `web: "hidden"` in the manifest, because the consent lives in
+  `~/.ade/secrets/diagnostics-autosend.json` and a browser has no such file.
+  Analytics consent and diagnostics consent are deliberately separate flags, so
+  turning one off never silently turns off the other. See
+  [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
   auth, credential-specific permission diagnostics, structured validation
@@ -514,7 +525,14 @@ Renderer — settings:
   CLI availability is app basics, not an integration. The
   `EnvironmentSection.tsx` wrapper that used to pair them is gone.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
-  — shared section headers (`SettingsSectionShell`) and toggle styling.
+  — shared section headers (`SettingsSectionShell`), toggle styling, and
+  `ConsentToggleSection`: the one privacy consent control — labelled switch,
+  plain-words body, live footnote, persistent error line — that both
+  `ProductAnalyticsSection` and `DiagnosticsSharingSection` render. It always
+  reads the real persisted value rather than rendering optimism, and when the
+  preload bridge predates the setting it renders disabled instead of pretending
+  to work; a consent switch showing "off" for something that is on is the one
+  failure mode this component exists to prevent.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
   — theme, chat appearance, and terminal text. Renders `ChatAppearancePreview`
   and writes local user preferences through `appStore` (font size,
@@ -1266,7 +1284,7 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and privacy. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance | `AppearanceSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, launch-prompt clipboard, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |

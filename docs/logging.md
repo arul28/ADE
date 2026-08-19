@@ -309,9 +309,13 @@ product question is only whether the thing that fires without anyone asking
 works and whether its guardrail holds, so nothing else crosses: not the failure
 code that triggered it, not the surface, not the upload reference, not the saved
 report path, and not whether the user then turned the feature off — that is a
-setting, not an event. `skipped_disabled` is deliberately absent: an
-installation that has withdrawn consent emits nothing at all, so counting its
-non-sends would be the one measurement it declined. A per-outcome one-hour
+setting, not an event. Two of the five outcomes `runAutoDiagnosticsSend` can
+return deliberately emit nothing. `skipped_disabled`: an installation that has
+withdrawn consent emits nothing at all, so counting its non-sends would be the
+one measurement it declined. `skipped_ineligible` — an unusable failure code, or
+a send already in flight — because nothing was built, spent or refused, so there
+is no outcome to report; it is a caller bug or a race, and it belongs in the
+local log, which is where it goes. A per-outcome one-hour
 deduplication key bounds the worst case to 24 accepted events per outcome — 72
 across all three — per installation per UTC day, and the client budget of three
 sends a day makes the real number far smaller; this sits inside the existing
