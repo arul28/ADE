@@ -134,6 +134,7 @@ import type { createGitOperationsService } from "../../../../desktop/src/main/se
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
+import type { LaneEventsService } from "../../../../desktop/src/main/services/laneEvents/laneEventsService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
@@ -1076,6 +1077,8 @@ type SyncHostServiceArgs = {
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
+  /** Lane story service; forwarded to the default remote-command service. */
+  getLaneEventsService?: () => LaneEventsService | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
@@ -2088,6 +2091,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
+    getLaneEventsService: args.getLaneEventsService,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,

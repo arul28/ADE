@@ -2934,6 +2934,33 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_pack_events_project_created on pack_events(project_id, created_at)");
   db.run("create index if not exists idx_pack_events_pack_key_created on pack_events(project_id, pack_key, created_at)");
 
+  // Lane story (docs/features/lanes/lane-story.md). Single text PK and NO
+  // unique index so it auto-CRRs and replicates to phones; dedupe is app-side
+  // on (lane_id, kind, ref). Deliberately NOT in RETAINED_EVENT_LOG_TABLES —
+  // a 30-day prune would erase the story it exists to tell. It is bounded by
+  // milestone-only kinds, deletion with its lane, and a per-lane row cap.
+  db.run(`
+    create table if not exists lane_events (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      kind text not null,
+      ts text not null,
+      actor_kind text not null,
+      actor_session_id text,
+      actor_provider text,
+      actor_model text,
+      actor_login text,
+      attribution text,
+      ref text,
+      branch_ref text,
+      payload_json text not null,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_lane_events_lane_ts on lane_events(lane_id, ts)");
+  db.run("create index if not exists idx_lane_events_lane_kind_ref on lane_events(lane_id, kind, ref)");
+
   db.run(`
     create table if not exists pack_versions (
       id text primary key,

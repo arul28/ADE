@@ -8518,3 +8518,122 @@ describe("per-chat runtime routing", () => {
     }
   });
 });
+
+describe("preload lane story bridge", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  const mountBridge = async (invoke: ReturnType<typeof vi.fn>) => {
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    return { bridge: (globalThis as any).__adeBridge, on, removeListener };
+  };
+
+  it("routes lane story reads through the bound project runtime", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const listResult = {
+      laneId: "lane-1",
+      events: [],
+      branches: [],
+      chats: [],
+      baseRef: "main",
+      hasDerived: true,
+      generatedAt: "2026-08-18T00:00:00.000Z",
+    };
+    const summaryResult = { summaries: [], generatedAt: "2026-08-18T00:00:00.000Z" };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) return { windowId: 1, project: null, binding };
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        if (request?.domain === "lane_events" && request.action === "list") {
+          return { ok: true, domain: request.domain, action: request.action, result: listResult, statusHints: {} };
+        }
+        if (request?.domain === "lane_events" && request.action === "summary") {
+          return { ok: true, domain: request.domain, action: request.action, result: summaryResult, statusHints: {} };
+        }
+      }
+      return undefined;
+    });
+
+    const { bridge } = await mountBridge(invoke);
+    await expect(bridge.laneEvents.list({ laneId: "lane-1", limit: 50 })).resolves.toEqual(listResult);
+    await expect(bridge.laneEvents.summary({ laneIds: ["lane-1"] })).resolves.toEqual(summaryResult);
+
+    const actions = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, p]) => (p as { request: unknown }).request);
+    expect(actions).toEqual([
+      { domain: "lane_events", action: "list", args: { laneId: "lane-1", limit: 50 } },
+      { domain: "lane_events", action: "summary", args: { laneIds: ["lane-1"] } },
+    ]);
+  });
+
+  it("falls back to an empty story when no runtime is bound", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) return { windowId: 1, project: null, binding: null };
+      return undefined;
+    });
+    const { bridge } = await mountBridge(invoke);
+
+    const list = await bridge.laneEvents.list({ laneId: "lane-9" });
+    expect(list.laneId).toBe("lane-9");
+    expect(list.events).toEqual([]);
+    expect(list.branches).toEqual([]);
+    expect(list.chats).toEqual([]);
+    expect(list.baseRef).toBe("main");
+    expect(list.hasDerived).toBe(false);
+    expect(typeof list.generatedAt).toBe("string");
+
+    const summary = await bridge.laneEvents.summary({ laneIds: ["lane-9"] });
+    expect(summary.summaries).toEqual([]);
+    expect(typeof summary.generatedAt).toBe("string");
+  });
+
+  it("registers and removes the lane events IPC listener on subscribe/unsubscribe", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const { bridge, on, removeListener } = await mountBridge(invoke);
+
+    const callback = vi.fn();
+    const unsubscribe = bridge.laneEvents.onChanged(callback);
+    expect(on).toHaveBeenCalledWith(IPC.laneEventsChanged, expect.any(Function));
+
+    const listener = on.mock.calls.filter(([channel]) => channel === IPC.laneEventsChanged).at(-1)?.[1];
+    expect(typeof listener).toBe("function");
+    const event = { laneId: "lane-1", kinds: ["commit"], at: "2026-08-18T00:00:00.000Z" };
+    listener({}, event);
+    expect(callback).toHaveBeenCalledWith(event);
+
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC.laneEventsChanged, listener);
+  });
+});

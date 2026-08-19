@@ -4452,3 +4452,156 @@ button:active, [role="button"]:active {
   }
   .ade-reasoning-slider-fill { transition: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Lane story (Lanes tab overhaul experiment)
+   ═══════════════════════════════════════════════════════════ */
+
+/*
+ * Aurora field behind the story canvas. Three large accent blobs drifting on a
+ * 38s cycle — slow enough to read as depth rather than motion. `contain: strict`
+ * keeps it off the canvas's layout/paint path, and it never takes a pointer
+ * event: the canvas above it owns all interaction.
+ */
+.ade-lane-story-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  contain: strict;
+  z-index: 0;
+  /* Light surfaces need a much weaker tint; one number, not a second gradient stack. */
+  --ade-story-aurora-strength: 1;
+}
+
+/*
+ * The gradients live on an oversized child that is bigger than its clipping
+ * parent, so the drift can be expressed as `transform` instead of
+ * `background-position`. Animating background-position repaints the whole
+ * gradient stack every frame; a transform on a composited layer costs the
+ * compositor a matrix and the main thread nothing.
+ */
+.ade-lane-story-bg::before {
+  content: "";
+  position: absolute;
+  inset: -40%;
+  background:
+    radial-gradient(ellipse 60% 45% at 30% 35%, color-mix(in srgb, var(--color-accent) calc(14% * var(--ade-story-aurora-strength)), transparent) 0%, transparent 62%),
+    radial-gradient(ellipse 55% 40% at 68% 62%, color-mix(in srgb, var(--color-accent) calc(11% * var(--ade-story-aurora-strength)), transparent) 0%, transparent 58%),
+    radial-gradient(ellipse 45% 35% at 52% 88%, color-mix(in srgb, var(--color-warning) calc(7% * var(--ade-story-aurora-strength)), transparent) 0%, transparent 55%);
+  will-change: transform;
+  animation: ade-lane-story-aurora 38s ease-in-out infinite;
+}
+
+[data-theme="light"] .ade-lane-story-bg {
+  --ade-story-aurora-strength: 0.45;
+}
+
+@keyframes ade-lane-story-aurora {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(9%, 4%, 0) scale(1.04); }
+  66% { transform: translate3d(-5%, -7%, 0) scale(1.02); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+}
+
+.ade-lane-story-scroll {
+  position: relative;
+  z-index: 1;
+  scrollbar-width: thin;
+}
+
+.ade-lane-story-row:hover {
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent) !important;
+}
+
+/* Two-line clamp for the card message. */
+.ade-lane-story-card-message {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.35;
+}
+
+.ade-lane-story-card {
+  transition: box-shadow 140ms ease, transform 140ms ease;
+}
+
+.ade-lane-story-card:hover {
+  transform: translateY(-1px);
+}
+
+/* PR chips: stacked at rest, fanned on hover. */
+.ade-lane-story-prstack .ade-lane-story-prchip {
+  transition: transform 160ms ease, opacity 160ms ease, margin-left 160ms ease;
+}
+
+.ade-lane-story-prstack:hover .ade-lane-story-prchip {
+  transform: none !important;
+  opacity: 1 !important;
+  margin-left: 4px !important;
+}
+
+/* Hover-expand key, bottom-left of the canvas. */
+.ade-lane-story-key {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+  border: 1px solid var(--color-border);
+}
+
+.ade-lane-story-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ade-lane-story-key-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.ade-lane-story-key-label {
+  font-size: 9px;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width 180ms ease, opacity 180ms ease;
+}
+
+.ade-lane-story-key:hover .ade-lane-story-key-label {
+  max-width: 70px;
+  opacity: 1;
+}
+
+/* Heat scrubber, bottom-right of the canvas. */
+.ade-lane-story-scrubber {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 3;
+  padding: 5px 6px 3px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg) 86%, transparent);
+  border: 1px solid var(--color-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-lane-story-bg::before {
+    animation: none;
+  }
+  .ade-lane-story-card,
+  .ade-lane-story-prstack .ade-lane-story-prchip,
+  .ade-lane-story-key-label {
+    transition: none;
+  }
+}

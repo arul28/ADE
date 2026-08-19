@@ -18,6 +18,7 @@ import { createProjectState } from "./infra/projectState";
 import { withFallbackProxy } from "./infra/proxy";
 import { TerminalRegistry } from "./infra/registries";
 import { createLanesNamespace } from "./lanes";
+import { createLaneEventsNamespace } from "./laneEvents";
 import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
 import { createPrsNamespace } from "./prs";
@@ -106,6 +107,7 @@ export function createAdeWebAdapter(
     project: createProjectNamespace(infra),
     remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),
+    laneEvents: createLaneEventsNamespace(infra),
     sessions,
     agentChat: createAgentChatNamespace(infra),
     personalChats: createPersonalChatsNamespace(infra),

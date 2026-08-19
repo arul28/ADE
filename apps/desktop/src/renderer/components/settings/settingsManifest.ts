@@ -162,6 +162,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Privacy",
   },
   {
+    id: "general.experiments",
+    label: "Experiments",
+    keywords: ["experiments", "labs", "lanes", "timeline", "story", "beta"],
+    tab: "general",
+    anchor: "experiments",
+    // The flags live in the renderer's own preferences blob, so they work in
+    // the browser exactly as they do on desktop — and stay per-install.
+    scope: "app",
+    web: "browser",
+    group: "Experiments",
+  },
+  {
     id: "general.about",
     label: "About ADE",
     keywords: ["version", "build", "license", "logs", "support"],

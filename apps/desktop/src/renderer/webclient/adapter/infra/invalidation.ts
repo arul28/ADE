@@ -92,6 +92,10 @@ const TABLE_DOMAINS: Readonly<Record<string, readonly InvalidationDomain[]>> = {
   lane_linear_issues: ["lanes"],
   lane_linear_issue_links: ["lanes"],
   lane_state_snapshots: ["lanes"],
+  // The lane story reads live on the lanes surface, and web has no runtime
+  // push for them — this classification IS how a hosted timeline learns a new
+  // commit or PR transition landed.
+  lane_events: ["lanes"],
   lane_detail_snapshots: ["lanes"],
   lane_list_snapshots: ["lanes"],
   local_lane_storage_state: ["lanes"],

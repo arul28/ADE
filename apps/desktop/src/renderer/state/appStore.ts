@@ -93,6 +93,15 @@ function normalizeChatUserMinimapEnabled(value: unknown): boolean {
   return value !== false;
 }
 
+/**
+ * Experiments default OFF. Anything but a literal `true` — missing key, older
+ * blob, junk from a hand-edited localStorage — leaves the experiment off, so a
+ * user never lands in an unfinished surface by accident.
+ */
+function normalizeExperimentFlag(value: unknown): boolean {
+  return value === true;
+}
+
 /** Vertical rhythm in agent chat transcript only (row gaps + bubble padding scale). */
 export type ChatTranscriptDensity = "compact" | "comfortable" | "spacious";
 export const CHAT_TRANSCRIPT_DENSITY_IDS: ChatTranscriptDensity[] = ["compact", "comfortable", "spacious"];
@@ -788,6 +797,8 @@ type PersistedUserPreferences = {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  /** Lanes tab story timeline (Settings → General → Experiments). Default off. */
+  experimentsLanesStoryEnabled: boolean;
   /** Set true the first time the user changes the chat font size; locks the
    *  large-screen auto-size so it never overrides their choice again. */
   userOverrodeChatFontSize: boolean;
@@ -855,6 +866,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
+      experimentsLanesStoryEnabled: normalizeExperimentFlag(parsed.experimentsLanesStoryEnabled),
       userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
     };
   } catch {
@@ -901,6 +913,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
     chatShellGeometry: "default",
+    experimentsLanesStoryEnabled: false,
     userOverrodeChatFontSize: false,
   };
 }
@@ -933,6 +946,7 @@ function persistUserPreferencesFrom(state: {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  experimentsLanesStoryEnabled: boolean;
   userOverrodeChatFontSize: boolean;
 }) {
   persistUserPreferences({
@@ -954,6 +968,7 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
+    experimentsLanesStoryEnabled: state.experimentsLanesStoryEnabled,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
@@ -1106,6 +1121,8 @@ export type AppState = {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  /** Experiments → "Lanes tab overhaul". Off unless the user opted in. */
+  experimentsLanesStoryEnabled: boolean;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -1255,6 +1272,7 @@ export type AppState = {
   setChatTranscriptDensity: (density: ChatTranscriptDensity) => void;
   setChatChromeTint: (tint: ChatChromeTint) => void;
   setChatShellGeometry: (geometry: ChatShellGeometry) => void;
+  setExperimentsLanesStoryEnabled: (enabled: boolean) => void;
   /** Resets only theme + chat font size (narrow restore — per product spec). */
   resetThemeAndChatFontDefaults: () => void;
   setTerminalPreferences: (
@@ -1528,6 +1546,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   chatTranscriptDensity: initialUserPreferences.chatTranscriptDensity,
   chatChromeTint: initialUserPreferences.chatChromeTint,
   chatShellGeometry: initialUserPreferences.chatShellGeometry,
+  experimentsLanesStoryEnabled: initialUserPreferences.experimentsLanesStoryEnabled,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -1985,6 +2004,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, chatUserMinimapEnabled: enabled });
       return { chatUserMinimapEnabled: enabled };
+    }),
+  setExperimentsLanesStoryEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, experimentsLanesStoryEnabled: enabled });
+      return { experimentsLanesStoryEnabled: enabled };
     }),
   setChatTranscriptDensity: (density) =>
     set((prev) => {
@@ -2928,6 +2952,7 @@ export function createProjectAppStore(
     chatTranscriptDensity: rootState.chatTranscriptDensity,
     chatChromeTint: rootState.chatChromeTint,
     chatShellGeometry: rootState.chatShellGeometry,
+    experimentsLanesStoryEnabled: rootState.experimentsLanesStoryEnabled,
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     onboardingEnabled: rootState.onboardingEnabled,
     didYouKnowEnabled: rootState.didYouKnowEnabled,
@@ -2943,6 +2968,7 @@ export function createProjectAppStore(
     setAgentTurnCompletionSoundQuietWhenFocused: rootState.setAgentTurnCompletionSoundQuietWhenFocused,
     setChatFontSizePx: rootState.setChatFontSizePx,
     setChatUserMinimapEnabled: rootState.setChatUserMinimapEnabled,
+    setExperimentsLanesStoryEnabled: rootState.setExperimentsLanesStoryEnabled,
     setChatTranscriptDensity: rootState.setChatTranscriptDensity,
     setChatChromeTint: rootState.setChatChromeTint,
     setChatShellGeometry: rootState.setChatShellGeometry,

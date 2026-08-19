@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
@@ -9,6 +9,7 @@ import {
   selectActiveProjectStateKey,
   useAppStore,
   useAppStoreApi,
+  useRootAppStore,
   type LaneInspectorTab,
 } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
@@ -21,6 +22,13 @@ import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
 import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
+import { LaneStoryViewControl, useLaneStoryView } from "./story/LaneStoryViewControl";
+
+/**
+ * Lane story body (Settings → Experiments → "Lanes tab overhaul"). Lazy so the
+ * experiment costs the off-state bundle nothing but the tiny view control.
+ */
+const LaneStoryBody = lazy(() => import("./story/LaneStoryBody"));
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import {
   consumeLaunchedLanesHighlight,
@@ -421,6 +429,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const keybindings = useAppStore((s) => s.keybindings);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  // Lane story experiment: off → this page renders exactly as it does today.
+  // Root store: app-scoped experiment flag; surface stores only snapshot it at creation.
+  const lanesStoryEnabled = useRootAppStore((state) => state.experimentsLanesStoryEnabled);
+  const { view: laneStoryView, setView: setLaneStoryView } = useLaneStoryView(activeProjectStateKey);
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
@@ -2628,6 +2640,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Render ---- */
 
+  /**
+   * The Git ▾ sheet in the Lane story timeline mounts the *same* Git Actions
+   * pane the tiling region mounts, with the same props — the fullscreen surface
+   * is used so the pane never suppresses itself as a duplicate inline body.
+   */
+  const renderLaneStoryGitActions = useCallback((laneId: string) => {
+    const config = getPaneConfigs(laneId, "git-actions-fullscreen")["git-actions"];
+    return config.renderChildren({ minimized: false });
+  }, [getPaneConfigs]);
+
   return (
     <div data-route="lanes" className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
@@ -3086,6 +3108,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
         {/* Spacer */}
         <div style={{ flex: 1, height: 1 }} />
+
+        {/* Lane story view switch (experiment only) */}
+        {lanesStoryEnabled ? (
+          <LaneStoryViewControl view={laneStoryView} onChange={setLaneStoryView} />
+        ) : null}
 
         {/* Reset grid + Stats */}
         {visibleLaneIds.length > 0 ? (
@@ -3556,8 +3583,22 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         bannerBudget={laneBannerBudget}
       />
 
-      {/* Floating pane tiling layout */}
-      {visibleLaneIds.length === 0 ? (
+      {/* Lane story (experiment) replaces the pane tiling entirely */}
+      {lanesStoryEnabled ? (
+        <Suspense fallback={<div className="flex-1 min-h-0" />}>
+          <LaneStoryBody
+            lanes={filteredLanes}
+            lanePrTagsByLaneId={lanePrTagsByLaneId}
+            selectedLaneId={selectedLaneId}
+            view={laneStoryView}
+            onViewChange={setLaneStoryView}
+            onSelectLane={selectLane}
+            renderGitActions={renderLaneStoryGitActions}
+            active={active}
+          />
+        </Suspense>
+      ) : /* Floating pane tiling layout */
+      visibleLaneIds.length === 0 ? (
         <div className={lanesLoading && sortedLanes.length === 0 ? "flex-1 min-h-0 flex" : "flex-1 flex items-center justify-center"}>
           {sortedLanes.length === 0 ? (
             lanesLoading ? (

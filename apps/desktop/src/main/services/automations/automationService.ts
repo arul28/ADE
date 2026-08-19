@@ -2599,6 +2599,7 @@ export function createAutomationService({
         name: laneName,
         description,
         ...(parentLaneId ? { parentLaneId } : {}),
+        origin: { source: "automation", automationRuleId: rule.id ?? null },
       });
       trigger.laneId = lane.id;
       trigger.laneName = lane.name;
@@ -2916,6 +2917,7 @@ export function createAutomationService({
     const lane = await laneService.create({
       name: candidate,
       description,
+      origin: { source: "automation", automationRuleId: rule.id ?? null },
     });
     trigger.laneId = lane.id;
     trigger.laneName = lane.name;

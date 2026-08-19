@@ -24,6 +24,8 @@ import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
+import type { LaneEventsService } from "../laneEvents/laneEventsService";
+import type { LaneCreationOrigin, LaneEventActor } from "../../../shared/types/laneEvents";
 import type {
   ArchiveAndReclaimLaneArgs,
   ArchiveAndReclaimLaneResult,
@@ -1119,6 +1121,7 @@ export function createLaneService({
   onLinearIssueLinked,
   onLinearIssueSessionLinked,
   teardownDeps,
+  getLaneEventsService,
   logger: injectedLogger
 }: {
   db: AdeDb;
@@ -1146,6 +1149,12 @@ export function createLaneService({
     linkedAt: string;
   }) => void | Promise<void>;
   teardownDeps?: LaneDeleteTeardownDeps;
+  /**
+   * Late-bound because the lane events service is built after the lane service
+   * (it reads lane rows). Every call through it is best-effort: the lane story
+   * must never be able to fail a lane operation.
+   */
+  getLaneEventsService?: () => LaneEventsService | null;
   logger?: Logger;
 }) {
   const logger: Logger = injectedLogger ?? {
@@ -3137,6 +3146,7 @@ export function createLaneService({
     folder?: string;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
+    origin?: LaneCreationOrigin | null;
   }): Promise<LaneSummary> => {
     const laneId = randomUUID();
     const now = new Date().toISOString();
@@ -3316,6 +3326,8 @@ export function createLaneService({
       lane: summary,
     });
 
+    recordLaneCreation(summary, args.origin ?? null);
+
     return summary;
   };
 
@@ -3485,6 +3497,74 @@ export function createLaneService({
       onDeleteEvent({ type: "lane-delete", progress: cloneLaneDeleteProgress(progress) });
     } catch (err) {
       logger.warn("lane.delete.broadcast_failed", { laneId: progress.laneId, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  /**
+   * Record a lane-story event. Every writer in this service goes through here
+   * so a story failure can never surface as a lane operation failure.
+   */
+  const recordLaneEvent = (input: Parameters<LaneEventsService["record"]>[0]): void => {
+    const service = getLaneEventsService?.();
+    if (!service) return;
+    void Promise.resolve()
+      .then(() => service.record(input))
+      .catch((err) => {
+        logger.warn("lane.events.record_failed", {
+          laneId: input.laneId,
+          kind: input.kind,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  };
+
+  /**
+   * `lane_created` on the new lane, plus `lane_spawned` on the lane the
+   * originating chat lives in when they differ — that pair is what lets the
+   * story show a lane branching out of a conversation in another lane.
+   */
+  const recordLaneCreation = (summary: LaneSummary, origin: LaneCreationOrigin | null): void => {
+    const at = new Date().toISOString();
+    const source = origin?.source ?? "unknown";
+    const actor: LaneEventActor = origin?.chatSessionId
+      ? { kind: "agent", chatSessionId: origin.chatSessionId, attribution: "session" }
+      : source === "human"
+        ? { kind: "human", login: origin?.actorLogin ?? null, attribution: "session" }
+        : source === "automation"
+          ? { kind: "system", attribution: "session" }
+          : { kind: "unknown" };
+    recordLaneEvent({
+      laneId: summary.id,
+      kind: "lane_created",
+      ts: at,
+      actor,
+      ref: summary.id,
+      branchRef: summary.branchRef,
+      payload: {
+        source,
+        branchRef: summary.branchRef,
+        baseRef: summary.baseRef,
+        fromLaneId: origin?.fromLaneId ?? null,
+        fromChatSessionId: origin?.chatSessionId ?? null,
+        linearIssueIdentifier: origin?.linearIssueIdentifier ?? null,
+        automationRuleId: origin?.automationRuleId ?? null,
+      },
+    });
+    if (origin?.fromLaneId && origin.fromLaneId !== summary.id) {
+      recordLaneEvent({
+        laneId: origin.fromLaneId,
+        kind: "lane_spawned",
+        ts: at,
+        actor,
+        ref: summary.id,
+        branchRef: null,
+        payload: {
+          laneId: summary.id,
+          laneName: summary.name,
+          branchRef: summary.branchRef,
+          fromChatSessionId: origin.chatSessionId ?? null,
+        },
+      });
     }
   };
 
@@ -3664,6 +3744,12 @@ export function createLaneService({
     db.run("delete from conflict_proposals where project_id = ? and (lane_id = ? or peer_lane_id = ?)", [projectId, laneId, laneId]);
     db.run("delete from conflict_predictions where project_id = ? and (lane_a_id = ? or lane_b_id = ?)", [projectId, laneId, laneId]);
     db.run("delete from checkpoints where lane_id = ? and project_id = ?", [laneId, projectId]);
+    // The story goes with its lane. The synchronous delete keeps the row
+    // cleanup atomic with the rest of this block; `forgetLane` only drops the
+    // service's in-memory bookkeeping for the dead lane (queued notification,
+    // cap counter) so the same DELETE is not issued twice.
+    db.run("delete from lane_events where lane_id = ?", [laneId]);
+    getLaneEventsService?.()?.forgetLane(laneId);
     db.run("delete from session_deltas where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run(
       `
@@ -4274,7 +4360,13 @@ export function createLaneService({
       return true;
     },
 
-    async create({ name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue }: CreateLaneArgs): Promise<LaneSummary> {
+    /**
+     * `origin` is accepted alongside the declared args rather than added to
+     * `CreateLaneArgs` so the shared IPC/RPC contract stays unchanged: callers
+     * that know why a lane is being made pass it, everyone else lands on
+     * `source: "unknown"`.
+     */
+    async create({ name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue, origin }: CreateLaneArgs): Promise<LaneSummary> {
       const requestedStartPoint = startPoint?.trim() ?? "";
       if (parentLaneId) {
         const parent = getLaneRow(parentLaneId);
@@ -4334,6 +4426,7 @@ export function createLaneService({
           parentLaneId: parent.lane_type === "primary" ? null : parent.id,
           branchName,
           linearIssue,
+          origin: origin ?? null,
         });
       }
 
@@ -4359,6 +4452,7 @@ export function createLaneService({
         parentLaneId: null,
         branchName,
         linearIssue,
+        origin: origin ?? null,
       });
     },
 
@@ -4406,6 +4500,7 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
+          origin: args.origin ?? null,
         });
       }
 
@@ -4425,6 +4520,7 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
+          origin: args.origin ?? null,
         });
       }
 
@@ -4439,6 +4535,7 @@ export function createLaneService({
         folder: args.folder,
         branchName: args.branchName,
         linearIssue: args.linearIssue ?? null,
+        origin: args.origin ?? null,
       });
     },
 
@@ -4525,6 +4622,7 @@ export function createLaneService({
           baseRef: source.branch_ref,
           startPoint: sourceHeadSha,
           parentLaneId: source.id,
+          origin: args.origin ?? null,
         });
         createdLaneId = createdLane.id;
 
@@ -5041,6 +5139,25 @@ export function createLaneService({
 
       const refreshed = (await listLanes({ includeArchived: false, includeStatus: true })).find((lane) => lane.id === row.id);
       if (!refreshed) throw new Error(`Lane not found after branch switch: ${row.id}`);
+      if (previousBranchRef !== targetBranchRef) {
+        const eventTs = new Date().toISOString();
+        recordLaneEvent({
+          laneId: row.id,
+          kind: "branch_switched",
+          ts: eventTs,
+          actor: { kind: "human", attribution: "session" },
+          // Switching A -> B -> A is three real moves, so the dedupe ref carries
+          // the direction AND the moment; a bare branch name would silently drop
+          // every switch after the first.
+          ref: `${previousBranchRef ?? ""}->${targetBranchRef}@${eventTs}`,
+          branchRef: targetBranchRef,
+          payload: {
+            fromBranchRef: previousBranchRef ?? null,
+            toBranchRef: targetBranchRef,
+            baseRef: refreshed.baseRef,
+          },
+        });
+      }
       return {
         lane: refreshed,
         previousBranchRef,

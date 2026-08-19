@@ -323,6 +323,8 @@ type FormatterId =
   | "automation-cleanups"
   | "search-results"
   | "search-status"
+  | "lane-events"
+  | "lane-events-summary"
   | "external-sessions"
   | "storage-snapshot"
   | "storage-compress"
@@ -1665,6 +1667,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade lanes list --text                         Show lane stack graph and branch names (adopts new worktrees)
     $ ade lanes show <lane> --text                  Inspect one lane status
+    $ ade lane events [<lane>] --text               Read the lane story: commits, PRs, CI, reviews and chats, and
+                                                    which agent chat (or human) did each one. Defaults to $ADE_LANE_ID.
+                                                    Filters: --since <iso>, --limit <n>, --persisted-only
+    $ ade lane events-summary --lanes a,b --text    Compact per-lane digest (event/commit/PR counts, last event)
     $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
     $ ade lane drift resolve --lane <lane> --switch-back
                                                     Restore the worktree to the lane's recorded branch (refuses if dirty)
@@ -4095,6 +4101,53 @@ function buildLanePlan(args: string[]): CliPlan {
       label: "lanes list",
       steps: [actionCallStep("result", "list_lanes", input)],
       visualizer: visual || !noVisual ? "lanes" : undefined,
+    };
+  }
+  // The lane story: what happened in this lane and who did it. Reads only —
+  // events are written by the runtime, never by the CLI.
+  if (sub === "events" || sub === "story" || sub === "timeline") {
+    const laneId = requireValue(
+      readLaneId(args) ?? firstStandalonePositional(args) ?? process.env.ADE_LANE_ID ?? null,
+      "laneId",
+    );
+    const sinceTs = readValue(args, ["--since", "--since-ts"]);
+    if (sinceTs != null && Number.isNaN(Date.parse(sinceTs))) {
+      throw new CliUsageError("lane events --since must be an ISO-8601 timestamp, e.g. 2026-08-01T00:00:00Z.");
+    }
+    const limit = readIntOption(args, ["--limit"], undefined);
+    if (limit != null && limit <= 0) {
+      throw new CliUsageError("lane events --limit must be a positive integer.");
+    }
+    const input: JsonObject = { laneId };
+    if (sinceTs) input.sinceTs = sinceTs;
+    if (limit != null) input.limit = limit;
+    if (readFlag(args, ["--persisted-only", "--no-derived"])) input.persistedOnly = true;
+    return {
+      kind: "execute",
+      label: "lane events",
+      formatter: "lane-events",
+      steps: [actionStep("result", "lane_events", "list", input)],
+    };
+  }
+  if (sub === "events-summary" || sub === "stories") {
+    const lanesRaw =
+      readValue(args, ["--lanes", "--lane-ids"]) ??
+      readLaneId(args) ??
+      firstStandalonePositional(args) ??
+      process.env.ADE_LANE_ID ??
+      null;
+    const laneIds = (lanesRaw ?? "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (!laneIds.length) {
+      throw new CliUsageError("lane events-summary requires --lanes <id[,id...]> (or ADE_LANE_ID).");
+    }
+    return {
+      kind: "execute",
+      label: "lane events summary",
+      formatter: "lane-events-summary",
+      steps: [actionStep("result", "lane_events", "summary", { laneIds })],
     };
   }
   if (sub === "show" || sub === "status") {
@@ -19541,6 +19594,139 @@ function formatDiffSummary(value: unknown): string {
   );
 }
 
+/**
+ * The lane story as a compact readable narrative: one line per event, grouped
+ * by the branch it happened on, then the chats that worked the lane. The story
+ * is what a human reads to answer "what happened here and who did it", so the
+ * actor column is never blank — an unattributed event prints `unknown` rather
+ * than empty space.
+ */
+function formatLaneEventActor(actor: unknown): string {
+  if (!isRecord(actor)) return "unknown";
+  const kind = asString(actor.kind) ?? "unknown";
+  const provider = asString(actor.provider);
+  const model = asString(actor.model);
+  const login = asString(actor.login);
+  if (kind === "agent") {
+    const detail = [provider, model].filter(Boolean).join("\u00b7");
+    return detail ? `agent(${detail})` : "agent";
+  }
+  if (kind === "human") return login ? `you(${login})` : "you";
+  if (kind === "bot") return login ? `bot(${login})` : "bot";
+  if (kind === "system") return "system";
+  return "unknown";
+}
+
+function laneEventClock(ts: unknown, withDate = false): string {
+  const raw = asString(ts);
+  if (!raw) return withDate ? "----- --:--" : "--:--";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return withDate ? "----- --:--" : "--:--";
+  const clock = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+  if (!withDate) return clock;
+  const day = `${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+  return `${day} ${clock}`;
+}
+
+/**
+ * A single-day story reads fine as bare HH:MM; the moment it spans a calendar
+ * boundary the bare clock is ambiguous, so every row gains its MM-DD.
+ */
+function laneEventsSpanDays(events: readonly JsonObject[]): boolean {
+  let firstDay: string | null = null;
+  for (const event of events) {
+    const raw = asString(event.ts);
+    if (!raw) continue;
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) continue;
+    const day = `${parsed.getFullYear()}-${parsed.getMonth()}-${parsed.getDate()}`;
+    if (firstDay == null) firstDay = day;
+    else if (day !== firstDay) return true;
+  }
+  return false;
+}
+
+function laneEventSubject(event: JsonObject): string {
+  const payload = isRecord(event.payload) ? event.payload : {};
+  const candidate =
+    asString(payload.subject) ??
+    asString(payload.title) ??
+    asString(payload.toBranchRef) ??
+    asString(payload.laneName) ??
+    asString(payload.onto) ??
+    asString(payload.checksStatus) ??
+    asString(payload.reviewStatus) ??
+    asString(payload.outcome) ??
+    asString(payload.source) ??
+    "";
+  return truncateCell(candidate, 64);
+}
+
+function formatLaneEvents(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const laneId = asString(record.laneId) ?? "";
+  const baseRef = asString(record.baseRef) ?? "main";
+  const events = firstArray(value, ["events"]);
+  const lines: string[] = [`ADE lane story${laneId ? ` ${laneId}` : ""} (base ${baseRef})`];
+  if (events.length === 0) {
+    lines.push("(no events recorded yet)");
+    return lines.join("\n");
+  }
+
+  const withDate = laneEventsSpanDays(events);
+  const byBranch = new Map<string, JsonObject[]>();
+  for (const event of events) {
+    const branch = asString(event.branchRef) ?? "(lane)";
+    const bucket = byBranch.get(branch);
+    if (bucket) bucket.push(event);
+    else byBranch.set(branch, [event]);
+  }
+  for (const [branch, branchEvents] of byBranch) {
+    lines.push("", branch);
+    for (const event of branchEvents) {
+      const cells = [
+        laneEventClock(event.ts, withDate),
+        truncateCell(asString(event.kind) ?? "", 16).padEnd(16),
+        truncateCell(formatLaneEventActor(event.actor), 28).padEnd(28),
+        truncateCell(asString(event.ref) ?? "", 12).padEnd(12),
+        laneEventSubject(event),
+      ];
+      lines.push(`  ${cells.join("  ").trimEnd()}`);
+    }
+  }
+
+  const chats = firstArray(value, ["chats"]);
+  if (chats.length > 0) {
+    lines.push("", "Chats");
+    for (const chat of chats) {
+      const label = [asString(chat.provider), asString(chat.model)].filter(Boolean).join("\u00b7");
+      lines.push(
+        `  ${truncateCell(asString(chat.status) ?? "unknown", 14).padEnd(14)}  `
+        + `${truncateCell(label || "unknown", 28).padEnd(28)}  `
+        + `${truncateCell(asString(chat.title) ?? asString(chat.chatSessionId) ?? "", 48)}`.trimEnd(),
+      );
+    }
+  }
+
+  const derived = record.hasDerived === true ? " (includes derived events)" : "";
+  lines.push("", `${events.length} event${events.length === 1 ? "" : "s"}${derived}`);
+  return lines.join("\n");
+}
+
+function formatLaneEventsSummary(value: unknown): string {
+  const summaries = firstArray(value, ["summaries"]);
+  if (summaries.length === 0) return "ADE lane stories\n(no lanes)";
+  const rows = summaries.map((summary) => [
+    truncateCell(asString(summary.laneId) ?? "", 28),
+    String(typeof summary.eventCount === "number" ? summary.eventCount : 0),
+    String(typeof summary.commitCount === "number" ? summary.commitCount : 0),
+    String(typeof summary.prCount === "number" ? summary.prCount : 0),
+    truncateCell(asString(summary.lastEventKind) ?? "", 16),
+    truncateCell(asString(summary.lastEventTs) ?? "", 24),
+  ]);
+  return `ADE lane stories\n${renderTable(["lane", "events", "commits", "prs", "last", "at"], rows, "(no lanes)")}`;
+}
+
 function formatSearchResults(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const results = firstArray(value, ["results", "items"]);
@@ -21055,6 +21241,10 @@ function formatTextOutput(
       return formatSearchResults(value);
     case "search-status":
       return formatSearchStatus(value);
+    case "lane-events":
+      return formatLaneEvents(value);
+    case "lane-events-summary":
+      return formatLaneEventsSummary(value);
     case "external-sessions":
       return formatExternalSessions(value);
     case "sync-status":

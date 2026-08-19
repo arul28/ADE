@@ -37,6 +37,7 @@ import type { createGitOperationsService } from "../../../../desktop/src/main/se
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
+import type { LaneEventsService } from "../../../../desktop/src/main/services/laneEvents/laneEventsService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
@@ -155,6 +156,13 @@ type SyncServiceArgs = {
    */
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
+  /**
+   * Lane story service (docs/features/lanes/lane-story.md). Lazy for the same
+   * reason as the external-sessions getter: it is constructed after
+   * createSyncService in main.ts/bootstrap.ts. Unset simply means the sync
+   * host answers `lanes.listEvents` with an empty story.
+   */
+  getLaneEventsService?: () => LaneEventsService | null;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
@@ -731,6 +739,7 @@ export function createSyncService(args: SyncServiceArgs) {
     linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     getExternalSessionsService: args.getExternalSessionsService,
+    getLaneEventsService: args.getLaneEventsService,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,

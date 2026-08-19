@@ -373,7 +373,12 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ name, description, parentLaneId }) => {
       try {
-        const lane = await deps.laneService.create({ name, description, parentLaneId });
+        const lane = await deps.laneService.create({
+          name,
+          description,
+          parentLaneId,
+          origin: { source: "agent-cli", chatSessionId: deps.currentSessionId ?? null },
+        });
         return {
           success: true,
           lane,
@@ -1433,7 +1438,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.gitCommit = tool({
     description: "Create a git commit in a named lane. By default stages all changes (stageAll: true). Use gitStatus first to see what will be committed. Never commits to the CTO's own lane by default — laneId is required.",
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to commit in. Required — there is no default."), message: z.string().min(1).describe("Commit message."), stageAll: z.boolean().optional().default(true).describe("Stage all changes before committing.") }),
-    execute: ({ laneId, message, stageAll }) => gitGuard(() => deps.gitService!.commit({ laneId: requireMutationLaneId(laneId, "gitCommit"), message, stageAll })),
+    execute: ({ laneId, message, stageAll }) => gitGuard(() => deps.gitService!.commit({ laneId: requireMutationLaneId(laneId, "gitCommit"), message, stageAll, actorSessionId: deps.currentSessionId ?? null })),
   });
 
   tools.gitPush = tool({

@@ -1839,3 +1839,95 @@ describe("gitOperationsService.checkoutBranch", () => {
     expect(switchBranch).toHaveBeenCalledWith({ laneId: "lane-1", branchName: "feature/foo" });
   });
 });
+
+describe("gitOperationsService lane story recording", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Builds a service whose lane story writer and head hook record their order. */
+  function createRecordingService() {
+    const order: string[] = [];
+    const recordCommitRange = vi.fn(async (args: Record<string, unknown>) => {
+      order.push(`record:${String(args.attribution)}`);
+    });
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    mockGit.getHeadSha
+      .mockResolvedValueOnce("sha-pre")
+      .mockResolvedValueOnce("sha-post")
+      .mockResolvedValue("sha-post");
+
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: vi.fn().mockReturnValue({
+          baseRef: "main",
+          branchRef: "ade/lane-1",
+          worktreePath: "/tmp/ade-lane",
+          laneType: "worktree",
+        }),
+        invalidateListCache: vi.fn(),
+      } as any,
+      operationService: {
+        start: vi.fn().mockReturnValue({ operationId: "op-1" }),
+        finish: vi.fn(),
+        list: vi.fn().mockReturnValue([]),
+        listHeadChanges: vi.fn().mockReturnValue([]),
+      } as any,
+      projectConfigService: { get: () => ({ effective: { ai: {} } }) } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => false,
+        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
+        generateCommitMessage: vi.fn(),
+      } as any,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as any,
+      onHeadChanged: () => {
+        order.push("headChanged");
+      },
+      getLaneEventsService: () => ({ recordCommitRange }) as any,
+    });
+    return { service, recordCommitRange, order };
+  }
+
+  it("credits a Git-pane commit to the human and writes it before the head watcher runs", async () => {
+    const { service, recordCommitRange, order } = createRecordingService();
+
+    await service.commit({ laneId: "lane-1", message: "do the thing" } as any);
+
+    expect(recordCommitRange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        preHeadSha: "sha-pre",
+        postHeadSha: "sha-post",
+        actorSessionId: null,
+        attribution: "session-human",
+      }),
+    );
+    // Awaited first, so the attributed row always wins the dedupe race.
+    expect(order).toEqual(["record:session-human", "headChanged"]);
+  });
+
+  it("credits a chat's commit to that session", async () => {
+    const { service, recordCommitRange } = createRecordingService();
+
+    await service.commit({ laneId: "lane-1", message: "agent work", actorSessionId: "chat-3" } as any);
+
+    expect(recordCommitRange).toHaveBeenCalledWith(
+      expect.objectContaining({ actorSessionId: "chat-3", attribution: "session-agent" }),
+    );
+  });
+
+  it("does not record a pull as lane commits — that history is upstream's", async () => {
+    const { service, recordCommitRange, order } = createRecordingService();
+
+    await service.pull({ laneId: "lane-1" } as any);
+
+    expect(recordCommitRange).not.toHaveBeenCalled();
+    expect(order).toEqual(["headChanged"]);
+  });
+});

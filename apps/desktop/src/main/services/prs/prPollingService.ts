@@ -1,4 +1,6 @@
 import type { Logger } from "../logging/logger";
+import type { LaneEventsService } from "../laneEvents/laneEventsService";
+import type { LaneEventActor, PrPayload } from "../../../shared/types/laneEvents";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "./prService";
 import type { AdeDb } from "../state/kvDb";
@@ -117,6 +119,7 @@ export function createPrPollingService({
   isGithubRelayHealthy,
   getGithubBackgroundPauseUntilMs,
   db,
+  getLaneEventsService,
 }: {
   logger: Logger;
   prService: ReturnType<typeof createPrService>;
@@ -145,6 +148,13 @@ export function createPrPollingService({
   getGithubBackgroundPauseUntilMs?: () => number | null | Promise<number | null>;
   /** Optional database handle used to persist `last_polled_at` per PR for delta polling. */
   db?: AdeDb;
+  /**
+   * Late-bound lane-story writer. Living here rather than in each host's
+   * `onPullRequestsChanged` is what gives desktop and the daemon the same PR
+   * events: this is the one place `previousState`/`previousChecksStatus`/
+   * `previousReviewStatus` are known.
+   */
+  getLaneEventsService?: () => LaneEventsService | null;
 }) {
   const DEFAULT_INTERVAL_MS = 60_000;
   const MIN_INTERVAL_MS = 5_000;
@@ -352,6 +362,34 @@ export function createPrPollingService({
         return;
       }
 
+      const recordLaneStoryPrEvent = (
+        pr: PrSummary,
+        kind: "pr_opened" | "pr_checks" | "pr_review" | "pr_merged" | "pr_closed",
+        ref: string,
+        actor: LaneEventActor,
+        at: string,
+      ): void => {
+        const laneEventsService = getLaneEventsService?.();
+        if (!laneEventsService || !pr.laneId) return;
+        const payload: PrPayload = {
+          prId: pr.id,
+          githubPrNumber: pr.githubPrNumber,
+          title: pr.title ?? null,
+          githubUrl: pr.githubUrl ?? null,
+          headBranch: pr.headBranch ?? null,
+          baseBranch: pr.baseBranch ?? null,
+          checksStatus: pr.checksStatus ?? null,
+          reviewStatus: pr.reviewStatus ?? null,
+          mergeMethod: pr.mergeMethod ?? null,
+          mergedByLogin: pr.mergedBy?.login ?? null,
+        };
+        void laneEventsService
+          .record({ laneId: pr.laneId, kind, ts: at, actor, ref, branchRef: pr.headBranch ?? null, payload })
+          .catch(() => {
+            // The lane story never interferes with polling.
+          });
+      };
+
       const changedPrs: PrSummary[] = [];
       const changes: Array<{
         pr: PrSummary;
@@ -373,6 +411,55 @@ export function createPrPollingService({
           || prev.reviewStatus !== pr.reviewStatus
           || prev.state !== pr.state;
         if (changed) {
+          // Lane story: milestones only, and only on a real transition — never
+          // once per poll. `pr_checks`/`pr_review` carry the new status AND the
+          // head sha in their dedupe ref: each push gets its own CI and review
+          // cycle recorded, while a restart that re-polls the same head still
+          // dedupes to the row it already wrote.
+          const prAuthorChat = pr.chatSessionIds?.[0] ?? null;
+          const openedNow = pr.state === "open" || pr.state === "draft";
+          if (openedNow && (!prev || (prev.state !== "open" && prev.state !== "draft"))) {
+            recordLaneStoryPrEvent(
+              pr,
+              "pr_opened",
+              pr.id,
+              prAuthorChat
+                ? { kind: "agent", chatSessionId: prAuthorChat, attribution: "session" }
+                : { kind: "human", attribution: "inferred" },
+              pr.createdAt || polledAt,
+            );
+          }
+          if (pr.state === "merged" && prev?.state !== "merged") {
+            recordLaneStoryPrEvent(
+              pr,
+              "pr_merged",
+              pr.id,
+              { kind: "human", login: pr.mergedBy?.login ?? null, attribution: "inferred" },
+              pr.mergedAt || polledAt,
+            );
+          }
+          if (pr.state === "closed" && prev?.state !== "closed") {
+            recordLaneStoryPrEvent(pr, "pr_closed", pr.id, { kind: "unknown" }, polledAt);
+          }
+          if (prev && prev.checksStatus !== pr.checksStatus && pr.checksStatus) {
+            recordLaneStoryPrEvent(
+              pr,
+              "pr_checks",
+              `${pr.id}:${pr.checksStatus}:${pr.headSha ?? ""}`,
+              { kind: "bot", login: null, attribution: "inferred" },
+              polledAt,
+            );
+          }
+          if (prev && prev.reviewStatus !== pr.reviewStatus && pr.reviewStatus) {
+            recordLaneStoryPrEvent(
+              pr,
+              "pr_review",
+              `${pr.id}:${pr.reviewStatus}:${pr.headSha ?? ""}`,
+              { kind: "unknown", attribution: "inferred" },
+              polledAt,
+            );
+          }
+
           changedPrs.push(pr);
           changes.push({
             pr,

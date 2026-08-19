@@ -10,6 +10,7 @@ import type {
   GitUpstreamSyncStatus,
 } from "./git";
 import type { TerminalSessionSummary } from "./sessions";
+import type { LaneCreationOrigin } from "./laneEvents";
 
 // ---------------------------------------------------------------------------
 // Lane types
@@ -283,6 +284,8 @@ export type CreateLaneArgs = {
   branchName?: string;
   startPoint?: string;
   linearIssue?: LaneLinearIssue | null;
+  /** How this lane came to exist, for the lane story's `lane_created` event. */
+  origin?: LaneCreationOrigin | null;
 };
 
 export type CreateChildLaneArgs = {
@@ -293,11 +296,15 @@ export type CreateChildLaneArgs = {
   baseBranchRef?: string;
   branchName?: string;
   linearIssue?: LaneLinearIssue | null;
+  /** How this lane came to exist, for the lane story's `lane_created` event. */
+  origin?: LaneCreationOrigin | null;
 };
 
 export type CreateLaneFromUnstagedArgs = {
   sourceLaneId: string;
   name: string;
+  /** How this lane came to exist, for the lane story's `lane_created` event. */
+  origin?: LaneCreationOrigin | null;
 };
 
 export type ImportBranchLaneArgs = {

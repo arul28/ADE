@@ -1725,6 +1725,8 @@ export type SyncRemoteCommandAction =
   | "usage.refreshQuota"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
+  | "lanes.listEvents"
+  | "lanes.eventsSummary"
   | "lanes.listDeleteProgress"
   | "lanes.presence.announce"
   | "lanes.presence.release"

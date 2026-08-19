@@ -45,6 +45,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.watchCursorCloudMirror",
   // Per-project prompt stash. iOS gates the overflow-menu items on these
   // descriptors so an older brain simply omits stash instead of going limited.
+  // Lane story reads (docs/features/lanes/lane-story.md). Optional so a phone
+  // or web client on a newer build does not go limited against a host that
+  // predates the lane_events service.
+  "lanes.listEvents",
+  "lanes.eventsSummary",
   "chat.listPromptStashes",
   "chat.createPromptStash",
   "chat.deletePromptStash",

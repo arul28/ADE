@@ -21,6 +21,7 @@ import { AdeCliSection } from "../settings/AdeCliSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { DictationSection } from "../settings/DictationSection";
+import { ExperimentsSection } from "../settings/ExperimentsSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { KeepAwakeSection } from "../settings/KeepAwakeSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
@@ -152,6 +153,9 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
           </WebSettingsSection>
           <WebSettingsSection entryIds={["general.analytics"]}>
             <ProductAnalyticsSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.experiments"]}>
+            <ExperimentsSection />
           </WebSettingsSection>
         </>
       );

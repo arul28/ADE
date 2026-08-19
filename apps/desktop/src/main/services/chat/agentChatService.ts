@@ -696,6 +696,7 @@ import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
+import type { LaneEventsService } from "../laneEvents/laneEventsService";
 import {
   ORCHESTRATION_LEAD_CODEX_POLICY,
   ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
@@ -7420,6 +7421,12 @@ export function createAgentChatService(args: {
       limit?: number;
     }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor: unknown }>;
   } | null;
+  /**
+   * Lazy accessor for the lane story writer. Chat lifecycle is recorded from
+   * here rather than from `sessionService` so the session layer stays free of
+   * lane-story dependencies. Always best-effort.
+   */
+  getLaneEventsService?: () => LaneEventsService | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
@@ -7509,6 +7516,7 @@ export function createAgentChatService(args: {
     githubService,
     getOrchestrationService,
     getSearchService,
+    getLaneEventsService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
@@ -8808,6 +8816,7 @@ export function createAgentChatService(args: {
       ...(freshLaneDescription?.trim()
         ? { description: freshLaneDescription.trim() }
         : {}),
+      origin: { source: "agent-cli" },
     });
     logger.info("agent_chat.cto_execution_lane_created", {
       laneId: lane.id,
@@ -17543,6 +17552,32 @@ export function createAgentChatService(args: {
       onSessionEnded?.({ laneId: managed.session.laneId, sessionId: managed.session.id, exitCode: options?.exitCode ?? null });
     } catch {
       // ignore callback failures
+    }
+
+    try {
+      void getLaneEventsService?.()?.record({
+        laneId: managed.session.laneId,
+        kind: "chat_ended",
+        ts: endedAt,
+        actor: {
+          kind: "agent",
+          chatSessionId: managed.session.id,
+          provider: managed.session.provider,
+          model: managed.session.modelId ?? managed.session.model ?? null,
+          attribution: "session",
+        },
+        ref: managed.session.id,
+        branchRef: null,
+        payload: {
+          chatSessionId: managed.session.id,
+          title: managed.preview?.trim() || null,
+          provider: managed.session.provider,
+          model: managed.session.modelId ?? managed.session.model ?? null,
+          outcome: status === "failed" ? "failed" : "ended",
+        },
+      }).catch(() => {});
+    } catch {
+      // The lane story never blocks session teardown.
     }
 
     managedSessions.delete(managed.session.id);
@@ -30966,6 +31001,33 @@ export function createAgentChatService(args: {
     });
     if (normalizedTitle.length > 0) {
       sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });
+    }
+
+    // Lane story: the chat exists from here on. Recorded next to the row
+    // creation so a chat that dies before its first turn still shows up.
+    try {
+      void getLaneEventsService?.()?.record({
+        laneId,
+        kind: "chat_started",
+        ts: startedAt,
+        actor: {
+          kind: "agent",
+          chatSessionId: sessionId,
+          provider: effectiveProvider,
+          model: resolvedModelId ?? normalizedModel ?? null,
+          attribution: "session",
+        },
+        ref: sessionId,
+        branchRef: null,
+        payload: {
+          chatSessionId: sessionId,
+          title: initialTitle,
+          provider: effectiveProvider,
+          model: resolvedModelId ?? normalizedModel ?? null,
+        },
+      }).catch(() => {});
+    } catch {
+      // The lane story never blocks chat creation.
     }
 
     const managed: ManagedChatSession = {

@@ -52,6 +52,22 @@ Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
   env-init config applies, delegates to `laneService.delete`, and
   releases any leased port range for the deleted lane.
 
+Lane story (`apps/desktop/src/main/services/laneEvents/`, shared by both hosts):
+
+| File | Responsibility |
+|------|---------------|
+| `laneEventsService.ts` | The `lane_events` store and read model (see [Lane story](./lane-story.md)). Writes milestone events (`lane_created`, `lane_spawned`, `branch_switched`, `commit`, `rebase`, `chat_started`/`chat_ended`, `pr_opened`/`pr_checks`/`pr_review`/`pr_merged`/`pr_closed`), deduped app-side on `(lane_id, kind, ref)` because the table deliberately carries no UNIQUE index — that is what keeps it auto-CRR and phone-safe. `record` enforces a per-lane cap of 4000 rows, dropping the re-derivable `commit`/`pr_checks` rows before anything else. `recordCommitRange` is the single entry point for both the git-op finish hook and the head watchers; it dedupes on sha, so their overlap is harmless. `list` MERGES persisted rows with events derived on demand from `git log <base>..<branch>` (falling back to the merged PR's head sha when the branch is gone), the `pull_requests` rows, and the lane's chat sessions, so a lane created before the table existed still tells a full story; persisted wins over derived on the same `(kind, ref)`, and derived events carry `derived: true`. `summary` is the cheap many-lane digest for the List view. |
+| `laneEventTrailers.ts` | Pure helpers: `Co-Authored-By:` trailer → provider/model (`Claude Opus 5` → claude / "Opus 5", `cursoragent@cursor.com` → cursor, Codex/ChatGPT/OpenAI → codex, Droid/Factory → droid), and `chooseHeadWatchSession`, which credits an out-of-band commit to the lane's single mid-flight chat, or to the most recently talkative one when a fleet is running, and to nobody otherwise. |
+| `laneEventsServiceWiring.ts` | Host-level assembly shared by `apps/desktop/src/main/main.ts` and `apps/ade-cli/src/bootstrap.ts` so their wiring cannot drift (same reason `searchServiceWiring.ts` exists). Both hosts hold the service in a `laneEventsServiceHolder` and hand a `getLaneEventsService` accessor to `laneService`, `gitOperationsService`, `prPollingService` and `agentChatService`, because those are constructed first. Also exports `recordLaneRebaseEvent`, called from each host's `onRebaseEvent`. |
+
+Writers, and what each one records:
+
+- `laneService.create` / `createChild` / `createFromUnstaged` take an optional `origin: LaneCreationOrigin` and record `lane_created` (plus `lane_spawned` on the originating lane when the chat lived elsewhere). Callers that know why a lane exists pass it: the `ade.lanes.create` IPC handler → `human`, the RPC `create_lane` tool and the CTO execution-lane path → `agent-cli`, automations → `automation` with the rule id. Everything else lands on `unknown`.
+- `laneService.switchBranch` records `branch_switched`; lane teardown deletes the lane's rows next to `checkpoints`.
+- `gitOperationsService` records `commit` events from its shared `runLaneOperation` chokepoint, so commit/amend/revert/cherry-pick/rebase-continue are all covered by one hook. `GitCommitArgs.actorSessionId` (threaded from the RPC `commit_changes` tool and the CTO `gitCommit` tool) makes the attribution `session`; without it the head watcher attributes with `head-watch`, and a `Co-Authored-By` trailer fills in the provider either way.
+- `prPollingService` records PR events at the per-PR diff site, the one place `previousState`/`previousChecksStatus`/`previousReviewStatus` are known — never once per poll. `pr_checks` and `pr_review` carry the new status in their dedupe ref so each distinct transition persists exactly once.
+- `agentChatService` records `chat_started` beside the session row creation and `chat_ended` at session teardown, keeping `sessionService` free of lane-story dependencies.
+
 Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
@@ -892,6 +908,7 @@ Lane management (selected):
 | `ade.lanes.delete.risk` | `(args: { laneId }) => LaneDeleteRisk` — preflight read for the manage dialog: dirty state, unpushed commit count, remote-branch existence, active PTYs/watchers, env-init flag. |
 | `ade.lanes.delete.cancel` | `(args: { laneId }) => { cancelled, reason? }` — retained for contract compatibility only. Teardown runs to completion once started, so this always answers `{ cancelled: false }` with a reason naming the lane, and `LaneDeleteProgress.cancellable` is always `false`. |
 | `ade.lanes.delete.event` (push) | `LaneDeleteEvent` carrying `LaneDeleteProgress` — `steps[]` with per-step status (`pending` / `running` / `completed` / `failed` / `skipped`) plus `overallStatus` (`running` / `completed` / `failed` / `cancelled`) and `cancellable`. |
+| `ade.lanes.events.changed` (push) | `LaneEventsChangedEvent` (`{ laneId, kinds, at }`) — debounced at ≥250 ms per lane, emitted whenever a lane's story gains an event. Desktop pushes it on `IPC.laneEventsChanged`; the daemon pushes `lane_events_changed` on the runtime event stream. |
 | `ade.lanes.lifecycle.event` (push) | `LaneLifecycleEvent` - one-shot `lane-created`, `lane-renamed`, refresh-only `lane-branch-updated`, `lane-archived`, `lane-reclaimed`, `lane-unarchived`, `lane-restored`, or `lane-deleted` event. Auto identity emits `lane-branch-updated` only after the renamed branch is persisted; `useLaneListInvalidation` refreshes every lane consumer and `useLaneEventToasts` intentionally ignores this internal event. Local desktop paths emit this IPC channel directly; runtime-backed paths push `lane_lifecycle_event`, and preload merges both sources behind `window.ade.lanes.onLifecycleEvent`. There is also a refresh-only `lanes-invalidated` type meaning "something about the lane set changed; re-read it". It carries no claim about which lane or what happened, and its lane id is the placeholder `LANES_INVALIDATED_LANE_ID`, so any surface that names a lane must skip it and nothing user-visible may be worded from it. Transports with no per-lane change feed — the web client, whose invalidations are coarse table names — emit this instead of borrowing a real transition type and toasting a lane event that never occurred. |
 | `ade.lanes.delete.progress.list` | replay of the in-memory `LaneDeleteProgress` map for currently running deletes. Completed delete results are delivered through the live event stream; a remount after completion refreshes the lane list instead of replaying historical progress. |
 | `ade.lanes.getBranchDrift` | `(args: { laneId: string }) => LaneBranchDrift \| null` — fresh HEAD read for callers about to act on the branch; `null` for archived lanes, an unavailable worktree, a detached HEAD, or no drift. See [Branch drift](#branch-drift). |
@@ -899,6 +916,19 @@ Lane management (selected):
 | `ade.lanes.getStackChain` | `(args: { laneId: string }) => StackChainItem[]` |
 | `ade.lanes.rebaseStart` / `.rebaseAbort` / `.rebaseRollback` / `.rebasePush` | rebase run lifecycle |
 | `ade.lanes.listRebaseSuggestions` / `.dismissRebaseSuggestion` / `.deferRebaseSuggestion` | rebase suggestion lifecycle |
+
+Lane story reads are a separate ADE action domain, `lane_events`, rather than
+`lane` channels, because they are read-only and lane-scoped:
+
+| Action | Signature |
+|--------|-----------|
+| `lane_events.list` | `(args: LaneEventsListArgs) => LaneEventsListResult` — one lane's events (persisted ⊕ derived) plus its branches, chats, and base ref. |
+| `lane_events.summary` | `(args: { laneIds: string[] }) => LaneEventsSummaryResult` — the compact per-lane digest for the List view. |
+
+Neither action is CTO-only, but `adeRpcServer` lane-scopes both for non-CTO
+callers exactly as it does `external-sessions`: an agent reads the lane it is
+working in and nothing else, and a refusal is a `policyDenied` (-32010)
+structured error, never `methodNotFound`.
 
 Runtime isolation (Phase 5):
 

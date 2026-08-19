@@ -39,6 +39,7 @@ import type {
 } from "../../../shared/types";
 import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import type { Logger } from "../logging/logger";
+import type { LaneEventsService } from "../laneEvents/laneEventsService";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -205,7 +206,8 @@ export function createGitOperationsService({
   aiIntegrationService,
   logger,
   onHeadChanged,
-  onWorktreeChanged
+  onWorktreeChanged,
+  getLaneEventsService
 }: {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
@@ -226,6 +228,11 @@ export function createGitOperationsService({
     preHeadSha: string | null;
     postHeadSha: string | null;
   }) => void;
+  /**
+   * Late-bound: the lane events service is built after git ops. Recording is
+   * fire-and-forget so the lane story can never fail a git operation.
+   */
+  getLaneEventsService?: () => LaneEventsService | null;
 }) {
   const laneReadCache = new Map<string, CachedReadEntry<unknown>>();
 
@@ -462,17 +469,33 @@ export function createGitOperationsService({
     }
   }
 
+  /**
+   * Operation kinds that CREATE commits in this lane. Only these are credited
+   * to the actor that ran them; every other head move is upstream history.
+   */
+  const COMMIT_CREATING_OP_KINDS = new Set<string>([
+    "git_commit",
+    "git_commit_amend",
+    "git_revert",
+    "git_cherry_pick",
+    "git_rebase_continue",
+    "git_merge_continue",
+  ]);
+
   const runLaneOperation = async <T>({
     laneId,
     kind,
     reason,
     metadata,
+    actorSessionId,
     fn
   }: {
     laneId: string;
     kind: string;
     reason: string;
     metadata?: Record<string, unknown>;
+    /** Chat session credited for any commits this operation creates. */
+    actorSessionId?: string | null;
     fn: (lane: LaneInfo) => Promise<T>;
   }): Promise<{ result: T; action: GitActionResult }> => {
     invalidateLaneReadCache(laneId);
@@ -511,6 +534,32 @@ export function createGitOperationsService({
           });
         } catch {
           // Never fail git operation due to callback issues.
+        }
+      }
+
+      if (preHeadSha !== postHeadSha && COMMIT_CREATING_OP_KINDS.has(kind)) {
+        // ONLY the ops that author commits record here. `pull`, `checkout` and
+        // the undo/redo pair also move HEAD, but the commits they bring in are
+        // somebody else's history — the head watcher records those, and it
+        // filters out anything already on a remote.
+        //
+        // Awaited (inside the try/catch that keeps the story from ever failing
+        // an op) so the session-attributed row is written BEFORE the head
+        // watcher fires and wins every dedupe race against it.
+        const laneEventsService = getLaneEventsService?.();
+        if (laneEventsService) {
+          try {
+            await laneEventsService.recordCommitRange({
+              laneId,
+              preHeadSha,
+              postHeadSha,
+              actorSessionId: actorSessionId ?? null,
+              attribution: actorSessionId ? "session-agent" : "session-human",
+              reason,
+            });
+          } catch {
+            // Never fail a git operation because of the lane story.
+          }
         }
       }
 
@@ -772,6 +821,7 @@ export function createGitOperationsService({
         kind: args.amend ? "git_commit_amend" : "git_commit",
         reason: args.amend ? "amend_commit" : "commit",
         metadata: { amend: Boolean(args.amend), message },
+        actorSessionId: args.actorSessionId ?? null,
         fn: async (lane) => {
           const cmd = args.amend
             ? ["commit", "--amend", "-m", message]

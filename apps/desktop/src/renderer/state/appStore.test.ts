@@ -351,6 +351,27 @@ describe("appStore", () => {
       expect(useAppStore.getState().chatUserMinimapEnabled).toBe(true);
     });
 
+    it("persists the lanes-story experiment flag, defaulting off", () => {
+      // The whole-blob write is the trap: a setter that forgets its own field
+      // in `persistUserPreferencesFrom` drops it on the next unrelated save.
+      expect(useAppStore.getState().experimentsLanesStoryEnabled).toBe(false);
+      useAppStore.getState().setExperimentsLanesStoryEnabled(true);
+      expect(useAppStore.getState().experimentsLanesStoryEnabled).toBe(true);
+      const written = () => {
+        const calls = mockLocalStorage.setItem.mock.calls.filter(
+          ([key]: [string, string]) => key === "ade.userPreferences.v1",
+        );
+        return JSON.parse(calls[calls.length - 1]![1]);
+      };
+      expect(written()).toMatchObject({ experimentsLanesStoryEnabled: true });
+      // A save from a different setting must carry the flag along.
+      useAppStore.getState().setChatUserMinimapEnabled(false);
+      expect(written()).toMatchObject({ experimentsLanesStoryEnabled: true });
+      useAppStore.getState().setChatUserMinimapEnabled(true);
+      useAppStore.getState().setExperimentsLanesStoryEnabled(false);
+      expect(written()).toMatchObject({ experimentsLanesStoryEnabled: false });
+    });
+
     it("persists the launch prompt clipboard toggles", () => {
       expect(useAppStore.getState().launchPromptClipboardEnabled).toBe(true);
       expect(useAppStore.getState().launchPromptClipboardNoticeEnabled).toBe(true);

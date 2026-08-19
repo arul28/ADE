@@ -5954,6 +5954,8 @@ describe("CTO-gated Linear sync commands", () => {
         "prs.unstackGithubStack",
         "ai.openCursorCloudChat",
         "ai.watchCursorCloudMirror",
+        "lanes.listEvents",
+        "lanes.eventsSummary",
         "chat.listPromptStashes",
         "chat.createPromptStash",
         "chat.deletePromptStash",

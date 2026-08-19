@@ -711,6 +711,11 @@ import type {
   FeedbackSubmitDraftArgs,
   SearchIndexStatus,
   SearchQueryArgs,
+  LaneEventsListArgs,
+  LaneEventsListResult,
+  LaneEventsSummaryArgs,
+  LaneEventsSummaryResult,
+  LaneEventsChangedEvent,
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
@@ -2303,6 +2308,12 @@ declare global {
       };
       localhost: {
         probePort: (port: number) => Promise<boolean>;
+      };
+      /** Lane story events (docs/features/lanes/lane-story.md). Daemon-only: resolves to empty results when no runtime is bound. */
+      laneEvents: {
+        list: (args: LaneEventsListArgs, pin?: OpenProjectBinding | null) => Promise<LaneEventsListResult>;
+        summary: (args: LaneEventsSummaryArgs, pin?: OpenProjectBinding | null) => Promise<LaneEventsSummaryResult>;
+        onChanged: (callback: (event: LaneEventsChangedEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       search: {
         query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;

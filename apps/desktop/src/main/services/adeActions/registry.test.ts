@@ -2912,6 +2912,44 @@ describe("runtime file actions", () => {
   });
 });
 
+describe("lane_events domain", () => {
+  it("exposes the two read actions and nothing that writes", () => {
+    expect(isAllowedAdeAction("lane_events", "list")).toBe(true);
+    expect(isAllowedAdeAction("lane_events", "summary")).toBe(true);
+    expect(isAllowedAdeAction("lane_events", "record")).toBe(false);
+    expect(isAllowedAdeAction("lane_events", "forgetLane")).toBe(false);
+  });
+
+  it("keeps both reads open to every role", () => {
+    expect(isCtoOnlyAdeAction("lane_events", "list")).toBe(false);
+    expect(isCtoOnlyAdeAction("lane_events", "summary")).toBe(false);
+  });
+
+  it("delegates to runtime.laneEventsService and is unavailable without one", () => {
+    const list = vi.fn().mockResolvedValue({ events: [] });
+    const summary = vi.fn().mockResolvedValue({ summaries: [] });
+
+    const withService = getAdeActionDomainServices({ laneEventsService: { list, summary } } as never);
+    const domain = withService.lane_events as Record<string, (args?: unknown) => unknown>;
+    expect(domain).not.toBeNull();
+    void domain.list!({ laneId: "lane-1" });
+    expect(list).toHaveBeenCalledWith({ laneId: "lane-1" });
+    void domain.summary!({ laneIds: ["lane-1"] });
+    expect(summary).toHaveBeenCalledWith({ laneIds: ["lane-1"] });
+
+    expect(getAdeActionDomainServices({} as never).lane_events).toBeNull();
+  });
+
+  it("documents both actions so `ade actions list` is the only doc an agent needs", () => {
+    for (const action of ["list", "summary"] as const) {
+      const contract = getAdeActionInputContract("lane_events", action);
+      expect(contract?.description).toBeTruthy();
+      expect(contract?.input).toBeTruthy();
+      expect(contract?.example).toContain("lane_events." + action);
+    }
+  });
+});
+
 describe("search domain", () => {
   it("exposes the universal search actions through the runtime action surface", () => {
     expect(isAllowedAdeAction("search", "query")).toBe(true);

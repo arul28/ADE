@@ -271,6 +271,19 @@ import type { createOperationService } from "../../../../desktop/src/main/servic
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import { restoreRecreatedLaneRuntime } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import {
+  emptyLaneEventsListResult,
+  emptyLaneEventsSummaryResult,
+  type LaneEventsListArgs,
+  type LaneEventsListResult,
+  type LaneEventsSummaryArgs,
+  type LaneEventsSummaryResult,
+} from "../../../../desktop/src/shared/types/laneEvents";
+import type { LaneEventsService } from "../../../../desktop/src/main/services/laneEvents/laneEventsService";
+import {
+  validateListArgs,
+  validateSummaryArgs,
+} from "../../../../desktop/src/main/services/laneEvents/laneEventsValidation";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
@@ -353,6 +366,15 @@ type SyncRemoteCommandServiceArgs = {
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   externalSessionsService?: ExternalSessionsRemoteService | null;
   getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
+  /**
+   * Lane story reads (docs/features/lanes/lane-story.md). Optional on purpose:
+   * a host that predates the service — or one whose experiment is off — still
+   * answers `lanes.listEvents` with an empty story rather than an error, so a
+   * hosted timeline renders "nothing recorded yet" instead of failing. The lazy
+   * accessor exists for the same init-order reason as the external-sessions
+   * pair: the service is built after createSyncService in some hosts.
+   */
+  getLaneEventsService?: () => LaneEventsService | null;
   /**
    * Deterministic stamp of the sync host's in-memory lane presence
    * (`devicesOpen`). The host decorates lane list/detail payloads with
@@ -3834,8 +3856,22 @@ type RemoteCommandRegistrationDeps = {
   register: RemoteCommandRegistrar;
 };
 
+// The lane-story caps and semantics are owned by `laneEventsValidation`, so a
+// remote caller and a local one are held to exactly the same limits.
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
+  register("lanes.listEvents", { viewerAllowed: true }, async (payload) => {
+    const parsed = validateListArgs(payload);
+    const service = args.getLaneEventsService?.() ?? null;
+    if (!service) return emptyLaneEventsListResult(parsed.laneId) satisfies LaneEventsListResult;
+    return (await service.list(parsed)) satisfies LaneEventsListResult;
+  });
+  register("lanes.eventsSummary", { viewerAllowed: true }, async (payload) => {
+    const parsed = { laneIds: validateSummaryArgs(payload) };
+    const service = args.getLaneEventsService?.() ?? null;
+    if (!service) return emptyLaneEventsSummaryResult() satisfies LaneEventsSummaryResult;
+    return (await service.summary(parsed)) satisfies LaneEventsSummaryResult;
+  });
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
   register("lanes.getBranchDrift", { viewerAllowed: true }, async (payload) =>
     args.laneService.getBranchDrift({

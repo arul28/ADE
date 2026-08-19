@@ -2593,6 +2593,204 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("builds typed lane story commands", () => {
+    const events = expectExecutePlan(
+      buildCliPlan([
+        "lane",
+        "events",
+        "lane-42",
+        "--since",
+        "2026-08-01T00:00:00.000Z",
+        "--limit",
+        "25",
+        "--persisted-only",
+      ]),
+    );
+    expect(events.formatter).toBe("lane-events");
+    expect(events.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane_events",
+        action: "list",
+        args: {
+          laneId: "lane-42",
+          sinceTs: "2026-08-01T00:00:00.000Z",
+          limit: 25,
+          persistedOnly: true,
+        },
+      },
+    });
+
+    // --lane wins over a positional, and optional filters are omitted entirely.
+    const flagged = expectExecutePlan(buildCliPlan(["lane", "events", "--lane", "lane-7"]));
+    expect(flagged.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "lane_events", action: "list", args: { laneId: "lane-7" } },
+    });
+
+    // The lane defaults to $ADE_LANE_ID, like every other lane-scoped command.
+    const previousLaneId = process.env.ADE_LANE_ID;
+    process.env.ADE_LANE_ID = "lane-from-env";
+    try {
+      const defaulted = expectExecutePlan(buildCliPlan(["lane", "events"]));
+      expect(defaulted.steps[0]?.params).toMatchObject({
+        arguments: { args: { laneId: "lane-from-env" } },
+      });
+    } finally {
+      if (previousLaneId == null) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLaneId;
+    }
+
+    const summary = expectExecutePlan(
+      buildCliPlan(["lane", "events-summary", "--lanes", "lane-1, lane-2 ,"]),
+    );
+    expect(summary.formatter).toBe("lane-events-summary");
+    expect(summary.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane_events",
+        action: "summary",
+        args: { laneIds: ["lane-1", "lane-2"] },
+      },
+    });
+
+    // Usage errors (exit 2), not silently-dropped filters.
+    expect(() => buildCliPlan(["lane", "events", "lane-1", "--since", "yesterday"])).toThrow(
+      /ISO-8601/,
+    );
+    expect(() => buildCliPlan(["lane", "events", "lane-1", "--limit", "0"])).toThrow(
+      /positive integer/,
+    );
+    const clearedLaneId = process.env.ADE_LANE_ID;
+    delete process.env.ADE_LANE_ID;
+    try {
+      expect(() => buildCliPlan(["lane", "events-summary"])).toThrow(/requires --lanes/);
+    } finally {
+      if (clearedLaneId != null) process.env.ADE_LANE_ID = clearedLaneId;
+    }
+  });
+
+  it("renders the lane story as text", () => {
+    const opts = {
+      ...baseResolveOpts(),
+      projectRoot: "/tmp/project",
+      workspaceRoot: "/tmp/project",
+      text: true,
+    };
+    const story = formatOutput(
+      {
+        laneId: "lane-42",
+        baseRef: "main",
+        hasDerived: true,
+        generatedAt: "2026-08-18T10:00:00.000Z",
+        branches: [],
+        chats: [
+          {
+            chatSessionId: "chat-1",
+            title: "Fix login redirect",
+            provider: "claude",
+            model: "Opus 5",
+            status: "running",
+          },
+        ],
+        events: [
+          {
+            id: "ev-1",
+            kind: "commit",
+            ts: "2026-08-18T09:30:00.000Z",
+            ref: "abc1234",
+            branchRef: "feature/login",
+            actor: { kind: "agent", provider: "claude", model: "Opus 5" },
+            payload: { subject: "Repair the login redirect" },
+            derived: false,
+          },
+          {
+            id: "ev-2",
+            kind: "pr_merged",
+            ts: "2026-08-18T09:45:00.000Z",
+            ref: "pr-9",
+            branchRef: "feature/login",
+            actor: { kind: "human", login: "arul" },
+            payload: { title: "Fix login redirect" },
+            derived: true,
+          },
+        ],
+      },
+      opts,
+      "lane-events",
+    );
+    expect(story).toContain("ADE lane story lane-42 (base main)");
+    expect(story).toContain("feature/login");
+    expect(story).toContain("commit");
+    expect(story).toContain("agent(claude\u00b7Opus 5)");
+    expect(story).toContain("you(arul)");
+    expect(story).toContain("Repair the login redirect");
+    expect(story).toContain("2 events (includes derived events)");
+    expect(story).toContain("Chats");
+
+    // A single-day story keeps the bare clock...
+    expect(story).toMatch(/\n  \d{2}:\d{2}  commit/);
+
+    // ...but once it spans a calendar boundary every row carries its MM-DD,
+    // otherwise "09:30" above "22:10" reads as the same afternoon.
+    const spanning = formatOutput(
+      {
+        laneId: "lane-42",
+        baseRef: "main",
+        events: [
+          {
+            id: "ev-1",
+            kind: "commit",
+            ts: "2026-08-16T12:00:00.000Z",
+            ref: "abc1234",
+            branchRef: "feature/login",
+            actor: { kind: "agent", provider: "claude" },
+            payload: { subject: "First day" },
+            derived: false,
+          },
+          {
+            id: "ev-2",
+            kind: "commit",
+            ts: "2026-08-18T12:00:00.000Z",
+            ref: "def5678",
+            branchRef: "feature/login",
+            actor: { kind: "agent", provider: "claude" },
+            payload: { subject: "Third day" },
+            derived: false,
+          },
+        ],
+      },
+      opts,
+      "lane-events",
+    );
+    expect(spanning).toMatch(/\n  \d{2}-\d{2} \d{2}:\d{2}  commit/);
+    expect(spanning).toContain("First day");
+    expect(spanning).toContain("Third day");
+
+    const empty = formatOutput({ laneId: "lane-9", baseRef: "main", events: [] }, opts, "lane-events");
+    expect(empty).toContain("(no events recorded yet)");
+
+    const summary = formatOutput(
+      {
+        summaries: [
+          {
+            laneId: "lane-42",
+            eventCount: 12,
+            commitCount: 9,
+            prCount: 1,
+            lastEventKind: "pr_merged",
+            lastEventTs: "2026-08-18T09:45:00.000Z",
+          },
+        ],
+      },
+      opts,
+      "lane-events-summary",
+    );
+    expect(summary).toContain("ADE lane stories");
+    expect(summary).toContain("lane-42");
+    expect(summary).toContain("pr_merged");
+  });
+
   it("builds typed ADE search commands", () => {
     const query = expectExecutePlan(
       buildCliPlan([

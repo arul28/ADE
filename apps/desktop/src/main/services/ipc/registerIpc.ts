@@ -717,6 +717,7 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
+import type { LaneEventsService } from "../laneEvents/laneEventsService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import {
   loadExternalSessionDetail,
@@ -1026,6 +1027,7 @@ export type AppContext = {
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   reviewService: ReturnType<typeof createReviewService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
+  laneEventsService?: LaneEventsService | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
   automationService: ReturnType<typeof createAutomationService> | null;
@@ -6251,6 +6253,8 @@ export function registerIpc({
       baseBranch: arg.baseBranch,
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
+      // The lane dialog is the one creation path that is always a person.
+      origin: { source: "human" },
     });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -6259,7 +6263,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
-    const lane = await ctx.laneService.createChild(arg);
+    const lane = await ctx.laneService.createChild({ ...arg, origin: { source: "human" } });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
@@ -6267,7 +6271,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesCreateFromUnstaged, async (_event, arg: CreateLaneFromUnstagedArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
-    const lane = await ctx.laneService.createFromUnstaged(arg);
+    const lane = await ctx.laneService.createFromUnstaged({ ...arg, origin: { source: "human" } });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;

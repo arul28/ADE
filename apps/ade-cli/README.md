@@ -488,6 +488,9 @@ ade lane drift --lane lane-id --text              # did someone `git checkout` i
 ade lane drift resolve --lane lane-id --switch-back        # put the worktree back on the lane's branch (refuses on a dirty tree)
 ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
 ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
+ade lane events --lane lane-id --text             # the lane story: commits, PRs, CI, reviews, rebases and chats, each with the actor (which agent chat, human or bot) that caused it. Defaults to $ADE_LANE_ID
+ade lane events lane-id --since 2026-08-01T00:00:00Z --limit 50 --text   # window the story; --persisted-only skips events derived on read from git/PR state
+ade lane events-summary --lanes lane-a,lane-b --text                     # compact per-lane digest (event/commit/PR counts + last event) for a roster view
 ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
 ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
 ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane history/branch/chat; remove ADE-managed local files

@@ -111,6 +111,11 @@ import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
 import { createProjectSearchService } from "./services/search/searchServiceWiring";
+import { recordLaneRebaseEvent } from "./services/laneEvents/laneEventsServiceWiring";
+import {
+  createLaneEventsService,
+  type LaneEventsService,
+} from "./services/laneEvents/laneEventsService";
 import type { SearchService } from "./services/search/searchService";
 import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
 import { providerPointersFromChatRecord } from "./services/externalSessions/liveChatProviderRefs";
@@ -2767,6 +2772,7 @@ app.whenReady().then(async () => {
       null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     const searchServiceHolder: { current: SearchService | null } = { current: null };
+    const laneEventsServiceHolder: { current: LaneEventsService | null } = { current: null };
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null =
       null;
     let automationIngressServiceRef: ReturnType<typeof createAutomationIngressService> | null =
@@ -2874,6 +2880,19 @@ app.whenReady().then(async () => {
       if (pr) {
         prServiceRef?.markHotRefresh([pr.id]);
       }
+
+      // Out-of-band commits (a terminal, an agent CLI) only ever surface here.
+      // `recordCommitRange` dedupes on sha, so overlapping with the git-op
+      // finish hook is harmless.
+      void laneEventsServiceHolder.current
+        ?.recordCommitRange({
+          laneId,
+          preHeadSha: prev,
+          postHeadSha,
+          attribution: "head-watch",
+          reason: args.reason,
+        })
+        .catch(() => {});
     };
 
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
@@ -2888,6 +2907,7 @@ app.whenReady().then(async () => {
       onHeadChanged: handleHeadChanged,
       onRebaseEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.lanesRebaseEvent, event);
+        recordLaneRebaseEvent(laneEventsServiceHolder.current, event);
         if (
           event.type === "rebase-run-updated" &&
           event.run.state !== "running"
@@ -2900,6 +2920,7 @@ app.whenReady().then(async () => {
           });
         }
       },
+      getLaneEventsService: () => laneEventsServiceHolder.current,
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
       onLifecycleEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.lanesLifecycleEvent, event);
@@ -3296,6 +3317,7 @@ app.whenReady().then(async () => {
       prService,
       projectConfigService,
       db,
+      getLaneEventsService: () => laneEventsServiceHolder.current,
       isGithubRelayHealthy: () => automationIngressServiceRef?.isGithubRelayHealthy() === true,
       getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
       onEvent: emitPrEvent,
@@ -3628,6 +3650,7 @@ app.whenReady().then(async () => {
       githubService,
       getOrchestrationService: () => orchestrationServiceRef,
       getSearchService: () => searchServiceHolder.current,
+      getLaneEventsService: () => laneEventsServiceHolder.current,
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
@@ -3754,6 +3777,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       aiIntegrationService,
       logger,
+      getLaneEventsService: () => laneEventsServiceHolder.current,
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
       },
@@ -4042,6 +4066,17 @@ app.whenReady().then(async () => {
       backfillDelayMs: 10_000,
     });
     searchServiceHolder.current = searchService;
+
+    const laneEventsService = createLaneEventsService({
+      db,
+      projectId,
+      logger,
+      chatSessionsDir: adePaths.chatSessionsDir,
+      laneService,
+      agentChatService,
+    });
+    laneEventsServiceHolder.current = laneEventsService;
+    laneEventsService.onChanged((event) => emitProjectEvent(projectRoot, IPC.laneEventsChanged, event));
     const externalSessionsService = createExternalSessionsService({
       projectRoot,
       laneService,
@@ -4282,6 +4317,7 @@ app.whenReady().then(async () => {
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
+      getLaneEventsService: () => laneEventsServiceHolder.current,
       usageTrackingService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,
@@ -4687,6 +4723,7 @@ app.whenReady().then(async () => {
       prSummaryService,
       fileService,
       searchService,
+      laneEventsService,
       externalSessionsService,
       ctoStateService,
       ctoMemoryService,
@@ -4954,6 +4991,7 @@ app.whenReady().then(async () => {
       prSummaryService,
       reviewService,
       searchService,
+      laneEventsService,
       externalSessionsService,
       jobEngine,
       transcriptionService: getSharedTranscriptionService(logger),
@@ -5354,6 +5392,11 @@ app.whenReady().then(async () => {
     // disposed search service.
     try {
       ctx.searchService?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.laneEventsService?.dispose();
     } catch {
       // ignore
     }

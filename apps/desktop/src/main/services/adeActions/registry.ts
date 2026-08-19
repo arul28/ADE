@@ -195,6 +195,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "orchestration",
   "search",
   "external-sessions",
+  "lane_events",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
@@ -947,6 +948,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // it stays local IPC only (`IPC.externalSessions{Watch,Unwatch}Detail`).
   // Exposing them here would hand remote callers a snapshot that never updates.
   "external-sessions": ["list", "import", "getDetail"],
+  // Read-only: the lane story is written by the runtime's own hooks, never by
+  // an action. No `ADE_ACTION_CTO_ONLY` entry — every role may read it, and
+  // non-CTO RPC callers are additionally lane-scoped in `adeRpcServer`.
+  lane_events: ["list", "summary"],
 };
 
 export type AdeActionInputContract = {
@@ -1234,6 +1239,21 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Re-parse one outside session file and return a generous transcript tail.",
       input: "object { provider, sessionId }",
       example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
+    },
+  },
+  lane_events: {
+    list: {
+      description:
+        "The story of one lane: commits, PR/CI/review transitions, chat lifecycle, branch switches and rebases, each with the actor that caused it. Persisted milestones are merged with events derived on demand from git and the PR rows, so a lane that predates the store still returns a full history (those carry `derived: true`). Also returns the lane's branches and its chat sessions with live status.",
+      input:
+        "object { laneId, sinceTs?: ISO-8601, limit?: number (default 500, newest kept), persistedOnly?: boolean }",
+      example: "ade actions run lane_events.list --input-json '{\"laneId\":\"lane-1\",\"limit\":100}' --text",
+    },
+    summary: {
+      description:
+        "Compact per-lane digest for many lanes at once: event/commit/PR counts, the last event, a ~40-entry spine for a mini timeline, and the lane's most relevant chat right now. Cheap by design — use this for lists and `list` for one lane's detail.",
+      input: "object { laneIds: string[] }",
+      example: "ade actions run lane_events.summary --input-json '{\"laneIds\":[\"lane-1\",\"lane-2\"]}' --text",
     },
   },
 };
@@ -4093,6 +4113,19 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
   };
 }
 
+function buildLaneEventsDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const laneEventsService = runtime.laneEventsService;
+  if (!laneEventsService) return null;
+  return {
+    list(args: unknown) {
+      return laneEventsService.list((args ?? {}) as Parameters<typeof laneEventsService.list>[0]);
+    },
+    summary(args: unknown) {
+      return laneEventsService.summary((args ?? {}) as Parameters<typeof laneEventsService.summary>[0]);
+    },
+  } as OpaqueService;
+}
+
 function buildSearchDomainService(runtime: AdeRuntime): OpaqueService | null {
   const searchService = runtime.searchService;
   if (!searchService) return null;
@@ -4205,6 +4238,7 @@ export function getAdeActionDomainServices(
     orchestration: toService(buildOrchestrationDomainService(runtime)),
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
+    lane_events: toService(buildLaneEventsDomainService(runtime)),
   };
 }
 

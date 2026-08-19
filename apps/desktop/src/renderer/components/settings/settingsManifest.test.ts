@@ -182,6 +182,20 @@ describe("settings manifest", () => {
     expect(new Set(groups).size).toBe(groups.length);
   });
 
+  it("reaches the Experiments card by the words users try for a beta flag", () => {
+    // The card is the only door to an unfinished tab; if it is not findable in
+    // Cmd-K, the experiment ships invisible.
+    for (const query of ["experiments", "labs", "beta", "timeline"]) {
+      expect(searchSettingsEntries(query).map((e) => e.id), `"${query}" missed it`)
+        .toContain("general.experiments");
+    }
+    const entry = resolveSettingsHash("experiments");
+    expect(entry?.id).toBe("general.experiments");
+    expect(entry?.tab).toBe("general");
+    expect(settingsRouteFor("general.experiments")).toBe("/settings?tab=general#experiments");
+    expect(settingsGroupsForTab("general")).toContain("Experiments");
+  });
+
   it("only marks scope chips on settings whose storage would surprise", () => {
     // Team-scoped settings always warrant the chip: they are committed and
     // affect other people.

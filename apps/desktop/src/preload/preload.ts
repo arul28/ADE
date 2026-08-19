@@ -5,6 +5,10 @@ import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import {
+  emptyLaneEventsListResult,
+  emptyLaneEventsSummaryResult,
+} from "../shared/types/laneEvents";
+import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
   type AttentionNotchAcknowledgeRequest,
@@ -765,6 +769,11 @@ import type {
   FeedbackSubmission,
   FeedbackSubmissionEvent,
   FeedbackSubmitDraftArgs,
+  LaneEventsChangedEvent,
+  LaneEventsListArgs,
+  LaneEventsListResult,
+  LaneEventsSummaryArgs,
+  LaneEventsSummaryResult,
   SearchIndexStatus,
   SearchQueryArgs,
   SearchQueryResult,
@@ -1848,6 +1857,9 @@ const remoteLaneDeleteEventCallbacks = new Set<
 const remoteLaneLifecycleEventCallbacks = new Set<
   (payload: LaneLifecycleEvent) => void
 >();
+const remoteLaneEventsChangedCallbacks = new Set<
+  (payload: LaneEventsChangedEvent) => void
+>();
 const remoteLaneRebaseEventCallbacks = new Set<
   (payload: RebaseRunEventPayload) => void
 >();
@@ -2070,6 +2082,7 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteSessionChangedCallbacks.size > 0 ||
     remoteLaneDeleteEventCallbacks.size > 0 ||
     remoteLaneLifecycleEventCallbacks.size > 0 ||
+    remoteLaneEventsChangedCallbacks.size > 0 ||
     remoteLaneRebaseEventCallbacks.size > 0 ||
     remoteLaneRebaseSuggestionsEventCallbacks.size > 0 ||
     remoteLaneAutoRebaseEventCallbacks.size > 0 ||
@@ -2671,6 +2684,22 @@ function dispatchRemoteRuntimeEventPayload(
     }
   }
 
+  // Lane story events are read-model-only: they never invalidate the git read
+  // caches, they just tell an open timeline to refetch.
+  const laneEventsChanged = toWrappedEvent<LaneEventsChangedEvent>(
+    payload,
+    "lane_events_changed",
+  );
+  if (laneEventsChanged) {
+    for (const cb of [...remoteLaneEventsChangedCallbacks]) {
+      try {
+        cb(laneEventsChanged);
+      } catch (error) {
+        console.error("preload remote lane events listener failed", error);
+      }
+    }
+  }
+
   const laneRebaseEvent = toWrappedEvent<RebaseRunEventPayload>(
     payload,
     "lane_rebase_event",
@@ -2935,6 +2964,16 @@ function subscribeRemoteLaneLifecycleEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remoteLaneLifecycleEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneEventsChanged(
+  cb: (payload: LaneEventsChangedEvent) => void,
+): () => void {
+  remoteLaneEventsChangedCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneEventsChangedCallbacks.delete(cb);
   };
 }
 
@@ -7934,6 +7973,68 @@ const adeBridge = {
   localhost: {
     probePort: async (port: number): Promise<boolean> =>
       ipcRenderer.invoke(IPC.localhostProbePort, { port }),
+  },
+  // The lane story is daemon-only by design, exactly like universal search: it
+  // always routes through the ADE runtime action bridge (never an in-process
+  // IPC fallback) so packaged and remote-bound windows behave identically. When
+  // no runtime is bound the reads resolve to benign empty stories rather than
+  // throwing, so the Lanes tab renders an empty timeline instead of an error.
+  laneEvents: {
+    list: async (
+      args: LaneEventsListArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneEventsListResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<LaneEventsListResult>(pin, "lane_events", "list", { args });
+      }
+      const outcome = await callProjectRuntimeActionIfBound<LaneEventsListResult>(
+        "lane_events",
+        "list",
+        { args },
+      );
+      if (outcome.handled && outcome.result) return outcome.result;
+      return emptyLaneEventsListResult(args.laneId);
+    },
+    summary: async (
+      args: LaneEventsSummaryArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneEventsSummaryResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<LaneEventsSummaryResult>(pin, "lane_events", "summary", { args });
+      }
+      const outcome = await callProjectRuntimeActionIfBound<LaneEventsSummaryResult>(
+        "lane_events",
+        "summary",
+        { args },
+      );
+      if (outcome.handled && outcome.result) return outcome.result;
+      return emptyLaneEventsSummaryResult();
+    },
+    onChanged: (
+      cb: (ev: LaneEventsChangedEvent) => void,
+      pin?: OpenProjectBinding | null,
+    ) => {
+      // A pinned lane lives on another machine, so its story changes arrive on
+      // THAT runtime's event pump; the bound runtime describes a different
+      // database and would never fire for it.
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<LaneEventsChangedEvent>(payload, "lane_events_changed"),
+        cb,
+        "lane events changed",
+      );
+      if (removePinned) return removePinned;
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: LaneEventsChangedEvent,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.laneEventsChanged, listener);
+      const removeRemote = subscribeRemoteLaneEventsChanged(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.laneEventsChanged, listener);
+      };
+    },
   },
   // Universal search is daemon-only by design: it always routes through the
   // ADE runtime action bridge (never an in-process IPC fallback) so packaged

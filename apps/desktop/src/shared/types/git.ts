@@ -21,6 +21,14 @@ export type GitCommitArgs = {
   laneId: string;
   message: string;
   amend?: boolean;
+  /**
+   * The agent chat session making this commit, when the caller knows it (the
+   * RPC `commit_changes` tool, `ade git commit`, the CTO `gitCommit` tool).
+   * Absent means a human at the Git pane. It is what lets the lane story
+   * attribute a commit to a chat with `attribution: "session"` instead of
+   * falling back to the head watcher's guess.
+   */
+  actorSessionId?: string | null;
 };
 
 export type GitGenerateCommitMessageArgs = {

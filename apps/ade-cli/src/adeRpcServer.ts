@@ -2873,6 +2873,44 @@ function filterExternalSessionSummariesForLane(result: unknown, laneCwd: string)
   });
 }
 
+/**
+ * Lane-scope a `lane_events` read. `list` must name a lane the caller is
+ * authorized for (or exactly one authorized lane is implied); `summary`
+ * intersects the requested lane ids with the authorized set and refuses when
+ * nothing survives.
+ */
+function scopeLaneEventsAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:lane_events.${action}`;
+  const laneIds = authorizedPtyLaneIds(runtime, session);
+  const deny = (requested: string | null): never =>
+    scopeAccessDenied("lane story reads are limited to the caller's own lane", method, {
+      callerChatSessionId: session.identity.chatSessionId ?? null,
+      requestedSessionId: requested,
+    });
+
+  if (action === "summary") {
+    const requested = Array.isArray(args.laneIds)
+      ? args.laneIds.map((value) => asOptionalTrimmedString(value)).filter((value): value is string => Boolean(value))
+      : [];
+    const allowed = requested.length > 0 ? requested.filter((laneId) => laneIds.has(laneId)) : [...laneIds];
+    if (allowed.length === 0) deny(requested[0] ?? null);
+    return { ...args, laneIds: allowed };
+  }
+
+  const requestedLaneId = extractLaneId(args);
+  if (requestedLaneId) {
+    if (!laneIds.has(requestedLaneId)) deny(requestedLaneId);
+    return { ...args, laneId: requestedLaneId };
+  }
+  if (laneIds.size === 1) return { ...args, laneId: [...laneIds][0]! };
+  return deny(null);
+}
+
 function scopeExternalSessionsListArgs(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3926,6 +3964,17 @@ async function runTool(args: {
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
+    } else if (!callerIsCto && domain === "lane_events" && !isUnboundAdeCliCaller(session)) {
+      // The lane story is lane-scoped for non-CTO callers, exactly like
+      // `external-sessions`: an agent may read the lane it is working in, and
+      // nothing else. Denials are `policyDenied` so the caller learns the
+      // domain exists and why it was refused, rather than "unknown method".
+      scopedObjectArgs = scopeLaneEventsAdeActionArgs(
+        runtime,
+        session,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
     } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
       const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
@@ -4251,6 +4300,10 @@ async function runTool(args: {
     }
 
     const lane = await runtime.laneService.create({
+      origin: {
+        source: session.identity.chatSessionId ? "agent-cli" : "unknown",
+        chatSessionId: session.identity.chatSessionId ?? null,
+      },
       name: nameArg,
       ...(description ? { description } : {}),
       ...(parentLaneId ? { parentLaneId } : {}),
@@ -5035,7 +5088,14 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.toolFailed, "Commit message is empty after generation.");
     }
 
-    const action = await runtime.gitService.commit({ laneId, message, amend });
+    const action = await runtime.gitService.commit({
+      laneId,
+      message,
+      amend,
+      // Attribute the commit to the calling chat at write time, so the lane
+      // story never has to guess from the head watcher.
+      actorSessionId: session.identity.chatSessionId ?? null,
+    });
     const latest = await runtime.gitService.listRecentCommits({ laneId, limit: 1 });
 
     return {

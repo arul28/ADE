@@ -32,6 +32,26 @@ ade lanes archive <lane> --text
 worktree, taking any uncommitted work in it with them. Archive a lane only when
 the user asked for cleanup, or a workflow that owns lane lifecycle requires it.
 
+## Lane events (the lane story)
+
+Every lane keeps an append-only story of its milestones — commits, PR open /
+merge / close, CI and review transitions, rebases, branch switches, and chat
+start/end — and each event names the actor that caused it (which agent chat with
+its provider and model, which human, which bot). Read it when you need to answer
+"what happened in this lane and who did it" rather than "what does it look like
+now". It is milestone-only: turns and tokens are never recorded.
+
+```bash
+ade lane events --lane <lane> --text            # full story, newest events last (defaults to $ADE_LANE_ID)
+ade lane events <lane> --since <iso> --limit 50 --text
+ade lane events-summary --lanes <a>,<b> --text  # per-lane counts + last event
+```
+
+Reads merge persisted rows with events derived on demand from git and PR state,
+so a lane created before the story existed still reads back a full history;
+`--persisted-only` skips derivation. These commands are read-only — the runtime
+writes lane events, never the CLI.
+
 ## ADE-aware Git
 
 Use ADE git commands when the operation should update ADE operation state and refresh lane status:

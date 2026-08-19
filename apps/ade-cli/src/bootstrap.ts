@@ -39,6 +39,11 @@ import { createDiffService } from "../../desktop/src/main/services/diffs/diffSer
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createProjectSearchService } from "../../desktop/src/main/services/search/searchServiceWiring";
 import type { SearchService } from "../../desktop/src/main/services/search/searchService";
+import { recordLaneRebaseEvent } from "../../desktop/src/main/services/laneEvents/laneEventsServiceWiring";
+import {
+  createLaneEventsService,
+  type LaneEventsService,
+} from "../../desktop/src/main/services/laneEvents/laneEventsService";
 import {
   createExternalSessionsService,
 } from "../../desktop/src/main/services/externalSessions/externalSessionsService";
@@ -331,6 +336,7 @@ export type AdeRuntime = {
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   reviewService?: ReturnType<typeof createReviewService> | null;
   searchService?: SearchService | null;
+  laneEventsService?: LaneEventsService | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   appNavigationService?: {
@@ -684,6 +690,7 @@ export async function createAdeRuntime(args: {
   let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
   let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
   const searchServiceHolder: { current: SearchService | null } = { current: null };
+  const laneEventsServiceHolder: { current: LaneEventsService | null } = { current: null };
   let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
   let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
   let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
@@ -719,15 +726,27 @@ export async function createAdeRuntime(args: {
     operationService,
     onHeadChanged: (event) => {
       pushEvent("runtime", { type: "lane_head_changed", ...event });
+      // Out-of-band commits (a terminal, an agent CLI) only ever surface here.
+      void laneEventsServiceHolder.current
+        ?.recordCommitRange({
+          laneId: event.laneId,
+          preHeadSha: event.preHeadSha,
+          postHeadSha: event.postHeadSha,
+          attribution: "head-watch",
+          reason: event.reason,
+        })
+        .catch(() => {});
       void rebaseSuggestionServiceRef?.onParentHeadChanged(event).catch(() => {});
       void autoRebaseServiceRef?.onHeadChanged(event).catch(() => {});
     },
     onRebaseEvent: (event) => {
       pushEvent("runtime", { type: "lane_rebase_event", event });
+      recordLaneRebaseEvent(laneEventsServiceHolder.current, event);
       if (event.type === "rebase-run-updated" && event.run.state !== "running") {
         void conflictServiceRef?.scanRebaseNeeds().catch(() => {});
       }
     },
+    getLaneEventsService: () => laneEventsServiceHolder.current,
     onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
     onLifecycleEvent: (event) => {
       pushEvent("runtime", { type: "lane_lifecycle_event", event });
@@ -1004,7 +1023,8 @@ export async function createAdeRuntime(args: {
     operationService,
     projectConfigService,
     aiIntegrationService,
-    logger
+    logger,
+    getLaneEventsService: () => laneEventsServiceHolder.current
   });
 
   const diffService = createDiffService({ laneService });
@@ -1281,6 +1301,7 @@ export async function createAdeRuntime(args: {
         pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
       },
       getDirtyFileTextForPath: () => undefined,
+      getLaneEventsService: () => laneEventsServiceHolder.current,
     });
     if (typeof (headlessLinearServices.prService as { setAgentChatService?: (svc: unknown) => void }).setAgentChatService === "function") {
       (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService);
@@ -1530,6 +1551,7 @@ export async function createAdeRuntime(args: {
     prService: headlessLinearServices.prService,
     projectConfigService,
     db,
+    getLaneEventsService: () => laneEventsServiceHolder.current,
     isGithubRelayHealthy: () => automationIngressService.isGithubRelayHealthy(),
     getGithubBackgroundPauseUntilMs: () =>
       headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
@@ -1837,6 +1859,7 @@ export async function createAdeRuntime(args: {
       linearOAuthService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
+      getLaneEventsService: () => laneEventsServiceHolder.current,
       sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
       hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
@@ -1894,6 +1917,17 @@ export async function createAdeRuntime(args: {
     backfillDelayMs: 5_000,
   });
   searchServiceHolder.current = searchService;
+
+  const laneEventsService = createLaneEventsService({
+    db,
+    projectId,
+    logger,
+    chatSessionsDir: paths.chatSessionsDir,
+    laneService,
+    agentChatService,
+  });
+  laneEventsServiceHolder.current = laneEventsService;
+  laneEventsService.onChanged((event) => pushEvent("runtime", { type: "lane_events_changed", event }));
   headlessLinearServices.prService?.setEventEmitter(createPrEventFanout(
     emitPrEvent,
     (event) => {
@@ -1966,6 +2000,7 @@ export async function createAdeRuntime(args: {
     testService,
     reviewService,
     searchService,
+    laneEventsService,
     externalSessionsService,
     aiIntegrationService,
     agentChatService,
@@ -2044,6 +2079,7 @@ export async function createAdeRuntime(args: {
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());
       swallow(() => searchService.dispose());
+      swallow(() => laneEventsService.dispose());
       swallow(() => processRegistry.stop());
       swallow(() => db.flushNow());
       swallow(() => db.close());

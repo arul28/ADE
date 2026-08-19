@@ -1147,6 +1147,66 @@ describe("createAdeWebAdapter", () => {
     }
   });
 
+  it("serves the lane story over sync and nudges subscribers on a lane_events table change", async () => {
+    vi.useFakeTimers();
+    try {
+      fake.descriptors = descriptors(["lanes.listEvents", "lanes.eventsSummary"]);
+      const listResult = {
+        laneId: "lane-1",
+        events: [{ id: "ev-1", kind: "commit" }],
+        branches: [],
+        chats: [],
+        baseRef: "main",
+        hasDerived: true,
+        generatedAt: "2026-08-18T00:00:00.000Z",
+      };
+      const summaryResult = { summaries: [{ laneId: "lane-1", eventCount: 1 }], generatedAt: "2026-08-18T00:00:00.000Z" };
+      fake.commandResults.set("lanes.listEvents", listResult);
+      fake.commandResults.set("lanes.eventsSummary", summaryResult);
+
+      const adapter = createAdeWebAdapter(fake.asClient());
+      adapter.bindProject(project, "project-1");
+
+      await expect(adapter.ade.laneEvents.list({ laneId: "lane-1", limit: 100 })).resolves.toEqual(listResult);
+      await expect(adapter.ade.laneEvents.summary({ laneIds: ["lane-1"] })).resolves.toEqual(summaryResult);
+      expect(fake.commandCalls.map((call) => [call.action, call.opts.projectId])).toEqual([
+        ["lanes.listEvents", "project-1"],
+        ["lanes.eventsSummary", "project-1"],
+      ]);
+
+      const changes: unknown[] = [];
+      const unsubscribe = adapter.ade.laneEvents.onChanged((event) => changes.push(event));
+      fake.emitTables(["lane_events"]);
+      await vi.advanceTimersByTimeAsync(260);
+
+      expect(changes).toHaveLength(1);
+      expect(changes[0]).toMatchObject({ kinds: [] });
+      expect(typeof (changes[0] as { laneId: string }).laneId).toBe("string");
+
+      unsubscribe();
+      fake.emitTables(["lane_events"]);
+      await vi.advanceTimersByTimeAsync(260);
+      expect(changes).toHaveLength(1);
+
+      adapter.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to an empty lane story when the host does not serve the reads", async () => {
+    fake.descriptors = descriptors(["lanes.list"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    const list = await adapter.ade.laneEvents.list({ laneId: "lane-9" });
+    expect(list).toMatchObject({ laneId: "lane-9", events: [], branches: [], chats: [], hasDerived: false });
+    await expect(adapter.ade.laneEvents.summary({ laneIds: ["lane-9"] })).resolves.toMatchObject({ summaries: [] });
+    expect(fake.commandCalls).toEqual([]);
+
+    adapter.dispose();
+  });
+
   it("routes commands through sync with project id stamping and descriptor fallbacks", async () => {
     fake.descriptors = descriptors([
       "lanes.list",

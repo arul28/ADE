@@ -4,6 +4,7 @@ import type {
   FilesGitStatusEvent,
   GitHubStatus,
   LaneDeleteEvent,
+  LaneEventsChangedEvent,
   LaneLifecycleEvent,
   OpenProjectBinding,
   PrEventPayload,
@@ -34,6 +35,7 @@ export type AdapterEvents = {
   lanesInvalidated: InvalidationEvent;
   lanesLifecycle: LaneLifecycleEvent;
   lanesDelete: LaneDeleteEvent;
+  laneEventsChanged: LaneEventsChangedEvent;
   sessionsInvalidated: InvalidationEvent;
   sessionsChanged: TerminalSessionChangedEvent;
   chatsInvalidated: InvalidationEvent;

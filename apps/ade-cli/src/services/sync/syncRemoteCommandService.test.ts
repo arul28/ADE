@@ -24,6 +24,7 @@ function createService(options?: {
   gitService?: Record<string, unknown>;
   githubService?: Record<string, unknown>;
   laneService?: Record<string, unknown>;
+  laneEventsService?: Record<string, unknown>;
   operationService?: Record<string, unknown>;
   prService?: Record<string, unknown>;
   prSummaryService?: Record<string, unknown>;
@@ -90,6 +91,9 @@ function createService(options?: {
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
+    ...(options?.laneEventsService
+      ? { getLaneEventsService: () => options.laneEventsService as never }
+      : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
     ...(options?.issueRuntimeHostPairingGrant
@@ -1392,6 +1396,91 @@ describe("createSyncRemoteCommandService", () => {
     expect(ptyService.resumeSession).toHaveBeenCalledWith({
       sessionId: "session-1",
     });
+  });
+
+
+  it("routes lanes.listEvents and lanes.eventsSummary to the lane events service", async () => {
+    const listResult = {
+      laneId: "lane-1",
+      events: [{ id: "ev-1", laneId: "lane-1", kind: "commit", ts: "2026-08-18T00:00:00.000Z", actor: { kind: "unknown" }, ref: "abc", branchRef: "feature", payload: {}, derived: false }],
+      branches: [],
+      chats: [],
+      baseRef: "main",
+      hasDerived: false,
+      generatedAt: "2026-08-18T00:00:01.000Z",
+    };
+    const summaryResult = { summaries: [{ laneId: "lane-1", eventCount: 1 }], generatedAt: "2026-08-18T00:00:01.000Z" };
+    const list = vi.fn().mockResolvedValue(listResult);
+    const summary = vi.fn().mockResolvedValue(summaryResult);
+    const { service } = createService({ laneEventsService: { list, summary } });
+
+    expect(service.getDescriptor("lanes.listEvents")).toEqual({
+      action: "lanes.listEvents",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+    expect(service.getDescriptor("lanes.eventsSummary")).toEqual({
+      action: "lanes.eventsSummary",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+
+    await expect(
+      service.execute(makePayload("lanes.listEvents", {
+        laneId: "lane-1",
+        sinceTs: "2026-08-01T00:00:00.000Z",
+        limit: 10_000,
+        persistedOnly: true,
+      })),
+    ).resolves.toEqual(listResult);
+    // The limit is clamped so one viewer cannot ask the host for an unbounded read.
+    expect(list).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      sinceTs: "2026-08-01T00:00:00.000Z",
+      limit: 2000,
+      persistedOnly: true,
+    });
+
+    await expect(
+      service.execute(makePayload("lanes.eventsSummary", { laneIds: ["lane-1", " lane-2 ", "lane-1"] })),
+    ).resolves.toEqual(summaryResult);
+    expect(summary).toHaveBeenCalledWith({ laneIds: ["lane-1", "lane-2"] });
+  });
+
+  it("rejects malformed lane story args before touching the service", async () => {
+    const list = vi.fn();
+    const summary = vi.fn();
+    const { service } = createService({ laneEventsService: { list, summary } });
+
+    await expect(service.execute(makePayload("lanes.listEvents", {}))).rejects.toThrow(/requires laneId/);
+    await expect(
+      service.execute(makePayload("lanes.listEvents", { laneId: "lane-1", sinceTs: "not-a-date" })),
+    ).rejects.toThrow(/ISO-8601/);
+    await expect(
+      service.execute(makePayload("lanes.listEvents", { laneId: "lane-1", limit: "10" })),
+    ).rejects.toThrow(/limit must be a finite number/);
+    await expect(service.execute(makePayload("lanes.eventsSummary", {}))).rejects.toThrow(/laneIds as an array/);
+    await expect(
+      service.execute(makePayload("lanes.eventsSummary", { laneIds: [1] })),
+    ).rejects.toThrow(/laneIds must be strings/);
+    expect(list).not.toHaveBeenCalled();
+    expect(summary).not.toHaveBeenCalled();
+  });
+
+  it("answers lane story reads with an empty story when no lane events service is wired", async () => {
+    const { service } = createService({});
+
+    const list = (await service.execute(makePayload("lanes.listEvents", { laneId: "lane-7" }))) as Record<string, unknown>;
+    expect(list).toMatchObject({
+      laneId: "lane-7",
+      events: [],
+      branches: [],
+      chats: [],
+      baseRef: "main",
+      hasDerived: false,
+    });
+    const summary = (await service.execute(makePayload("lanes.eventsSummary", { laneIds: ["lane-7"] }))) as Record<string, unknown>;
+    expect(summary).toMatchObject({ summaries: [] });
   });
 
   it("routes work.listExternalSessions to the external session service", async () => {

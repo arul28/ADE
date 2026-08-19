@@ -3212,6 +3212,9 @@ describe("adeRpcServer", () => {
       laneId: "lane-1",
       amend: false,
       message: "generated commit message",
+      // The lane story attributes the commit to the calling chat; this caller
+      // has no chat identity, so it is explicitly null rather than absent.
+      actorSessionId: null,
     });
     expect(response.structuredContent.messageSource).toBe("generated");
     expect(response.structuredContent.generatedByModel).toBe("gpt-5-mini");
