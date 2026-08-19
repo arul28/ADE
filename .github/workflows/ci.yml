@@ -595,6 +595,9 @@ jobs:
           # Depth 2 keeps the PR merge commit's parents available, so the
           # gating step below can diff the merge against its base parent.
           fetch-depth: 2
+          # xcodebuild executes PR-controlled build phases; it never needs
+          # authenticated git, so don't leave the token in .git/config.
+          persist-credentials: false
 
       - name: Decide whether iOS is affected
         id: gate

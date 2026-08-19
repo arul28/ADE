@@ -17336,7 +17336,8 @@ final class SyncService: ObservableObject {
   }
 
   func awaitRelayCandidateReadyForTesting(
-    frames: [[String: Any]]
+    frames: [[String: Any]],
+    acceptedWindowNanoseconds: UInt64? = nil
   ) async throws -> SyncRelayReadyNegotiation {
     let mailbox = SyncConnectionRaceTextMailbox()
     for frame in frames {
@@ -17347,10 +17348,11 @@ final class SyncService: ObservableObject {
     // Every frame is already buffered, so the pre-`accepted` deadline is timing
     // nothing real here — it only races the test host's scheduler, and a loaded
     // machine can burn the 350ms production window between reading two frames
-    // that were delivered instantly. Widen that one window so the runtime's
-    // ordering rules are what the test measures.
+    // that were delivered instantly. Widen that one window by default so the
+    // runtime's ordering rules are what the test measures; a timeout-path test
+    // passes a tiny window instead so it does not sit out the wide one.
     var budget = connectAttemptBudget
-    budget.relayAcceptedNegotiationNanoseconds = 30_000_000_000
+    budget.relayAcceptedNegotiationNanoseconds = acceptedWindowNanoseconds ?? 30_000_000_000
     return try await awaitRelayCandidateReady(mailbox: mailbox, budget: budget)
   }
 

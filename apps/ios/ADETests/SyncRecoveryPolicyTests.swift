@@ -1142,7 +1142,12 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     }
 
     do {
-      try await service.awaitRelayCandidateReadyForTesting(frames: [])
+      // A short real window: this test IS the timeout path, so it must not sit
+      // out the wide scheduling-safe window the ordering tests use.
+      try await service.awaitRelayCandidateReadyForTesting(
+        frames: [],
+        acceptedWindowNanoseconds: 50_000_000
+      )
       XCTFail("A ready-v2 timeout must require a fresh legacy socket.")
     } catch let error as SyncRelayReadyNegotiationError {
       XCTAssertEqual(error, .retryLegacySocket)
