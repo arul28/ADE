@@ -35,7 +35,7 @@
 | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of **Report issue**: shared machine sources plus the desktop's own jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Saves the report `0600`, copies it, and opens a prefilled GitHub issue. |
 | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder, the redactor (`redactDiagnosticText`), and `buildDiagnosticIssueUrl`. No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
 | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — the machine-level logs, layout, disk figures and redaction context both surfaces read, so a log added for one appears in both. |
-| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open]`, the headless equivalent. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
+| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open] [--send]`, the headless equivalent. `--send` posts the same redacted report to ADE (Clerk token when the machine is signed in, anonymous otherwise) and prints a short reference id. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
 | `apps/ade-cli/src/lib/externalLinks.ts` | `normalizeExternalUrl` / `openExternalUrl` for the CLI: allows only `http(s)` and `mailto:`, opens through the platform helper (`open` / `rundll32` via the trusted-tool resolver / `xdg-open`), and falls back to Electron's `shell.openExternal` only when actually running inside Electron — a static `electron` import crashes headless startup. |
 | `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
 | `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The button itself, on every error surface. One press assembles, saves, copies, and opens the issue; it reports what actually happened rather than claiming success. |
@@ -519,7 +519,8 @@ rides the clipboard.
 | Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
 | IPC | `IPC.diagnosticsOpenIssue` |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
-| Headless equivalent | `ade report-issue [--open]` |
+| Headless equivalent | `ade report-issue [--open] [--send]` |
+| Upload (opt-in) | `POST /diagnostics/upload` on the account directory Worker (`apps/account-directory/src/diagnostics.ts`); client in `apps/ade-cli/src/services/diagnostics/diagnosticUpload.ts` and its renderer mirror `apps/desktop/src/main/services/diagnostics/diagnosticsUpload.ts` |
 
 `ade report-issue` and the desktop button read the same machine sources through
 `collectMachineDiagnosticSources`, so a log added for one appears in both; the

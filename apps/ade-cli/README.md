@@ -469,6 +469,7 @@ ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
 ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
 ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
+ade report-issue --send                           # also upload the same redacted report to ADE and print its reference id
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set

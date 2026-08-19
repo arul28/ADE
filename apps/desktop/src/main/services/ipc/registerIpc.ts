@@ -82,6 +82,11 @@ import {
   type ProductAnalyticsStatus,
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import {
+  brainActionDomainFromIpcArgs,
+  brainActionErrorCode,
+  createMachineRegisterRefusalObserver,
+} from "../analytics/reliabilityTelemetry";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
@@ -2343,6 +2348,35 @@ export function registerIpc({
                   outcome: didTimeout ? "timeout" : "failure",
                   recoverable: true,
                   source: "ipc",
+                },
+              });
+            } catch {
+              // Analytics capture must never mask the original IPC error.
+            }
+          }
+          // Every brain action the app performs goes through this one channel,
+          // and `usageActionFromIpcChannel` maps it to `localRuntime.callAction`
+          // — not a meaningful usage action — so the branch above has never
+          // fired for it. That is why an installation whose brain failed every
+          // action produced no telemetry at all. It is deliberately NOT fixed by
+          // adding the channel to MEANINGFUL_ACTIONS: that set is the durable
+          // `usage_events` mutation ledger, and joining it would write a
+          // mutation row per brain call and redefine what "interaction" counts.
+          if (channel === IPC.localRuntimeCallAction) {
+            try {
+              const actionDomain = brainActionDomainFromIpcArgs(args);
+              const errorCode = brainActionErrorCode(error, didTimeout);
+              productAnalyticsService?.captureInternal({
+                event: "ade_brain_action_failed",
+                surface: "desktop",
+                // Per domain+code per hour: a brain that rejects every call in
+                // a retry loop costs one accepted event an hour, not one per
+                // call, and the per-event daily cap bounds the rest.
+                dedupeKey: `brain-action-failed:${actionDomain ?? "unknown"}:${errorCode}`,
+                minimumIntervalMs: 60 * 60 * 1_000,
+                properties: {
+                  ...(actionDomain ? { action_domain: actionDomain } : {}),
+                  error_code: errorCode,
                 },
               });
             } catch {
@@ -5359,7 +5393,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+  const readLocalSyncStatus = async (arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const params = {
       includeTransferReadiness: arg?.includeTransferReadiness === true,
       forceTransferReadiness: arg?.forceTransferReadiness === true,
@@ -5393,6 +5427,34 @@ export function registerIpc({
     } catch (error) {
       return buildMachineOnlySyncSnapshot(error);
     }
+  };
+
+  // The account directory refusing to register THIS computer is the state a
+  // revoked machine sits in, and the local status read is where the desktop can
+  // see it. The observer reports only the edge into a refusal, so a machine that
+  // stays revoked for days costs one event and not one per poll tick; the
+  // per-code hour below bounds the case the in-process latch cannot see, which
+  // is an app or brain restarting inside the refusal.
+  const observeMachineRegisterRefusal = createMachineRegisterRefusalObserver((code) => {
+    productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_register_refused",
+        outcome: "failed",
+        refusal_code: code,
+      },
+      projectId: null,
+      dedupeKey: `machine_register_refused:${code}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
+  });
+
+  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const snapshot = await readLocalSyncStatus(arg);
+    observeMachineRegisterRefusal(snapshot);
+    return snapshot;
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
@@ -9788,6 +9850,19 @@ export function registerIpc({
       localRuntimeConnectionPool,
       LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
     ),
+    // Same shape and the same per-outcome hour as the two Connections controls
+    // below, so removal joins that funnel rather than starting a parallel one.
+    // The machine key, its display name and the account id all stay here.
+    recordMachineRemoved: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "machine_removed", outcome },
+        projectId: null,
+        dedupeKey: `machine_removed:${outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+    },
     logger: {
       info: (message, meta) => getCtx().logger.info(message, meta),
       warn: (message, meta) => getCtx().logger.warn(message, meta),

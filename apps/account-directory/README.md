@@ -102,24 +102,34 @@ identity file — a reinstall, a wiped config directory, a restored backup —
 arrives as a **second row for one physical computer**. The user then removes the
 row that looks stale, and half the time that is the live install.
 
-A register call whose `deviceId` matches other rows on the same account
-therefore deletes those rows and reports them:
+A register call whose `deviceId` **or** `hardwareId` matches other rows on the
+same account therefore deletes those rows and reports them:
 
 ```json
 { "machineKey": "...", "supersededMachineKeys": ["<older key>"] }
 ```
 
 The field is additive and omitted when nothing was superseded, so existing
-clients are unaffected. Two rules bound it:
+clients are unaffected. Three rules bound it:
 
-- **Same trust bar as a re-pair.** `deviceId` is caller-supplied and forgeable,
-  so on a plain token it authorizes nothing — otherwise any machine could claim
-  another's device id and delete its row. The call must carry proven-fresh
-  interactive authentication or spend a pairing grant, exactly as un-revoking
-  does. A grant is only spendable on `pairing: true`; the claim is honored on
-  any register, because it is a property of a token this Worker verified.
-- **At most 5 rows per call**, oldest-seen first. The rest go on the next proven
-  re-pair.
+- **Two identifiers, one union.** `deviceId` catches an in-place reinstall,
+  where `~/.ade/secrets` survived. `hardwareId` — an optional, per-account
+  sha256 of an OS-level machine identifier (`IOPlatformUUID`, `MachineGuid`,
+  `/etc/machine-id`) — catches a full `~/.ade` wipe, where the device id was
+  minted fresh alongside the machine key and matches nothing. It is salted with
+  the account id, so one machine seen by two accounts stores two unrelated
+  values and the column cannot correlate users. Rows with a null `hardware_id`
+  (written before it shipped, or by a host that cannot read one) are matched by
+  `deviceId` only, and nothing back-fills them.
+- **Same trust bar as a re-pair.** `deviceId` and `hardwareId` are both
+  caller-supplied and forgeable, so on a plain token they authorize nothing —
+  otherwise any machine could claim another's identifiers and delete its row.
+  The call must carry proven-fresh interactive authentication or spend a pairing
+  grant, exactly as un-revoking does. A grant is only spendable on
+  `pairing: true`; the claim is honored on any register, because it is a
+  property of a token this Worker verified.
+- **At most 5 rows per call** across both identifiers, oldest-seen first. The
+  rest go on the next proven re-pair.
 
 Superseded keys get **no** `revoked_machines` row. The physical device holds the
 new key, and blocking the old one would trapdoor any client that rolls its
@@ -166,6 +176,49 @@ hosts publish `ed25519:<raw-32-byte-base64>` so clients can verify and seal
 account adoption on direct or relay routes. The Worker treats the value as
 opaque metadata and rejects values longer than 128 characters.
 
+## Diagnostic report uploads
+
+`POST /diagnostics/upload` is the destination for ADE's "Send to ADE" button and
+`ade report-issue --send`. It exists because support round-trips were the real
+cost of a broken install: the report is already built and fully redacted on the
+user's machine, and asking someone whose ADE will not start to run terminal
+commands and paste output is where most of them stalled.
+
+**Contract**
+
+| | |
+|---|---|
+| Method | `POST` (plus `OPTIONS` preflight; anything else is `405`) |
+| Body | `text/plain` — the report itself; or `application/json` — `{ report, installId?, appVersion? }` |
+| Metadata on `text/plain` | `?installId=` / `?appVersion=` query parameters |
+| Auth | **Optional** `Authorization: Bearer <Clerk token>`, verified exactly as the account routes verify it. Absent, the upload is anonymous. A token that is sent and does not verify is `401` — never silently downgraded |
+| Size | `413` above 512 KB. `content-length` is checked first, then the stream is counted as it arrives, so a missing or dishonest length changes nothing |
+| Rate limit | 5 per UTC day per user (signed in) or per caller IP (anonymous) → `429` with `retry-after: 86400` |
+| Success | `200 {"ok": true, "id": "<uuid>"}`. The report is **never** echoed back |
+| Storage | `reports/<utc-date>/<userIdOrAnon>/<uuid>.md` in the `DIAGNOSTICS` R2 bucket, with `userId` / `installId` / `appVersion` as custom metadata |
+| No binding | `503`, and the in-app button says sending is unavailable |
+
+The key's identity segment is `u-<clerk user id>` when signed in and
+`anon-<sha256(ip) prefix>` otherwise — the *same* segment the quota is counted
+on, so one prefix listing answers both "where does this go" and "has this caller
+had enough today".
+
+CORS is `*` on this route only. The desktop button runs in Electron's renderer,
+whose origin is `file://` (`Origin: null`) in a packaged build, so no fixed
+allow-list can name it; `*` is safe here because the route reads no account
+state, returns only an opaque id, and cannot be used with
+`credentials: "include"`. Every `/account/*` route keeps its exact-origin rule.
+
+**Rate limiting without a migration.** The device flow counts attempts in the
+`device_approval_rate_limits` D1 table. This route deliberately does not: it
+ships without touching `migrations/`, so the quota is enforced by a per-isolate
+counter (fast, but lost when Cloudflare recycles the isolate) backed by an R2
+prefix listing (durable and global, one class-A operation per upload). The
+listing is not transactional, so genuinely simultaneous requests can land a
+couple of objects over five. For a bound whose only job is "one person cannot
+fill the bucket", that is an acceptable trade; if volume ever justifies exact
+counting, move it to the D1 pattern the device flow already uses.
+
 ## Local checks
 
 ```sh
@@ -200,7 +253,21 @@ deployment:
    `DIRECTORY_AUTH_SECRET` (`npx wrangler secret put DIRECTORY_AUTH_SECRET`) to
    the same value configured on the push relay; machine removal and re-pairing
    both fail loudly without it.
-3. Apply the remote migrations and deploy the Worker. Use
+3. Create the R2 bucket behind the `DIAGNOSTICS` binding, **before** the deploy
+   that first references it — `wrangler deploy` does not create buckets, and a
+   Worker bound to a bucket that does not exist fails to start:
+
+   ```sh
+   npx wrangler r2 bucket create ade-diagnostics              # default environment
+   npx wrangler r2 bucket create ade-diagnostics-production   # production
+   ```
+
+   The binding is optional in code, so an already-deployed Worker whose bucket
+   was removed answers `503` on `/diagnostics/upload` and keeps every other
+   route working. Set a lifecycle rule on both buckets to expire objects after
+   the support window you actually want to keep reports for; nothing in the
+   Worker deletes them.
+4. Apply the remote migrations and deploy the Worker. Use
    `npm run d1:migrate:production` and `npm run deploy:production` for the
    production environment. Each deploy script validates only the environment it
    is about to publish, so an unconfigured development Worker cannot block a

@@ -41,6 +41,16 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Opt-in diagnostic report uploads (`POST /diagnostics/upload`). The bucket
+  // is NOT created by deploying — run `wrangler r2 bucket create` first (see
+  // README, "Diagnostic report uploads"). Missing binding is handled: the route
+  // answers 503 and the in-app button reports that sending is unavailable.
+  "r2_buckets": [
+    {
+      "binding": "DIAGNOSTICS",
+      "bucket_name": "ade-diagnostics"
+    }
+  ],
   "env": {
     "production": {
       "name": "ade-account-directory-production",
@@ -57,6 +67,12 @@
           "database_name": "ade-account-directory-production",
           "database_id": "38ebe0bb-ac4d-4b39-b73e-bab2f0092971",
           "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "DIAGNOSTICS",
+          "bucket_name": "ade-diagnostics-production"
         }
       ]
     }

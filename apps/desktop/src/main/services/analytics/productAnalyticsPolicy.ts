@@ -5,6 +5,7 @@ import {
   RENDERER_GONE_UNKNOWN_REASON,
 } from "../../rendererCrashRecovery";
 import type { ToolErrorKind } from "../../../shared/types";
+import type { AdeActionDomain } from "../adeActions/registry";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -27,6 +28,7 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_brain_recovered", "ade_renderer_recovered", "ade_publish_failing", "ade_relay_suppressed",
   "ade_account_session_unreadable",
   "ade_tool_fetched",
+  "ade_brain_action_failed",
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -56,6 +58,11 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_account_session_unreadable: 10,
   // Three pinned tools, plus headroom for a retry apiece after a flaky network.
   ade_tool_fetched: 12,
+  // Brain action failures are the loudest un-instrumented class there is, so
+  // the cap has to survive a genuinely broken machine without becoming the
+  // whole day's budget. The emitter dedupes per domain+code per hour, so 20 is
+  // roughly "twenty distinct failure shapes a day", not twenty failures.
+  ade_brain_action_failed: 20,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -86,6 +93,9 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_relay_suppressed: 3,
   ade_account_session_unreadable: 3,
   ade_tool_fetched: 3,
+  // A brain that fails every action fails it in a tight loop; the per-minute
+  // ceiling is what stops the first minute of an outage from spending the day.
+  ade_brain_action_failed: 3,
 };
 
 const STRING_PROPERTIES = new Set([
@@ -94,6 +104,7 @@ const STRING_PROPERTIES = new Set([
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
+  "action_domain", "error_code", "refusal_code",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -127,6 +138,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // One coarse fact per "Report issue" press: whether the GitHub issue page
   // opened. Never the surface it was pressed on, and never the report itself.
   "issue_report",
+  // Machine membership. `machine_removed` is the user dropping a computer from
+  // their account; `machine_register_refused` is the account directory refusing
+  // to take THIS computer back, which is the state a revoked machine sits in
+  // and the one that produced no telemetry at all last time.
+  "machine_removed",
+  "machine_register_refused",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -140,6 +157,10 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_feature_used: new Set([
     "feature", "action", "outcome", "source", "mode", "provider", "model_family", "duration_bucket", "connection_state",
     "bytes_freed", "files_compressed", "count_bucket",
+    // Why the account directory refused to register this machine. Its own key
+    // rather than `code`, which is unallowlisted free-slug shared with the
+    // publisher-health events; `refusal_code` is a three-value closed set.
+    "refusal_code",
   ]),
   ade_work_session_started: new Set(["feature", "action", "outcome", "source", "mode", "provider"]),
   ade_work_session_completed: new Set([
@@ -171,9 +192,58 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // `provider` already enumerates codex/claude/opencode, so the tool identity
   // reuses it rather than adding a parallel key.
   ade_tool_fetched: new Set(["provider", "outcome", "duration_bucket", "tool_error_kind"]),
+  // Exactly two keys, and deliberately NOT folded into `ade_error`. That event
+  // is keyed by `action` (a usage-ledger action name) and coarsens its failure
+  // to `error_kind`'s eight buckets, which is precisely the information this
+  // event exists to keep: which brain domain, and the structured code the brain
+  // attached. Reusing it would also put a new high-volume emitter inside
+  // `ade_error`'s 20/day cap and dilute the one signal that already works.
+  ade_brain_action_failed: new Set(["action_domain", "error_code"]),
 };
 
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
+
+/**
+ * The ADE action domains, mirrored from `ADE_ACTION_DOMAIN_NAMES` in
+ * `services/adeActions/registry.ts`.
+ *
+ * Mirrored rather than imported at runtime on purpose: that module pulls in the
+ * whole runtime service graph (auth services, the CLI bootstrap) and this policy
+ * is loaded by the analytics service, the exporters, and their tests. The
+ * `Record<AdeActionDomain, true>` annotation is what keeps the copy honest — a
+ * domain renamed OR added in the registry fails this file's type-check instead
+ * of silently becoming an unreportable value.
+ */
+const ADE_ACTION_DOMAIN_ALLOWLIST: Readonly<Record<AdeActionDomain, true>> = {
+  account: true, attention: true, lane: true, git: true, diff: true, conflicts: true, pr: true,
+  tests: true, chat: true, keybindings: true, ai: true, onboarding: true, automation_planner: true,
+  cto_state: true, cto_memory: true, session: true, operation: true, ade_project: true,
+  project_config: true, project_secret: true, linear_credentials: true, linear_oauth: true,
+  linear_issue_tracker: true, github: true, feedback: true, usage: true, analytics: true,
+  storage: true, budget: true, update: true, file: true, pty: true, terminal: true, layout: true,
+  tiling_tree: true, graph_state: true, computer_use_artifacts: true, ios_simulator: true,
+  app_control: true, built_in_browser: true, automations: true, review: true, issue: true,
+  orchestration: true, search: true, "external-sessions": true,
+};
+
+/**
+ * Structured failure codes (`codedError`, `Error.code`, and the `code:` prefix
+ * the runtime RPC boundary encodes) are an open, code-authored vocabulary — the
+ * point of collecting them is to see the ones nobody predicted — so they cannot
+ * be pinned to a literal allowlist the way every other string property is.
+ *
+ * They are bounded by SHAPE instead, and deliberately more tightly than
+ * `SLUG_VALUE`: a lower-case identifier, snake_case or kebab-case, because the
+ * code base authors both (`storage_read_failed`, `cto-identity-invalid`). No
+ * dots, slashes, colons, plus signs, spaces, or `@` — which is what makes it
+ * impossible for a path, hostname, URL, email, or any fragment of an error
+ * sentence to arrive here. The length cap is well under any realistic code and
+ * far under a message. Note that a hyphen can only ever reach this from a real
+ * `Error.code`: `parseCodedErrorMessage` reads a `code:` message prefix with an
+ * even narrower charset, so nothing hyphenated can be scraped out of prose.
+ */
+const ERROR_CODE_VALUE = /^[a-z][a-z0-9_-]{0,47}$/;
+
 const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   screen: new Set([
     "project", "hub", "lanes", "files", "work", "graph", "prs", "review", "history", "automations",
@@ -262,6 +332,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "manifest", "unsupported-target", "network", "integrity", "disk-space", "extract",
     "lock-timeout", "filesystem",
   ]),
+  action_domain: new Set(Object.keys(ADE_ACTION_DOMAIN_ALLOWLIST)),
+  // The account directory's own two refusals, plus the honest bucket for a
+  // refusal a newer directory names and this build has never heard of. The
+  // brain's user-facing sentence is NOT a fallback: it is free text.
+  refusal_code: new Set(["machine_revoked", "pairing_authentication_required", "other"]),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {
@@ -291,6 +366,11 @@ function safeStringProperty(key: string, value: ProductAnalyticsPropertyValue): 
     return raw === "open" || isMeaningfulUsageAction(raw) || ANALYTICS_ONLY_ACTIONS.has(raw) ? raw : null;
   }
   if (key === "error_kind") return coarseErrorKind(value);
+  if (key === "error_code") {
+    if (typeof value !== "string" || value.length > 256) return null;
+    const normalized = value.trim().toLowerCase();
+    return ERROR_CODE_VALUE.test(normalized) ? normalized : null;
+  }
   const safe = safeProductAnalyticsString(value);
   if (!safe) return null;
   const allowlist = SAFE_STRING_VALUES[key];

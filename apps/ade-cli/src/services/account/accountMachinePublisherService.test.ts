@@ -190,6 +190,116 @@ describe("account machine publisher health", () => {
     });
   });
 
+  it("sends the account-salted hardware anchor on the heartbeat, and omits it when there is none", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, { status: 204 });
+    });
+    const readAccountHardwareId = vi.fn((userId: string) => `anchor-for-${userId}`);
+    const options = {
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "account-user",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    };
+
+    await createAccountMachinePublisherService({ ...options, readAccountHardwareId }).publishNow();
+    // Salted with the account id, and sent on the plain heartbeat: a row can
+    // only be matched on a later reinstall if it stored an anchor first.
+    expect(readAccountHardwareId).toHaveBeenCalledWith("account-user");
+    expect(bodies[0]).toMatchObject({
+      machineKey: "machine-studio",
+      deviceId: "device-studio",
+      hardwareId: "anchor-for-account-user",
+    });
+    expect(bodies[0]).not.toHaveProperty("pairing");
+
+    // No reader wired, no anchor to read, and a reader that throws are all the
+    // same ordinary outcome: the field is absent and the publish succeeds.
+    await createAccountMachinePublisherService(options).publishNow();
+    await createAccountMachinePublisherService({
+      ...options,
+      readAccountHardwareId: () => null,
+    }).publishNow();
+    const thrower = createAccountMachinePublisherService({
+      ...options,
+      readAccountHardwareId: () => {
+        throw new Error("ioreg unavailable");
+      },
+    });
+    await thrower.publishNow();
+
+    expect(bodies.slice(1).every((body) => !("hardwareId" in body))).toBe(true);
+    expect(thrower.getPublisherHealth().state).toBe("published");
+  });
+
+  it("sends no anchor when the publisher has no account id to salt with", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const readAccountHardwareId = vi.fn(() => "anchor");
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      // The env-token publisher: authenticated, but with no account identity.
+      // Hashing without the salt would produce a value shared across accounts.
+      getAccountStatus: () => ({
+        signedIn: false,
+        source: "env-token" as const,
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      readAccountHardwareId,
+      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.publishNow();
+
+    expect(readAccountHardwareId).not.toHaveBeenCalled();
+    expect(bodies[0]).not.toHaveProperty("hardwareId");
+    expect(service.getPublisherHealth().state).toBe("published");
+  });
+
+  it("keeps the anchor alongside a deliberate pairing publish and its grant", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "account-user",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      consumePairingGrant: () => "grant-token",
+      readAccountHardwareId: () => "anchor-for-account-user",
+      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.publishPairing();
+
+    // The anchor is the identifier a proven re-pair supersedes on; a payload
+    // that carried the proof but not the anchor would prove nothing about it.
+    expect(bodies[0]).toMatchObject({
+      pairing: true,
+      pairingGrant: "grant-token",
+      hardwareId: "anchor-for-account-user",
+    });
+  });
+
   it("confirms only its own superseded machine keys, and tolerates a directory that sends none", async () => {
     const confirmSupersededMachineKeys = vi.fn((keys: readonly unknown[]) =>
       (keys as string[]).filter((key) => key === "machine-old"));

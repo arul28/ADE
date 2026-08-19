@@ -17,6 +17,8 @@ type StoredMachine = {
   user_id: string;
   machine_key: string;
   device_id: string | null;
+  /** Null for every row written before the anchor shipped, and never back-filled. */
+  hardware_id: string | null;
   name: string | null;
   custom_name: string | null;
   platform: string | null;
@@ -175,15 +177,20 @@ class FakeD1Database {
     const normalized = sql.toLowerCase();
     if (!normalized.includes("from machines")) return [];
     // Duplicate lookup for one physical device. Mirrors the source predicate
-    // exactly — including the `machine_key <> ?` self-exclusion — so a worker
-    // that drops it deletes the row it just wrote and the test says so.
+    // exactly — including the `machine_key <> ?` self-exclusion and the OR over
+    // both identifiers — so a worker that drops either deletes the row it just
+    // wrote, or stops folding reinstalls, and the tests say so. A null bind
+    // matches nothing, exactly as SQL comparison to null does.
     if (normalized.includes("device_id = ?")) {
-      const [userId, deviceId, machineKey, limit] = values;
+      const [userId, machineKey, deviceId, hardwareId, limit] = values;
       return this.rows
         .filter((row) =>
           row.user_id === userId
-          && row.device_id === deviceId
           && row.machine_key !== machineKey
+          && (
+            (deviceId != null && row.device_id === deviceId)
+            || (hardwareId != null && row.hardware_id === hardwareId)
+          )
         )
         .sort((left, right) => Number(left.last_seen_at ?? 0) - Number(right.last_seen_at ?? 0))
         .slice(0, Number(limit)) as T[];
@@ -298,11 +305,12 @@ class FakeD1Database {
       return before - this.revocations.length;
     }
     if (normalized.includes("insert into machines")) {
-      const retainRelayEndpoints = values[10] === 1;
+      const retainRelayEndpoints = values[11] === 1;
       const row: StoredMachine = {
         user_id: String(values[0]),
         machine_key: String(values[1]),
         device_id: values[2] == null ? null : String(values[2]),
+        hardware_id: values[10] == null ? null : String(values[10]),
         name: values[3] == null ? null : String(values[3]),
         custom_name: null,
         platform: values[4] == null ? null : String(values[4]),
@@ -334,6 +342,10 @@ class FakeD1Database {
         Object.assign(existing, row, {
           created_at: existing.created_at,
           custom_name: existing.custom_name,
+          // Mirrors `coalesce(excluded.hardware_id, machines.hardware_id)`: one
+          // heartbeat that could not read an anchor must not erase the one this
+          // row already has, or a single bad sample undoes the dedup.
+          hardware_id: row.hardware_id ?? existing.hardware_id,
         });
       } else {
         this.rows.push(row);
@@ -350,16 +362,20 @@ class FakeD1Database {
       return 1;
     }
     if (normalized.includes("delete from machines")) {
-      const [userId, machineKey, deviceId] = values;
-      // The supersede delete carries the device id it was authorized by; the
-      // removal delete does not. Honoring it here means a worker that drops the
-      // predicate stops being covered by these tests.
+      const [userId, machineKey, deviceId, hardwareId] = values;
+      // The supersede delete carries the identifiers it was authorized by; the
+      // removal delete does not. Honoring them here means a worker that narrows
+      // the predicate — dropping it entirely, or keeping only the device id and
+      // silently sparing every anchor-matched row — stops being covered.
       const scopedToDevice = normalized.includes("device_id = ?");
+      const matchesScope = (row: StoredMachine): boolean =>
+        (deviceId != null && row.device_id === deviceId)
+        || (hardwareId != null && row.hardware_id === hardwareId);
       const before = this.rows.length;
       this.rows = this.rows.filter((row) =>
         row.user_id !== userId
         || row.machine_key !== machineKey
-        || (scopedToDevice && row.device_id !== deviceId)
+        || (scopedToDevice && !matchesScope(row))
       );
       return before - this.rows.length;
     }
@@ -1616,6 +1632,7 @@ describe("machine directory", () => {
       user_id: "user_1",
       machine_key: `machine-${index}`,
       device_id: `device-${index}`,
+      hardware_id: null,
       name: `Machine ${index}`,
       custom_name: null,
       platform: "macOS",
@@ -2510,6 +2527,297 @@ describe("device supersede", () => {
     expect(((await second.json()) as { supersededMachineKeys: string[] }).supersededMachineKeys)
       .toHaveLength(2);
     expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+  });
+});
+
+/**
+ * The other half of the reinstall story, and the half device-supersede could
+ * not reach.
+ *
+ * `sync-device-id` lives in `~/.ade/secrets` next to the machine key, so the
+ * user who follows the oldest support instruction there is — delete `~/.ade`,
+ * install again, sign in — arrives with BOTH identifiers freshly minted and
+ * nothing for the directory to match. `hardware_id` is derived from the machine
+ * itself and is the same on the other side of that wipe.
+ *
+ * It is caller-supplied like the device id, so it is gated by the identical
+ * proof and nothing here relaxes that.
+ */
+describe("hardware anchor supersede", () => {
+  // What a client actually sends: sha256 hex, salted per account, so these two
+  // stand for the same computer seen by two different accounts.
+  const ANCHOR = "a".repeat(64);
+  const OTHER_ACCOUNT_ANCHOR = "b".repeat(64);
+
+  function registerWithAnchor(
+    machineKey: string,
+    body: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return { ...registerBody(machineKey), hardwareId: ANCHOR, ...body };
+  }
+
+  it("persists the anchor and never lets a blank heartbeat erase it", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+
+    await handleRequest(
+      request("POST", "/account/machines/register", token, registerWithAnchor("machine-a")),
+      env,
+    );
+    expect(env.DB.rows[0]?.hardware_id).toBe(ANCHOR);
+
+    // A host that momentarily cannot read its identifier still heartbeats. The
+    // stored anchor is what a later reinstall matches on, so one bad sample
+    // must not cost the row its only durable identity.
+    const blank = await handleRequest(
+      request("POST", "/account/machines/register", token, registerBody("machine-a")),
+      env,
+    );
+    expect(blank.status).toBe(200);
+    expect(env.DB.rows[0]?.hardware_id).toBe(ANCHOR);
+    // Nor is it echoed back: the roster has no use for it and the response is
+    // the one place it could leak to another surface.
+    expect(await blank.json()).not.toHaveProperty("hardwareId");
+  });
+
+  it("folds a wiped install's row in when the device id did not survive either", async () => {
+    const env = makeEnv();
+    await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintToken({ sub: "user_1" }),
+        registerWithAnchor("machine-old", { deviceId: "device-before-the-wipe" }),
+      ),
+      env,
+    );
+
+    // `rm -rf ~/.ade`, reinstall, sign in: new machine key, NEW DEVICE ID, and
+    // the same computer underneath. Device-supersede alone matches nothing here.
+    const reinstalled = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerWithAnchor("machine-new", { deviceId: "device-after-the-wipe" }),
+      ),
+      env,
+    );
+
+    expect(reinstalled.status).toBe(200);
+    expect(await reinstalled.json()).toMatchObject({
+      machineKey: "machine-new",
+      supersededMachineKeys: ["machine-old"],
+    });
+    expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+    expect(env.DB.revocations).toEqual([]);
+  });
+
+  it("refuses an anchor match on a plain token", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await handleRequest(
+      request("POST", "/account/machines/register", token, registerWithAnchor("machine-old", {
+        deviceId: "device-before-the-wipe",
+      })),
+      env,
+    );
+
+    // An anchor is no more attested than a device id. Honoring one without a
+    // proven-fresh human would let any machine claim another's hardware and
+    // delete its row.
+    const rotated = await handleRequest(
+      request("POST", "/account/machines/register", token, registerWithAnchor("machine-new", {
+        deviceId: "device-after-the-wipe",
+        pairing: true,
+      })),
+      env,
+    );
+
+    expect(rotated.status).toBe(200);
+    expect(await rotated.json()).not.toHaveProperty("supersededMachineKeys");
+    expect(env.DB.rows.map((row) => row.machine_key).sort()).toEqual(["machine-new", "machine-old"]);
+  });
+
+  it("supersedes an anchor match on a grant-backed pairing register", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await handleRequest(
+      request("POST", "/account/machines/register", token, registerWithAnchor("machine-old", {
+        deviceId: "device-before-the-wipe",
+      })),
+      env,
+    );
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-new" });
+
+    const rotated = await handleRequest(
+      request("POST", "/account/machines/register", token, registerWithAnchor("machine-new", {
+        deviceId: "device-after-the-wipe",
+        pairing: true,
+        pairingGrant: grant,
+      })),
+      env,
+    );
+
+    expect(rotated.status).toBe(200);
+    expect(await rotated.json()).toMatchObject({ supersededMachineKeys: ["machine-old"] });
+    expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+    expect(env.DB.pairingGrants).toEqual([]);
+  });
+
+  it("still folds a null-anchor row in through the device id", async () => {
+    const env = makeEnv();
+    // Written before this shipped: no anchor at all, and nothing back-fills one.
+    await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintToken({ sub: "user_1" }),
+        { ...registerBody("machine-legacy"), deviceId: "device-macbook" },
+      ),
+      env,
+    );
+    expect(env.DB.rows[0]?.hardware_id).toBeNull();
+
+    // An in-place reinstall keeps `~/.ade/secrets`, so the device id is still
+    // the identifier that matches. The anchor path must not have cost it that.
+    const reinstalled = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerWithAnchor("machine-new", { deviceId: "device-macbook" }),
+      ),
+      env,
+    );
+
+    expect(await reinstalled.json()).toMatchObject({ supersededMachineKeys: ["machine-legacy"] });
+    expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+  });
+
+  it("never matches an anchor across accounts", async () => {
+    const env = makeEnv();
+    // The salt makes this impossible to produce in the field; the query being
+    // user-scoped is what makes it impossible even if it were produced.
+    await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintToken({ sub: "user_2" }),
+        registerWithAnchor("machine-theirs", { deviceId: "device-theirs" }),
+      ),
+      env,
+    );
+
+    const mine = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerWithAnchor("machine-mine", { deviceId: "device-mine" }),
+      ),
+      env,
+    );
+
+    expect(await mine.json()).not.toHaveProperty("supersededMachineKeys");
+    expect(env.DB.rows.map((row) => row.machine_key).sort())
+      .toEqual(["machine-mine", "machine-theirs"]);
+  });
+
+  it("leaves another account's row alone even when it holds a different anchor", async () => {
+    const env = makeEnv();
+    await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintToken({ sub: "user_2" }),
+        registerWithAnchor("machine-theirs", {
+          deviceId: "device-macbook",
+          hardwareId: OTHER_ACCOUNT_ANCHOR,
+        }),
+      ),
+      env,
+    );
+
+    // Same physical machine, second account: the device id is genuinely shared,
+    // and the row still belongs to somebody else.
+    const mine = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerWithAnchor("machine-mine", { deviceId: "device-macbook" }),
+      ),
+      env,
+    );
+
+    expect(await mine.json()).not.toHaveProperty("supersededMachineKeys");
+    expect(env.DB.rows).toHaveLength(2);
+  });
+
+  it("caps the union of both identifiers at five rows per call", async () => {
+    const env = makeEnv();
+    const staleToken = await mintToken({ sub: "user_1" });
+    // Three phantoms reachable only by device id, three only by anchor: the cap
+    // has to bind across the union, not once per identifier.
+    for (let index = 0; index < 3; index += 1) {
+      await handleRequest(
+        request("POST", "/account/machines/register", staleToken, registerWithAnchor(`machine-device-${index}`, {
+          deviceId: "device-macbook",
+          hardwareId: null,
+        })),
+        env,
+      );
+      await handleRequest(
+        request("POST", "/account/machines/register", staleToken, registerWithAnchor(`machine-anchor-${index}`, {
+          deviceId: `device-wiped-${index}`,
+        })),
+        env,
+      );
+    }
+
+    const first = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerWithAnchor("machine-new", { deviceId: "device-macbook" }),
+      ),
+      env,
+    );
+
+    expect(((await first.json()) as { supersededMachineKeys: string[] }).supersededMachineKeys)
+      .toHaveLength(MAX_SUPERSEDED_MACHINES);
+    expect(env.DB.rows).toHaveLength(2);
+
+    const second = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerWithAnchor("machine-new", { deviceId: "device-macbook" }),
+      ),
+      env,
+    );
+    expect(((await second.json()) as { supersededMachineKeys: string[] }).supersededMachineKeys)
+      .toHaveLength(1);
+    expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+  });
+
+  it("rejects an oversized anchor rather than storing it", async () => {
+    const env = makeEnv();
+    const response = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintToken({ sub: "user_1" }),
+        registerWithAnchor("machine-a", { hardwareId: "x".repeat(129) }),
+      ),
+      env,
+    );
+
+    expect(response.status).toBe(400);
+    expect(env.DB.rows).toEqual([]);
   });
 });
 

@@ -36,7 +36,9 @@ import {
 import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
+  describeDiagnosticUpload,
   openDiagnosticIssue,
+  sendDiagnosticReport,
 } from "./commands/reportIssue";
 export { readInstalledDesktopVersion };
 import {
@@ -397,7 +399,7 @@ type CliPlan =
   | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
-  | { kind: "report-issue"; open: boolean }
+  | { kind: "report-issue"; open: boolean; send: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -696,7 +698,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open]                     Print a redacted diagnostic report for a bug report
+    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -12647,6 +12649,7 @@ function buildCliPlan(
     return {
       kind: "report-issue",
       open: readFlag(args, ["--open"]),
+      send: readFlag(args, ["--send"]),
     };
   }
   if (primary === "auth") {
@@ -22322,16 +22325,20 @@ async function runCli(
       // opening it without copying first sends them to a form with nothing to
       // paste. Both steps are best effort and the report is printed regardless.
       const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
+      // Sending is opt-in and never blocks the printed report: a failed upload
+      // still leaves the user holding everything they need to file by hand.
+      const sent = plan.send ? await sendDiagnosticReport(built) : null;
       if (parsed.options.text) {
         const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
+        const sendNote = sent ? `\n${describeDiagnosticUpload(sent)}` : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}\n`,
+          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue),
+          buildReportIssuePayload(built, openedIssue, sent),
           parsed.options,
           undefined,
         ),

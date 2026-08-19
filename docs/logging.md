@@ -110,6 +110,7 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_publish_failing`
 - `ade_relay_suppressed`
 - `ade_account_session_unreadable`
+- `ade_brain_action_failed`
 
 The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 
@@ -272,10 +273,58 @@ banner copy and in local logs. A per-outcome one-hour deduplication key bounds a
 click-loop to at most 24 accepted events per outcome — 48 across both — per
 installation per UTC day, inside the existing `ade_feature_used` and shared
 ceilings. The Activity feed's polling, rendering, section collapse, filters, and
-acknowledgements, notch and iOS widget updates, machine removal, pairing-grant
-mint and redeem, and relay control sweeps remain untracked: they are
-high-frequency reads and UI mechanics, or they run on the relay and
-account-directory surfaces that have no analytics path.
+acknowledgements, notch and iOS widget updates, pairing-grant mint and redeem,
+and relay control sweeps remain untracked: they are high-frequency reads and UI
+mechanics, or they run on the relay and account-directory surfaces that have no
+analytics path.
+
+Machine membership is two more coarse facts on the same `ade_feature_used`
+event, added because a production incident — a machine revoked, then a brain
+that would not boot — produced no analytics at all.
+
+Removing a computer from the account records `feature: "connections"`,
+`action: "machine_removed"`, and a coarse `outcome`. It is captured in
+`accountBridge.removeMachine`, not in the IPC handler, because only that
+function knows which half failed: the directory delete is the authoritative
+membership change, and the Activity purge that follows it rethrows so the user
+can retry clearing it. `completed` therefore means the directory accepted the
+removal, and `failed` means it did not. No machine key, display name, or account
+identifier travels.
+
+The account directory refusing to register **this** computer records
+`action: "machine_register_refused"`, `outcome: "failed"`, and `refusal_code` —
+one of `machine_revoked`, `pairing_authentication_required`, or `other`. The
+desktop can see this because the brain's publisher puts the machine-readable
+code in `routeHealth.accountDirectory.lastHttpReason` alongside `http_error` and
+a 401/403 (`accountMachinePublisherService`); the desktop never talks to the
+directory itself. Any other 401/403 is reported as `other` rather than passing
+the server's prose through, and non-refusals (timeouts, 5xx, transport failures)
+are left to `ade_publish_failing`, which the brain already emits. The refusal is
+a **state**, and the Connections pane and app shell both poll it on a timer, so
+only the edge into a refusal is captured; a per-code one-hour key bounds the
+case the in-process latch cannot see, an app or brain restarting inside the
+refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
+30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
+
+`ade_brain_action_failed` is the one new event. Every brain action the desktop
+performs goes through the single `ade.localRuntime.callAction` IPC channel, and
+that channel is not a meaningful usage action, so the existing `ade_error`
+capture in `registerIpc` has never fired for it — an installation whose brain
+rejected every action was silent. The channel is deliberately **not** added to
+`MEANINGFUL_ACTIONS`: that set defines the durable `usage_events` mutation
+ledger, and joining it would write a mutation row per brain call. Instead the
+`callAction` error path emits exactly two properties: `action_domain`, the ADE
+action domain, allowlisted against the registry's closed
+`ADE_ACTION_DOMAIN_NAMES` list; and `error_code`, the structured code from
+`codedError`/`Error.code`/the RPC `code:` prefix — the code only, never the
+message, never a path, and `ipc_timeout` or `unknown` when there is no code.
+Because codes are an open code-authored vocabulary (seeing an unpredicted one is
+the point), `error_code` is bounded by shape rather than a literal allowlist: a
+lower-case identifier of at most 48 characters, which no path, URL, email,
+hostname, or sentence fragment can satisfy. A per-domain-per-code one-hour
+deduplication key turns an error loop into one accepted event an hour, and the
+event's own 20-per-day / 3-per-minute caps bound the rest without touching
+`ade_error`'s budget.
 
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 

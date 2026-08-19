@@ -63,6 +63,21 @@ type ReachableEndpoint = {
 type RegisterInput = {
   machineKey: string;
   deviceId: string;
+  /**
+   * A per-account hash of an OS-level machine identifier, when the client can
+   * read one. Null on older clients, on hosts with no such identifier, and on
+   * any registration made without an account id to salt with.
+   *
+   * It exists because `deviceId` does NOT survive a `~/.ade` wipe — it lives in
+   * the same secrets directory as the machine key — so a reinstall produces two
+   * fresh identifiers and dedup has nothing to match. This one is derived from
+   * the hardware and the OS install, so it is the same after the wipe.
+   *
+   * Caller-supplied and therefore forgeable, exactly like `deviceId`: on a
+   * plain token it authorizes nothing. See the supersede block in
+   * `handleRegister` for the proof bar that makes acting on it safe.
+   */
+  hardwareId: string | null;
   name: string;
   platform: string;
   deviceType: string;
@@ -171,6 +186,13 @@ export const PAIRING_GRANT_RESERVATION_MS = 60_000;
 export const MAX_SUPERSEDED_MACHINES = 5;
 const MAX_PUBKEY_CHARS = 128;
 const MAX_MACHINE_KEY_CHARS = 128;
+/**
+ * A hardware anchor is a sha256 hex digest (64 chars); the cap is slack, not a
+ * shape check. Validating the shape would buy nothing — the value is
+ * caller-supplied either way, and what makes it safe to act on is the pairing
+ * proof, not its formatting.
+ */
+const MAX_HARDWARE_ID_CHARS = 128;
 /** A grant is 32 random bytes in base64url (43 chars); the cap is slack, not a shape check. */
 const MAX_PAIRING_GRANT_CHARS = 256;
 const MAX_CUSTOM_NAME_CHARS = 80;
@@ -282,6 +304,7 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
   if (!isRecord(value)) return null;
   const machineKey = requiredString(value, "machineKey");
   const deviceId = requiredString(value, "deviceId");
+  const hardwareId = optionalString(value, "hardwareId");
   const name = requiredString(value, "name");
   const platform = requiredString(value, "platform");
   const deviceType = requiredString(value, "deviceType");
@@ -294,6 +317,8 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
     !machineKey
     || machineKey.length > MAX_MACHINE_KEY_CHARS
     || !deviceId
+    || hardwareId === undefined
+    || (hardwareId !== null && hardwareId.length > MAX_HARDWARE_ID_CHARS)
     || !name
     || !platform
     || !deviceType
@@ -310,6 +335,7 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
   return {
     machineKey,
     deviceId,
+    hardwareId,
     name,
     platform,
     deviceType,
@@ -861,21 +887,40 @@ async function acquirePairingProof(
  * machine_key)`, so the old row survives forever as a machine the user never
  * owned twice. Ordered oldest-seen first so that when the cap bites, it is the
  * stalest rows that go.
+ *
+ * TWO identifiers can name the same device, and the union is the point. The
+ * device id catches an in-place reinstall, where `~/.ade/secrets` survived. The
+ * hardware anchor catches the case that motivated it — a full `~/.ade` wipe,
+ * where the device id was minted fresh alongside the machine key and matches
+ * nothing. Either one alone leaves a phantom row behind in the other's case.
+ *
+ * Null-anchor rows can only ever be matched by device id. That is expected: a
+ * row written before this shipped, or by a host that cannot read an identifier,
+ * is folded in the first time the same physical machine re-registers with fresh
+ * auth AND a surviving device id, and otherwise ages out by hand from the
+ * machine list. Nothing here back-fills an anchor onto a row it did not send.
+ *
+ * One statement rather than two, so `order by`/`limit` apply to the UNION: two
+ * capped queries merged in the worker could return six rows, or drop the oldest
+ * of one set in favour of a newer row from the other.
  */
 async function machineKeysForDevice(
   env: Env,
-  args: { userId: string; deviceId: string; machineKey: string },
+  args: { userId: string; deviceId: string | null; hardwareId: string | null; machineKey: string },
 ): Promise<string[]> {
   const rows = (await env.DB.prepare(`
     select machine_key
       from machines
-     where user_id = ? and device_id = ? and machine_key <> ?
+     where user_id = ?
+       and machine_key <> ?
+       and (device_id = ? or hardware_id = ?)
      order by last_seen_at asc
      limit ?
   `).bind(
     args.userId,
-    args.deviceId,
     args.machineKey,
+    args.deviceId,
+    args.hardwareId,
     MAX_SUPERSEDED_MACHINES,
   ).all<{ machine_key: string }>()).results ?? [];
   return rows.map((row) => row.machine_key);
@@ -1059,10 +1104,15 @@ async function handleRegister(
   await env.DB.prepare(`
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
-      reachable_endpoints, last_seen_at, created_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      reachable_endpoints, last_seen_at, created_at, hardware_id
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict(user_id, machine_key) do update set
       device_id = excluded.device_id,
+      -- coalesce, and not excluded.hardware_id: an anchor is optional on every
+      -- request, so a single heartbeat from a host that momentarily could not
+      -- read one -- a sandbox, a slow probe, a downgrade -- must not erase the
+      -- anchor this row already learned. A new non-null value still wins.
+      hardware_id = coalesce(excluded.hardware_id, machines.hardware_id),
       name = excluded.name,
       platform = excluded.platform,
       device_type = excluded.device_type,
@@ -1105,6 +1155,7 @@ async function handleRegister(
     JSON.stringify(input.reachableEndpoints),
     nowMs,
     nowMs,
+    input.hardwareId,
     input.retainRelayEndpoints ? 1 : 0,
   ).run();
 
@@ -1122,7 +1173,11 @@ async function handleRegister(
   // `deviceId` is caller-supplied and forgeable, so on a plain token it
   // authorizes nothing — otherwise any machine could claim another's device id
   // and delete that machine's row. With a proven-fresh human behind the call it
-  // is exactly the signal we want.
+  // is exactly the signal we want. `hardwareId` is caller-supplied in exactly
+  // the same way and gets exactly the same treatment: it is a better identifier
+  // (it survives the `~/.ade` wipe that invalidates the device id), not a more
+  // trustworthy one, and nothing about it is attested. The fresh-auth bar is
+  // the whole of what makes acting on either of them safe.
   //
   // Superseded keys get NO revocation row. The physical device holds the new
   // key; blocking the old one would trapdoor any client that rolls its identity
@@ -1131,13 +1186,18 @@ async function handleRegister(
   // relay is not called: the device did not leave the account, so its Activity
   // is still the user's own.
   let supersededMachineKeys: string[] = [];
-  // The parser already rejects an empty `deviceId`, but this guard is what
-  // stands between a future relaxation of that rule and a query that matches
-  // every row whose device id is unset.
-  if (input.deviceId) {
+  // Empty identifiers are normalized to null before they reach the query, and
+  // that is load-bearing: `device_id = ''` would match every row a future
+  // relaxation of the parser let through with an unset device id, while
+  // `device_id = null` matches nothing at all. `hardwareId` is already null
+  // whenever the client sent none.
+  const matchDeviceId = input.deviceId || null;
+  const matchHardwareId = input.hardwareId || null;
+  if (matchDeviceId || matchHardwareId) {
     const duplicates = await machineKeysForDevice(env, {
       userId,
-      deviceId: input.deviceId,
+      deviceId: matchDeviceId,
+      hardwareId: matchHardwareId,
       machineKey: input.machineKey,
     });
     if (duplicates.length > 0) {
@@ -1167,11 +1227,17 @@ async function handleRegister(
           pairingProof = { kind: "spent_grant" };
         }
         for (const machineKey of duplicates) {
-          // `device_id` stays in the predicate: the row was selected a moment
-          // ago, and this is the only thing that authorized deleting it.
+          // The identifiers stay in the predicate, and it mirrors the select
+          // exactly: the row was chosen a moment ago because it matched one of
+          // them, and that match is the only thing that authorized deleting it.
+          // A delete narrower than the select (device id alone) would silently
+          // leave every anchor-matched row in place.
           await env.DB
-            .prepare("delete from machines where user_id = ? and machine_key = ? and device_id = ?")
-            .bind(userId, machineKey, input.deviceId)
+            .prepare(`
+              delete from machines
+               where user_id = ? and machine_key = ? and (device_id = ? or hardware_id = ?)
+            `)
+            .bind(userId, machineKey, matchDeviceId, matchHardwareId)
             .run();
         }
         supersededMachineKeys = duplicates;

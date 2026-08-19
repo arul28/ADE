@@ -35,6 +35,7 @@ import {
 } from "../sync/syncCloudRelayStore";
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
+import { readAccountHardwareId } from "./hardwareAnchor";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
@@ -51,6 +52,23 @@ export const PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS = 120_000;
 export type AccountMachineRegistration = {
   machineKey: string;
   deviceId: string;
+  /**
+   * A per-account hash of this computer's OS-level machine identifier, when one
+   * can be read. See `hardwareAnchor.ts` for the recipe and for why the raw
+   * identifier never appears here.
+   *
+   * It exists because `machineKey` and `deviceId` BOTH live under `~/.ade`, so
+   * a user who wipes that directory and signs in again arrives as a machine the
+   * directory has never seen and leaves their old row behind as a phantom. This
+   * is the one identifier that survives the wipe.
+   *
+   * Optional in every direction: a host that cannot produce an anchor omits it,
+   * and a directory that predates it ignores it. It is sent on the heartbeat as
+   * well as on a deliberate pairing, because a row can only be matched later if
+   * it stored an anchor at some point — but storing one authorizes nothing on
+   * its own. Superseding still requires the same fresh-authentication proof.
+   */
+  hardwareId?: string;
   name: string;
   platform: string;
   deviceType: string;
@@ -513,6 +531,15 @@ export function createAccountMachinePublisherService(options: {
    * and test publishers stay unaffected; absent means "do not reconcile".
    */
   confirmSupersededMachineKeys?: (keys: readonly unknown[]) => string[];
+  /**
+   * The per-account hardware anchor for the signed-in owner, or null when this
+   * host has none. Called with the account id because the value is salted with
+   * it — see `hardwareAnchor.ts`.
+   *
+   * Optional so small and test publishers stay unaffected; absent means "send
+   * no anchor", which is exactly what every client did before this existed.
+   */
+  readAccountHardwareId?: (userId: string) => string | null;
   directoryBaseUrl?: () => string | null | undefined;
   isSyncEnabled?: () => boolean;
   subscribeToSignIn?: (listener: () => void) => (() => void);
@@ -1072,13 +1099,29 @@ export function createAccountMachinePublisherService(options: {
         pairingGrant = null;
       }
     }
-    const registration: AccountMachineRegistration = isPairingPublish
-      ? {
-        ...registrationWithRelayHint,
-        pairing: true,
-        ...(pairingGrant ? { pairingGrant } : {}),
+    // Read here rather than in `buildAccountMachineRegistration`, because the
+    // account id is the salt and the builder has no account context — it also
+    // runs on the relay-state poll, which only compares route signatures and
+    // never sends anything. A throwing or absent reader is an ordinary "no
+    // anchor": this field must never be the reason a machine fails to publish.
+    let hardwareId: string | null = null;
+    if (options.readAccountHardwareId && accountOwnerId) {
+      try {
+        hardwareId = options.readAccountHardwareId(accountOwnerId)?.trim() || null;
+      } catch {
+        hardwareId = null;
       }
-      : registrationWithRelayHint;
+    }
+    const registration: AccountMachineRegistration = {
+      ...(isPairingPublish
+        ? {
+          ...registrationWithRelayHint,
+          pairing: true,
+          ...(pairingGrant ? { pairingGrant } : {}),
+        }
+        : registrationWithRelayHint),
+      ...(hardwareId ? { hardwareId } : {}),
+    };
     const reachableEndpointCount = registration.reachableEndpoints.length;
 
     let accessToken: string | null = null;
@@ -1572,6 +1615,11 @@ export function createBrainAccountMachinePublisherService(options: {
         return [];
       }
     },
+    // The only identity input that does not come out of `secretsDir`, which is
+    // the entire point: everything else in this composition is destroyed by the
+    // `~/.ade` wipe this anchor exists to survive. Cached for the process, so
+    // the heartbeat pays for the lookup once.
+    readAccountHardwareId: (userId) => readAccountHardwareId(userId),
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
       if (explicit?.trim()) {
