@@ -1300,9 +1300,12 @@ struct WorkChatSessionView: View {
     .padding(.bottom, 0)
   }
 
-  var body: some View {
-    ScrollViewReader { proxy in
-      VStack(spacing: 0) {
+  /// Extracted from `body` so the type-checker sees two bounded
+  /// expressions instead of one ~300-line chain; the x86_64 simulator
+  /// slice hit the "unable to type-check in reasonable time" ceiling
+  /// on the combined expression.
+  @ViewBuilder
+  private func transcriptScrollView(proxy: ScrollViewProxy) -> some View {
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 14) {
             sessionOverviewSection
@@ -1408,6 +1411,15 @@ struct WorkChatSessionView: View {
               .transition(.move(edge: .trailing).combined(with: .opacity))
             }
           }
+  }
+
+  /// Layout half of the chat column (structure + geometry preferences).
+  /// Split from `body` so the type-checker sees bounded expressions; the
+  /// behavior chain (onChange/sheet/task) stays in `body`.
+  @ViewBuilder
+  private func chatColumn(proxy: ScrollViewProxy) -> some View {
+      VStack(spacing: 0) {
+        transcriptScrollView(proxy: proxy)
 
         composerInset(proxy: proxy)
           .fixedSize(horizontal: false, vertical: true)
@@ -1478,6 +1490,11 @@ struct WorkChatSessionView: View {
           olderHistoryTriggerArmed = false
           requestEarlierTimelineEntries(automatically: true)
         }
+  }
+
+  /// Timeline/scroll change handlers, split from `body` for type-checker budget.
+  private func timelineScrollHandlers<V: View>(_ content: V, proxy: ScrollViewProxy) -> some View {
+    content
         .onChange(of: timeline.count) { oldCount, newCount in
           let previousTailId = lastTimelineTailId
           lastTimelineTailId = timeline.last?.id
@@ -1525,6 +1542,11 @@ struct WorkChatSessionView: View {
             unreadBelowCount = 0
           }
         }
+  }
+
+  /// Session lifecycle + input-recovery handlers, split from `body` for type-checker budget.
+  private func sessionLifecycleHandlers<V: View>(_ content: V, proxy: ScrollViewProxy) -> some View {
+    content
         .onAppear {
           prepareScrollStateForCurrentSessionIfNeeded(reason: "appear")
           if transcript.isEmpty && fallbackEntries.isEmpty {
@@ -1610,6 +1632,11 @@ struct WorkChatSessionView: View {
         .onChange(of: liveClaudeQuotaCardId) { _, newId in
           handleLiveQuotaCardChange(newId)
         }
+  }
+
+  /// Haptics and sheet presenters, split from `body` for type-checker budget.
+  private func feedbackAndSheets<V: View>(_ content: V) -> some View {
+    content
         .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
         .sensoryFeedback(.impact(weight: .light), trigger: quotaCardHapticToken)
         .sheet(isPresented: $artifactDrawerPresented) {
@@ -1663,8 +1690,18 @@ struct WorkChatSessionView: View {
               .presentationDragIndicator(.visible)
           }
         }
-      }
+  }
+
+  var body: some View {
+    ScrollViewReader { proxy in
+      feedbackAndSheets(
+        sessionLifecycleHandlers(
+          timelineScrollHandlers(chatColumn(proxy: proxy), proxy: proxy),
+          proxy: proxy
+        )
+      )
     }
+  }
 }
 
 private extension WorkChatSessionView {
