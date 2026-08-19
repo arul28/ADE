@@ -1397,12 +1397,19 @@ function withPreservedLaneStatus(
  * What to say instead of the brain's own words, per coded failure.
  *
  * A code is listed here only when this screen can say something the brain's
- * message does not. `storage_read_failed` is deliberately ABSENT: the brain
- * builds that message with `storageUnreadableMessage`, which names the actual
- * path that could not be read and the cloud provider holding it, and this file
- * used to replace it with a paraphrase that named neither. An unlisted code
- * still gets the generic line below, and no code at all falls through to the
- * brain's message.
+ * message does not — a libuv errno, a socket path, a migration state. Anything
+ * NOT listed keeps the brain's own sentence as the headline, because the brain
+ * is the only party that knows the specifics: `storage_read_failed` is built by
+ * `storageUnreadableMessage`, which names the file that could not be read and
+ * tells the user to move it out of iCloud Drive/Dropbox/OneDrive, and a generic
+ * paraphrase here would push that into the collapsed details fold.
+ *
+ * So the rule is exactly three cases:
+ *  - listed code            → this file's line, brain's message kept as `detail`
+ *  - unlisted code, message → the brain's message, verbatim, with no `detail`
+ *  - unlisted code, NO message → `GENERIC_RECOVERY_MESSAGE`, the only case where
+ *                                a bare code would otherwise leave a blank screen
+ * No code at all falls through to the brain's message as well.
  */
 const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = {
   disk_full:
@@ -1448,7 +1455,7 @@ function formatProjectTransitionError(
   }
   const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code
-    ? RECOVERY_MESSAGE_BY_CODE[code] ?? GENERIC_RECOVERY_MESSAGE
+    ? RECOVERY_MESSAGE_BY_CODE[code] ?? (raw ? null : GENERIC_RECOVERY_MESSAGE)
     : null;
   const fallback = raw.length > 0 ? raw : "Project action failed.";
   return {

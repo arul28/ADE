@@ -1190,6 +1190,15 @@ export type SyncCloudRelayStatus = {
   lastBridgeValidationAt: string | null;
   lastControlError: string | null;
   lastError: string | null;
+  /**
+   * The relay self-probe: ADE dialing its own relay endpoint and reading the
+   * echo back. Declared optional because only the brain's status builder fills
+   * them in and only `ade doctor` reads them; every other producer of this type
+   * omits all three, and did so while these fields were travelling untyped.
+   */
+  relayEndToEndVerifiedAt?: string | null;
+  relayEndToEndFailure?: string | null;
+  relayEndToEndRoundTripMs?: number | null;
 };
 
 /**

@@ -1,4 +1,5 @@
 import { logActivityRelayFailure } from "./logging";
+import { trustedHttpsOrigin } from "./trustedOrigin";
 
 /**
  * The slice of the Worker env this hand-off needs. Declared here rather than
@@ -32,20 +33,13 @@ export type ActivityRelayOutcome =
   | { ok: true }
   | { ok: false; reason: string };
 
+/**
+ * The relay is addressed by origin and the paths below are appended to it, so
+ * a configured value that carries one is trusted for its origin rather than
+ * refused — the one way this differs from the CORS allow-list.
+ */
 function trustedActivityRelayBaseUrl(env: ActivityRelayEnv): string | null {
-  const raw = env.PUSH_RELAY_URL?.trim();
-  if (!raw) return null;
-  try {
-    const url = new URL(raw);
-    const loopback = url.hostname === "localhost"
-      || url.hostname === "127.0.0.1"
-      || url.hostname === "[::1]";
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return null;
-    if (url.username || url.password || url.search || url.hash) return null;
-    return url.origin;
-  } catch {
-    return null;
-  }
+  return trustedHttpsOrigin(env.PUSH_RELAY_URL);
 }
 
 /**

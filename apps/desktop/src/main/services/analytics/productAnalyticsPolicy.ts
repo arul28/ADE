@@ -1,4 +1,5 @@
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
+import { ACCOUNT_MACHINE_REFUSAL_CODES } from "../../../shared/accountMachineRefusal";
 import { AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
 import {
   RENDERER_GONE_ANALYTICS_REASONS,
@@ -322,10 +323,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "lock-timeout", "filesystem",
   ]),
   action_domain: ADE_ACTION_DOMAIN_ALLOWLIST,
-  // The account directory's own two refusals, plus the honest bucket for a
-  // refusal a newer directory names and this build has never heard of. The
-  // brain's user-facing sentence is NOT a fallback: it is free text.
-  refusal_code: new Set(["machine_revoked", "pairing_authentication_required", "other"]),
+  // The account directory's own refusals, read off the one list that defines
+  // them, plus the honest bucket for a refusal a newer directory names and this
+  // build has never heard of. The brain's user-facing sentence is NOT a
+  // fallback: it is free text.
+  refusal_code: new Set<string>([...ACCOUNT_MACHINE_REFUSAL_CODES, "other"]),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {

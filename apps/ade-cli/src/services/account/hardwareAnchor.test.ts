@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { canonicalWindowsPath } from "../projects/machineLayout";
 import {
   canonicalAdeHomePath,
   HARDWARE_ANCHOR_DOMAIN,
@@ -193,6 +194,18 @@ describe("account hardware id", () => {
       .toBe(canonicalAdeHomePath("c:\\users\\ada\\.ade", "win32"));
     expect(canonicalAdeHomePath("/home/Ada/.ade", "linux"))
       .not.toBe(canonicalAdeHomePath("/home/ada/.ade", "linux"));
+  });
+
+  it("folds a Windows home path the same way the runtime pipe identity does", () => {
+    // Routed through `canonicalWindowsPath`, not a bare `path.resolve`: that is
+    // what makes `realpath` — and so 8.3 short names and junction casing —
+    // collapse to one spelling. Forward slashes are the part of that fold this
+    // test can prove off Windows; `path.resolve` on a POSIX host would not even
+    // recognise the drive letter and would join both spellings onto its cwd.
+    expect(canonicalAdeHomePath("C:/Users/Ada/.ade", "win32"))
+      .toBe(canonicalAdeHomePath("C:\\Users\\Ada\\.ade", "win32"));
+    expect(canonicalAdeHomePath("C:\\Users\\Ada\\.ade", "win32"))
+      .toBe(canonicalWindowsPath("C:\\Users\\Ada\\.ade").toLowerCase());
   });
 
   it("returns null with no account id and with no anchor", () => {

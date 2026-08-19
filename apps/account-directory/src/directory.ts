@@ -14,15 +14,9 @@ import {
   type PairingProofBroker,
 } from "./pairingGrants";
 import { logDirectoryLifecycle, logDirectoryRefusal } from "./logging";
+import { trustedHttpsOrigin } from "./trustedOrigin";
 
 export type { ActivityRelayOptions } from "./activityRelay";
-/**
- * Re-exported, not just moved: the CLI's auto-recovery mirrors this value and
- * points at this module for it (`machinePairingAutoRecovery.ts`), so the name
- * stays part of the directory's published surface even though the freshness
- * check itself now lives with the rest of the token verification.
- */
-export { PAIRING_AUTH_FRESHNESS_MS } from "./callerToken";
 
 export type Env = CallerTokenEnv & ActivityRelayEnv & {
   DB: D1Database;
@@ -900,18 +894,13 @@ async function handleRename(
   });
 }
 
+/**
+ * This value is compared against an `Origin` header, which is always bare, so
+ * anything more than an origin means the setting is not what its author thought
+ * it was and is refused rather than truncated.
+ */
 function trustedWebClientOrigin(env: Env): string | null {
-  const raw = env.WEB_CLIENT_ORIGIN?.trim();
-  if (!raw) return null;
-  try {
-    const url = new URL(raw);
-    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return null;
-    if (url.origin !== raw || url.username || url.password || url.search || url.hash) return null;
-    return url.origin;
-  } catch {
-    return null;
-  }
+  return trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
 }
 
 function withCors(response: Response, origin: string): Response {

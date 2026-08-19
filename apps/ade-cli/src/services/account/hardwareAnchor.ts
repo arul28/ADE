@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
+import { canonicalWindowsPath } from "../projects/machineLayout";
 
 /**
  * The one piece of machine identity a reinstall cannot destroy.
@@ -251,17 +252,22 @@ export function readHardwareAnchorUuid(): string | null {
 /**
  * The ADE home path as it goes into the hash.
  *
- * Resolved so `~/.ade`, `~/.ade/`, and a relative `ADE_HOME` all agree, and
- * lowercased on Windows because NTFS is case-insensitive: `C:\Users\Ada\.ade`
- * and `c:\users\ada\.ade` are one directory and must not be two machines.
+ * Resolved so `~/.ade`, `~/.ade/`, and a relative `ADE_HOME` all agree. On
+ * Windows it goes through the same `canonicalWindowsPath` the runtime pipe
+ * identity uses, then is lowercased: NTFS is case-insensitive, so
+ * `C:\Users\Ada\.ade` and `c:\users\ada\.ade` are one directory, and `realpath`
+ * additionally folds the two spellings a bare `resolve` would keep apart — an
+ * 8.3 short name (`C:\Users\ADAOBI~1\.ade`) and a junction reached by a
+ * different casing. Any of those splitting the anchor would make one install
+ * look like two machines, which is the exact bug the anchor exists to prevent.
  * Case is preserved everywhere else, where two spellings really are two paths.
  */
 export function canonicalAdeHomePath(
   adeHomePath: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const resolved = path.resolve(adeHomePath);
-  return platform === "win32" ? resolved.toLowerCase() : resolved;
+  if (platform !== "win32") return path.resolve(adeHomePath);
+  return canonicalWindowsPath(adeHomePath).toLowerCase();
 }
 
 /**

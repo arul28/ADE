@@ -1,5 +1,7 @@
 import { isAuthenticationUnavailableError, verifyCallerToken } from "./callerToken";
 import type { Env } from "./directory";
+import { logDiagnosticsUpload } from "./logging";
+import { isLoopbackHostname } from "./trustedOrigin";
 
 /**
  * `POST /diagnostics/upload` — the one-click destination for ADE's already
@@ -120,8 +122,7 @@ function isCrossSiteBrowserUpload(request: Request): boolean {
   const origin = request.headers.get("origin")?.trim() ?? "";
   if (!origin || origin === "null") return false;
   try {
-    const { hostname } = new URL(origin);
-    return !(hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]");
+    return !isLoopbackHostname(new URL(origin).hostname);
   } catch {
     return true;
   }
@@ -266,29 +267,6 @@ async function withinDailyLimit(
     count: count >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY ? count : count + 1,
   });
   return count < MAX_DIAGNOSTIC_UPLOADS_PER_DAY;
-}
-
-function logDiagnosticsUpload(args: {
-  outcome: "stored" | "rejected";
-  status: number;
-  reason?: string;
-  identity: string;
-  authenticated: boolean;
-  bytes: number;
-}): void {
-  console.log(JSON.stringify({
-    ts: new Date().toISOString(),
-    svc: "ade-account-directory",
-    kind: "diagnostics_upload",
-    outcome: args.outcome,
-    status: args.status,
-    ...(args.reason ? { reason: args.reason } : {}),
-    // The identity is already a hash for anonymous callers; a signed-in one is
-    // truncated for the same reason every other log line here truncates.
-    identity: args.identity.slice(0, 24),
-    authenticated: args.authenticated,
-    bytes: args.bytes,
-  }));
 }
 
 export type DiagnosticsRequestOptions = {

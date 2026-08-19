@@ -67,6 +67,36 @@ export function logDirectoryRefusal(args: {
   }));
 }
 
+/**
+ * One line per diagnostics upload, stored or refused.
+ *
+ * The route stores bytes it never parses, so this line is the only record that
+ * an upload happened at all — and the only way to tell "the user's report never
+ * arrived" from "it arrived and was refused for being too large".
+ */
+export function logDiagnosticsUpload(args: {
+  outcome: "stored" | "rejected";
+  status: number;
+  reason?: string;
+  identity: string;
+  authenticated: boolean;
+  bytes: number;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    kind: "diagnostics_upload",
+    outcome: args.outcome,
+    status: args.status,
+    ...(args.reason ? { reason: args.reason } : {}),
+    // The identity is already a hash for anonymous callers; a signed-in one is
+    // truncated for the same reason every other log line here truncates.
+    identity: args.identity.slice(0, 24),
+    authenticated: args.authenticated,
+    bytes: args.bytes,
+  }));
+}
+
 export function logDirectoryLifecycle(args: {
   correlationId: string;
   /** The matched account route's kind, or null for anything else. */

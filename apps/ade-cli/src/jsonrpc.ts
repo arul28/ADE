@@ -4,6 +4,7 @@ import {
   encodeCodedErrorMessage,
   isErrnoLikeCode,
   parseCodedErrorMessage,
+  stripElectronErrorWrapper,
   UNKNOWN_SYSTEM_ERRNO_PATTERN,
 } from "../../desktop/src/shared/codedError";
 
@@ -115,11 +116,33 @@ function readCodedErrorShape(
   if (typeof rawCode !== "string" || !rawCode.trim()) return null;
   if (isErrnoLikeCode(rawCode)) return null;
   const parsed = parseCodedErrorMessage(error);
+  const code = parsed.code ?? rawCode.trim();
+  // `parseCodedErrorMessage` drops ANY leading `identifier:` from the message,
+  // which is right for one this encoder already wrote ("storage_read_failed:
+  // …") and wrong for a service sentence that merely begins that way — "gh:
+  // not authenticated", or a Windows "C:\Users\… is not a repository" — whose
+  // first word would be silently eaten before the message is re-encoded below.
+  // So the strip is accepted only when the prefix WAS this error's own code.
+  const body = messageBody(error, parsed.rootPath);
   return {
-    code: parsed.code ?? rawCode.trim(),
-    message: parsed.message,
+    code,
+    message: body.startsWith(`${code}:`) ? parsed.message : body,
     ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
   };
+}
+
+/**
+ * Everything `parseCodedErrorMessage` removes EXCEPT its leading-identifier
+ * rule: the rootPath tail and the transport wrappers.
+ *
+ * `parsed.rootPath` is the message's own bytes after the delimiter, preserved
+ * verbatim, so trimming it back off by length is exact.
+ */
+function messageBody(error: Error, rootPath: string | undefined): string {
+  const raw = error.message;
+  return stripElectronErrorWrapper(
+    rootPath ? raw.slice(0, raw.length - rootPath.length - 1) : raw,
+  );
 }
 
 /**

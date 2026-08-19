@@ -268,7 +268,7 @@ describe("machinePairingAutoRecovery", () => {
   });
 
   it("pins the quiet window to the directory's pairing-auth freshness bound", () => {
-    // `PAIRING_AUTH_FRESHNESS_MS` in apps/account-directory/src/directory.ts.
+    // `PAIRING_AUTH_FRESHNESS_MS` in apps/account-directory/src/callerToken.ts.
     // The worker builds separately, so this value is duplicated rather than
     // imported; this assertion is what keeps the duplicate honest.
     expect(PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS).toBe(10 * 60_000);

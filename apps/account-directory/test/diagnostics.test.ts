@@ -1,8 +1,5 @@
 import { createHash } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   handleDiagnosticsRequest,
   isDiagnosticsRequest,
@@ -11,13 +8,12 @@ import {
   type DiagnosticsEnv,
 } from "../src/diagnostics";
 import worker from "../src/index";
+import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
 
-const ISSUER = "https://clerk.diagnostics.test";
-const OAUTH_CLIENT_ID = "client_ade";
 const UPLOAD_URL = "https://directory.test/diagnostics/upload";
 
 /**
- * Fake R2, in the same spirit as the fake D1 in `directory.test.ts`: enough of
+ * Fake R2, in the same spirit as the fake D1 in `./fakeD1`: enough of
  * the real surface to hold the contract (prefix listing, custom metadata,
  * stored bytes) and nothing else, so a test failure points at the route rather
  * than at the fake.
@@ -66,54 +62,17 @@ class FakeR2Bucket {
   }
 }
 
-let jwksServer: Server;
-let jwksUrl = "";
-let signingKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
-
-beforeAll(async () => {
-  const primary = await generateKeyPair("RS256", { extractable: true });
-  signingKey = primary.privateKey;
-  const publicJwk = await exportJWK(primary.publicKey);
-  const jwks = { keys: [{ ...publicJwk, alg: "RS256", kid: "test-key", use: "sig" }] };
-  jwksServer = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify(jwks));
-  });
-  await new Promise<void>((resolve, reject) => {
-    jwksServer.once("error", reject);
-    jwksServer.listen(0, "127.0.0.1", resolve);
-  });
-  jwksUrl = `http://127.0.0.1:${(jwksServer.address() as AddressInfo).port}/jwks`;
-});
-
-afterAll(async () => {
-  await new Promise<void>((resolve, reject) => {
-    jwksServer.close((error) => (error ? reject(error) : resolve()));
-  });
-});
-
 function makeEnv(
   overrides: Partial<DiagnosticsEnv> = {},
 ): DiagnosticsEnv & { DIAGNOSTICS: FakeR2Bucket } {
   return {
     DB: {} as unknown as D1Database,
-    CLERK_JWKS_URL: jwksUrl,
+    CLERK_JWKS_URL: jwksEndpoint(),
     CLERK_ISSUER: ISSUER,
     CLERK_OAUTH_CLIENT_ID: OAUTH_CLIENT_ID,
     DIAGNOSTICS: new FakeR2Bucket(),
     ...overrides,
   } as unknown as DiagnosticsEnv & { DIAGNOSTICS: FakeR2Bucket };
-}
-
-async function mintToken(sub = "user_1"): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "RS256", kid: "test-key" })
-    .setIssuer(ISSUER)
-    .setSubject(sub)
-    .setIssuedAt(now)
-    .setExpirationTime(now + 600)
-    .sign(signingKey);
 }
 
 /** A distinct address per test: the anonymous quota is keyed on the caller IP. */
@@ -203,7 +162,7 @@ describe("diagnostics upload route", () => {
     const response = await handleDiagnosticsRequest(
       uploadRequest({
         body: JSON.stringify({ report: REPORT, installId: "install-7" }),
-        token: await mintToken("user_42"),
+        token: await mintToken({ sub: "user_42" }),
       }),
       env,
     );

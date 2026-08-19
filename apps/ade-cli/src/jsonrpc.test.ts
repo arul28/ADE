@@ -402,6 +402,24 @@ describe("internal error replies", () => {
     expect(response.error.data?.code).toBe("storage_read_failed");
   });
 
+  it("keeps a message that merely starts with an identifier and a colon", async () => {
+    // Only the error's OWN code may be stripped off the front. A message whose
+    // first word happens to be an identifier followed by a colon — a `gh`
+    // failure relayed verbatim, a Windows drive letter — would otherwise lose
+    // its head on the way out and reach the caller decapitated.
+    for (const [message, expected] of [
+      ["gh: not authenticated. Run `gh auth login`.", "gh: not authenticated. Run `gh auth login`."],
+      ["C:\\Users\\Ada\\project is not a git repository.", "C:\\Users\\Ada\\project is not a git repository."],
+    ] as const) {
+      const response = await failWith(Object.assign(new Error(message), {
+        code: "github_cli_unavailable",
+      }));
+
+      expect(response.error.message).toBe(`github_cli_unavailable: ${expected}`);
+      expect(response.error.data?.code).toBe("github_cli_unavailable");
+    }
+  });
+
   it("keeps a service-authored refusal readable", async () => {
     const response = await failWith(new Error("Project root does not exist: /tmp/gone"));
     expect(response.error.message).toBe("Project root does not exist: /tmp/gone");

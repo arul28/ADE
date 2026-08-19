@@ -40,7 +40,7 @@ export const PAIRING_AUTO_REPAIR_SNAPSHOT_GRACE_MS = 120_000;
 /**
  * How long a fresh revocation is left alone before an episode may even start.
  *
- * Mirrors `PAIRING_AUTH_FRESHNESS_MS` in `apps/account-directory/src/directory.ts`
+ * Mirrors `PAIRING_AUTH_FRESHNESS_MS` in `apps/account-directory/src/callerToken.ts`
  * (10 minutes) — deliberately the same number, and it must stay the same
  * number. That is the window in which the directory still accepts the sign-in
  * this machine authenticated with, so a repair sent inside it is the one repair
@@ -197,12 +197,14 @@ export function createMachinePairingAutoRecovery(
    * Is the latched revocation recent enough that repairing it would be undoing
    * something the user just did?
    *
-   * Only a revocation the directory actually timestamped can be judged: a
-   * `revokedAt` the directory omitted (older worker, or the
-   * `pairing_authentication_required` shape, which carries none) reads as NOT
-   * fresh and the loop behaves exactly as it did before this gate existed.
-   * Blocking on a missing timestamp would disable recovery for precisely the
-   * stale-row case this loop was built for.
+   * Only a revocation the directory actually timestamped can be judged. Both
+   * refusal shapes carry one — `machine_revoked` and
+   * `pairing_authentication_required` are two answers about the same revocation
+   * row and both 403s include its `revokedAt` — so both are held quiet while
+   * the removal is fresh. A missing timestamp means a directory deployed before
+   * the field existed; that reads as NOT fresh and the loop behaves exactly as
+   * it did before this gate, because blocking on a missing timestamp would
+   * disable recovery for precisely the stale-row case this loop was built for.
    */
   const revocationIsFresh = (publisher: MachinePairingAutoRecoveryPublisher): boolean => {
     const { revoked, revokedAt } = publisher.getMachineRevocation();
