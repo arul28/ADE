@@ -238,6 +238,7 @@ import {
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
+import { runAdeCliAutoInstall } from "./services/cli/adeCliAutoInstall";
 import { createDevToolsService } from "./services/devTools/devToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
@@ -460,25 +461,36 @@ function fixElectronShellPath(): void {
 // Must run before any service or child process is created.
 fixElectronShellPath();
 
+let adeCliAutoInstallScheduled = false;
+
+/**
+ * Makes `ade` exist for a user who never opens Settings. Every guard that
+ * matters — already on PATH, already settled once, silent failure — lives in
+ * `runAdeCliAutoInstall`; this only schedules it. Both project-open and dormant
+ * startup reach here, so the process-wide latch keeps it to a single attempt.
+ */
 function installAdeCliForTerminalInBackground(
   adeCliService: ReturnType<typeof createAdeCliService>,
   logger: Logger,
+  globalStatePath: string,
 ): void {
-  if (process.env.ADE_DISABLE_CLI_AUTO_INSTALL === "1") return;
-  void adeCliService.installForUser()
-    .then((result) => {
-      logger.info("ade_cli.auto_install", {
-        ok: result.ok,
-        command: result.status.command,
-        installTargetPath: result.status.installTargetPath,
-        message: result.message,
-      });
-    })
-    .catch((error) => {
+  if (adeCliAutoInstallScheduled) return;
+  adeCliAutoInstallScheduled = true;
+  // A convenience, not startup work: it can spawn the packaged installer and
+  // append to a shell profile, so it stays off the path to the first window.
+  const task = setImmediate(() => {
+    void runAdeCliAutoInstall({
+      adeCli: adeCliService,
+      logger,
+      readState: () => readGlobalState(globalStatePath),
+      writeState: (state) => writeGlobalState(globalStatePath, state),
+    }).catch((error) => {
       logger.warn("ade_cli.auto_install_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  });
+  task.unref?.();
 }
 
 const disableHardwareAcceleration =
@@ -2841,7 +2853,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
-    installAdeCliForTerminalInBackground(adeCliService, logger);
+    installAdeCliForTerminalInBackground(adeCliService, logger, globalStatePath);
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -5193,7 +5205,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
-    installAdeCliForTerminalInBackground(adeCliService, logger);
+    installAdeCliForTerminalInBackground(adeCliService, logger, globalStatePath);
     const externalOnlyLaneService: FileServiceLaneAdapter = {
       getFilesWorkspaces: () => [],
       resolveWorkspaceById: (workspaceId: string) => {
