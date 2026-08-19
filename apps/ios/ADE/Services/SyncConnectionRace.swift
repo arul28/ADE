@@ -54,6 +54,12 @@ enum SyncConnectionRaceTiming {
 struct SyncConnectionRaceBudget: Equatable, Sendable {
   var overallNanoseconds: UInt64
   var relayReadyAfterAcceptedNanoseconds: UInt64
+  /// Deadline for `accepted`. Carried on the budget rather than read straight
+  /// off `SyncConnectionRaceTiming` so a caller that is not racing a real
+  /// socket — a test feeding pre-buffered frames — can widen the window without
+  /// changing what either production budget waits.
+  var relayAcceptedNegotiationNanoseconds: UInt64 = SyncConnectionRaceTiming
+    .relayAcceptedNegotiationNanoseconds
 
   static let standard = SyncConnectionRaceBudget(
     overallNanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds,
@@ -218,7 +224,7 @@ struct SyncRelayReadyNegotiation: Equatable {
   var phaseBudgetNanoseconds: UInt64 {
     acceptedV2
       ? budget.relayReadyAfterAcceptedNanoseconds
-      : SyncConnectionRaceTiming.relayAcceptedNegotiationNanoseconds
+      : budget.relayAcceptedNegotiationNanoseconds
   }
 
   func negotiationWindowExpired() -> SyncRelayReadyNegotiationDecision {
