@@ -13,6 +13,12 @@ import {
   recordLastFailure,
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
+import { codedError } from "../../desktop/src/shared/codedError";
+import {
+  detectCloudPlaceholderFile,
+  detectCloudStorageProvider,
+  storageUnreadableMessage,
+} from "../../desktop/src/main/services/storage/cloudPlaceholder";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
 import { cleanupLegacyAdeSkills } from "../../desktop/src/main/services/skills/legacySkillCleanupService";
 import {
@@ -621,6 +627,16 @@ export async function createAdeRuntime(args: {
   });
   let db: AdeDb;
   try {
+    // Preflight before the open, so a cloud-evicted database fails with the
+    // sentence that names the fix instead of the platform's uninterpretable
+    // errno ("Unknown system error -11, read" on macOS).
+    const placeholder = detectCloudPlaceholderFile(paths.dbPath);
+    if (placeholder) {
+      throw codedError(
+        storageUnreadableMessage(placeholder.path, placeholder.provider),
+        "storage_read_failed",
+      );
+    }
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
     });
@@ -629,14 +645,23 @@ export async function createAdeRuntime(args: {
     const detail = error instanceof Error ? error.message : String(error);
     const failure = {
       code,
-      message: "ADE could not open the project data store.",
+      message: code === "storage_read_failed"
+        ? storageUnreadableMessage(paths.dbPath, detectCloudStorageProvider(paths.dbPath))
+        : "ADE could not open the project data store.",
       detail,
       projectRoot,
       component: "project_db_open" as const,
     };
     recordLastFailure({ kind: "project", projectRoot }, failure);
     recordLastFailure({ kind: "machine" }, failure);
-    throw error;
+    // Rethrowing the raw error discarded the classification computed one line
+    // above and handed the renderer a bare libuv message. Carry the code, the
+    // offending path and the raw errno instead — the code picks the recovery
+    // copy, and `detail` stays for logs and `ade report-issue`.
+    throw Object.assign(
+      codedError(failure.message, code),
+      { dbPath: paths.dbPath, projectRoot, detail },
+    );
   }
   clearLastFailure({ kind: "project", projectRoot });
 

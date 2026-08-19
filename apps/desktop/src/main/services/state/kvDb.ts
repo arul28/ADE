@@ -59,6 +59,7 @@ export type KvDbOpenErrorCode =
   | "db_integrity"
   | "migration_incomplete"
   | "migration_unknown_state"
+  | "storage_read_failed"
   | "unknown";
 
 const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
@@ -67,8 +68,42 @@ const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
   "db_integrity",
   "migration_incomplete",
   "migration_unknown_state",
+  "storage_read_failed",
   "unknown",
 ]);
+
+/**
+ * Filesystem failures that mean "the bytes are not readable here", as opposed
+ * to "the database is damaged". Reading a File-Provider placeholder (iCloud
+ * Drive, Dropbox, OneDrive) that the provider cannot materialize is the common
+ * cause; a failing disk or a dropped network mount produces the same shapes.
+ */
+const STORAGE_READ_ERRNO_CODES = new Set([
+  "EDEADLK",
+  "EIO",
+  "ENXIO",
+  "ENODEV",
+  "ESTALE",
+  "EHOSTDOWN",
+  "EREMOTEIO",
+]);
+
+/**
+ * libuv can only name the errnos it has a mapping for. macOS returns EDEADLK
+ * (errno 11) for a File-Provider read it cannot satisfy, which libuv does not
+ * map, so the error reaches us as the uninterpretable "Unknown system error
+ * -11: Unknown system error -11, read". Anything in that shape is a raw
+ * filesystem failure, never a SQLite-level verdict.
+ */
+const UNKNOWN_SYSTEM_ERRNO_PATTERN = /unknown system error\s+-?\d+/i;
+
+function isStorageReadError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const raw = error as { code?: unknown; errno?: unknown; syscall?: unknown };
+  if (typeof raw.code === "string" && STORAGE_READ_ERRNO_CODES.has(raw.code)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return UNKNOWN_SYSTEM_ERRNO_PATTERN.test(message);
+}
 
 export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
   const explicitCode = error && typeof error === "object" && "code" in error
@@ -80,6 +115,9 @@ export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
 
   const message = error instanceof Error ? error.message : String(error);
   if (isNoSpaceError(error) || /SQLITE_FULL/i.test(message)) return "disk_full";
+  // Ahead of the integrity bucket: an unreadable file is not a corrupt one, and
+  // offering to "repair" a placeholder would rewrite data ADE cannot even read.
+  if (isStorageReadError(error)) return "storage_read_failed";
   if (/malformed|not a database|integrity/i.test(message)) return "db_integrity";
   return "unknown";
 }

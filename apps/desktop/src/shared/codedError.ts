@@ -23,6 +23,12 @@ export function stripElectronErrorWrapper(message: string): string {
   return message
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
     .replace(/^Error:\s*/i, "")
+    // The runtime RPC client wraps every daemon-side failure in "Remote ADE
+    // service method <m> failed (code <n>): …". A code the brain attached is
+    // behind that wrapper, and without stripping it no brain-side failure can
+    // ever be recognised by its code — which is how a project whose data files
+    // were unreadable reached the user as a raw libuv errno.
+    .replace(/^Remote ADE service method \S+ failed(?:\s*\(code -?\d+\))?:\s*/i, "")
     .trim();
 }
 

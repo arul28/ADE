@@ -390,6 +390,31 @@ describe("kvDb migration backup", () => {
     expect(classifySqliteOpenError(new Error("database disk image is malformed"))).toBe("db_integrity");
     expect(classifySqliteOpenError(new Error("surprise"))).toBe("unknown");
   });
+
+  it("buckets unreadable-storage errnos apart from a damaged database", () => {
+    // macOS returns EDEADLK for a File-Provider read it cannot satisfy, and
+    // libuv has no name for it — this exact message reached a user's screen.
+    expect(classifySqliteOpenError(Object.assign(
+      new Error("Unknown system error -11: Unknown system error -11, read"),
+      { errno: -11, syscall: "read" },
+    ))).toBe("storage_read_failed");
+    expect(classifySqliteOpenError(new Error("Unknown system error -11, read"))).toBe("storage_read_failed");
+    expect(classifySqliteOpenError(Object.assign(new Error("read failed"), { code: "EDEADLK" })))
+      .toBe("storage_read_failed");
+    expect(classifySqliteOpenError(Object.assign(new Error("input/output error"), { code: "EIO" })))
+      .toBe("storage_read_failed");
+    // A full disk still wins: it has its own repair path.
+    expect(classifySqliteOpenError(Object.assign(new Error("Unknown system error -28"), { code: "ENOSPC" })))
+      .toBe("disk_full");
+    // An unreadable file is never reported as a corrupt one — repairing it
+    // would rewrite data ADE could not read.
+    expect(classifySqliteOpenError(Object.assign(
+      new Error("Unknown system error -11, read"),
+      { code: "EDEADLK" },
+    ))).not.toBe("db_integrity");
+    expect(classifySqliteOpenError(Object.assign(new Error("permission denied"), { code: "EACCES" })))
+      .toBe("unknown");
+  });
 });
 
 describe("kvDb storage maintenance", () => {

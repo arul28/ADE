@@ -1423,6 +1423,10 @@ function formatProjectTransitionError(
   const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code === "disk_full"
     ? "Your computer ran out of storage while ADE was saving project data. Free up space, then try again."
+    : code === "storage_read_failed"
+      // Never "try again": the files are in a cloud folder that isn't downloaded,
+      // and retrying reads the same placeholder.
+      ? "ADE couldn't read this project's data. If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again."
     : code === "brain_crash_looping" || code === "migration_incomplete" || code === "migration_unknown_state"
       ? "ADE's background service needs a repair before this project can open."
       : code && [

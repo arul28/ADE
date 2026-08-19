@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   startJsonRpcServer,
   type JsonRpcHandler,
+  type JsonRpcInternalErrorReport,
   type JsonRpcTransport,
 } from "./jsonrpc";
 
@@ -313,5 +314,74 @@ describe("startJsonRpcServer", () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0]?.[1]).toBe("write");
     expect(transport.closed).toBe(true);
+  });
+});
+
+describe("internal error replies", () => {
+  async function failWith(error: unknown, options?: { onInternalError?: (report: JsonRpcInternalErrorReport) => void }) {
+    const transport = new MemoryTransport();
+    const stop = startJsonRpcServer(async () => {
+      throw error;
+    }, transport, {
+      nonFatal: true,
+      ...(options?.onInternalError ? { onInternalError: options.onInternalError } : {}),
+    });
+    transport.push({ jsonrpc: "2.0", id: 1, method: "ade/actions/call" });
+    await waitForDrain();
+    stop();
+    return jsonlResponses(transport)[0] as {
+      error: { code: number; message: string; data?: { code?: string; errorId?: string } };
+    };
+  }
+
+  it("never forwards a raw filesystem errno, and logs it against a reference", async () => {
+    // The production shape: macOS EDEADLK, which libuv cannot name.
+    const raw = Object.assign(
+      new Error("Unknown system error -11: Unknown system error -11, read"),
+      { errno: -11, code: "EDEADLK", syscall: "read" },
+    );
+    const reports: JsonRpcInternalErrorReport[] = [];
+    const response = await failWith(raw, { onInternalError: (report) => reports.push(report) });
+
+    expect(response.error.code).toBe(-32603);
+    expect(response.error.message).not.toContain("Unknown system error");
+    expect(response.error.message).toMatch(/^Internal error in ade\/actions\/call \(ref [0-9a-f]+\)$/);
+    expect(response.error.data?.errorId).toMatch(/^[0-9a-f]+$/);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.method).toBe("ade/actions/call");
+    expect(reports[0]?.errorId).toBe(response.error.data?.errorId);
+    expect(reports[0]?.error).toBe(raw);
+  });
+
+  it("redacts path-bearing fs errors and runtime faults", async () => {
+    const enoent = Object.assign(
+      new Error("ENOENT: no such file or directory, open '/Users/someone/private/ade.db'"),
+      { errno: -2, code: "ENOENT", syscall: "open" },
+    );
+    expect((await failWith(enoent)).error.message).not.toContain("/Users/someone");
+
+    const fault = new TypeError("Cannot read properties of undefined (reading 'db')");
+    expect((await failWith(fault)).error.message).not.toContain("undefined");
+
+    expect((await failWith("boom")).error.message).not.toContain("boom");
+  });
+
+  it("forwards a service's coded verdict so the caller can act on it", async () => {
+    const response = await failWith(Object.assign(
+      new Error("ADE couldn't read this project's data at /tmp/p/.ade/ade.db."),
+      { code: "storage_read_failed" },
+    ));
+
+    expect(response.error.code).toBe(-32603);
+    expect(response.error.message).toBe(
+      "storage_read_failed: ADE couldn't read this project's data at /tmp/p/.ade/ade.db.",
+    );
+    expect(response.error.data?.code).toBe("storage_read_failed");
+  });
+
+  it("keeps a service-authored refusal readable", async () => {
+    const response = await failWith(new Error("Project root does not exist: /tmp/gone"));
+    expect(response.error.message).toBe("Project root does not exist: /tmp/gone");
+    expect(response.error.data).toBeUndefined();
   });
 });
