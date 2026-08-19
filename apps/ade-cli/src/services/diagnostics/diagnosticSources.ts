@@ -13,6 +13,7 @@ import {
   type DiagnosticVolumeSpace,
 } from "./diagnosticReport";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { MACHINE_MAIN_LOG_FILE_NAME } from "../../../../desktop/src/main/services/logging/machineLogger";
 import { resolveRuntimeServiceName } from "../../serviceManager/common";
 import { launchAgentPath } from "../../serviceManager/installLaunchd";
 import { servicePath as systemdUnitPath } from "../../serviceManager/installSystemd";
@@ -35,9 +36,10 @@ import {
  * Electron-only inputs (`readVolumeSpace`, the desktop's own userData jsonl
  * logs, the typed last-failure store) stay in the desktop service and are
  * layered on top. Everything a headless box can read — both of the background
- * service's output streams, its service definition, and the project logs of
- * whichever project this machine used last — belongs HERE, so the desktop's
- * button and `ade report-issue --send` produce the same document.
+ * service's output streams, its service definition, the desktop main process's
+ * machine log, and the project logs of whichever project this machine used
+ * last — belongs HERE, so the desktop's button and `ade report-issue --send`
+ * produce the same document.
  */
 
 /** The reason a source is absent, in the two words the report renders. */
@@ -441,10 +443,11 @@ export function collectMachineDiagnosticSources(
   const readVolume = options.readVolume ?? readVolumeViaStatfs;
 
   // A report is worth least on the machine where nothing is open, which is
-  // exactly the machine that cannot open anything. `main.jsonl` carries the
-  // machine-level events — the CLI auto-install outcome among them — so a
-  // report that omits it because no window happens to be showing a project is
-  // missing evidence that was on disk the whole time.
+  // exactly the machine that cannot open anything. The project's `main.jsonl`
+  // is still collected — for the open project, or the most recently opened one
+  // — because a project that failed to open leaves its story there. But it can
+  // only ever be a fallback: it requires SOME project to have been opened at
+  // some point, and to guess the right one.
   const fallbackProjectRoot = openProjectRoot
     ? null
     : resolveMostRecentProjectRoot(layout.projectsPath);
@@ -452,11 +455,20 @@ export function collectMachineDiagnosticSources(
 
   const logs: DiagnosticLogTail[] = [
     ...collectServiceOutputLogs({ env, platform, homeDir, runtimeDir: layout.runtimeDir, run }),
+    // The desktop main process's own machine-scoped log: the launch marker, the
+    // `ade://` scheme claim, which process won the single-instance lock, the CLI
+    // auto-install outcome. Full tail cap, like the other machine-level streams
+    // beside it — these are the ones that explain a startup which never got far
+    // enough to write anything else, and on a machine where no project has ever
+    // been opened it is the ONLY main-process log there is.
+    readLogTail("Desktop main (machine)", path.join(layout.runtimeDir, MACHINE_MAIN_LOG_FILE_NAME)),
     readLogTail("Brain", path.join(layout.runtimeDir, "brain.jsonl")),
   ];
   if (projectRoot) {
     const logsDir = projectLogsDir(projectRoot);
-    logs.push(readLogTail("Desktop main", path.join(logsDir, "main.jsonl"), PROJECT_LOG_LIMITS));
+    logs.push(
+      readLogTail("Desktop main (project)", path.join(logsDir, "main.jsonl"), PROJECT_LOG_LIMITS),
+    );
     logs.push(readLogTail("ADE CLI", path.join(logsDir, "ade-cli.jsonl"), PROJECT_LOG_LIMITS));
   }
 

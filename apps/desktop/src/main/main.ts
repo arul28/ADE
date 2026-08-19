@@ -17,6 +17,21 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
+// The first durable line of the launch, and the earliest statement in this file
+// that can write one: everything below — the `ade://` claim, the single-instance
+// lock, the whole of `whenReady` — used to happen before any structured logger
+// existed, because the only one was built inside the project-open paths. A
+// report from a machine where no project ever opened had no main-process log at
+// all. Machine-scoped by construction (`~/.ade/runtime/desktop-main.jsonl`), so
+// a headless `ade report-issue` finds it too. See `machineLogger.ts`.
+logMachineEvent("info", "desktop.main_started", {
+  pid: process.pid,
+  version: app.getVersion(),
+  isPackaged: app.isPackaged,
+  packageChannel: process.env.ADE_PACKAGE_CHANNEL ?? null,
+  platform: process.platform,
+});
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +64,11 @@ import {
 import { registerIpc } from "./services/ipc/registerIpc";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
+import {
+  flushMachineMainLog,
+  getMachineMainLogger,
+  logMachineEvent,
+} from "./services/logging/machineLogger";
 import {
   createProductAnalyticsService,
   defaultProductAnalyticsStateFile,
@@ -468,14 +488,20 @@ let adeCliAutoInstallScheduled = false;
  * matters — already on PATH, already settled once, silent failure — lives in
  * `runAdeCliAutoInstall`; this only schedules it. Both project-open and dormant
  * startup reach here, so the process-wide latch keeps it to a single attempt.
+ *
+ * Its outcome goes to the MACHINE log, not the caller's. Whether this computer
+ * ever got the `ade` command is a fact about the computer: filed per project it
+ * landed wherever the latch happened to win, and on the dormant path it landed
+ * in a `userData` log no report collects at all — so "did the auto-install
+ * run?" was unanswerable from the one document meant to answer it.
  */
 function installAdeCliForTerminalInBackground(
   adeCliService: ReturnType<typeof createAdeCliService>,
-  logger: Logger,
   globalStatePath: string,
 ): void {
   if (adeCliAutoInstallScheduled) return;
   adeCliAutoInstallScheduled = true;
+  const logger = getMachineMainLogger();
   // A convenience, not startup work: it can spawn the packaged installer and
   // append to a shell profile, so it stays off the path to the first window.
   const task = setImmediate(() => {
@@ -1104,16 +1130,14 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
         pendingAppNavigationRequests.length - MAX_PENDING_APP_NAVIGATION_REQUESTS,
       );
     }
-    try {
-      // The structured logger is not up this early; console keeps the signal.
-      console.warn("[main] app_navigation.queued_before_dispatcher_ready", {
-        target: request.target.kind,
-        source: request.source,
-        queued: pendingAppNavigationRequests.length,
-      });
-    } catch {
-      // A missing console must never break navigation queueing.
-    }
+    // Durable in the machine log and still on stdout; `logMachineEvent` owns
+    // both, and swallows a failure of either — a missing console must never
+    // break navigation queueing.
+    logMachineEvent("warn", "app_navigation.queued_before_dispatcher_ready", {
+      target: request.target.kind,
+      source: request.source,
+      queued: pendingAppNavigationRequests.length,
+    });
     return;
   }
   dispatchAppNavigationRequest(request);
@@ -1125,14 +1149,12 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
 registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,
   dispatch: dispatchOrQueueAppNavigationRequest,
-  log: (event, fields) => {
-    // Avoid throwing if console is gone; structured logger may not be ready yet.
-    try {
-      console.log(`[main] ${event}`, fields);
-    } catch {
-      // ignore
-    }
-  },
+  // Which scheme this build claimed, and which process won the single-instance
+  // lock, are facts about the computer, not about any project — and they are
+  // decided before one can be open. They were `console.log` only because no
+  // structured logger existed this early; the machine log does.
+  log: (event, fields) => logMachineEvent("info", event, fields),
+  flushLog: flushMachineMainLog,
 });
 
 let pendingProjectOpenFiles: string[] = [];
@@ -1367,7 +1389,8 @@ app.whenReady().then(async () => {
       return new Response("Not found", { status: 404 });
     }
   });
-  console.log("[info] app.hardware_acceleration", {
+  // What this computer's GPU was told to do, decided before any project opens.
+  logMachineEvent("info", "app.hardware_acceleration", {
     enabled: !disableHardwareAcceleration,
     reason: disableHardwareAcceleration
       ? process.env.ADE_DISABLE_HARDWARE_ACCEL === "1"
@@ -1477,8 +1500,10 @@ app.whenReady().then(async () => {
       machineTrustResetRestartRequired = runMachineTrustResetMigration(machineAdeLayout).restartRequired;
     } catch (error) {
       // Leave the reset incomplete so the next launch retries. A filesystem
-      // permission problem must not prevent ADE itself from starting.
-      console.warn("[warn] machine_trust_reset.failed", {
+      // permission problem must not prevent ADE itself from starting. The
+      // subject is this machine's saved machine list, so it belongs in the
+      // machine log — and it fires before a project logger could exist.
+      logMachineEvent("warn", "machine_trust_reset.failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -2852,7 +2877,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
-    installAdeCliForTerminalInBackground(adeCliService, logger, globalStatePath);
+    installAdeCliForTerminalInBackground(adeCliService, globalStatePath);
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -5204,7 +5229,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
-    installAdeCliForTerminalInBackground(adeCliService, logger, globalStatePath);
+    installAdeCliForTerminalInBackground(adeCliService, globalStatePath);
     const externalOnlyLaneService: FileServiceLaneAdapter = {
       getFilesWorkspaces: () => [],
       resolveWorkspaceById: (workspaceId: string) => {

@@ -30,13 +30,13 @@ export const LOG_TAIL_MAX_BYTES = 32 * 1024;
  * Every source added here is weighed against `MAX_DIAGNOSTIC_UPLOAD_BYTES`
  * (512 KB for the whole serialized upload, `apps/desktop/src/shared/diagnosticsUpload.ts`),
  * because a report that grows past it is not sent at all — the exact failure
- * this collector exists to prevent. At the full cap the desktop's seven tails
- * alone would be 224 KB before a single JSON state blob; at this one the two
+ * this collector exists to prevent. At the full cap the desktop's eight tails
+ * alone would be 256 KB before a single JSON state blob; at this one the two
  * project logs cost 32 KB instead of 64 KB, which is what buys room for the
  * launchd stdout stream and the service definition. The machine-level
- * streams — the service's own stdout/stderr and `brain.jsonl` — keep the full
- * cap, because they are the ones that explain a startup that never got far
- * enough to write anything else.
+ * streams — the service's own stdout/stderr, `brain.jsonl`, and the desktop
+ * main process's `desktop-main.jsonl` — keep the full cap, because they are the
+ * ones that explain a startup that never got far enough to write anything else.
  */
 export const LOG_TAIL_COMPACT_MAX_LINES = 80;
 export const LOG_TAIL_COMPACT_MAX_BYTES = 16 * 1024;

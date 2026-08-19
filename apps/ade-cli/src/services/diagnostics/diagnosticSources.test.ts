@@ -285,7 +285,7 @@ describe("collectMachineDiagnosticSources — project logs with no project open"
     expect(sources.projectRoot).toBe(recent);
     expect(sources.projectRootIsFallback).toBe(true);
     // The machine-level event that was unreachable without a project open.
-    expect(sources.logs.find((log) => log.label === "Desktop main")?.text).toContain(
+    expect(sources.logs.find((log) => log.label === "Desktop main (project)")?.text).toContain(
       "ade_cli.auto_install",
     );
     expect(sources.logs.find((log) => log.label === "ADE CLI")?.text).toContain("cli.started");
@@ -303,7 +303,7 @@ describe("collectMachineDiagnosticSources — project logs with no project open"
 
     expect(sources.projectRoot).toBe(open);
     expect(sources.projectRootIsFallback).toBe(false);
-    expect(sources.logs.find((log) => log.label === "Desktop main")?.text).toContain('"open"');
+    expect(sources.logs.find((log) => log.label === "Desktop main (project)")?.text).toContain('"open"');
     expect(sources.notes.join("\n")).not.toContain("no project was open");
   });
 
@@ -325,7 +325,37 @@ describe("collectMachineDiagnosticSources — project logs with no project open"
 
     expect(sources.projectRoot).toBeNull();
     expect(sources.notes.join("\n")).toContain("no project is registered");
-    expect(sources.logs.map((log) => log.label)).not.toContain("Desktop main");
+    expect(sources.logs.map((log) => log.label)).not.toContain("Desktop main (project)");
+  });
+
+  // The fallback above is a mitigation: it still needs SOME project to have
+  // been opened, and to guess the right one. The machine log needs neither.
+  it("carries the desktop's machine log with no project on the machine at all", () => {
+    const { home, runtimeDir } = machineHome();
+    fs.writeFileSync(
+      path.join(runtimeDir, "desktop-main.jsonl"),
+      '{"event":"desktop.main_started"}\n{"event":"ade_cli.auto_install"}\n',
+      "utf8",
+    );
+
+    const sources = collect({ home });
+
+    expect(sources.projectRoot).toBeNull();
+    const machineLog = sources.logs.find((log) => log.label === "Desktop main (machine)");
+    expect(machineLog?.text).toContain("desktop.main_started");
+    // The machine-scoped fact that used to be filed under whichever project
+    // happened to open, and was therefore unreachable from a report like this.
+    expect(machineLog?.text).toContain("ade_cli.auto_install");
+  });
+
+  it("notes an absent machine log rather than omitting the section", () => {
+    const { home } = machineHome();
+
+    const machineLog = collect({ home }).logs.find(
+      (log) => log.label === "Desktop main (machine)",
+    );
+
+    expect(machineLog?.error).toBe("(not present)");
   });
 
   it("never writes to or throws on a registry it cannot understand", () => {

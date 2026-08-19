@@ -165,12 +165,36 @@ describe("collectDiagnosticReport", () => {
       { surface: "project_recovery", projectRoot: null },
     );
 
-    expect(report).toContain("### Desktop main");
+    expect(report).toContain("### Desktop main (project)");
     expect(report).toContain("deeplink.scheme_claimed");
     expect(report).toContain("### ADE CLI");
     expect(report).toContain("no project was open");
     // The project's absolute path must not ride along with its logs.
     expect(report).not.toContain(projectRoot);
+  });
+
+  // The fallback above still needs a project to have been opened once, and to
+  // guess the right one. On a machine where none ever was, the main process's
+  // own machine log is the only main-process evidence there is — and a report
+  // from that machine used to contain none at all.
+  it("carries the desktop's machine log with no project on the machine", async () => {
+    const adeHome = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+    fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });
+    fs.writeFileSync(
+      path.join(adeHome, "runtime", "desktop-main.jsonl"),
+      '{"event":"desktop.main_started"}\n{"event":"deeplink.single_instance.lock_lost"}\n',
+      "utf8",
+    );
+
+    const { report } = await collectDiagnosticReport(
+      { ...deps(), env: { ADE_HOME: adeHome } },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(report).toContain("### Desktop main (machine)");
+    expect(report).toContain("desktop.main_started");
+    expect(report).toContain("deeplink.single_instance.lock_lost");
+    expect(report).toContain("no project is registered");
   });
 
   // The desktop and `ade report-issue` are meant to produce the same document;
