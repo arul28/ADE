@@ -19,8 +19,10 @@ import {
 } from "@phosphor-icons/react";
 import type { PublishProjectResult } from "../../../shared/types";
 import { extractCodeFromMessage } from "../../lib/codedError";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { extractError } from "../../lib/format";
 import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { fadeScale } from "../../lib/motion";
 import {
   COLORS,
@@ -115,6 +117,7 @@ export function PublishToGitHubDialog({
   const [tokenDraft, setTokenDraft] = useState("");
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  const [storeUnreadable, setStoreUnreadable] = useState(false);
 
   // Reset all local state whenever the dialog opens.
   useEffect(() => {
@@ -131,10 +134,15 @@ export function PublishToGitHubDialog({
     setTokenDraft("");
     setTokenSaving(false);
     setTokenError(null);
+    setStoreUnreadable(false);
     void window.ade.github.getStatus({ forceRefresh: false }).then((status) => {
-      if (!cancelled && status.connected && status.userLogin) {
+      if (cancelled) return;
+      if (status.connected && status.userLogin) {
         setOwner(status.userLogin);
       }
+      // "Not connected" would be a guess here: an unreadable store reports no
+      // credential whether or not one is saved.
+      setStoreUnreadable(status.credentialStoreUnreadable === true);
     }).catch(() => {});
     return () => {
       cancelled = true;
@@ -162,6 +170,13 @@ export function PublishToGitHubDialog({
     } catch (err) {
       const code = extractCodeFromMessage(err);
       if (code === "github_not_connected") {
+        // Re-read before offering a fix. "Not connected" is also what an
+        // unreadable store looks like, and the answer to that one is repair,
+        // not a replacement token.
+        const status = await window.ade.github
+          .getStatus({ forceRefresh: true })
+          .catch(() => null);
+        if (status) setStoreUnreadable(status.credentialStoreUnreadable === true);
         setConnectMode(true);
       } else if (code === "remote_already_exists") {
         setError({
@@ -219,6 +234,13 @@ export function PublishToGitHubDialog({
   const handleOpenTokenLink = useCallback(() => {
     void window.ade.app.openExternal(GITHUB_CLASSIC_TOKEN_NEW_URL);
   }, []);
+
+  // The repair lives in the Connections panel, which is a header popover — this
+  // modal has to get out of its way first.
+  const handleOpenConnections = useCallback(() => {
+    onOpenChange(false);
+    openConnectionsPanel("machines");
+  }, [onOpenChange]);
 
   const headerTitle = success
     ? "Publish to GitHub"
@@ -313,6 +335,8 @@ export function PublishToGitHubDialog({
                       error={tokenError}
                       onOpenTokenLink={handleOpenTokenLink}
                       onCancel={() => setConnectMode(false)}
+                      storeUnreadable={storeUnreadable}
+                      onOpenConnections={handleOpenConnections}
                     />
                   ) : (
                     <FormBody
@@ -522,6 +546,8 @@ function ConnectBody({
   error,
   onOpenTokenLink,
   onCancel,
+  storeUnreadable,
+  onOpenConnections,
 }: {
   tokenDraft: string;
   onTokenChange: (value: string) => void;
@@ -530,28 +556,57 @@ function ConnectBody({
   error: string | null;
   onOpenTokenLink: () => void;
   onCancel: () => void;
+  storeUnreadable: boolean;
+  onOpenConnections: () => void;
 }) {
   const detected = tokenDraft.trim() ? detectTokenType(tokenDraft.trim()) : null;
+  const notice = (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        padding: "10px 12px",
+        fontSize: 12,
+        fontFamily: SANS_FONT,
+        color: COLORS.textSecondary,
+        background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-warning) 28%, var(--color-border))",
+        borderRadius: 8,
+        lineHeight: "18px",
+      }}
+    >
+      <LinkBreak size={14} weight="regular" style={{ color: COLORS.warning, flexShrink: 0, marginTop: 2 }} />
+      <span>
+        {storeUnreadable
+          ? `${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}. ${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}`
+          : "GitHub is not connected. Run gh auth login with repo and workflow scopes, or paste a personal access token."}
+      </span>
+    </div>
+  );
+
+  // Unreadable is NOT "not connected": the saved sign-in may still be on disk,
+  // just unopenable here. Saving a token over it would destroy a credential
+  // that repair can recover, so this state offers only the repair route.
+  if (storeUnreadable) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {notice}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <button type="button" style={outlineButton()} onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" style={primaryButton()} onClick={onOpenConnections}>
+            {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          gap: 10,
-          padding: "10px 12px",
-          fontSize: 12,
-          fontFamily: SANS_FONT,
-          color: COLORS.textSecondary,
-          background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
-          border: "1px solid color-mix(in srgb, var(--color-warning) 28%, var(--color-border))",
-          borderRadius: 8,
-          lineHeight: "18px",
-        }}
-      >
-        <LinkBreak size={14} weight="regular" style={{ color: COLORS.warning, flexShrink: 0, marginTop: 2 }} />
-        <span>GitHub is not connected. Run gh auth login with repo and workflow scopes, or paste a personal access token.</span>
-      </div>
+      {notice}
 
       <Field label="PERSONAL ACCESS TOKEN">
         <input

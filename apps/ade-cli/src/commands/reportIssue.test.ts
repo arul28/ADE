@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
+  describeDiagnosticUpload,
   openDiagnosticIssue,
+  sendDiagnosticReport,
 } from "./reportIssue";
 
 const tempDirs: string[] = [];
@@ -149,5 +151,81 @@ describe("buildReportIssuePayload", () => {
     // The rest of the contract is unchanged: same keys, same `ok`.
     expect(payload.ok).toBe(true);
     expect(payload.issueUrl).toBe(built.issueUrl);
+  });
+});
+
+describe("sendDiagnosticReport", () => {
+  const built = {
+    report: "REPORT BODY",
+    installId: "install-abc",
+    appVersion: "1.2.60",
+    secretsDir: "/tmp/does-not-need-to-exist/secrets",
+  };
+
+  function capture(response: Response) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      return response;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+
+  it("sends the built report unchanged, with the account token when signed in", async () => {
+    const { calls, fetchImpl } = capture(
+      new Response(JSON.stringify({ ok: true, id: "abcdef12-3456-4789-8abc-def012345678" }), {
+        status: 200,
+      }),
+    );
+
+    const result = await sendDiagnosticReport(built, {
+      baseUrl: "https://directory.example",
+      getToken: async () => "clerk-token",
+      fetchImpl,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      id: "abcdef12-3456-4789-8abc-def012345678",
+      reference: "abcdef12",
+    });
+    expect(calls[0]!.url).toBe("https://directory.example/diagnostics/upload");
+    expect(new Headers(calls[0]!.init.headers).get("authorization")).toBe("Bearer clerk-token");
+    // The report is redacted upstream; --send must post those exact bytes.
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      report: "REPORT BODY",
+      installId: "install-abc",
+      appVersion: "1.2.60",
+    });
+  });
+
+  it("uploads anonymously when there is no session, and drops the placeholder install id", async () => {
+    const { calls, fetchImpl } = capture(
+      new Response(JSON.stringify({ ok: true, id: "0f0f0f0f-1111-4222-8333-444444444444" }), {
+        status: 200,
+      }),
+    );
+
+    await sendDiagnosticReport(
+      { ...built, installId: "unknown" },
+      { baseUrl: "https://directory.example", getToken: async () => null, fetchImpl },
+    );
+
+    expect(new Headers(calls[0]!.init.headers).get("authorization")).toBeNull();
+    // "unknown" is the report's stand-in for "analytics is off"; sending it as
+    // an install id would attach a metadata value that identifies nothing.
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      report: "REPORT BODY",
+      appVersion: "1.2.60",
+    });
+  });
+
+  it("describes each failure in one plain sentence", async () => {
+    expect(describeDiagnosticUpload({ ok: true, id: "abcdef1234", reference: "abcdef12" }))
+      .toBe("Sent to ADE — reference abcdef12");
+    expect(describeDiagnosticUpload({ ok: false, reason: "rate_limited" }))
+      .toContain("already sent several reports today");
+    expect(describeDiagnosticUpload({ ok: false, reason: "network" }))
+      .toContain("couldn't reach");
   });
 });

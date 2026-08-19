@@ -1,4 +1,12 @@
 import { Buffer } from "node:buffer";
+import { randomBytes } from "node:crypto";
+import {
+  encodeCodedErrorMessage,
+  isErrnoLikeCode,
+  parseCodedErrorMessage,
+  stripElectronErrorWrapper,
+  UNKNOWN_SYSTEM_ERRNO_PATTERN,
+} from "../../desktop/src/shared/codedError";
 
 export type JsonRpcId = string | number | null;
 
@@ -73,6 +81,93 @@ type JsonRpcServerErrorReporter = (
   context: JsonRpcServerErrorContext,
 ) => void;
 
+/**
+ * An unclassified handler failure, reported in full to the process log while
+ * only `errorId` crosses the wire. Callers correlate the two.
+ */
+export type JsonRpcInternalErrorReport = {
+  errorId: string;
+  method: string;
+  error: unknown;
+};
+
+export type JsonRpcInternalErrorReporter = (report: JsonRpcInternalErrorReport) => void;
+
+function nextErrorId(): string {
+  return randomBytes(4).toString("hex");
+}
+
+/**
+ * Services signal known failures with a string `Error.code` (the same
+ * convention the desktop's `codedError` uses). Those messages are authored for
+ * people, so they may cross the boundary; everything else is an internal
+ * detail — a libuv errno, a Node internal code, a stack-bearing message, a
+ * path — and must not.
+ *
+ * The wire format itself is not this file's to invent: the desktop parses these
+ * replies with `parseCodedErrorMessage`, so the same module both reads the
+ * incoming error and writes the outgoing message.
+ */
+function readCodedErrorShape(
+  error: unknown,
+): { code: string; message: string; rootPath?: string } | null {
+  if (!(error instanceof Error)) return null;
+  const rawCode = (error as Error & { code?: unknown }).code;
+  if (typeof rawCode !== "string" || !rawCode.trim()) return null;
+  if (isErrnoLikeCode(rawCode)) return null;
+  const parsed = parseCodedErrorMessage(error);
+  const code = parsed.code ?? rawCode.trim();
+  // `parseCodedErrorMessage` drops ANY leading `identifier:` from the message,
+  // which is right for one this encoder already wrote ("storage_read_failed:
+  // …") and wrong for a service sentence that merely begins that way — "gh:
+  // not authenticated", or a Windows "C:\Users\… is not a repository" — whose
+  // first word would be silently eaten before the message is re-encoded below.
+  // So the strip is accepted only when the prefix WAS this error's own code.
+  const body = messageBody(error, parsed.rootPath);
+  return {
+    code,
+    message: body.startsWith(`${code}:`) ? parsed.message : body,
+    ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
+  };
+}
+
+/**
+ * Everything `parseCodedErrorMessage` removes EXCEPT its leading-identifier
+ * rule: the rootPath tail and the transport wrappers.
+ *
+ * `parsed.rootPath` is the message's own bytes after the delimiter, preserved
+ * verbatim, so trimming it back off by length is exact.
+ */
+function messageBody(error: Error, rootPath: string | undefined): string {
+  const raw = error.message;
+  return stripElectronErrorWrapper(
+    rootPath ? raw.slice(0, raw.length - rootPath.length - 1) : raw,
+  );
+}
+
+/**
+ * Whether the failure came from the runtime or the operating system rather
+ * than from a service deciding something about the caller's request.
+ *
+ * Only these are redacted. RPC handlers throw `JsonRpcError` for protocol
+ * failures and plain `Error`s carrying sentences meant for the person who
+ * asked ("Project root does not exist: …"), and blanking those would turn
+ * every actionable refusal into a reference number. What must never cross is
+ * the other kind: an errno the platform could not even name, a filesystem
+ * message quoting a path, or a runtime fault carrying a stack — the class of
+ * message that produced "Unknown system error -11: … read" on a user's screen.
+ */
+function isInternalRuntimeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return true;
+  const raw = error as Error & { code?: unknown; errno?: unknown; syscall?: unknown };
+  if (typeof raw.syscall === "string" && raw.syscall.length > 0) return true;
+  if (typeof raw.errno === "number") return true;
+  if (isErrnoLikeCode(raw.code)) return true;
+  if (UNKNOWN_SYSTEM_ERRNO_PATTERN.test(error.message)) return true;
+  // Runtime faults (TypeError, RangeError, …) are always programming errors.
+  return /^(?:Type|Range|Reference|Syntax|Eval|URI)Error$/.test(error.name);
+}
+
 function writeMessage(
   message: JsonRpcResponse | JsonRpcResponse[] | JsonRpcNotification,
   mode: TransportMode,
@@ -87,7 +182,11 @@ function writeMessage(
   writeFn(framed);
 }
 
-function toErrorResponse(id: JsonRpcId, error: unknown): JsonRpcFailure {
+function toErrorResponse(
+  id: JsonRpcId,
+  error: unknown,
+  context: { method: string; onInternalError?: JsonRpcInternalErrorReporter },
+): JsonRpcFailure {
   if (error instanceof JsonRpcError) {
     return {
       jsonrpc: "2.0",
@@ -100,12 +199,52 @@ function toErrorResponse(id: JsonRpcId, error: unknown): JsonRpcFailure {
     };
   }
 
+  // A coded failure is a verdict the service already made and worded; forward
+  // the code so the caller can act on it, in the `code: message` shape the
+  // desktop already parses.
+  const coded = readCodedErrorShape(error);
+  if (coded) {
+    return {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: JsonRpcErrorCode.internalError,
+        message: encodeCodedErrorMessage(
+          coded.code,
+          coded.message,
+          coded.rootPath ? { rootPath: coded.rootPath } : undefined,
+        ),
+        data: { code: coded.code },
+      }
+    };
+  }
+
+  if (isInternalRuntimeError(error)) {
+    // The message and stack go to the process log — which `ade report-issue`
+    // collects — and the caller gets only the reference that finds them.
+    const errorId = nextErrorId();
+    try {
+      context.onInternalError?.({ errorId, method: context.method, error });
+    } catch {
+      // Reporting must not become a second failure path.
+    }
+    return {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: JsonRpcErrorCode.internalError,
+        message: `Internal error in ${context.method} (ref ${errorId})`,
+        data: { errorId },
+      }
+    };
+  }
+
   return {
     jsonrpc: "2.0",
     id,
     error: {
       code: JsonRpcErrorCode.internalError,
-      message: error instanceof Error ? error.message : String(error)
+      message: (error as Error).message,
     }
   };
 }
@@ -118,6 +257,7 @@ async function handleSingleMessage(
   message: unknown,
   handler: JsonRpcHandler,
   onError?: JsonRpcServerErrorReporter,
+  onInternalError?: JsonRpcInternalErrorReporter,
 ): Promise<JsonRpcResponse | null> {
   if (!isValidRequest(message)) {
     return {
@@ -172,7 +312,7 @@ async function handleSingleMessage(
       result: result ?? {}
     };
   } catch (error) {
-    return toErrorResponse(id, error);
+    return toErrorResponse(id, error, { method: request.method, onInternalError });
   }
 }
 
@@ -291,8 +431,9 @@ async function dispatchPayload(args: {
   transport: TransportMode;
   writeFn: (data: string) => void;
   onError?: JsonRpcServerErrorReporter;
+  onInternalError?: JsonRpcInternalErrorReporter;
 }): Promise<void> {
-  const { payloadText, handler, transport, writeFn, onError } = args;
+  const { payloadText, handler, transport, writeFn, onError, onInternalError } = args;
   const trimmed = payloadText.trim();
   if (!trimmed.length) return;
 
@@ -338,7 +479,7 @@ async function dispatchPayload(args: {
     }
 
     const results = (
-      await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler, onError)))
+      await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler, onError, onInternalError)))
     ).filter((entry): entry is JsonRpcResponse => entry != null);
 
     if (results.length) {
@@ -347,7 +488,7 @@ async function dispatchPayload(args: {
     return;
   }
 
-  const response = await handleSingleMessage(parsed, handler, onError);
+  const response = await handleSingleMessage(parsed, handler, onError, onInternalError);
   if (response) {
     writeMessage(response, transport, writeFn);
   }
@@ -366,6 +507,11 @@ export interface JsonRpcServerOptions {
   nonFatal?: boolean;
   /** Called for transport or notification failures that are contained by the server. */
   onError?: JsonRpcServerErrorReporter;
+  /**
+   * Called with the full error behind a redacted `internalError` reply. Wire it
+   * to the process log: the reply carries only the matching `errorId`.
+   */
+  onInternalError?: JsonRpcInternalErrorReporter;
 }
 
 export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTransport, options?: JsonRpcServerOptions): JsonRpcServerHandle {
@@ -415,6 +561,7 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       transport: args.transport,
       writeFn,
       onError: reportError,
+      ...(options?.onInternalError ? { onInternalError: options.onInternalError } : {}),
     })
       .catch((error) => {
         reportError(error, "dispatch");

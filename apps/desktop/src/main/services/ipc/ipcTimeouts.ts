@@ -15,6 +15,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+/**
+ * The `{ request: { domain, action } }` payload every runtime `callAction`
+ * invoke carries, read off the raw IPC arguments.
+ *
+ * One decoder for every reader of that shape — the timeout policy below and the
+ * failure telemetry in `registerIpc` — because they all describe the same call
+ * and a reader that disagreed about what a well-formed request looks like would
+ * silently attribute a timeout to one action and its failure to another.
+ * `action` is optional: a payload naming only a domain is still enough to
+ * attribute a failure, and callers that need to route on the action check it.
+ */
+export function readRuntimeActionRequest(
+  args: readonly unknown[],
+): { domain: string; action?: string } | null {
+  const payload = args[0];
+  const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
+  const domain = typeof request?.domain === "string" ? request.domain.trim() : "";
+  if (!domain) return null;
+  const action = typeof request?.action === "string" ? request.action.trim() : "";
+  return { domain, ...(action ? { action } : {}) };
+}
+
 const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ai: {
     piLoginStart: IPC.aiPiLoginStart,
@@ -48,32 +70,26 @@ const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
 
 function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
-  const payload = args[0];
-  const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
-  if (typeof request?.domain !== "string" || typeof request.action !== "string") return null;
+  const request = readRuntimeActionRequest(args);
+  if (!request?.action) return null;
   const channel = RUNTIME_ACTION_CHANNEL[request.domain]?.[request.action];
   return channel ? ipcInvokeTimeoutMs(channel) : null;
 }
 
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
-  const payload = args[0];
-  const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
-  const domain = request?.domain;
-  const action = request?.action;
-  if (typeof domain !== "string" || typeof action !== "string") return null;
-  return isRetryableRemoteAction(domain, action)
+  const request = readRuntimeActionRequest(args);
+  if (!request?.action) return null;
+  return isRetryableRemoteAction(request.domain, request.action)
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }
 
 export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = []): number {
   if (channel === IPC.localRuntimeCallAction) {
-    const payload = args[0];
-    const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
-    if (typeof request?.domain === "string" && typeof request.action === "string") {
-      return localRuntimeActionIpcTimeoutMs(request.domain, request.action);
-    }
-    return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
+    const request = readRuntimeActionRequest(args);
+    return request?.action
+      ? localRuntimeActionIpcTimeoutMs(request.domain, request.action)
+      : LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
   }
   if (channel === IPC.localRuntimeCallSync) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
   // Reconnecting forwards to the brain on the same 30s sync budget. On the 30s

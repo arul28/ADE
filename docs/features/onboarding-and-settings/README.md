@@ -126,6 +126,25 @@ Main process:
   into missing permissions. `service_unavailable` gets no credential cooldown,
   because the credential is not the problem and must stay usable the instant
   GitHub recovers.
+  `GitHubStatus.credentialStoreUnreadable` is carried on the credential
+  inventory (cached with it for 30 s) rather than re-read at status time, so the
+  readability verdict always belongs to the read that produced that inventory's
+  candidates. The service holds it sticky across reads and warns
+  `github.credential_store_unreadable` — with the store's own failure reason —
+  once per transition into unreadable rather than on every cached refresh; a
+  successful token write clears it, because a write that landed re-sealed the
+  store under a key this process holds.
+- `apps/desktop/src/main/services/github/credentialReadState.ts` — returns a
+  credential *and* whether the store was readable in one call
+  (`readCredentialWithState` / `readCredentialWithStateAsync`). An undecryptable
+  store returns an empty view instead of throwing, so "no token" and "a token
+  ADE cannot read" are the same answer, and only the store's
+  `getLastReadState()` separates them — and that method describes the store's
+  most recent read, so it has to be consulted immediately after the `getSync` it
+  is being asked about. Pairing the two in one helper is what makes that
+  ordering impossible to get wrong. A store that throws counts as unreadable
+  too: the Electron `safeStorage` store reports decrypt failures that way rather
+  than by returning `{}`.
 - `apps/desktop/src/shared/githubServiceHealth.ts` and
   `apps/desktop/src/main/services/github/githubStatusPage.ts` — telling a GitHub
   outage apart from a broken credential. The shared module parses
@@ -150,9 +169,14 @@ Main process:
   GitHub request/status path. It applies the same candidate order, cooldowns,
   GraphQL classification, conditional-request cache isolation, read/write
   status fields, and githubstatus.com corroboration when a packaged or
-  remote-bound window uses `ade serve`. The renderer reaches GitHub through
-  whichever service owns the project, so anything applied to only one of the two
-  `getStatus` implementations is dead in the shipping runtime-backed build.
+  remote-bound window uses `ade serve`. It reads its stored tokens through the
+  same `credentialReadState.ts` helpers the desktop service uses and reports
+  `credentialStoreUnreadable` on its own status and inventory, because an
+  undecryptable store returns an empty view rather than throwing — without it a
+  remote runtime describes a corrupted store exactly as it describes a fresh
+  install. The renderer reaches GitHub through whichever service owns the
+  project, so anything applied to only one of the two `getStatus`
+  implementations is dead in the shipping runtime-backed build.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~3,150 lines, the largest service.
@@ -177,9 +201,18 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/git.ts` — `GitHubStatus`,
   `GitHubAuthFailure`, `GitHubRateLimitState`, and the credential source,
   capability, state, and fallback contracts. `writeAuthSource`,
-  `credentialStates`, `credentialFallback`, `backgroundRefreshPausedUntil`, and
-  `serviceHealth` are optional so a newer client remains compatible with an
-  older remote runtime.
+  `credentialStates`, `credentialFallback`, `credentialStoreUnreadable`,
+  `backgroundRefreshPausedUntil`, and `serviceHealth` are optional so a newer
+  client remains compatible with an older remote runtime, which simply omits
+  them. The same module owns `GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY` — the
+  single wording for the unreadable case, shared by the Settings card, the
+  integration banner, the PR tab's main-process empty state, and the
+  Publish-to-GitHub dialog — which, in this state, drops the token field
+  entirely and offers only **Open connections**, because saving a token would
+  overwrite a sign-in that repair can still recover. It lives beside
+  the field rather than in a renderer helper because the main process needs it
+  too, and two hand-kept copies of one sentence is how the "not connected"
+  masking survived in more than one place.
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
     complete, setDismissed)
@@ -368,7 +401,13 @@ Renderer — settings:
   account bucket renders the reset time and explains that background refresh is
   paused automatically; it never asks the user to re-authenticate. When no
   fallback remains, a missing, invalid, or genuinely under-scoped credential
-  shows login/refresh instructions. The App-installation card also classifies relay
+  shows login/refresh instructions. An unreadable credential store outranks all
+  of that: the card reads **Can't read sign-in** instead of "Not connected",
+  renders the shared unreadable notice with an **Open connections** button that
+  opens the Connections panel's Machines tab, and suppresses the `gh auth login`
+  setup steps — those steps would answer a question ADE has not actually asked,
+  and following them writes a new credential over one that is probably intact.
+  The App-installation card also classifies relay
   rate-limit responses as a concise cooldown state instead of displaying
   GitHub's raw request-id / scraping-policy error. Raw network/unknown
   validation errors stay in Settings rather than the global banner. The shared
@@ -432,15 +471,38 @@ Renderer — settings:
   before a mutation. `describeGithubOutage(status)` is the one presentation
   entry point for a corroborated GitHub outage — it answers "is there an
   outage", "what do we say", and "where does the button go" together, and every
-  GitHub-blaming surface gates on it. `describeGithubAuthFailure` and
-  `describeGithubCliBanner` consult it first, so an outage outranks every
-  credential-shaped reading of the same failure. When it returns null ADE says
-  nothing about GitHub's health and keeps its existing copy.
+  GitHub-blaming surface gates on it. When it returns null ADE says nothing
+  about GitHub's health and keeps its existing copy.
+  `describeGithubCliBanner` resolves three states in a fixed order, and the
+  order is the whole point:
+  1. `credentialStoreUnreadable` — first, ahead of everything. An unreadable
+     store returns an EMPTY view, so every conclusion below it would be drawn
+     from credentials ADE could not read. It is also a local, repairable fact
+     that outlives any incident, so an outage must not mask the one thing the
+     user can actually fix.
+  2. `!tokenStored` — ahead of the outage. A missing token is a purely local
+     fact and stays true regardless of GitHub's health, so the genuine "connect
+     GitHub" instruction survives an incident.
+  3. the outage — ahead of every remaining state, all of which are inferred
+     from GitHub's own answers and are therefore unreliable while GitHub is
+     failing. `describeGithubAuthFailure` consults the outage first for the same
+     reason.
+
+  Every branch also returns a `target` (`github-settings` | `connections`)
+  rather than leaving the destination implicit: an unreadable store is not a
+  GitHub problem and is not fixed on the GitHub card, whereas an outage and
+  every auth failure are — there the credential ADE holds is readable and it is
+  the account behind it, or GitHub itself, that has the objection.
 - `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` and
   `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
   app shell raises a write-access banner for an otherwise connected App-only
   status, and feedback submission requires a write-capable credential rather
-  than treating read connectivity as sufficient.
+  than treating read connectivity as sufficient. The gh-CLI/token banner routes
+  its single action by the `target` the derivation supplies — the GitHub
+  connection settings route, or the same Connections panel the relay banner
+  opens — and keys its dismissal fingerprint on the sub-state, so a store that
+  becomes unreadable re-raises a banner the user had dismissed for a different
+  reason.
 - `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.
@@ -1298,7 +1360,7 @@ and [machine power and sleep in the account directory](../sync-and-multi-device/
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
 | Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
-| GitHub credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
+| GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
 | Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
 
 ## AI mode and provider behavior
@@ -1408,6 +1470,55 @@ the credential store's own `CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus a 5 s
 margin, because a wait shorter than the lock timeout could expire while the
 winning peer is still legitimately queued behind the lock — and the loser
 would then declare a live session dead.
+
+## GitHub connection status has the same third state
+
+The account session is not the only thing the credential store can hide. The
+same file backs `github.token.v1` and `github.appUserToken.v1`, and it fails the
+same way: an undecryptable store returns an **empty view** rather than an error,
+so a GitHub status built from it is indistinguishable from a fresh install. That
+is the whole hazard — "not connected" invites a reconnect, and a reconnect
+overwrites credentials that were only unreadable, turning a recoverable read
+failure into real credential loss.
+
+`GitHubStatus` therefore separates three answers, not two:
+
+| Answer | What is actually true | What the surface offers |
+| --- | --- | --- |
+| connected | A credential validated against `GET /user` and, where required, the repo probe. | Nothing; `writeAuthSource` still gates mutations separately. |
+| not connected | ADE read the store successfully and there is no usable credential. | `gh auth login` steps, or a PAT field. |
+| `credentialStoreUnreadable` | ADE could not open the store on this read. Saved credentials may be entirely intact. | Say so, and offer **repair** — never a reconnect as the primary path. |
+
+Every surface that would otherwise conclude "not connected" resolves the third
+state *first*, ahead of `!tokenStored`, because everything downstream of an
+unreadable read is a guess:
+
+- **Settings → Integrations → GitHub** (`GitHubSection.tsx`) shows **Can't read
+  sign-in** in warning tone with the shared notice and an **Open connections**
+  button, and hides the gh-CLI setup steps.
+- **The app-shell integration banner** (`IntegrationBannerHost.tsx`) points its
+  action at the Connections panel rather than the GitHub settings route, since
+  no GitHub-side action repairs a store ADE cannot open.
+- **The PR tab's empty state** — the message is built in the main process by
+  `prService.buildGithubSnapshotAuthError`, which is why the wording is a shared
+  constant in `shared/types/git.ts` rather than renderer copy.
+- **Publish to GitHub** (`PublishToGitHubDialog.tsx`) reads the flag once when
+  the dialog opens and replaces "GitHub is not connected" with the unreadable
+  wording. The token field stays, because pasting a token there is a deliberate
+  act by a user who already came to connect — the dialog only stops asserting a
+  disconnection it cannot actually observe.
+
+The Settings button and the banner action both land on the Connections panel's
+**Machines** tab, where the account header already carries the sign-in repair
+path — the same
+`account.repairSession` the account tri-state uses, which converges the shared
+credential store's key binding before restarting the brain. One store, one
+repair: a GitHub-specific fix-it control would be a second button for the same
+file. Writing a new GitHub token also clears the flag, because a successful
+write re-seals the store under a key this process holds.
+
+Because the field is optional, an older remote runtime that omits it degrades to
+the previous two-way behaviour instead of reporting a state it cannot compute.
 
 ## Gotchas
 

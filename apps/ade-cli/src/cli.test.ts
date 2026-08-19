@@ -18,6 +18,7 @@ import {
   describeLastFailureForStartupLog,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,
@@ -11777,5 +11778,69 @@ describe("unlinkOwnedRuntimeSocket", () => {
 
     expect(outcome).toBe("not_owned");
     expect(unlinked).toEqual([]);
+  });
+});
+
+describe("formatDiagnosticError", () => {
+  it("never prints the fields of a thrown non-Error, which can carry a token", () => {
+    // sync.connectToBrain hands the draft's token to the request it builds; a
+    // rejection that carried that request used to be JSON.stringify'd whole
+    // into launchd.err.log, which `ade report-issue` tails into a report the
+    // user is told to paste into a public GitHub issue.
+    // Assembled from segments so the working tree never carries a
+    // secret-shaped literal the secret scanner would flag (same convention as
+    // diagnosticReport.test.ts).
+    const fakeAdeToken = ["ade", "live", "9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c"].join("_");
+    const fakeSkToken = ["sk", "live", "abcdefghijklmnopqrstuvwxyz"].join("-");
+    const thrown = {
+      code: "ECONNREFUSED",
+      token: fakeAdeToken,
+      body: { authorization: `Bearer ${fakeSkToken}` },
+    };
+
+    const formatted = formatDiagnosticError(thrown);
+
+    expect(formatted).not.toContain(fakeAdeToken);
+    expect(formatted).not.toContain(fakeSkToken);
+    // The shape still has to be diagnosable: the errno and the key names that
+    // locate the throw site survive.
+    expect(formatted).toContain("code=ECONNREFUSED");
+    expect(formatted).toContain("token");
+  });
+
+  it("redacts a credential that an Error carried in its own message", () => {
+    const fakeUrlToken = ["6f1c", "8a2b", "4d9e", "7f30"].join("");
+    const formatted = formatDiagnosticError(
+      new Error(`connect failed: tcp://127.0.0.1:5051?token=${fakeUrlToken}`),
+    );
+
+    expect(formatted).not.toContain(fakeUrlToken);
+    expect(formatted).toContain("token=<redacted>");
+    // Loopback is the fact a maintainer needs and identifies nobody.
+    expect(formatted).toContain("127.0.0.1");
+  });
+
+  it("caps a runaway error so one throw cannot bury the log it is written to", () => {
+    const formatted = formatDiagnosticError("x".repeat(20_000));
+
+    expect(formatted.length).toBeLessThan(4_200);
+    expect(formatted).toMatch(/characters truncated/);
+  });
+
+  it("keeps a plain string error and survives a value that throws while described", () => {
+    expect(formatDiagnosticError("brain socket vanished")).toBe("brain socket vanished");
+
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("no keys for you");
+        },
+        get: () => {
+          throw new Error("no fields for you");
+        },
+      },
+    );
+    expect(() => formatDiagnosticError(hostile)).not.toThrow();
   });
 });

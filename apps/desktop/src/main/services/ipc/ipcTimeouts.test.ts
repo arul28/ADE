@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { IPC } from "../../../shared/ipc";
-import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
+import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
@@ -275,5 +275,41 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "chat", action: "suggestLaneNameFromPrompt", args: {} },
     }])).toBe(405_000);
+  });
+});
+
+describe("readRuntimeActionRequest", () => {
+  it("reads the domain and action the renderer already sent", () => {
+    expect(readRuntimeActionRequest([{
+      rootPath: "/Users/alice/secret-project",
+      request: { domain: " lane ", action: " create ", args: {} },
+    }])).toEqual({ domain: "lane", action: "create" });
+  });
+
+  it("keeps a domain-only request, which is enough to attribute a failure", () => {
+    expect(readRuntimeActionRequest([{ request: { domain: "lane" } }])).toEqual({ domain: "lane" });
+    expect(readRuntimeActionRequest([{ request: { domain: "lane", action: "  " } }]))
+      .toEqual({ domain: "lane" });
+    expect(readRuntimeActionRequest([{ request: { domain: "lane", action: 7 } }]))
+      .toEqual({ domain: "lane" });
+  });
+
+  it("returns null for anything malformed rather than guessing", () => {
+    for (
+      const args of [
+        [],
+        [null],
+        ["not-an-object"],
+        [[{ request: { domain: "lane" } }]],
+        [{}],
+        [{ request: null }],
+        [{ request: [] }],
+        [{ request: { action: "create" } }],
+        [{ request: { domain: "   " } }],
+        [{ request: { domain: 7 } }],
+      ]
+    ) {
+      expect(readRuntimeActionRequest(args)).toBeNull();
+    }
   });
 });

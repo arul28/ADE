@@ -395,8 +395,12 @@ export function IntegrationBannerHost({
 
     // 2) gh CLI / PAT not connected (MIGRATED). A DISTINCT concern from the App
     // block: this is the token ADE uses for git & PR operations, not webhooks.
+    // An unreadable credential store pierces the outage suppression: it is a
+    // local, repairable fact that outlives any GitHub incident, and this banner
+    // is the discovery surface for the Repair path — an outage must not hide
+    // the one thing the user can actually fix.
     if (
-      !githubSuppressed
+      (!githubSuppressed || githubStatus?.credentialStoreUnreadable === true)
       && currentProjectRoot
       && githubStatus
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
@@ -411,7 +415,13 @@ export function IntegrationBannerHost({
           {
             label: cli.action,
             variant: "primary",
-            onClick: () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE),
+            // The banner states its own destination: an unreadable credential
+            // store is not fixed on the GitHub card, and its Repair control
+            // lives in the Connections panel — the same one the relay banner
+            // opens.
+            onClick: cli.target === "connections"
+              ? () => openConnectionsPanel("machines")
+              : () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE),
           },
         ],
         dismiss: { key: `github-cli:${currentProjectRoot}`, fingerprint: cli.subState },

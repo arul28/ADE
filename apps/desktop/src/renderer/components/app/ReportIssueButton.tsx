@@ -1,8 +1,14 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
 } from "../../../shared/types/diagnostics";
+import {
+  describeDiagnosticUploadFailure,
+  resolveDiagnosticsUploadBaseUrl,
+  uploadDiagnosticReport,
+  type DiagnosticUploadResult,
+} from "../../../shared/diagnosticsUpload";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   ERROR_DISCLOSURE_CARET,
@@ -11,6 +17,10 @@ import {
 } from "./errorSurfaceKit";
 
 export type ReportIssueVariant = "primary" | "secondary" | "ghost";
+
+/** The inline actions inside the result line: text links, not buttons in a row. */
+const REPORT_LINK_BUTTON =
+  "font-medium text-fg/75 underline decoration-fg/25 underline-offset-2 transition-colors hover:text-fg disabled:no-underline disabled:opacity-60";
 
 const VARIANT_CLASS: Record<ReportIssueVariant, string> = {
   primary: ERROR_PRIMARY_BUTTON,
@@ -23,7 +33,16 @@ const VARIANT_CLASS: Record<ReportIssueVariant, string> = {
 
 /**
  * Every error screen's escape hatch: collect a redacted diagnostic report,
- * put it on the clipboard and on disk, and open a prefilled GitHub issue.
+ * put it on the clipboard and on disk, and open a prefilled GitHub issue —
+ * then optionally hand that exact report straight to ADE.
+ *
+ * The send runs here rather than in the main process because the diagnostics
+ * preload bridge exposes only `openIssue`; the renderer already holds the
+ * finished, redacted report that call returns, so it posts those same bytes.
+ * One consequence, deliberate: the renderer has no access to the account token
+ * (it lives in the brain's credential store), so a desktop upload is anonymous
+ * and identified only by the install id the report already carries.
+ * `ade report-issue --send` reads the store directly and does send a token.
  *
  * Deliberately self-contained — one import and one element per host screen —
  * so the error surfaces can be redesigned without untangling it.
@@ -48,14 +67,25 @@ export function ReportIssueButton({
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<DiagnosticReportPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<DiagnosticUploadResult | null>(null);
   const { copy, copied } = useCopyToClipboard();
+  /**
+   * Which report the upload result belongs to. "Report issue" stays live while
+   * a send is in flight, so a user who reports twice can have the first
+   * upload's reply land after the second report exists — and a reference that
+   * points at the older report is worse than none.
+   */
+  const reportGenerationRef = useRef(0);
 
   const bridge = typeof window !== "undefined" ? window.ade?.diagnostics : undefined;
 
   const run = useCallback(async () => {
     if (!bridge?.openIssue || pending) return;
+    reportGenerationRef.current += 1;
     setPending(true);
     setError(null);
+    setSent(null);
     try {
       const payload = await bridge.openIssue(context);
       setResult(payload);
@@ -66,6 +96,37 @@ export function ReportIssueButton({
       setPending(false);
     }
   }, [bridge, context, pending]);
+
+  const send = useCallback(async () => {
+    if (!result || sending) return;
+    const generation = reportGenerationRef.current;
+    setSending(true);
+    try {
+      const outcome = await uploadDiagnosticReport({
+        // The very bytes the clipboard holds. Redaction already happened in
+        // the main process; nothing here reshapes the report.
+        report: result.report,
+        // "unknown" is the report's stand-in for "analytics is switched off";
+        // sending it as an install id would attach a value that matches nothing.
+        installId: result.installId === "unknown" ? null : result.installId,
+        // Resolved here rather than inside the upload: the CLI resolves its own
+        // origin the way the brain does, so the client itself takes a base URL
+        // its caller already decided on.
+        baseUrl: resolveDiagnosticsUploadBaseUrl(
+          typeof import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL === "string"
+            ? import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL
+            : null,
+        ),
+      });
+      if (reportGenerationRef.current !== generation) return;
+      setSent(outcome);
+    } finally {
+      // Cleared unconditionally: `sending` is the only thing keeping a second
+      // upload out, so a stale reply that left it set would strand the newer
+      // report with a permanently disabled Send.
+      setSending(false);
+    }
+  }, [result, sending]);
 
   // An older preload has no diagnostics bridge; offering a dead button is
   // worse than offering nothing on a screen that is already failing.
@@ -104,10 +165,33 @@ export function ReportIssueButton({
             <button
               type="button"
               onClick={() => void copy(result.report)}
-              className="font-medium text-fg/75 underline decoration-fg/25 underline-offset-2 transition-colors hover:text-fg"
+              className={REPORT_LINK_BUTTON}
             >
               {copied ? "Copied" : "Copy again"}
             </button>
+            {sent?.ok ? null : (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => void send()}
+                  disabled={sending}
+                  className={REPORT_LINK_BUTTON}
+                >
+                  {sending ? "Sending…" : sent ? "Try sending again" : "Send to ADE"}
+                </button>
+              </>
+            )}
+            {sent
+              ? (
+                <span className={sent.ok ? "text-fg/60" : "text-amber-300/90"}>
+                  {" "}
+                  {sent.ok
+                    ? `Sent — reference ${sent.reference}`
+                    : describeDiagnosticUploadFailure(sent.reason)}
+                </span>
+              )
+              : null}
           </span>
         ) : null}
 
@@ -153,7 +237,8 @@ export function ReportIssueButton({
             }
           >
             File paths, your name, email addresses and any sign-in codes are removed
-            before the report is created. Nothing is sent until you post the issue.
+            before the report is created. Nothing leaves this computer unless you post
+            the issue or choose "Send to ADE".
           </p>
         </details>
       ) : null}

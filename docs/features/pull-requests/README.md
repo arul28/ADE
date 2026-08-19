@@ -183,8 +183,9 @@ GitHub access and relay dependencies:
 |------|---------------|
 | `apps/desktop/src/main/services/github/githubService.ts`, `apps/ade-cli/src/headlessLinearServices.ts` | Desktop-local and runtime-owned GitHub request paths. Both build the environment → App → GitHub CLI → PAT read chain, skip the read-only App for writes, retry compatible credentials after auth/permission/rate failures, and expose the active/fallback sources through `GitHubStatus`. Both also record a **transport** failure — a hang, timeout, DNS/TLS error, or a body that stalls mid-stream, caught at the header read *and* at the body read — before rethrowing it, with a null rate limit so it cannot clobber real quota numbers. Without that record the request budget reported no kind at all for the outage shape it exists to survive. Both expose `getRequestBudget()`; implementing it only on the desktop side would leave the shipping runtime-bound build's poll governor un-gated. |
 | `apps/desktop/src/main/services/github/githubCredentialHealth.ts`, `githubRateLimit.ts` | Token-digest health keyed by REST/GraphQL resource, five-minute invalid/permission cooldowns, rate-limit reset handling, same-account primary-quota propagation, and the 500-request background reserve. `classifyGitHubAuthFailure` maps GitHub 5xx (and GitHub's own outage bodies) to `service_unavailable` ahead of the transient-network check, and that kind is deliberately given **no** credential cooldown — the credential is not the problem, so parking it would fail the user's next local merge or PR read for the whole window. `githubRequestBudget()` exposes the reserve plus the worst *recent* failure kind as a zero-network `GitHubRequestBudget`, which is how foreground pollers honour the same reserve. The reserve half uses the quota-bucket filter (`core` / `graphql` / a large-limit `unknown`); the kind half deliberately does not, skipping only the independent `search` bucket, and bounds what it reports by `REQUEST_BUDGET_FAILURE_FRESHNESS_MS` (90 s). `REQUEST_BUDGET_FAILURE_SEVERITY` ranks the kinds and is a stated two-way contract with `ladderBaseMs` in the renderer's poll governor. See [Keeping automatic GitHub reads inside the quota](#keeping-automatic-github-reads-inside-the-quota). |
+| `apps/desktop/src/main/services/github/credentialReadState.ts` | Reads a credential and the store's readability verdict in one call, so the `getLastReadState()` answer belongs to the `getSync` it is being asked about. An undecryptable store returns an empty view instead of throwing, which is what made "no token" and "a token ADE cannot read" the same answer; a store that throws counts as unreadable too. Feeds `GitHubStatus.credentialStoreUnreadable`. |
 | `apps/desktop/src/main/services/github/githubStatusPage.ts`, `apps/desktop/src/shared/githubServiceHealth.ts` | GitHub-outage attribution. See [Telling a GitHub outage apart from a broken credential](#telling-a-github-outage-apart-from-a-broken-credential). The shared module is the pure half — Statuspage `summary.json` parsing into `GitHubServiceHealth`, the ADE-relevant component allowlist, and `isGithubServiceUnavailable`; the main-process module owns the failure-triggered lookup, its cache, and `attachGitHubServiceHealth`. |
-| `apps/desktop/src/shared/githubOperationCredential.ts`, `apps/desktop/src/shared/types/git.ts` | Capability-aware credential order and the optional status DTOs for source state, fallback, write availability, background-pause time, and corroborated service health. `resolveGithubStatusCredentials` stops walking the chain on `service_unavailable` alongside `network` / `unknown`: a GitHub 5xx says nothing about the credential, so the next candidate would fail identically and only add load to a failing service. |
+| `apps/desktop/src/shared/githubOperationCredential.ts`, `apps/desktop/src/shared/types/git.ts` | Capability-aware credential order and the optional status DTOs for source state, fallback, write availability, background-pause time, credential-store readability, and corroborated service health. `resolveGithubStatusCredentials` stops walking the chain on `service_unavailable` alongside `network` / `unknown`: a GitHub 5xx says nothing about the credential, so the next candidate would fail identically and only add load to a failing service. `git.ts` also owns `GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY`, the one wording for the unreadable case — it sits beside the field because the main process builds the PR tab's empty-state message from it. |
 | `apps/desktop/src/main/services/automations/automationIngressService.ts`, `apps/ade-cli/src/bootstrap.ts`, `apps/desktop/src/main/main.ts` | Relay cursor drain and targeted reconciliation, relay-health tracking, and injection of relay/quota state into the runtime-owned or desktop-local PR poller. |
 | `apps/webhook-relay/src/relay.ts` | Hosted event/subscription authorization. Signed-in ADE account requests use the installed repository binding in D1 first; legacy clients fall back to a GitHub-token repository-access check. |
 
@@ -926,6 +927,18 @@ Fields:
   capabilities, active roles, cooldown/failure state, and the active read
   fallback transition. Different sources that resolve to the same token are
   attempted once.
+- `credentialStoreUnreadable` — optional (older remote runtimes omit it): ADE's
+  encrypted credential store could not be decrypted on the read that produced
+  this status. It is not a variant of "no token" — an unreadable store returns
+  an **empty view** instead of throwing, so `tokenStored: false`,
+  `patTokenStored: false`, and `authSource: "none"` all become indistinguishable
+  from a fresh install while the saved credentials are still on disk. Clients
+  must not render it as "never connected": the reconnect that invitation leads
+  to overwrites them. The service carries the flag on the 30-second credential
+  inventory rather than re-reading the store at status time, so the verdict
+  belongs to the read that produced the inventory's candidates, and clears it on
+  a successful token write, which re-seals the store under a key the process
+  holds.
 - `authFailure` — optional structured validation failure for compatibility
   with older runtimes: `rate_limited`, `invalid_token`, `permission_denied`,
   `service_unavailable`, `network`, or `unknown`, with the original message and
@@ -999,6 +1012,22 @@ The App Shell banner uses the same shared presentation helper as Settings. It
 stays quiet when a fallback keeps reads and writes usable, distinguishes
 App-only read access from a write-capable connection, and never advertises a
 reconnect command for an account-level rate-limit pause.
+
+An unreadable credential store is the one case the helper resolves before
+anything else — ahead of `!tokenStored` and ahead of the outage check below.
+`describeGithubCliBanner` checks `credentialStoreUnreadable` first because an
+unreadable store returns an EMPTY view, so every state under it would be read
+off credentials ADE never saw; and because it is a local, repairable fact that
+outlives any incident, so a GitHub outage must not hide the one thing the user
+can actually fix. The helper returns a `target` alongside the copy so the
+banner's single action lands where the fix actually is: an outage and every
+auth failure are addressed on the GitHub settings card, because there the
+credential is readable and it is the account behind it — or GitHub itself —
+that has the objection, while an unreadable store is not a GitHub problem at
+all and its repair control lives in the Connections panel.
+`prService.buildGithubSnapshotAuthError` makes the same check first, for the
+same reason — the PR tab's empty state would otherwise tell someone whose
+credentials are intact to run `gh auth login` and overwrite them.
 
 ## Telling a GitHub outage apart from a broken credential
 

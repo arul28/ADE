@@ -9,6 +9,16 @@ import {
   collectMachineDiagnosticSources,
   readDiagnosticJsonFile,
 } from "../services/diagnostics/diagnosticSources";
+import {
+  uploadDiagnosticReport,
+  type DiagnosticUploadResult,
+} from "../../../desktop/src/shared/diagnosticsUpload";
+import { DEFAULT_ADE_ACCOUNT_DIRECTORY_URL } from "../../../desktop/src/shared/accountDirectory";
+import { getSignedInAccountAccessToken } from "../services/account/accountAuthService";
+import {
+  getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
+} from "../services/account/sharedAccountAuthService";
 import { copyToClipboard } from "../lib/clipboard";
 import { openExternalUrl } from "../lib/externalLinks";
 
@@ -31,6 +41,10 @@ export type ReportIssueResult = {
   report: string;
   issueUrl: string;
   installId: string;
+  /** CLI version stamped into the report; sent as upload metadata. */
+  appVersion: string | null;
+  /** Where this machine's account session lives, so `--send` can read a token. */
+  secretsDir: string;
 };
 
 /**
@@ -101,6 +115,8 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
   return {
     report,
     installId,
+    appVersion: options.cliVersion ?? null,
+    secretsDir: sources.layout.secretsDir,
     issueUrl: buildDiagnosticIssueUrl({
       surface,
       appVersion: options.cliVersion ?? null,
@@ -152,6 +168,75 @@ export async function openDiagnosticIssue(
 }
 
 /**
+ * `ade report-issue --send`: hand the same redacted report to ADE over HTTPS.
+ *
+ * Everything it needs is read from local files — the account session out of the
+ * machine's own credential store, the directory origin out of the same resolver
+ * the brain uses — so it still works on the machine where the brain will not
+ * start, which is the only machine anyone runs this on. A signed-in machine
+ * sends its Clerk token so support can tie the report to the account; a
+ * signed-out one uploads anonymously against the install id the report already
+ * carries. Neither path changes a byte of the report.
+ */
+export async function sendDiagnosticReport(
+  built: Pick<ReportIssueResult, "report" | "installId" | "appVersion" | "secretsDir">,
+  deps: {
+    env?: NodeJS.ProcessEnv;
+    baseUrl?: string;
+    /** Test seam; production resolves the token from the credential store. */
+    getToken?: () => Promise<string | null>;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<DiagnosticUploadResult> {
+  const env = deps.env ?? process.env;
+  // Both lookups touch the machine's own config and credential store, and this
+  // command exists for machines whose state is damaged. Neither may throw: a
+  // failed send has to stay a failed send, not take the printed report with it.
+  const baseUrl = deps.baseUrl ?? (() => {
+    try {
+      return getSharedAccountDirectoryBaseUrl({ secretsDir: built.secretsDir, env });
+    } catch {
+      return DEFAULT_ADE_ACCOUNT_DIRECTORY_URL;
+    }
+  })();
+  const token = await (deps.getToken ?? (async () => {
+    // An unreadable or absent session simply means an anonymous upload, which
+    // is exactly what the route accepts them for.
+    try {
+      return await getSignedInAccountAccessToken(
+        getSharedAccountAuthService({ secretsDir: built.secretsDir, env }),
+      );
+    } catch {
+      return null;
+    }
+  }))();
+
+  return uploadDiagnosticReport({
+    baseUrl,
+    report: built.report,
+    token,
+    installId: built.installId === "unknown" ? null : built.installId,
+    appVersion: built.appVersion,
+    fetchImpl: deps.fetchImpl,
+  });
+}
+
+/** One short line for `--text`, in the same register as the rest of the command. */
+export function describeDiagnosticUpload(result: DiagnosticUploadResult): string {
+  if (result.ok) return `Sent to ADE — reference ${result.reference}`;
+  switch (result.reason) {
+    case "rate_limited":
+      return "Not sent: you've already sent several reports today. Try again tomorrow.";
+    case "too_large":
+      return "Not sent: this report is too big to send. File it on GitHub instead.";
+    case "unavailable":
+      return "Not sent: ADE can't take reports right now. File it on GitHub instead.";
+    default:
+      return "Not sent: ADE couldn't reach the report service. File it on GitHub instead.";
+  }
+}
+
+/**
  * The `--json` shape of `ade report-issue`. `copied` is here because `--open`
  * has two side effects, and a script that asked for machine-readable output
  * could not tell whether the second one happened: on a box with no clipboard
@@ -162,12 +247,29 @@ export async function openDiagnosticIssue(
 export function buildReportIssuePayload(
   built: Pick<ReportIssueResult, "report" | "issueUrl" | "installId">,
   side: { copied: boolean } | null,
-): { ok: true; installId: string; issueUrl: string; copied: boolean; report: string } {
+  sent?: DiagnosticUploadResult | null,
+): {
+  ok: true;
+  installId: string;
+  issueUrl: string;
+  copied: boolean;
+  report: string;
+  sent?: { ok: boolean; reference?: string; reason?: string };
+} {
   return {
     ok: true,
     installId: built.installId,
     issueUrl: built.issueUrl,
     copied: side?.copied ?? false,
     report: built.report,
+    // Omitted entirely without `--send`, so a script can tell "not asked for"
+    // from "asked for and failed".
+    ...(sent
+      ? {
+        sent: sent.ok
+          ? { ok: true, reference: sent.reference }
+          : { ok: false, reason: sent.reason },
+      }
+      : {}),
   };
 }

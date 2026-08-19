@@ -10508,10 +10508,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Deliberately above the `!conn` gate: the report reads local files only,
       // so it still answers while the runtime is unreachable — the state a bug
       // report is most worth filing from.
+      // `--send` too: the CLI spelling is the one half these users already know,
+      // including alongside other flags they may carry over (`--open --send`).
+      const wantsSend = args
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .some((argument) => /^--?send$/.test(argument) || argument === "send");
       try {
-        const { buildTuiDiagnosticReport } = await import("./reportIssue");
+        const { buildTuiDiagnosticReport, sendTuiDiagnosticReport } = await import("./reportIssue");
         const built = buildTuiDiagnosticReport({ projectRoot: project.projectRoot });
+        // Shown before anything is sent, so the file path and the issue URL are
+        // in hand no matter how the upload goes.
         setRightPane({ kind: "details", title: "Report issue", body: built.body });
+        if (!wantsSend) return;
+        addNotice("Sending the report to ADE…", "info");
+        const sent = await sendTuiDiagnosticReport(built);
+        setRightPane({ kind: "details", title: "Report issue", body: sent.body });
+        addNotice(sent.notice, sent.result.ok ? "success" : "error");
       } catch (error) {
         setRightPane({
           kind: "details",
@@ -17434,7 +17448,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           Retrying automatically · r retry now · Ctrl+C quit
         </Text>
         <Text color={theme.color.mutedFg} dimColor>
-          Run ade report-issue --open in another terminal to prepare a report you can post. Personal information is removed.
+          Run ade report-issue --open --send in another terminal to send a report to ADE and post it. Personal information is removed.
         </Text>
       </Box>
     );

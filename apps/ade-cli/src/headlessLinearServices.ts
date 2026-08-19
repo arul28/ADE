@@ -25,6 +25,10 @@ import {
   resolveModelAlias,
 } from "../../desktop/src/shared/modelRegistry";
 import { parseGitHubScopeHeaders } from "../../desktop/src/shared/githubScopes";
+import {
+  readCredentialWithState,
+  readCredentialWithStateAsync,
+} from "../../desktop/src/main/services/github/credentialReadState";
 import type {
   GitHubAuthFailure,
   GitHubAppDeviceAuthPollResult,
@@ -327,6 +331,8 @@ type HeadlessGitHubCredentialInventory = {
   patTokenStored: boolean;
   ghCliPath: string | null;
   ghAuthError: string | null;
+  /** Whether the credential file was readable on the read that built this. */
+  credentialStoreUnreadable: boolean;
 };
 
 class HeadlessGithubCredentialAttemptError extends Error {
@@ -726,6 +732,10 @@ export function createHeadlessGitHubService(
   let cachedStatusBinding: string | null = null;
   let tokenOverride: string | null = null;
   let tokenDecryptionFailed = false;
+  // An undecryptable store returns an EMPTY view instead of throwing, so without
+  // this a remote runtime reports a corrupted store as "GitHub was never
+  // connected" — identical to a fresh install. See GitHubStatus.credentialStoreUnreadable.
+  let credentialStoreUnreadable = false;
   let statusLookupGeneration = 0;
   let statusLookupInFlight: {
     generation: number;
@@ -744,16 +754,16 @@ export function createHeadlessGitHubService(
     statusLookupGeneration += 1;
   };
 
+  const noteCredentialStoreReadState = (unreadable: boolean): boolean => {
+    credentialStoreUnreadable = unreadable;
+    return credentialStoreUnreadable;
+  };
+
   const readStoredPatToken = (): string | null => {
     if (tokenOverride != null) return tokenOverride;
-    try {
-      const stored = credentialStore.getSync(tokenKey);
-      tokenDecryptionFailed = false;
-      if (stored?.trim()) return stored.trim();
-    } catch {
-      tokenDecryptionFailed = true;
-    }
-    return null;
+    const read = readCredentialWithState(credentialStore, tokenKey);
+    tokenDecryptionFailed = noteCredentialStoreReadState(read.unreadable);
+    return read.value;
   };
 
   const readToken = (): HeadlessGitHubTokenLookup => {
@@ -787,19 +797,19 @@ export function createHeadlessGitHubService(
 
   const readStoredPatTokenAsync = async (): Promise<string | null> => {
     if (tokenOverride != null) return tokenOverride;
-    try {
-      const stored = await credentialStore.get(tokenKey);
-      tokenDecryptionFailed = false;
-      if (stored?.trim()) return stored.trim();
-    } catch {
-      tokenDecryptionFailed = true;
-    }
-    return null;
+    const read = await readCredentialWithStateAsync(credentialStore, tokenKey);
+    tokenDecryptionFailed = noteCredentialStoreReadState(read.unreadable);
+    return read.value;
   };
 
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
     const patToken = await readStoredPatTokenAsync();
     const patTokenStored = Boolean(patToken);
+    // Snapshotted next to `patTokenStored`, because the read that just ran is
+    // the one this verdict belongs to. `credentialStoreUnreadable` is shared
+    // mutable state: another caller reading the same store during the awaits
+    // below would otherwise hand this inventory somebody else's outcome.
+    const storeUnreadableForThisRead = credentialStoreUnreadable;
     const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
     const appStatus = appUserAuth.getAuthStatus();
     const [appResult, gh] = await Promise.all([
@@ -872,6 +882,7 @@ export function createHeadlessGitHubService(
       patTokenStored,
       ghCliPath: gh.ghCliPath,
       ghAuthError: gh.ghAuthError,
+      credentialStoreUnreadable: storeUnreadableForThisRead,
     };
   };
 
@@ -1724,6 +1735,7 @@ export function createHeadlessGitHubService(
           repo,
           hasOrigin,
           patTokenStored: inventory.patTokenStored,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           ghCliPath: inventory.ghCliPath ?? cachedStatus.ghCliPath,
           ghAuthError: inventory.ghAuthError,
           credentialStates: githubCredentialStates({
@@ -1765,6 +1777,7 @@ export function createHeadlessGitHubService(
           tokenStored: inventory.appTokenStored,
           patTokenStored: inventory.patTokenStored,
           tokenDecryptionFailed,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           storageScope: "app",
           authSource: failure?.source ?? "none",
           writeAuthSource: "none",
@@ -1855,6 +1868,7 @@ export function createHeadlessGitHubService(
           tokenStored: true,
           patTokenStored: inventory.patTokenStored,
           tokenDecryptionFailed: false,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           storageScope: "app",
           authSource: candidate.source,
           writeAuthSource: activeWriteSource ?? "none",
@@ -1905,6 +1919,7 @@ export function createHeadlessGitHubService(
         tokenStored: true,
         patTokenStored: inventory.patTokenStored,
         tokenDecryptionFailed: false,
+        credentialStoreUnreadable: inventory.credentialStoreUnreadable,
         storageScope: "app",
         authSource: primaryCandidate.source,
         writeAuthSource: "none",
@@ -2117,6 +2132,11 @@ export function createHeadlessGitHubService(
         credentialStore.deleteSync(tokenKey);
       }
       tokenDecryptionFailed = false;
+      // A write that landed re-sealed the store with a key this process holds,
+      // so whatever made the previous read unreadable no longer applies. Without
+      // this the status keeps reporting a broken store forever, because every
+      // later read short-circuits on `tokenOverride` before re-reading it.
+      credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       if (clean && clean !== previousToken) clearGithubCredentialHealth(clean);
       invalidateStatusCache();
@@ -2127,6 +2147,9 @@ export function createHeadlessGitHubService(
       tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
       tokenDecryptionFailed = false;
+      // Same reasoning as `setToken`: the delete rewrote the store with a key
+      // this process holds, so the previous unreadable verdict is stale.
+      credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       invalidateStatusCache();
       emitStatusChanged();

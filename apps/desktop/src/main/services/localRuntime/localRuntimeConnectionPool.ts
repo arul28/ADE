@@ -830,8 +830,30 @@ function closeRuntimeClient(client: RuntimeRpcClient): void {
 // messages (see RuntimeRpcClient.failConnection). A drop happens whenever the
 // daemon restarts or is recycled — e.g. when a desktop rebuild changes the
 // expected build hash and the running daemon is deemed incompatible.
+const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote ADE service connection (closed|failed)/i;
+
+// A `Remote ADE service method X failed (code …)` error is the daemon's own
+// JSON-RPC reply: the socket answered, so whatever went wrong is the brain's,
+// not the transport's. This is checked first and wins, because a brain-side
+// message can quote a transport sentence verbatim — and retrying a brain-side
+// failure would re-run a non-idempotent action against a healthy daemon.
+const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote ADE service method \S+ failed[\s(:]/i;
+
+// Socket-level codes that mean the connection went away mid-call. Read from
+// `Error.code`, never from message text, so a forwarded application message
+// that happens to mention ECONNRESET cannot buy itself a retry.
+const LOCAL_RUNTIME_TRANSPORT_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+  "ENOTCONN",
+]);
+
 export function isLocalRuntimeConnectionDropped(error: Error): boolean {
-  return /Remote ADE service connection (closed|failed)/i.test(error.message);
+  if (LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN.test(error.message)) return false;
+  const code = (error as Error & { code?: unknown }).code;
+  if (typeof code === "string" && LOCAL_RUNTIME_TRANSPORT_ERROR_CODES.has(code)) return true;
+  return LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN.test(error.message);
 }
 
 // Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these

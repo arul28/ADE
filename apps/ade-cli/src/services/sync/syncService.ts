@@ -65,10 +65,10 @@ import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
 import {
-  buildSyncCloudRelayStatus,
   createSyncCloudRelayStore,
   type SyncCloudRelayStore,
 } from "./syncCloudRelayStore";
+import { buildSyncCloudRelayStatus } from "./syncCloudRelayStatus";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
@@ -541,6 +541,10 @@ export function createSyncService(args: SyncServiceArgs) {
   });
   const cloudRelayStore = args.cloudRelayStore ?? createSyncCloudRelayStore({
     filePath: path.join(pairingStateDir, CLOUD_RELAY_FILE),
+    // Identity mints, rotations, and backup recoveries are logged wherever the
+    // store is built: a machine key that changes with no record is how a live
+    // computer turned into a phantom row its owner deleted.
+    logger: args.logger,
   });
   const accountAuthService = args.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => [args.projectRoot],

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitHubAppInstallationStatus, GitHubStatus } from "../../shared/types";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
 import {
   deriveGithubRepoConnectionState,
   describeGithubAuthFailure,
@@ -124,6 +125,47 @@ describe("deriveGithubRepoConnectionState", () => {
 });
 
 describe("describeGithubCliBanner", () => {
+  // Regression: an unreadable credential store arrives with tokenStored:false —
+  // identical to a fresh install — and the banner used to say "GitHub CLI or
+  // token not connected", pointing the user at a Connect flow that would write
+  // over credentials that are still on disk.
+  it("says the sign-in is unreadable rather than never connected", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      tokenStored: false,
+      credentialStoreUnreadable: true,
+    }));
+
+    expect(banner.subState).toBe("credential-store-unreadable");
+    expect(banner.title).toBe(GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title);
+    expect(banner.title).not.toContain("not connected");
+    expect(banner.detail).toContain("Settings → Connections");
+    // The Repair control lives in Connections, not on the GitHub settings card.
+    expect(banner.target).toBe("connections");
+  });
+
+  it("outranks a stale auth failure with the unreadable store", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      tokenStored: false,
+      credentialStoreUnreadable: true,
+      authFailure: { kind: "invalid_token", message: "Bad credentials", retryAt: null },
+    }));
+
+    expect(banner.subState).toBe("credential-store-unreadable");
+  });
+
+  it("still reports a genuinely absent credential as not connected", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      tokenStored: false,
+      credentialStoreUnreadable: false,
+    }));
+
+    expect(banner.subState).toBe("no-token");
+    expect(banner.title).toBe("GitHub CLI or token not connected");
+    // Every banner states its destination; only the unreadable store leaves the
+    // GitHub card, so a caller never has to re-derive the default.
+    expect(banner.target).toBe("github-settings");
+  });
+
   it("does not tell a signed-in rate-limited user to reconnect", () => {
     const banner = describeGithubCliBanner(makeCliStatus({
       authFailure: {

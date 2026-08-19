@@ -165,7 +165,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/doctor", description: "Show ADE Code and Claude-compat diagnostics", placement: "right", category: "System" },
   // The terminal counterpart of the desktop "Report issue" button. Local-only,
   // like `ade report-issue`, so it still works when the brain is the problem.
-  { name: "/report-issue", description: "Build a redacted diagnostic report for a bug report", placement: "right", category: "System" },
+  { name: "/report-issue", description: "Build a redacted diagnostic report for a bug report; send hands it to ADE", placement: "right", argumentHint: "[send]", category: "System" },
   { name: "/model", description: "Open the model, reasoning, and permission picker", placement: "right", category: "Model" },
   { name: "/effort", description: "Open the reasoning-effort picker", placement: "right", category: "Model" },
   { name: "/system", description: "Show system and runtime details", placement: "right", category: "System" },

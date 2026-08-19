@@ -98,6 +98,18 @@ const STATE_COPY: Record<
     body: "Something interrupted ADE while it was saving. ADE can finish the job and reopen the project — your files and chats stay exactly where they are.",
     canAutoRepair: true,
   },
+  storage_unreadable: {
+    headline: "ADE couldn't read this project's data",
+    // No repair offer: rewriting files ADE can't read would risk the user's
+    // work, and the same failure also comes from a failing disk — so the
+    // remedy is stated as a condition, not an accusation.
+    body: "The project's files couldn't be read from this computer. If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.",
+    canAutoRepair: false,
+    prerequisites: [
+      "Move the project folder out of iCloud Drive, Dropbox or OneDrive.",
+      "Then choose Try again.",
+    ],
+  },
   brain_not_installed: {
     headline: "ADE needs to finish setting up",
     body: "A background component isn't ready yet. ADE can set it up and reopen the project.",

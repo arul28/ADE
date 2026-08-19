@@ -169,6 +169,14 @@ type CredentialStoreMigrationSource = {
    */
   getLastReadState(): CredentialStoreReadState;
   /**
+   * Why that read failed, when it did. The legacy store is the only thing that
+   * knows: a store nothing on this machine can open is `no_os_key_material`
+   * (a PEER process can still open it, so the credentials are not lost) and a
+   * broken file is `store_format`. Reporting either as `decrypt_failure` sends
+   * the user at the wrong repair.
+   */
+  getLastReadFailureReason(): CredentialStoreReadFailureReason | null;
+  /**
    * Rewrites the legacy file to exactly `values` WITHOUT acquiring the store's
    * lock: the migration already holds that same lock file, and the file lock is
    * not reentrant.
@@ -749,8 +757,20 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   async get(key: string): Promise<string | null> {
+    return (await this.getWithReadState(key)).value;
+  }
+
+  /**
+   * A read paired with the state that read produced. Prefer this over `get()`
+   * followed by `getLastReadState()`: the latter answers about the store's most
+   * recent read, which after an await is not necessarily this one.
+   */
+  async getWithReadState(
+    key: string,
+  ): Promise<{ value: string | null; state: CredentialStoreReadState }> {
     const normalized = normalizeKey(key);
-    return (await this.readAllAsync())[normalized] ?? null;
+    const { values, state } = await this.readAllAsync();
+    return { value: values[normalized] ?? null, state };
   }
 
   async set(key: string, value: string): Promise<void> {
@@ -1124,17 +1144,28 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     return true;
   }
 
-  private async readAllAsync(): Promise<Record<string, string>> {
+  /**
+   * Returns the decoded values AND the state this read produced, because
+   * `lastReadState` is a single field every reader overwrites. An async caller
+   * can only consult it once its own read has resolved, by which point another
+   * reader — App user authentication shares this store — may have moved it.
+   * Capturing the verdict here, in the same step that records it, is what keeps
+   * "no credential" and "a credential ADE cannot read" tellable apart.
+   */
+  private async readAllAsync(): Promise<{
+    values: Record<string, string>;
+    state: CredentialStoreReadState;
+  }> {
     const { value: raw, exists: credentialsExist } = await readJsonObjectAsync(this.credentialsPath);
     if (!credentialsExist) {
       this.lastReadState = "missing";
       this.lastReadFailureReason = null;
-      return {};
+      return { values: {}, state: "missing" };
     }
     if (!raw || Object.keys(raw).length === 0) {
       this.lastReadState = "unreadable";
       this.lastReadFailureReason = "store_format";
-      return {};
+      return { values: {}, state: "unreadable" };
     }
     const machineKey = await readOrCreateMachineKeyAsync(this.machineKeyPath);
     const material = await this.readKeyMaterialAsync();
@@ -1159,12 +1190,12 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       // The reason is what the caller needs, and it gets it.
       this.lastReadState = "unreadable";
       this.lastReadFailureReason = attempt.reason;
-      return {};
+      return { values: {}, state: "unreadable" };
     }
     this.lastReadState = "available";
     this.lastReadFailureReason = null;
     if (attempt.sealedBinding !== "machine") this.scheduleRebindToMachineKey(material);
-    return attempt.values;
+    return { values: attempt.values, state: "available" };
   }
 
   /**
@@ -1259,6 +1290,17 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private readonly lockPath: string;
   private readonly legacyLockPath: string;
   private readonly legacyStore: CredentialStoreMigrationSource | null;
+  /**
+   * Result of the most recent read, for the same reason the file store records
+   * one: a read that cannot open the ciphertext still has to return SOMETHING,
+   * and the only branch here that returns `{}` rather than throwing is the
+   * aborted legacy migration below. Without this, a caller cannot tell that
+   * empty view from a machine that was never signed in — and telling a user
+   * "not connected" when the truth is "not readable" invites them to reconnect
+   * over credentials that are still on disk.
+   */
+  private lastReadState: CredentialStoreReadState = "missing";
+  private lastReadFailureReason: CredentialStoreReadFailureReason | null = null;
 
   constructor(args: {
     safeStorage: SafeStorageLike;
@@ -1303,6 +1345,14 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
     return this.readAll()[normalized] ?? null;
+  }
+
+  getLastReadState(): CredentialStoreReadState {
+    return this.lastReadState;
+  }
+
+  getLastReadFailureReason(): CredentialStoreReadFailureReason | null {
+    return this.lastReadFailureReason;
   }
 
   setSync(key: string, value: string): void {
@@ -1361,20 +1411,45 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     } catch (error: unknown) {
       if (isEnoent(error)) {
         const legacyValues = this.migrateLegacyStore(args.safeLockHeld === true);
-        return legacyValues ?? {};
+        if (legacyValues) return this.recordRead(legacyValues, "available");
+        // No safeStorage file AND no migratable legacy values. That is "missing"
+        // UNLESS the legacy store told us it could not decrypt what is there —
+        // the migration aborts on exactly that case (readLegacyEncryptedFileStore)
+        // and returning `{}` without saying so is the masking bug.
+        //
+        // The legacy store's OWN reason is carried across rather than assumed:
+        // an `os`-sealed store this process cannot open is `no_os_key_material`,
+        // which a peer process can still recover from, and calling that a
+        // decrypt failure offers a repair that throws the session away.
+        const legacy = this.legacyStore;
+        return legacy?.getLastReadState() === "unreadable"
+          ? this.recordRead({}, "unreadable", legacy.getLastReadFailureReason() ?? "decrypt_failure")
+          : this.recordRead({}, "missing");
       }
+      this.recordRead({}, "unreadable", "store_format");
       throw error;
     }
     try {
       const decrypted = this.safeStorage.decryptString(payload.encrypted);
-      return normalizeStoredCredentialValues(JSON.parse(decrypted));
+      return this.recordRead(normalizeStoredCredentialValues(JSON.parse(decrypted)), "available");
     } catch (error: unknown) {
       if (!payload.hasMagic && isStoredCredentialEnvelopeBuffer(payload.encrypted)) {
         const legacyValues = this.migrateLegacyStore(args.safeLockHeld === true);
-        if (legacyValues) return legacyValues;
+        if (legacyValues) return this.recordRead(legacyValues, "available");
       }
+      this.recordRead({}, "unreadable", "decrypt_failure");
       throw error;
     }
+  }
+
+  private recordRead(
+    values: Record<string, string>,
+    state: CredentialStoreReadState,
+    reason: CredentialStoreReadFailureReason | null = null,
+  ): Record<string, string> {
+    this.lastReadState = state;
+    this.lastReadFailureReason = state === "unreadable" ? reason : null;
+    return values;
   }
 
   private readLegacySafeStorageFile(): Record<string, string> | null {

@@ -39,6 +39,7 @@ import {
 } from "../sync/machineIdentitySigningStore";
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
+import { readAccountHardwareId } from "./hardwareAnchor";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
@@ -65,6 +66,23 @@ export const PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS = 120_000;
 export type AccountMachineRegistration = {
   machineKey: string;
   deviceId: string;
+  /**
+   * A per-account hash of this computer's OS-level machine identifier, when one
+   * can be read. See `hardwareAnchor.ts` for the recipe and for why the raw
+   * identifier never appears here.
+   *
+   * It exists because `machineKey` and `deviceId` BOTH live under `~/.ade`, so
+   * a user who wipes that directory and signs in again arrives as a machine the
+   * directory has never seen and leaves their old row behind as a phantom. This
+   * is the one identifier that survives the wipe.
+   *
+   * Optional in every direction: a host that cannot produce an anchor omits it,
+   * and a directory that predates it ignores it. It is sent on the heartbeat as
+   * well as on a deliberate pairing, because a row can only be matched later if
+   * it stored an anchor at some point — but storing one authorizes nothing on
+   * its own. Superseding still requires the same fresh-authentication proof.
+   */
+  hardwareId?: string;
   name: string;
   platform: string;
   deviceType: string;
@@ -269,6 +287,26 @@ async function readMachineRevokedBounded(response: Response): Promise<{
 
 function readHttpReasonBounded(response: Response): Promise<string | null> {
   return boundedBodyRead(response, readAccountDirectoryHttpReason);
+}
+
+/**
+ * Read the keys a compatible directory says it retired for THIS device.
+ *
+ * Purely additive: a directory that predates the field, or answers 204, yields
+ * an empty list and nothing downstream changes. It exists so a rotation this
+ * machine performed can be confirmed as clean — the alternative is a roster
+ * where the owner cannot tell a retired key from a live one, which is how a
+ * working MacBook came to be deleted by hand.
+ */
+async function readSupersededMachineKeysBounded(response: Response): Promise<string[]> {
+  const keys = await boundedBodyRead(response, async (bounded) => {
+    const body: unknown = await bounded.clone().json();
+    if (!body || typeof body !== "object") return null;
+    const raw = (body as Record<string, unknown>).supersededMachineKeys;
+    if (!Array.isArray(raw)) return null;
+    return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+  });
+  return keys ?? [];
 }
 
 function failureLegForState(
@@ -546,6 +584,21 @@ export function createAccountMachinePublisherService(options: {
    * user's one proof on a request that has no use for it.
    */
   consumePairingGrant?: () => string | null;
+  /**
+   * Hand the directory's `supersededMachineKeys` to the identity store, which
+   * answers with the subset this machine actually retired. Optional so small
+   * and test publishers stay unaffected; absent means "do not reconcile".
+   */
+  confirmSupersededMachineKeys?: (keys: readonly unknown[]) => string[];
+  /**
+   * The per-account hardware anchor for the signed-in owner, or null when this
+   * host has none. Called with the account id because the value is salted with
+   * it — see `hardwareAnchor.ts`.
+   *
+   * Optional so small and test publishers stay unaffected; absent means "send
+   * no anchor", which is exactly what every client did before this existed.
+   */
+  readAccountHardwareId?: (userId: string) => string | null;
   /**
    * This machine's power and sleep state. Optional: a publisher without one
    * simply omits the fields, which is what an older host does anyway.
@@ -1135,13 +1188,29 @@ export function createAccountMachinePublisherService(options: {
         pairingGrant = null;
       }
     }
-    const registration: AccountMachineRegistration = isPairingPublish
-      ? {
-        ...registrationWithRelayHint,
-        pairing: true,
-        ...(pairingGrant ? { pairingGrant } : {}),
+    // Read here rather than in `buildAccountMachineRegistration`, because the
+    // account id is the salt and the builder has no account context — it also
+    // runs on the relay-state poll, which only compares route signatures and
+    // never sends anything. A throwing or absent reader is an ordinary "no
+    // anchor": this field must never be the reason a machine fails to publish.
+    let hardwareId: string | null = null;
+    if (options.readAccountHardwareId && accountOwnerId) {
+      try {
+        hardwareId = options.readAccountHardwareId(accountOwnerId)?.trim() || null;
+      } catch {
+        hardwareId = null;
       }
-      : registrationWithRelayHint;
+    }
+    const registration: AccountMachineRegistration = {
+      ...(isPairingPublish
+        ? {
+          ...registrationWithRelayHint,
+          pairing: true,
+          ...(pairingGrant ? { pairingGrant } : {}),
+        }
+        : registrationWithRelayHint),
+      ...(hardwareId ? { hardwareId } : {}),
+    };
     const reachableEndpointCount = registration.reachableEndpoints.length;
 
     let accessToken: string | null = null;
@@ -1257,6 +1326,26 @@ export function createAccountMachinePublisherService(options: {
         });
         warnOnce("http_error", "http", legDurations, { status: response.status });
         return;
+      }
+      // Read before draining. A directory that reports retired keys is telling
+      // this machine its rotation landed cleanly; nothing has to act on it, but
+      // an unexplained rotation is exactly what nobody could explain last time.
+      if (options.confirmSupersededMachineKeys) {
+        try {
+          const superseded = await readSupersededMachineKeysBounded(response);
+          const confirmed = superseded.length > 0
+            ? options.confirmSupersededMachineKeys(superseded)
+            : [];
+          if (confirmed.length > 0) {
+            options.logger?.info?.("account.machine_identity_superseded_confirmed", {
+              machineKey,
+              previousMachineKeys: confirmed,
+            });
+          }
+        } catch {
+          // An older directory sends no body at all; never fail a good publish
+          // over bookkeeping.
+        }
       }
       await response.body?.cancel().catch(() => {});
       lastWarning = null;
@@ -1638,6 +1727,15 @@ export function createBrainAccountMachinePublisherService(options: {
   isSyncEnabled: () => boolean;
   getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
+  /**
+   * Passed in rather than built here, from the ONE relay store the caller
+   * already holds. Two instances over one identity file is two of everything
+   * that file protects — two backup reconcilers, two rotation-lock clients —
+   * and the machine key this publisher reports comes from the caller's instance
+   * anyway, so a private second one could confirm a supersession against a
+   * different read of the same file.
+   */
+  confirmSupersededMachineKeys: (keys: readonly unknown[]) => string[];
   directoryBaseUrl?: () => string | null | undefined;
   logger: BrainAccountMachinePublisherLogger;
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
@@ -1694,6 +1792,20 @@ export function createBrainAccountMachinePublisherService(options: {
     // Same shared auth service the access token comes from, so the grant a
     // device sign-in earned in this brain reaches the publish that needs it.
     consumePairingGrant: () => accountAuthService.consumePairingGrant(),
+    confirmSupersededMachineKeys: options.confirmSupersededMachineKeys,
+    // The only identity input that does not come out of `secretsDir`, which is
+    // the entire point: everything else in this composition is destroyed by the
+    // `~/.ade` wipe this anchor exists to survive. Cached for the process, so
+    // the heartbeat pays for the lookup once.
+    //
+    // The ADE home path is what keeps a Beta install from claiming Stable's
+    // row: the platform UUID underneath is shared by every ADE on the box, and
+    // the install's own home directory is the thing that differs. It is the
+    // parent of `secretsDir` by construction (`<adeHome>/secrets`), so the
+    // publisher anchors the install it actually serves rather than whatever
+    // `ADE_HOME` this process happened to launch with.
+    readAccountHardwareId: (userId) =>
+      readAccountHardwareId(userId, path.dirname(options.secretsDir)),
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
       if (explicit?.trim()) {

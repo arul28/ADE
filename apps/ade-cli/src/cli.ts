@@ -36,8 +36,11 @@ import {
 import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
+  describeDiagnosticUpload,
   openDiagnosticIssue,
+  sendDiagnosticReport,
 } from "./commands/reportIssue";
+import { redactDiagnosticText } from "./services/diagnostics/diagnosticReport";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -110,6 +113,7 @@ import {
   startJsonRpcServer,
   type JsonRpcHandler,
   type JsonRpcId,
+  type JsonRpcInternalErrorReport,
   type JsonRpcRequest,
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
@@ -176,6 +180,7 @@ import {
   PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
 } from "./services/account/accountMachinePublisherService";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
+import type { MachinePairingAutoRecovery } from "./services/account/machinePairingAutoRecovery";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
 import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
@@ -411,7 +416,7 @@ type CliPlan =
   | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
-  | { kind: "report-issue"; open: boolean }
+  | { kind: "report-issue"; open: boolean; send: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -710,7 +715,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open]                     Print a redacted diagnostic report for a bug report
+    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -12702,6 +12707,7 @@ function buildCliPlan(
     return {
       kind: "report-issue",
       open: readFlag(args, ["--open"]),
+      send: readFlag(args, ["--send"]),
     };
   }
   if (primary === "auth") {
@@ -14197,14 +14203,90 @@ function reportContainedJsonRpcError(
   }
 }
 
+/**
+ * The full text behind a redacted `internalError` reply. It lands on stderr,
+ * which for the installed brain is `launchd.err.log` — one of the logs
+ * `ade report-issue` tails — so the `ref` the user was shown is searchable.
+ */
+function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
+  try {
+    process.stderr.write(
+      `ade jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
+    );
+  } catch {
+    // Stderr may be gone during shutdown; contained errors should stay contained.
+  }
+}
+
+/**
+ * One thrown value must not be able to bury a log the user is asked to send:
+ * a rejected fetch can carry a whole response body.
+ */
+const DIAGNOSTIC_ERROR_MAX_CHARS = 4_000;
+
+/** Fields worth printing off a thrown non-Error: they describe, never carry. */
+const DIAGNOSTIC_ERROR_SAFE_FIELDS = [
+  "name",
+  "message",
+  "code",
+  "errno",
+  "syscall",
+  "status",
+  "statusCode",
+] as const;
+
+/**
+ * Renders a thrown value for stderr — which for the installed brain is
+ * `launchd.err.log`, a file `ade report-issue` tails into a report the user is
+ * told to paste into a public issue. So this is a redaction boundary, not a
+ * formatter: everything it returns goes through the same pass the report body
+ * gets, and a thrown non-Error is described rather than serialized. Dumping
+ * such a value with `JSON.stringify` would print whatever an upstream caller
+ * attached to it — `sync.connectToBrain` carries `draft.token`, and a rejected
+ * request object would have shipped it verbatim.
+ */
 function formatDiagnosticError(error: unknown): string {
+  return capDiagnosticText(redactDiagnosticText(describeDiagnosticError(error)));
+}
+
+function capDiagnosticText(text: string): string {
+  if (text.length <= DIAGNOSTIC_ERROR_MAX_CHARS) return text;
+  return `${text.slice(0, DIAGNOSTIC_ERROR_MAX_CHARS)}… (${text.length - DIAGNOSTIC_ERROR_MAX_CHARS} more characters truncated)`;
+}
+
+function describeDiagnosticError(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
   if (typeof error === "string") return error;
+  if (error === null || error === undefined) return String(error);
+  if (typeof error !== "object") return String(error);
+
+  // A thrown object: name the shape and the diagnostic fields, then list the
+  // remaining keys by name only. Key names locate the throw site; their values
+  // are exactly what must not reach a log the user may hand over.
+  const record = error as Record<string, unknown>;
+  const described: string[] = [];
+  let label = "Object";
   try {
-    return JSON.stringify(error);
+    for (const field of DIAGNOSTIC_ERROR_SAFE_FIELDS) {
+      const value = record[field];
+      if (value === undefined || value === null) continue;
+      if (typeof value === "object" || typeof value === "function") continue;
+      described.push(`${field}=${String(value)}`);
+    }
+    const otherKeys = Object.keys(record).filter(
+      (key) => !(DIAGNOSTIC_ERROR_SAFE_FIELDS as readonly string[]).includes(key),
+    );
+    if (otherKeys.length > 0) {
+      described.push(`otherKeys=[${otherKeys.slice(0, 20).join(", ")}]`);
+    }
+    label = Array.isArray(error) ? "Array" : (record.constructor?.name ?? "Object");
   } catch {
-    return String(error);
+    // Getters and proxy traps run arbitrary code and can throw; a value we
+    // cannot describe still must not take the error boundary down with it.
   }
+  return described.length > 0
+    ? `[thrown ${label}] ${described.join(" ")}`
+    : `[thrown ${label}]`;
 }
 
 function installRuntimeProcessErrorBoundary(label: string): () => void {
@@ -14280,6 +14362,7 @@ function createHeadlessRpcServer(
     const stop = startJsonRpcServer(handler, transport, {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
       stop.notify(method, params),
@@ -16670,6 +16753,7 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
     stop = startJsonRpcServer(handler, createStdioTransport(), {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     unsubscribeNotifications = client.onAnyNotification((method, params) =>
       stop?.notify(method, params),
@@ -17243,8 +17327,16 @@ async function runServe(
   const machineCloudRelayFilePath = path.join(layout.secretsDir, "sync-cloud-relay.json");
   const machineCloudRelayStore = createSyncCloudRelayStore({
     filePath: machineCloudRelayFilePath,
+    // Every mint, rotation, and backup recovery of this machine's identity is
+    // logged here. A machine key that changes silently is how a live computer
+    // became a phantom row its owner deleted.
+    logger: headlessProjectLogger,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // Turns the "Reconnect this computer" button into something the machine can
+  // press for itself when the directory refuses it. Built below, next to the
+  // publisher it watches.
+  let machinePairingAutoRecovery: MachinePairingAutoRecovery | null = null;
   // Held only while this brain hosts phone sync WITHOUT a project scope (a
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
@@ -17602,6 +17694,8 @@ async function runServe(
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    machinePairingAutoRecovery?.stop();
+    machinePairingAutoRecovery = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -17883,6 +17977,18 @@ async function runServe(
           return brainSyncHostLease ? projectlessSyncSnapshot() : null;
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+        // The SAME store instance the machine key above comes from, so a
+        // `supersededMachineKeys` answer is checked against the keys this brain
+        // actually retired. The publisher used to build a private second store
+        // over the same file, which is one identity guarded by two independent
+        // readers for no benefit at all.
+        confirmSupersededMachineKeys: (keys) => {
+          try {
+            return machineCloudRelayStore.confirmSupersededMachineKeys(keys);
+          } catch {
+            return [];
+          }
+        },
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);
@@ -17932,6 +18038,29 @@ async function runServe(
         reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
       });
     }
+    // A directory refusal used to dead-end: heartbeats stopped and the machine
+    // waited for a human to click "Reconnect this computer", which nobody ever
+    // sees on a headless box. This runs the identical repair on a slow, budgeted
+    // schedule. It reads the publisher through `getPublisher` rather than
+    // capturing it, because the publisher is destroyed and rebuilt whenever the
+    // sync host lease moves.
+    const { createMachinePairingAutoRecovery } = await import(
+      "./services/account/machinePairingAutoRecovery"
+    );
+    machinePairingAutoRecovery = createMachinePairingAutoRecovery({
+      getPublisher: () => accountMachinePublisher,
+      runRepair: () => repairMachinePairing(),
+      hasAccountSession: () => {
+        try {
+          return brainAccountAuthService.getStatus().signedIn === true;
+        } catch {
+          return false;
+        }
+      },
+      budget: machineCloudRelayStore,
+      logger: headlessProjectLogger,
+    });
+    machinePairingAutoRecovery.start();
   }
 
   process.stderr.write(
@@ -22458,16 +22587,20 @@ async function runCli(
       // opening it without copying first sends them to a form with nothing to
       // paste. Both steps are best effort and the report is printed regardless.
       const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
+      // Sending is opt-in and never blocks the printed report: a failed upload
+      // still leaves the user holding everything they need to file by hand.
+      const sent = plan.send ? await sendDiagnosticReport(built) : null;
       if (parsed.options.text) {
         const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
+        const sendNote = sent ? `\n${describeDiagnosticUpload(sent)}` : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}\n`,
+          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue),
+          buildReportIssuePayload(built, openedIssue, sent),
           parsed.options,
           undefined,
         ),
@@ -22686,6 +22819,7 @@ export {
   checkLinearReadiness,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,

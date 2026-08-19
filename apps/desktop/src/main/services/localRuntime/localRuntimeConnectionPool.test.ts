@@ -3857,6 +3857,26 @@ describe("local runtime action retry classification", () => {
     expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed."))).toBe(false);
   });
 
+  it("retries socket-level drops but never a failure the daemon itself reported", () => {
+    // A socket that went away mid-call, named by its errno rather than by text.
+    expect(isLocalRuntimeConnectionDropped(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })))
+      .toBe(true);
+    expect(isLocalRuntimeConnectionDropped(Object.assign(new Error("write after end"), { code: "EPIPE" })))
+      .toBe(true);
+
+    // The daemon answered — the failure is the brain's, and retrying it would
+    // re-run a non-idempotent action against a healthy daemon.
+    expect(isLocalRuntimeConnectionDropped(new Error(
+      "Remote ADE service method ade/actions/call failed (code -32603): storage_read_failed: ADE couldn't read this project's data.",
+    ))).toBe(false);
+    // …even when the brain's own message quotes the transport sentinel.
+    expect(isLocalRuntimeConnectionDropped(new Error(
+      "Remote ADE service method ade/actions/call failed (code -32011): Remote ADE service connection closed.",
+    ))).toBe(false);
+    // A message that merely names an errno buys no retry either.
+    expect(isLocalRuntimeConnectionDropped(new Error("Local ADE service action failed: ECONNRESET"))).toBe(false);
+  });
+
   it("only retries idempotent read actions, never mutations", () => {
     // Reads — safe to retry after a connection drop.
     expect(isRetryableReadAction("lane", "list")).toBe(true);

@@ -161,6 +161,12 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
         body: "Something interrupted ADE while it was saving. Your files and chats are still here.",
         canAutoRepair: true,
       };
+    case "storage_unreadable":
+      return {
+        headline: "ADE couldn't read this project's data.",
+        body: "The project's files couldn't be read from this computer. If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.",
+        canAutoRepair: false,
+      };
     case "brain_crash_looping":
       return {
         headline: "ADE's background service keeps stopping.",

@@ -4,6 +4,7 @@ import type {
   GitHubSetTokenResult,
   GitHubStatus,
 } from "../../shared/types";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
 import {
   GITHUB_STATUS_PAGE_URL,
   githubServiceAffectedLabel,
@@ -379,18 +380,36 @@ export function describeGithubPatVerification(result: GitHubSetTokenResult): {
   };
 }
 
+/**
+ * Where the banner's single CTA has to land. Everything about GitHub itself is
+ * fixed in the GitHub settings card; an unreadable credential store is not a
+ * GitHub problem at all, and its only repair control lives in Connections.
+ */
+export type GithubBannerTarget = "github-settings" | "connections";
+
 export function describeGithubCliBanner(status: GitHubStatus): {
   subState: string;
   title: string;
   detail: string;
   action: string;
+  /** Always stated: an omitted target left every caller to re-derive the default. */
+  target: GithubBannerTarget;
 } {
+  // First, and ahead of `!tokenStored`: an unreadable store returns an EMPTY
+  // view, so every other conclusion below is drawn from credentials ADE could
+  // not read. Saying "not connected" here is what invited users to reconnect
+  // over working credentials.
+  if (status.credentialStoreUnreadable === true) {
+    const { subState, title, detail, action } = GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY;
+    return { subState, title, detail, action, target: "connections" };
+  }
   if (!status.tokenStored) {
     return {
       subState: "no-token",
       title: "GitHub CLI or token not connected",
       detail: "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
       action: "Connect GitHub",
+      target: "github-settings",
     };
   }
   // Below this point every state is inferred from GitHub's answers, so an
@@ -402,18 +421,27 @@ export function describeGithubCliBanner(status: GitHubStatus): {
   // It stays so that any other caller — or a future refactor of that
   // suppression — cannot silently reintroduce the credential accusation.
   const outage = describeGithubOutage(status);
-  if (outage) return outage;
+  // Targeted at the GitHub card like every other GitHub-blaming state: an
+  // outage is not a credential-store problem, so Connections has nothing for
+  // it. (The Repair control there is only for a store ADE cannot read.) The
+  // action label is rewritten because this shape drops `actionUrl` — a button
+  // that navigates in-app must not read as a link to githubstatus.com; the
+  // settings card itself carries the real external incident link.
+  if (outage) return { ...outage, action: "Open GitHub settings", target: "github-settings" };
   if (status.connected && !githubStatusHasWriteCredential(status)) {
     return {
       subState: "no-write-credential",
       title: "GitHub write access isn't connected",
       detail: "The ADE GitHub App can keep pull request data fresh, but GitHub CLI or a personal access token is needed for create, update, and merge actions.",
       action: "Connect GitHub",
+      target: "github-settings",
     };
   }
   const authFailure = describeGithubAuthFailure(status);
+  // Every auth failure is fixed on the GitHub card: the credential ADE holds is
+  // readable, it is the account behind it that GitHub has an objection to.
   if (authFailure) {
-    return authFailure;
+    return { ...authFailure, target: "github-settings" };
   }
   if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
     const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repository";
@@ -422,6 +450,7 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       title: `GitHub token can't access ${repoLabel}`,
       detail: "Your fine-grained token is valid but hasn't been granted this repository. Update its repository access.",
       action: "Fix GitHub auth",
+      target: "github-settings",
     };
   }
   return {
@@ -429,6 +458,7 @@ export function describeGithubCliBanner(status: GitHubStatus): {
     title: "GitHub token is missing permissions",
     detail: "Your GitHub token lacks the scopes ADE needs. Reconnect it with repo and workflow access.",
     action: "Fix GitHub auth",
+    target: "github-settings",
   };
 }
 

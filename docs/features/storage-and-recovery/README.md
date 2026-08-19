@@ -4,9 +4,9 @@
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors, creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
+| `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors (`classifySqliteOpenError`, whose `storage_read_failed` bucket is checked *before* the integrity bucket so an unreadable file is never reported as a corrupt one), creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
 | `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `REVIEW_ARTIFACT_RETENTION_DAYS` = 30, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
-| `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. |
+| `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. `AtomicWriteOptions.mode` creates the temp file with the caller's permission bits so a secret is never briefly world-readable, and a rename refused with `EXDEV` / `EPERM` / `EACCES` / `EBUSY` falls back to a copy — a deliberately closed list that leaves `ENOSPC` and `EIO` terminal. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
 | `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
 | `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies a provider resume failure as missing thread, provider environment, transient transport, or unknown without treating every provider error as lost continuity. |
@@ -22,6 +22,7 @@
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer ADE runtime is already running — quit and reopen ADE instead."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
+| `apps/desktop/src/main/services/storage/cloudPlaceholder.ts` | The cloud-eviction preflight. `detectCloudStorageProvider` matches a path against the provider roots (`Library/Mobile Documents`, `Library/CloudStorage`, and home-relative `OneDrive` / `Dropbox` / `Google Drive` folders) on text alone, so it costs nothing on any platform; `isDatalessFileStats` spots a file with a size but zero allocated blocks, which is what a dehydrated placeholder looks like through `fs.stat`. `detectCloudPlaceholderFile` reports a finding only when both agree, and `storageUnreadableMessage` writes the one sentence a person needs — with the "move it out of the cloud folder" remedy stated conditionally when no provider was matched, because a failing disk or a dropped network mount produces the same unreadable file. |
 | `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes lane files in the background. The **storage doctor** compresses history and maintains the database; filesystem candidates such as staging, backups, DerivedData, and build output remain review-first. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
 | `apps/desktop/src/main/services/lanes/laneService.ts` | Owns the lane-aware `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive` operations. It proves exact path-and-branch ownership against this project's Git worktree registry, rejects symlinks, rechecks directory identity before removal, shares the database-backed lane worktree lease with PR workflows, and stores retryable reclaim failures locally. |
 | `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory ADE writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
@@ -35,8 +36,9 @@
 | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of **Report issue**: shared machine sources plus the desktop's own jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Saves the report `0600`, copies it, and opens a prefilled GitHub issue. |
 | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder, the redactor (`redactDiagnosticText`), and `buildDiagnosticIssueUrl`. No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
 | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — the machine-level logs, layout, disk figures and redaction context both surfaces read, so a log added for one appears in both. |
-| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open]`, the headless equivalent. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
+| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open] [--send]`, the headless equivalent. `--send` posts the same redacted report to ADE (Clerk token when the machine is signed in, anonymous otherwise) and prints a short reference id. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
 | `apps/ade-cli/src/lib/externalLinks.ts` | `normalizeExternalUrl` / `openExternalUrl` for the CLI: allows only `http(s)` and `mailto:`, opens through the platform helper (`open` / `rundll32` via the trusted-tool resolver / `xdg-open`), and falls back to Electron's `shell.openExternal` only when actually running inside Electron — a static `electron` import crashes headless startup. |
+| `apps/desktop/src/shared/diagnosticsUpload.ts` | The one **Send to ADE** client, shared by the renderer button and the CLI: `uploadDiagnosticReport`, the `DiagnosticUploadFailure` vocabulary and its one-sentence copy, `resolveDiagnosticsUploadBaseUrl`, and `diagnosticReference` (the first 8 characters of the returned id — a full uuid is unreadable over a phone call). It lives in `shared/` because that is the only tree the renderer, the main process and the CLI can all import (Vite refuses to serve files outside `apps/desktop`), and it is deliberately free of Node built-ins and `import.meta` so the identical module loads in all three. It posts the report's exact bytes and transforms nothing: the thing that is sent has to be the thing that was shown. |
 | `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
 | `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The button itself, on every error surface. One press assembles, saves, copies, and opens the issue; it reports what actually happened rather than claiming success. |
 | `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces — `ErrorSurfaceCard`, `WhatToDo`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top. |
@@ -49,7 +51,8 @@
 | `apps/desktop/src/renderer/components/settings/storage/storageView.ts` | Pure, DOM-free presentation + policy helpers. Category metadata/order/hues, safety labels, and `buildCleanupTarget` / `cleanableEntries` / `groupLaneItems` map a snapshot item to a typed `StorageCleanupTarget`. The overhaul adds the diagnostics/maintenance view-model: `dbBreakdownRows`, `buildSafeCleanupPlan`, journal/db-size-sparkline/trend helpers, `daemonMemoryBytes`, `healthChip`, `formatSlowActions`, and `categoryPolicyChip` — each degrading to a sensible "not available" value so the UI renders against an older daemon that never sends `extras`. |
 | `apps/desktop/src/shared/types/storage.ts` | Shared storage contracts: disk-pressure types, `StorageCategoryId`, `StorageSafety`, `StorageItem`/`StorageCategorySnapshot`/`StorageSnapshot`, and the `StorageCleanupTarget`/`StorageCleanupPreview`/`StorageCleanupResult` DTOs. `StorageItem` carries ownership, age, blocked reasons, reclaim estimate/state, and lane ownership for the review screen; `StorageLifecycleSnapshot` carries the effective four-rule policy plus last/next scan and review counts. The ledger/maintenance surface includes `StorageLedgerEntry`/`StoragePolicyClass`, `MaintenanceAction`/`MaintenanceRunReport`/`MaintenanceTrigger`, `DbBreakdownEntry`, `StorageSnapshotExtras`, and `RuntimeHealthSnapshot`. |
 | `apps/desktop/src/shared/types/recovery.ts` | Typed recovery contracts: the `AdeRecoveryErrorCode` union + `toAdeRecoveryErrorCode`, `AdeLastFailureReport`, `ProjectRecoveryDiagnosis`, the ordered `RepairStepId` list + `ProjectRepairReport`, and `mapKvDbOpenErrorCode`. |
-| `apps/desktop/src/shared/codedError.ts` | `codedError(message, code)`, `encodeCodedErrorMessage`, and the `parseCodedErrorMessage`/`stripElectronErrorWrapper`/`extractCodeFromMessage` decoders that let the renderer recover a `code` through the Electron IPC error-wrapping. Re-exported to the renderer via `apps/desktop/src/renderer/lib/codedError.ts`. |
+| `apps/desktop/src/shared/codedError.ts` | `codedError(message, code)`, `encodeCodedErrorMessage`, and the `parseCodedErrorMessage`/`stripElectronErrorWrapper`/`extractCodeFromMessage` decoders that let the renderer recover a `code` through the Electron IPC error-wrapping — and through the runtime RPC client's own `Remote ADE service method <m> failed (code <n>):` wrapper, which the strip list has to name or no brain-side code survives the trip. It also draws the line between the two error vocabularies: `isErrnoLikeCode` recognises platform codes (`E…`, `ERR_…`, `MODULE_NOT_FOUND`) and `UNKNOWN_SYSTEM_ERRNO_PATTERN` recognises an errno libuv could not even name, neither of which can collide with ADE's lowercase snake_case codes. Re-exported to the renderer via `apps/desktop/src/renderer/lib/codedError.ts`. |
+| `apps/ade-cli/src/jsonrpc.ts` | The brain's JSON-RPC server, and the boundary that decides which failures may be worded to a caller at all. A service verdict — a plain `Error` carrying a non-errno string `code` — is re-encoded as `code: message` (with the rootPath tail intact) in the shape `parseCodedErrorMessage` decodes, and the code is repeated in `error.data.code`. A platform or runtime fault (a `syscall`/`errno`, an errno-like code, an unnameable errno, a `TypeError`-class fault) is replaced on the wire by `Internal error in <method> (ref <id>)` and handed in full to `onInternalError`, which `cli.ts` writes to stderr — `launchd.err.log`, one of the logs `ade report-issue` tails — so the reference the user was shown is searchable. |
 
 ## Behavior
 
@@ -82,6 +85,27 @@ writes a same-directory temporary file, optionally syncs it, and atomically
 renames it over the primary. A failed write does not replace the primary.
 `readJsonWithRecovery` accepts only payloads that pass the caller's validator
 and falls back from primary to the one `.lkg` generation.
+
+`writeFileAtomic` never unlinks the destination first. `rename` replaces an
+existing target in one step on every platform ADE ships to — libuv implements
+`fs.rename` on Windows with `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` — so the
+delete-then-rename shape some writers reach for as "the Windows fix" would only
+open a window in which the file does not exist at all, and a concurrent reader
+looking during it sees neither generation. What Windows genuinely needs is the
+other end: a rename refused because something else holds the target open (an
+indexer, an antivirus scanner, a second ADE process), plus `EXDEV` for a temp
+file that landed on another device. Those four codes — `EXDEV`, `EPERM`,
+`EACCES`, `EBUSY` — fall back to a non-atomic `copyFileSync`, and the list is
+closed on purpose: retrying `ENOSPC` or `EIO` as a copy would write the payload
+a second time to a filesystem that just proved it cannot take it, turning a
+clean "the write failed, the old file is intact" into a half-written target. A
+caller that passes `mode` — today `0o600` from the machine sync-relay identity
+store (`apps/ade-cli/src/services/sync/syncCloudRelayStore.ts`) — gets it on the
+temp file, so the rename carries the bits onto the target and the secret is
+never world-readable for even an instant; on the copy path the mode is reapplied
+with a best-effort `chmod`. Directory fsync is
+skipped on Windows rather than attempted and caught, because opening a directory
+handle there fails outright.
 
 Chat thread identity has three redundant sources:
 
@@ -118,7 +142,67 @@ service runs. `stateForCode` lives there too, so a screen falling back to the
 last recorded failure can never offer a different verdict, or a different
 repair offer, than the service would have given.
 
-One diagnosis deliberately offers no repair: `brain_starting`, when the service
+**A code is only worth attaching if it survives every wrapper on the way out.** The brain throws
+`codedError(message, code)`; `apps/ade-cli/src/jsonrpc.ts` re-encodes it as
+`code: message` (the rootPath, when there is one, rides after a NUL delimiter
+that never appears in human-readable text) and repeats the code in
+`error.data.code`; the desktop's runtime RPC client prefixes `Remote ADE service
+method <m> failed (code <n>):`; and Electron IPC strips custom `Error`
+properties, so `registerIpc`'s `surfaceCodedError` re-encodes once more on the
+way to the renderer. `stripElectronErrorWrapper` names all of those prefixes —
+missing the runtime-RPC one is how a project whose data files were unreadable
+reached the user as a raw libuv errno. The renderer's
+`RECOVERY_MESSAGE_BY_CODE` (`renderer/state/appStore.ts`) then overrides the
+brain's sentence only for codes where the screen genuinely knows more; a code
+that is not listed keeps the brain's own wording as the headline, because for
+`storage_read_failed` the brain's message is the one that names the file and the
+fix, and a generic paraphrase would push it into the collapsed details fold.
+
+The same boundary decides what may *not* be worded to a caller. A failure that
+came from the platform rather than from a service — one carrying `syscall` /
+`errno`, an errno-like `code`, an errno libuv could not name, or a
+`TypeError`-class runtime fault — is replaced on the wire with `Internal error
+in <method> (ref <id>)` and reported in full through `onInternalError` to the
+brain's stderr. Service verdicts are exempt: `JsonRpcError`s and plain sentences
+like "Project root does not exist: …" are authored for the person who asked, and
+blanking those would turn every actionable refusal into a reference number. The
+split is `isErrnoLikeCode` in `shared/codedError.ts`, which is also why ADE's
+codes are lowercase snake_case — the two vocabularies cannot collide.
+
+That same `Remote ADE service method …` prefix also decides what the desktop
+retries. `isLocalRuntimeConnectionDropped` in `localRuntimeConnectionPool.ts` is the
+predicate behind resetting the connection and re-running an action, so it has to
+mean "the socket went away", not "the message mentioned a socket". It reads
+`Error.code` for the transport errnos (`ECONNRESET`, `ECONNABORTED`, `EPIPE`,
+`ENOTCONN`) rather than matching them in text, and it rejects anything shaped
+like `Remote ADE service method <m> failed …` first and unconditionally: that
+prefix means the daemon answered, so the failure is the brain's and may quote a
+transport sentence verbatim — retrying it would re-run a non-idempotent action
+against a healthy daemon.
+
+**Unreadable storage is not a damaged database.** A project (or `~/.ade`) parked
+in iCloud Drive, Dropbox or OneDrive whose contents the provider has evicted
+answers a read with an errno the platform never names; on macOS it is `EDEADLK`,
+which reaches the app as "Unknown system error -11: … read". `createAdeRuntime`
+(`apps/ade-cli/src/bootstrap.ts`) runs `detectCloudPlaceholderFile` on the
+database path *before* opening it and throws `storage_read_failed` with
+`storageUnreadableMessage`, so the common case fails with the sentence that
+names the fix rather than the errno. When the preflight declines to fire — the
+file is materialized, or outside any known provider root — the open still fails
+safe, because `classifySqliteOpenError` buckets `EDEADLK` / `EIO` / `ENXIO` /
+`ENODEV` / `ESTALE` / `EHOSTDOWN` / `EREMOTEIO` and any unnameable errno into
+the same code, ahead of the integrity check. Both paths record the same typed
+failure and rethrow a coded error carrying the offending `dbPath` and the raw
+errno as `detail`, rather than the bare libuv message.
+
+`storage_read_failed` maps to the `storage_unreadable` diagnosis, which offers
+no repair on purpose: rewriting files ADE cannot read would risk the user's
+work, and the same failure also arrives from a failing disk or a dropped network
+mount. The recovery screen states the remedy as a condition ("if the folder is
+in iCloud Drive, Dropbox or OneDrive, move it…"), lists moving the folder as a
+prerequisite, and leaves Try again as the only action.
+
+One further diagnosis offers no repair: `brain_starting`, when the service
 is registered and its brain is alive but has not bound the socket yet (see
 [remote runtime](../remote-runtime/README.md)). There is nothing to fix and a
 repair would only kill a booting brain and restart its clock, so the screen
@@ -519,7 +603,8 @@ rides the clipboard.
 | Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
 | IPC | `IPC.diagnosticsOpenIssue` |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
-| Headless equivalent | `ade report-issue [--open]` |
+| Headless equivalent | `ade report-issue [--open] [--send]` |
+| Upload (opt-in) | `POST /diagnostics/upload` on the account directory Worker (`apps/account-directory/src/diagnostics.ts`); one client for both senders — the renderer button and the CLI — in `apps/desktop/src/shared/diagnosticsUpload.ts` |
 
 `ade report-issue` and the desktop button read the same machine sources through
 `collectMachineDiagnosticSources`, so a log added for one appears in both; the
@@ -574,6 +659,40 @@ One coarse analytics event is emitted per press:
 `ade_feature_used { feature: "connections", action: "issue_report", outcome:
 "opened" | "failed" }`, deduped to one per hour per outcome.
 
+**Send to ADE.** Filing on GitHub asks a user who is already looking at an error
+screen to paste a document into a form; the second action on the result line —
+and `ade report-issue --send` — posts the same finished report straight to
+`POST /diagnostics/upload` on the account directory Worker and shows a short
+reference id back. `apps/desktop/src/shared/diagnosticsUpload.ts` is the only
+client: it takes an already-redacted string and a base URL its caller resolved,
+and changes nothing about the bytes, because redaction happened once in the
+builder and any transformation here would mean the thing that was sent is not
+the thing that was shown. It also re-checks the 512 KB ceiling locally, so an
+oversized report fails without spending one of the user's few daily uploads on a
+doomed request. Failures come back as a small closed vocabulary — `too_large`,
+`rate_limited`, `unavailable`, `rejected`, `network` — never a server string,
+because the person reading it already hit one failure and a status line is not
+an improvement on "couldn't send". Each maps to one plain sentence that points
+back at GitHub where posting by hand is still the answer, or at tomorrow where
+it is not; the CLI words the same reasons for a terminal line in
+`describeDiagnosticUpload`.
+
+The two surfaces differ in exactly one way, and deliberately. The renderer runs
+the upload itself (the diagnostics preload bridge exposes only `openIssue`, and
+the renderer already holds the report that call returned), and it has no access
+to an account token — those live in the brain's credential store — so a desktop
+upload is anonymous, identified only by the install id the report already
+carries. `ade report-issue --send` reads the machine's own credential store and
+directory origin off local files, so it sends a Clerk token when the machine is
+signed in and still works on a machine whose brain will not start; resolving the
+origin the way the brain does also means a self-hosted machine's report and its
+token are not silently redirected to ADE's directory. The Worker treats the body
+as opaque: it never parses, indexes or echoes a report, which is what lets it
+accept anonymous uploads at all, and it bounds one identity (Clerk user, else a
+hash of the caller address) to five uploads a UTC day. The button's disclosure
+text says so — nothing leaves the computer unless the user posts the issue or
+chooses **Send to ADE**.
+
 ## Gotchas
 
 - The interrupted-rebuild recovery pass **must run before `migrate()`**. An
@@ -583,6 +702,19 @@ One coarse analytics event is emitted per press:
   every required unique and secondary index.
 - `PRAGMA foreign_keys` changes must happen outside a transaction; changing it
   inside an active transaction is ineffective.
+- **A rename failure is not automatically retryable.** Only `EXDEV` / `EPERM` /
+  `EACCES` / `EBUSY` fall back to a copy in `writeFileAtomic`; widening that set
+  to `ENOSPC` or `EIO` writes the payload a second time to a filesystem that
+  just refused it and can leave a half-written target where a clean failure
+  would have left the previous file intact.
+- **A new ADE error code must be lowercase snake_case.** `isErrnoLikeCode`
+  separates ADE's vocabulary from the platform's by shape alone, and the brain's
+  JSON-RPC boundary redacts anything it reads as platform-shaped. A code spelled
+  like an errno reaches the user as `Internal error in <method> (ref …)` instead
+  of its own message.
+- **`storage_read_failed` must stay ahead of the integrity bucket in
+  `classifySqliteOpenError`.** An unreadable file classified as a corrupt one
+  offers a repair that would rewrite data ADE could not even read.
 - launchd holds open descriptors for its stdout/stderr paths. Use
   copytruncate, not rename, or the service keeps writing to the unbounded old
   inode.

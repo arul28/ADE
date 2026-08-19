@@ -979,9 +979,12 @@ describe("ElectronSafeStorageCredentialStore", () => {
     // This process cannot obtain the OS material the ciphertext was sealed with
     // (locked/denied keychain), so it falls back to the bare machine key, which
     // does not decrypt either — the exact shape that reads as an empty store.
+    // `peerMayHoldMaterial` is declared rather than inherited from the test
+    // host: no peer can open this one either, which is what makes it a plain
+    // decrypt failure below on macOS and Linux alike.
     const undecryptableLegacyStore = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => null },
+      keyMaterial: { read: () => null, peerMayHoldMaterial: false },
     });
     expect(undecryptableLegacyStore.readAllForMigration()).toEqual({});
     expect(undecryptableLegacyStore.getLastReadState()).toBe("unreadable");
@@ -992,6 +995,10 @@ describe("ElectronSafeStorageCredentialStore", () => {
     });
 
     expect(store.getSync("linear.token.v1")).toBeNull();
+    // …and it says so. A `null` here is indistinguishable from "never stored",
+    // which is how a corrupted store reached the UI as a fresh install.
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(store.getLastReadFailureReason()).toBe("decrypt_failure");
 
     // Nothing written, nothing deleted: the credentials stay recoverable.
     expect(fs.existsSync(safePath)).toBe(false);
@@ -1002,6 +1009,31 @@ describe("ElectronSafeStorageCredentialStore", () => {
       keyMaterial: { read: () => Buffer.from("os-material-A") },
     });
     expect(recovered.getSync("linear.token.v1")).toBe("lin_secret");
+  });
+
+  it("keeps the legacy store's own reason for an unreadable migration source", () => {
+    // The launchd-brain shape: the legacy file is sealed with OS material this
+    // process cannot obtain, but a PEER process can. That is
+    // `no_os_key_material`, which is recoverable — reporting it as
+    // `decrypt_failure` puts the wrong repair in front of a user whose
+    // credentials are all still there.
+    sealLegacyOsBoundStore(tempDir, { "linear.token.v1": "lin_secret" }, Buffer.from("os-material-A"));
+    const legacyStore = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
+    });
+    expect(legacyStore.readAllForMigration()).toEqual({});
+    expect(legacyStore.getLastReadFailureReason()).toBe("no_os_key_material");
+
+    const store = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage,
+      legacyStore,
+    });
+
+    expect(store.getSync("linear.token.v1")).toBeNull();
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(store.getLastReadFailureReason()).toBe("no_os_key_material");
   });
 
   it("still moves and removes a legacy file that is already safeStorage-encrypted", () => {

@@ -698,12 +698,20 @@ function publishRow(
   const remedy = isBrainAccountSessionFailure(health.state)
     ? " · run `ade brain restart` so the brain re-reads the account session"
     : "";
+  // The refusals the directory answers with — a removed machine, a pairing that
+  // needs a fresh sign-in — all arrive as `state: "http_error"`, and the
+  // sentence the user can act on lives ONLY in `skipReason`. It used to be
+  // dropped from exactly the branch a refusal ends up in (a refusal is terminal,
+  // so `failingSince` is always set by the time anyone runs this), leaving the
+  // row saying "failing for 6m · http_error" about a machine whose repair is one
+  // sign-in away.
+  const reasonDetail = health.skipReason ? ` · ${health.skipReason}` : "";
   if (failingForMs != null && failingForMs >= PUBLISH_FAILURE_RED_MS) {
     return {
       key: "publish",
       label: "Publish health",
       status: "fail",
-      detail: `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}${remedy}`,
+      detail: `failing for ${compactDuration(failingForMs)} · ${health.state}${reasonDetail}${publishLegDetail(health)}${remedy}`,
     };
   }
   if (health.state === "published") {
@@ -724,8 +732,8 @@ function publishRow(
     label: "Publish health",
     status: "warn",
     detail: failingForMs == null
-      ? `${health.state}${health.skipReason ? ` · ${health.skipReason}` : ""}${remedy}`
-      : `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}${remedy}`,
+      ? `${health.state}${reasonDetail}${remedy}`
+      : `failing for ${compactDuration(failingForMs)} · ${health.state}${reasonDetail}${publishLegDetail(health)}${remedy}`,
   };
 }
 
@@ -746,14 +754,25 @@ function relayRow(relay: DoctorInput["relayHealth"]): DoctorRow {
       detail: relay.skipReason ?? "disabled",
     };
   }
+  // While relay control is DOWN the route reason outranks the self-probe, and
+  // while it is up the probe outranks it. `relayEndToEndFailure` is deliberately
+  // carried across control generations, so a disconnected machine still reports
+  // the last probe it managed to run — and the brain ranks a spent identity
+  // rotation budget ("this computer needs to be reconnected to your ADE
+  // account") into `skipReason` precisely because nothing else names that fix.
+  // Printing the stale probe line instead is how this row would answer a
+  // needs-reconnect machine with "self-probe skipped". `ade sync status` shows
+  // both; a one-line row has to choose the proximate one.
+  const routeFailure = relay.relayControlConnected === true
+    ? relay.relayEndToEndFailure ?? relay.skipReason
+    : relay.skipReason ?? relay.relayEndToEndFailure;
   // Suppression outranks every other failure: while another ADE process owns
   // this machine's relay slot, nothing downstream can succeed and no other
   // reason tells the user what to do about it.
   const failure = (relay.relayControlSuppressed === true
     ? relay.relayControlSuppressedReason ?? "Relay control is suppressed."
     : null)
-    ?? relay.relayEndToEndFailure
-    ?? relay.skipReason
+    ?? routeFailure
     ?? relay.lastControlError
     ?? null;
   const healthy = relay.relayControlConnected === true

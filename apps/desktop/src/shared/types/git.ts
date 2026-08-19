@@ -395,6 +395,18 @@ export type GitHubStatus = {
   tokenStored: boolean;
   patTokenStored: boolean;
   tokenDecryptionFailed: boolean;
+  /**
+   * True when ADE's encrypted credential store could not be decrypted on this
+   * read. Optional for compatibility with older remote runtimes, which simply
+   * omit it.
+   *
+   * An unreadable store returns an EMPTY view instead of throwing, so every
+   * "no token" conclusion downstream of it is indistinguishable from a fresh
+   * install. Clients MUST NOT render this as "never connected": the saved
+   * credentials are still on disk, and inviting the user to reconnect over them
+   * is how a recoverable read failure turns into real credential loss.
+   */
+  credentialStoreUnreadable?: boolean;
   storageScope: "app";
   authSource: "app" | "pat" | "environment" | "gh" | "none";
   tokenType?: GitHubTokenType;
@@ -434,6 +446,22 @@ export type GitHubStatus = {
   // additionally require writeAuthSource !== "none".
   connected: boolean;
 };
+
+/**
+ * The one wording for `credentialStoreUnreadable`, shared by every surface that
+ * has to say it: the PR tab's empty state (built in the main process), the
+ * integration banner, and the Settings card. Lives beside the field rather than
+ * in a renderer helper because the main process needs it too, and two hand-kept
+ * copies of the same sentence is how the "not connected" masking survived in
+ * more than one place to begin with.
+ */
+export const GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY = {
+  subState: "credential-store-unreadable",
+  statusLabel: "Can't read sign-in",
+  title: "ADE can't read your saved sign-in on this computer",
+  detail: "Your GitHub connection may still be there — ADE just can't open it. Repair it in Settings → Connections.",
+  action: "Open connections",
+} as const;
 
 export type GitHubSetTokenResult = GitHubStatus & {
   credentialVerification: GitHubCredentialVerification;

@@ -24,6 +24,8 @@ import {
   githubCredentialPresentation,
   describeGithubOutage,
 } from "../../lib/githubIntegrationStatus";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -227,6 +229,10 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   let readsWithLabel = authSourceLabel(githubStatus);
   if (authFailure?.kind === "rate_limited") readsWithLabel = "Paused";
   if (activeReadCredential) readsWithLabel = credentialSourceLabel(activeReadCredential.source);
+  // An unreadable credential store empties every stored-credential signal below
+  // it, so "Not connected" here would be a guess drawn from credentials ADE
+  // could not read. Say what is actually true instead.
+  const credentialStoreUnreadable = githubStatus?.credentialStoreUnreadable === true;
   // A corroborated GitHub outage explains every red state on this card. While
   // one is active the card stops reading as "your setup is broken": the chip
   // goes neutral, the ladder's failure badges are held back, and the gh-auth
@@ -235,7 +241,15 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const outage = describeGithubOutage(githubStatus);
   let statusColor: string;
   let statusLabel: string;
-  if (outage) {
+  // Unreadable store first, ahead of the outage: it is a LOCAL fact with a
+  // repair control two clicks away, and it stays true after GitHub recovers.
+  // An outage is transient and has no action; letting it mask the one state
+  // the user can actually fix would hide the fix for the duration of someone
+  // else's incident.
+  if (credentialStoreUnreadable) {
+    statusColor = COLORS.warning;
+    statusLabel = GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.statusLabel;
+  } else if (outage) {
     statusColor = COLORS.textMuted;
     statusLabel = outage.statusLabel;
   } else if (isConnected && credentialFallback) {
@@ -265,6 +279,9 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     githubStatus != null
     && !isConnected
     && githubStatus.authSource !== "pat"
+    // Nothing here is worth reading while the store is unreadable: the setup
+    // steps would be answering a question ADE has not actually asked.
+    && !credentialStoreUnreadable
     && (
       // A missing token is a local fact that an outage cannot explain away, so
       // that one instruction still stands. The other two are inferred from
@@ -428,6 +445,27 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
                 : credentialSourceLabel(effectiveWriteAuthSource),
             )}
           </div>
+
+          {credentialStoreUnreadable ? (
+            <div style={{
+              ...infoBoxStyle,
+              borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
+              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+              color: COLORS.textPrimary,
+            }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}
+              </div>
+              <div>{GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}</div>
+              <button
+                type="button"
+                style={{ ...linkButtonStyle, marginTop: 10 }}
+                onClick={() => openConnectionsPanel("machines")}
+              >
+                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action}
+              </button>
+            </div>
+          ) : null}
 
           {credentialFallback ? (
             <div style={{
