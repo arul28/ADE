@@ -261,13 +261,28 @@ export function readHardwareAnchorUuid(): string | null {
  * different casing. Any of those splitting the anchor would make one install
  * look like two machines, which is the exact bug the anchor exists to prevent.
  * Case is preserved everywhere else, where two spellings really are two paths.
+ *
+ * The result is memoized per input: this sits on the 30-second publish path,
+ * and `canonicalWindowsPath`'s realpath walk can BLOCK (not throw) on a stalled
+ * network home. The home cannot change mid-process any more than the UUID can.
+ * The recipe itself is not frozen by the `-v2` domain — an install whose fold
+ * changes simply presents an unmatched anchor and dedups on `device_id`, the
+ * same documented fallback every pre-anchor client uses.
  */
+const canonicalHomeByInput = new Map<string, string>();
+
 export function canonicalAdeHomePath(
   adeHomePath: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  if (platform !== "win32") return path.resolve(adeHomePath);
-  return canonicalWindowsPath(adeHomePath).toLowerCase();
+  const cacheKey = `${platform}:${adeHomePath}`;
+  const cached = canonicalHomeByInput.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const canonical = platform === "win32"
+    ? canonicalWindowsPath(adeHomePath).toLowerCase()
+    : path.resolve(adeHomePath);
+  canonicalHomeByInput.set(cacheKey, canonical);
+  return canonical;
 }
 
 /**

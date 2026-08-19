@@ -1573,11 +1573,15 @@ describe("appStore", () => {
         useAppStore.getState().switchProjectToPath("/tmp/project"),
       ).rejects.toThrow("storage_read_failed");
 
-      expect(useAppStore.getState().projectTransitionError).toEqual({
+      const transitionError = useAppStore.getState().projectTransitionError;
+      expect(transitionError).toEqual({
         code: "storage_read_failed",
         message: brainMessage,
         rootPath: "/tmp/project",
       });
+      // The brain's sentence is now the headline, so it must hold the same
+      // no-jargon bar the generic copy did.
+      expectNoJargon(transitionError?.message ?? "");
     });
 
     it.each([
