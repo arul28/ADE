@@ -44,8 +44,12 @@ type SystemdServiceManagerDeps = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-export function servicePath(homeDir = os.homedir()): string {
-  return path.join(homeDir, ".config", "systemd", "user", `${ADE_RUNTIME_SERVICE_NAME}.service`);
+/** See `launchAgentPath` for why `serviceName` is a parameter. */
+export function servicePath(
+  homeDir = os.homedir(),
+  serviceName: string = ADE_RUNTIME_SERVICE_NAME,
+): string {
+  return path.join(homeDir, ".config", "systemd", "user", `${serviceName}.service`);
 }
 
 function serviceUnitName(): string {

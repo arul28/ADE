@@ -809,7 +809,6 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   collectDiagnosticReport,
   diagnosticReportRoots,
@@ -4742,7 +4741,6 @@ export function registerIpc({
         reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
         installId: productAnalyticsService?.getDistinctId() ?? null,
         accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        projectLogsDir: projectRoot ? resolveAdeLayout(projectRoot).logsDir : null,
         getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
         diagnoseProject: projectRecoveryService
           ? (root: string) => projectRecoveryService.diagnose(root)

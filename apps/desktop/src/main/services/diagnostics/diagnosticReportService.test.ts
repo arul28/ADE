@@ -139,6 +139,53 @@ describe("collectDiagnosticReport", () => {
 
     expect(report).not.toContain("requested project root was not recognised");
   });
+
+  // A machine-scoped report is the one a user reaches when nothing will open,
+  // and it used to be the one missing `main.jsonl` — the desktop appended it
+  // only when a project happened to be open. The evidence was on disk the
+  // whole time.
+  it("carries the last project's main.jsonl when no project is open", async () => {
+    const adeHome = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+    const projectRoot = fs.mkdtempSync(path.join(tempRoot, "photon-"));
+    const logsDir = path.join(projectRoot, ".ade", "transcripts", "logs");
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.writeFileSync(path.join(logsDir, "main.jsonl"), '{"event":"deeplink.scheme_claimed"}\n', "utf8");
+    fs.writeFileSync(path.join(logsDir, "ade-cli.jsonl"), '{"event":"cli.started"}\n', "utf8");
+    fs.writeFileSync(
+      path.join(adeHome, "projects.json"),
+      JSON.stringify({
+        version: 2,
+        projects: [{ rootPath: projectRoot, lastOpenedAt: 7, catalogVisibility: "recent" }],
+      }),
+      "utf8",
+    );
+
+    const { report } = await collectDiagnosticReport(
+      { ...deps(), env: { ADE_HOME: adeHome } },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(report).toContain("### Desktop main");
+    expect(report).toContain("deeplink.scheme_claimed");
+    expect(report).toContain("### ADE CLI");
+    expect(report).toContain("no project was open");
+    // The project's absolute path must not ride along with its logs.
+    expect(report).not.toContain(projectRoot);
+  });
+
+  // The desktop and `ade report-issue` are meant to produce the same document;
+  // the section that says what the background service was told to be is part
+  // of it, present-or-noted, on every platform.
+  it("always carries a background service definition section", async () => {
+    const adeHome = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+
+    const { report } = await collectDiagnosticReport(
+      { ...deps(), env: { ADE_HOME: adeHome } },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(report).toContain("## Background service definition");
+  });
 });
 
 describe("resolveRevealableDiagnosticReport", () => {

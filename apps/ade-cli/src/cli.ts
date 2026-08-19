@@ -38,6 +38,7 @@ import {
   buildReportIssuePayload,
   describeDiagnosticUpload,
   openDiagnosticIssue,
+  saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./commands/reportIssue";
 import { redactDiagnosticText } from "./services/diagnostics/diagnosticReport";
@@ -22623,12 +22624,16 @@ async function runCli(
       // opening it without copying first sends them to a form with nothing to
       // paste. Both steps are best effort and the report is printed regardless.
       const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
+      // Saved BEFORE the upload is attempted, so the path printed under a
+      // failure is a file that already exists rather than one written after we
+      // knew we needed it.
+      const savedPath = plan.send ? saveDiagnosticReportCopy(built, { surface: "cli" }) : null;
       // Sending is opt-in and never blocks the printed report: a failed upload
       // still leaves the user holding everything they need to file by hand.
       const sent = plan.send ? await sendDiagnosticReport(built) : null;
       if (parsed.options.text) {
         const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
-        const sendNote = sent ? `\n${describeDiagnosticUpload(sent)}` : "";
+        const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
         return {
           output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
           exitCode: 0,
@@ -22636,7 +22641,7 @@ async function runCli(
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue, sent),
+          buildReportIssuePayload(built, openedIssue, sent, savedPath),
           parsed.options,
           undefined,
         ),

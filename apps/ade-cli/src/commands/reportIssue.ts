@@ -4,6 +4,8 @@ import path from "node:path";
 import {
   buildDiagnosticIssueUrl,
   buildDiagnosticReport,
+  diagnosticReportFilePath,
+  writeDiagnosticReportFile,
 } from "../services/diagnostics/diagnosticReport";
 import {
   collectMachineDiagnosticSources,
@@ -52,6 +54,11 @@ export type ReportIssueResult = {
   appVersion: string | null;
   /** Where this machine's account session lives, so `--send` can read a token. */
   secretsDir: string;
+  /**
+   * `~/.ade/diagnostic-reports` — the same directory the brain's automatic
+   * sender saves to, so the desktop toast's "View" reaches a CLI report too.
+   */
+  reportsDir: string;
 };
 
 /**
@@ -85,11 +92,7 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
   const projectRoot = options.projectRoot?.trim() || null;
   const surface = options.surface?.trim() || "cli";
 
-  const sources = collectMachineDiagnosticSources({
-    env,
-    projectRoot,
-    includeProjectCliLog: true,
-  });
+  const sources = collectMachineDiagnosticSources({ env, projectRoot });
   const installId = readInstallId(sources.layout.secretsDir) ?? "unknown";
 
   const report = buildDiagnosticReport({
@@ -115,6 +118,7 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
     state: sources.state,
     storage: sources.storage,
     logs: sources.logs,
+    serviceDefinition: sources.serviceDefinition,
     notes: sources.notes,
     redaction: sources.redaction,
   });
@@ -124,6 +128,7 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
     installId,
     appVersion: options.cliVersion ?? null,
     secretsDir: sources.layout.secretsDir,
+    reportsDir: path.join(sources.layout.adeDir, "diagnostic-reports"),
     issueUrl: buildDiagnosticIssueUrl({
       surface,
       headline: options.headline?.trim().slice(0, 300) || null,
@@ -235,19 +240,62 @@ export async function sendDiagnosticReport(
   });
 }
 
-/** One short line for `--text`, in the same register as the rest of the command. */
-export function describeDiagnosticUpload(result: DiagnosticUploadResult): string {
-  if (result.ok) return `Sent to ADE — reference ${result.reference}`;
-  switch (result.reason) {
-    case "rate_limited":
-      return "Not sent: you've already sent several reports today. Try again tomorrow.";
-    case "too_large":
-      return "Not sent: this report is too big to send. File it on GitHub instead.";
-    case "unavailable":
-      return "Not sent: ADE can't take reports right now. File it on GitHub instead.";
-    default:
-      return "Not sent: ADE couldn't reach the report service. File it on GitHub instead.";
+/**
+ * Saves the exact bytes that were (or would have been) uploaded, next to the
+ * brain's automatic reports.
+ *
+ * `--send` writes one unconditionally, because both outcomes need a file: a
+ * successful send needs somewhere to point when the user asks "what did you
+ * just take from my machine", and a failed one needs to leave them holding
+ * something concrete instead of a sentence about a service they cannot reach.
+ * Best effort — a read-only or full disk must not turn reporting a bug into a
+ * second bug.
+ */
+export function saveDiagnosticReportCopy(
+  built: Pick<ReportIssueResult, "report" | "reportsDir">,
+  args: { surface?: string; at?: Date } = {},
+): string | null {
+  const filePath = diagnosticReportFilePath(
+    built.reportsDir,
+    args.surface?.trim() || "cli",
+    args.at ?? new Date(),
+  );
+  return writeDiagnosticReportFile(filePath, built.report) ? filePath : null;
+}
+
+/**
+ * What `--send` prints, in the same register as the rest of the command.
+ *
+ * Both branches end somewhere the user can go. A success names the reference
+ * support will ask for AND the local copy of what was sent; a failure says why
+ * in plain words and names the file, because "couldn't send" with nothing
+ * attached is how a support thread turns into four more round trips.
+ */
+export function describeDiagnosticUpload(
+  result: DiagnosticUploadResult,
+  savedPath?: string | null,
+): string {
+  if (result.ok) {
+    const sent = `Sent to ADE — reference ${result.reference}`;
+    return savedPath ? `${sent}\nExactly what was sent is saved at ${savedPath}` : sent;
   }
+  const reason = (() => {
+    switch (result.reason) {
+      case "rate_limited":
+        return "Not sent: you've already sent several reports today. Try again tomorrow.";
+      case "too_large":
+        return "Not sent: this report is too big to send.";
+      case "unavailable":
+        return "Not sent: ADE can't take reports right now.";
+      case "rejected":
+        return "Not sent: the report service refused this report.";
+      default:
+        return "Not sent: ADE couldn't reach the report service.";
+    }
+  })();
+  return savedPath
+    ? `${reason}\nThe report is saved at ${savedPath} — attach that file to a GitHub issue.`
+    : `${reason} File it on GitHub instead (the full report is above).`;
 }
 
 /**
@@ -262,12 +310,14 @@ export function buildReportIssuePayload(
   built: Pick<ReportIssueResult, "report" | "issueUrl" | "installId">,
   side: { copied: boolean } | null,
   sent?: DiagnosticUploadResult | null,
+  savedPath?: string | null,
 ): {
   ok: true;
   installId: string;
   issueUrl: string;
   copied: boolean;
   report: string;
+  reportPath?: string;
   sent?: { ok: boolean; reference?: string; reason?: string };
 } {
   return {
@@ -276,6 +326,9 @@ export function buildReportIssuePayload(
     issueUrl: built.issueUrl,
     copied: side?.copied ?? false,
     report: built.report,
+    // The same file the text output names, so a script that wraps `--send`
+    // can attach it without re-serializing the report itself.
+    ...(savedPath ? { reportPath: savedPath } : {}),
     // Omitted entirely without `--send`, so a script can tell "not asked for"
     // from "asked for and failed".
     ...(sent

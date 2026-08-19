@@ -2,11 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { MAX_DIAGNOSTIC_UPLOAD_BYTES } from "../../../desktop/src/shared/diagnosticsUpload";
 import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
   describeDiagnosticUpload,
   openDiagnosticIssue,
+  saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./reportIssue";
 
@@ -227,5 +229,91 @@ describe("sendDiagnosticReport", () => {
       .toContain("already sent several reports today");
     expect(describeDiagnosticUpload({ ok: false, reason: "network" }))
       .toContain("couldn't reach");
+  });
+
+  // A send that failed used to end at "File it on GitHub instead", leaving the
+  // user with a wall of Markdown in a terminal and nothing to attach. Both
+  // outcomes now end somewhere they can go.
+  it("names the saved file under both a success and a failure", () => {
+    const saved = "/tmp/reports/2026-08-19-cli.md";
+
+    const sent = describeDiagnosticUpload({ ok: true, id: "abcdef1234", reference: "abcdef12" }, saved);
+    expect(sent).toContain("reference abcdef12");
+    expect(sent).toContain(saved);
+    expect(sent).toContain("Exactly what was sent");
+
+    const failed = describeDiagnosticUpload({ ok: false, reason: "network" }, saved);
+    expect(failed).toContain("couldn't reach");
+    expect(failed).toContain(saved);
+
+    // And when even the local write failed, it says where the report *is*
+    // rather than pointing at a file that does not exist.
+    expect(describeDiagnosticUpload({ ok: false, reason: "network" }, null))
+      .toContain("the full report is above");
+  });
+});
+
+describe("saveDiagnosticReportCopy", () => {
+  it("writes the exact report bytes owner-only, next to the automatic ones", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-report-save-"));
+    tempDirs.push(dir);
+    const reportsDir = path.join(dir, "diagnostic-reports");
+
+    const saved = saveDiagnosticReportCopy(
+      { report: "REPORT BODY", reportsDir },
+      { surface: "cli", at: new Date("2026-08-19T12:00:00.000Z") },
+    );
+
+    expect(saved).toBe(path.join(reportsDir, "2026-08-19T12-00-00-000Z-cli.md"));
+    expect(fs.readFileSync(saved!, "utf8")).toBe("REPORT BODY");
+    if (process.platform !== "win32") {
+      expect(fs.statSync(saved!).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("returns null rather than throwing when the report cannot be written", () => {
+    // Reporting a bug must never become a second bug: a read-only or full disk
+    // still leaves the printed report and the issue URL intact.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-report-save-"));
+    tempDirs.push(dir);
+    const blocked = path.join(dir, "blocked");
+    fs.writeFileSync(blocked, "not a directory\n", "utf8");
+
+    expect(saveDiagnosticReportCopy({ report: "REPORT BODY", reportsDir: blocked })).toBeNull();
+  });
+});
+
+describe("buildCliDiagnosticReport — completeness with no project open", () => {
+  // The whole point of the change: `ade report-issue --send` with no arguments,
+  // no project open and a cwd outside any project has to produce a COMPLETE
+  // report, because that is the state the machine is in when ADE will not start.
+  it("still carries the service definition and the last project's logs", () => {
+    const home = adeHome({ anonymousId: "anon-complete" });
+    const projectRoot = path.join(home, "workspace", "photon");
+    const logsDir = path.join(projectRoot, ".ade", "transcripts", "logs");
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.writeFileSync(path.join(logsDir, "main.jsonl"), '{"event":"ade_cli.auto_install"}\n', "utf8");
+    fs.mkdirSync(path.join(home, "runtime"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, "projects.json"),
+      JSON.stringify({
+        version: 2,
+        projects: [{ rootPath: projectRoot, lastOpenedAt: 42, catalogVisibility: "recent" }],
+      }),
+      "utf8",
+    );
+
+    const built = buildCliDiagnosticReport({ env: { ADE_HOME: home }, projectRoot: null });
+
+    // No project was open...
+    expect(built.report).toContain("- Project: none");
+    // ...and the report still has the machine-level events and the definition
+    // section, plus the note that explains where the project logs came from.
+    expect(built.report).toContain("ade_cli.auto_install");
+    expect(built.report).toContain("## Background service definition");
+    expect(built.report).toContain("no project was open");
+    // `--send` posts this document; it has to fit through the upload cap.
+    expect(new TextEncoder().encode(built.report).byteLength)
+      .toBeLessThan(MAX_DIAGNOSTIC_UPLOAD_BYTES);
   });
 });

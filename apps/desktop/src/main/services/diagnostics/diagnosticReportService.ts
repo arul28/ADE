@@ -88,8 +88,6 @@ export type DiagnosticReportDeps = {
   installId: string | null;
   /** Raw account user id; hashed here and never stored or sent verbatim. */
   accountUserId?: string | null;
-  /** Project `.ade/logs` directory for the open project, when there is one. */
-  projectLogsDir?: string | null;
   getLocalRuntimeStatus?: () => Promise<unknown> | unknown;
   diagnoseProject?: (projectRoot: string) => Promise<unknown>;
   /** Deadline for each optional step above. Test seam; defaults to 8s. */
@@ -196,12 +194,16 @@ export async function collectDiagnosticReport(
       : Promise.resolve(null),
   ]);
 
+  // Only what lives under Electron's userData is added here. The project's
+  // `main.jsonl` used to be appended at this point from an `app.getPath`-derived
+  // directory, which meant it was collected ONLY when a project was open — so a
+  // report from the machine-level error screens, the ones a person actually
+  // reaches when nothing will open, silently had no `main.jsonl` at all.
+  // `collectMachineDiagnosticSources` now owns it, for the open project or for
+  // the most recently opened one, and the CLI gets the same file.
   const logs: DiagnosticLogTail[] = [...sources.logs];
   logs.push(readLogTail("Desktop local runtime", path.join(deps.userDataPath, "local-runtime.jsonl")));
   logs.push(readLogTail("Desktop updates", path.join(deps.userDataPath, "ade-update.jsonl")));
-  if (deps.projectLogsDir) {
-    logs.push(readLogTail("Desktop main", path.join(deps.projectLogsDir, "main.jsonl")));
-  }
 
   // The typed store rather than the raw file the CLI falls back to: main owns
   // the writer, so it can read the record's real shape.
@@ -212,10 +214,15 @@ export async function collectDiagnosticReport(
       return null;
     }
   })();
-  const projectLastFailure = projectRoot
+  // Keyed off the root the shared collector actually used, not the request's:
+  // with no project open those differ, and reading the typed store for a root
+  // the logs above did not come from would attribute one project's last failure
+  // to another's evidence.
+  const collectedProjectRoot = sources.projectRoot;
+  const projectLastFailure = collectedProjectRoot
     ? (() => {
         try {
-          return readLastFailure({ kind: "project", projectRoot });
+          return readLastFailure({ kind: "project", projectRoot: collectedProjectRoot });
         } catch {
           return null;
         }
@@ -261,6 +268,7 @@ export async function collectDiagnosticReport(
     },
     storage: sources.storage,
     logs,
+    serviceDefinition: sources.serviceDefinition,
     notes: [...sources.notes, ...(request.extraNotes ?? [])],
     redaction,
   });

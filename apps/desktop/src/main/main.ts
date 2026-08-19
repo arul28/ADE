@@ -2603,7 +2603,6 @@ app.whenReady().then(async () => {
           reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
           installId: productAnalyticsService.getDistinctId(),
           accountUserId: readAccountOwnerId(),
-          projectLogsDir: projectRoot ? resolveAdeLayout(projectRoot).logsDir : null,
           getLocalRuntimeStatus: () => localRuntimePool.getStatus(),
           // Deliberately no `diagnoseProject`. The recovery diagnosis is itself
           // one of the triggers, so asking for a fresh one while building the

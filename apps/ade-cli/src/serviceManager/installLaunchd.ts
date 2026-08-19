@@ -95,8 +95,18 @@ function launchdPrintOutputText(result: ReturnType<ServiceManagerSpawnSync>): st
   return "";
 }
 
-export function launchAgentPath(homeDir = os.homedir()): string {
-  return path.join(homeDir, "Library", "LaunchAgents", `${ADE_RUNTIME_SERVICE_NAME}.plist`);
+/**
+ * `serviceName` is a parameter rather than only the module constant because
+ * `ADE_RUNTIME_SERVICE_NAME` is frozen from `process.env` at import time.
+ * Callers that resolve a channel from an environment they were handed — the
+ * diagnostic collector, and every test that points ADE at a temp home — would
+ * otherwise silently read the stable channel's plist.
+ */
+export function launchAgentPath(
+  homeDir = os.homedir(),
+  serviceName: string = ADE_RUNTIME_SERVICE_NAME,
+): string {
+  return path.join(homeDir, "Library", "LaunchAgents", `${serviceName}.plist`);
 }
 
 export function isLaunchdPrintRunning(output: string): boolean {
