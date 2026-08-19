@@ -147,6 +147,28 @@ export const PAIRING_AUTH_FRESHNESS_MS = 10 * 60_000;
  * retry — nothing longer.
  */
 export const PAIRING_GRANT_TTL_MS = 10 * 60_000;
+/**
+ * How long one registration may hold a pairing grant reserved before another is
+ * allowed to take it.
+ *
+ * This is a CRASH-SAFETY bound, not a lease anyone waits on. A reservation is
+ * held only across a single activity-relay hand-off — two attempts with a short
+ * backoff — so a minute is generous for the happy path. What it actually bounds
+ * is the bad path: a worker that dies between reserving a grant and either
+ * consuming or releasing it would otherwise strand the row as permanently
+ * unspendable until it expired, which is the same lockout the two-phase scheme
+ * exists to remove. After this long the reservation simply does not count.
+ */
+export const PAIRING_GRANT_RESERVATION_MS = 60_000;
+/**
+ * Most rows one register call may supersede.
+ *
+ * A device with more phantom keys than this is either pathological or hostile,
+ * and either way there is no reason to let a single request delete an unbounded
+ * slice of the account's roster. The rest are cleaned up by the next proven
+ * re-pair, oldest first.
+ */
+export const MAX_SUPERSEDED_MACHINES = 5;
 const MAX_PUBKEY_CHARS = 128;
 const MAX_MACHINE_KEY_CHARS = 128;
 /** A grant is 32 random bytes in base64url (43 chars); the cap is slack, not a shape check. */
@@ -530,6 +552,45 @@ function logActivityRelayFailure(args: {
 }
 
 /**
+ * One line per refused machine-membership change.
+ *
+ * Every refusal on this worker is a user who cannot get their computer back
+ * onto their account, and the request that produced it is long gone by the time
+ * they ask for help. Support has no other window into that: the client reports
+ * only the code, and the D1 tables record what the state IS, never why a call
+ * was turned away. So each refusal path emits exactly one line, and the fields
+ * are chosen to be joinable — `correlationId` ties it to the request the client
+ * logged, `userId` to the account, the prefixes to the specific install.
+ *
+ * PREFIXES ONLY. A machine key is a capability-shaped secret and a pairing
+ * grant is a live credential; eight characters identify a row for a human
+ * reading logs and are useless to anyone who reads them. Nothing here ever
+ * carries a full key, a token, or a grant in any form.
+ */
+function logDirectoryRefusal(args: {
+  event: "directory.register_refused" | "directory.remove_refused" | "directory.supersede_refused";
+  userId: string;
+  machineKey: string;
+  deviceId: string | null;
+  code: string;
+  correlationId: string;
+  /** Optional finer classification for support; the wire `code` stays the contract. */
+  reason?: string;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: "ade-account-directory",
+    event: args.event,
+    userId: args.userId,
+    machineKeyPrefix: args.machineKey.slice(0, 8),
+    deviceIdPrefix: args.deviceId ? args.deviceId.slice(0, 8) : null,
+    code: args.code,
+    correlationId: args.correlationId,
+    ...(args.reason ? { reason: args.reason.slice(0, 300) } : {}),
+  }));
+}
+
+/**
  * Forward a machine membership change to the push relay.
  *
  * Two credentials travel together, and they answer different questions:
@@ -660,31 +721,174 @@ async function mintPairingGrant(
 }
 
 /**
- * Spend a pairing grant, or refuse it.
+ * Reserve a pairing grant: phase one of spending it.
  *
- * One statement carries every rule the grant exists to enforce — it must belong
- * to this caller, name this machine, still be inside its TTL, and never have
- * been spent — because splitting them into a read and a later write would let
- * two concurrent registrations both observe an unspent row. `changes === 1` is
- * therefore the whole proof: the delete both consumes and validates.
+ * One statement still carries every rule the grant exists to enforce — it must
+ * belong to this caller, name this machine, still be inside its TTL, and not
+ * already be held by another in-flight registration — because splitting them
+ * into a read and a later write would let two concurrent registrations both
+ * observe a spendable row. `changes === 1` is therefore the whole proof.
+ *
+ * What the reservation buys over the plain delete this replaced is a spend that
+ * can be undone. The relay hand-off that follows can fail, and destroying the
+ * grant before knowing the outcome made a relay outage cost the user their only
+ * way back onto the account. A reserved grant can be put back byte for byte
+ * (`releaseReservedPairingGrant`) — no fresh expiry, no read-then-write.
  */
-async function redeemPairingGrant(
+async function reservePairingGrant(
   env: Env,
   args: { userId: string; machineKey: string; grant: string; nowMs: number },
 ): Promise<boolean> {
   const result = await env.DB.prepare(`
-    delete from machine_pairing_grants
+    update machine_pairing_grants
+       set reserved_at = ?
      where grant_hash = ? and user_id = ? and machine_key = ? and expires_at > ?
+       and (reserved_at is null or reserved_at <= ?)
   `).bind(
+    args.nowMs,
     await sha256Base64Url(args.grant),
     args.userId,
     args.machineKey,
     args.nowMs,
+    args.nowMs - PAIRING_GRANT_RESERVATION_MS,
   ).run();
   return (result.meta.changes ?? 0) === 1;
 }
 
-/** Cron sweep: an unspent grant is dead weight the moment it expires. */
+/**
+ * Phase two, success: the grant is spent for good.
+ *
+ * `reserved_at` is part of the predicate so this only ever deletes the
+ * reservation THIS request took. A stale reservation another registration has
+ * since claimed is not ours to consume.
+ */
+async function consumeReservedPairingGrant(
+  env: Env,
+  args: { userId: string; machineKey: string; grant: string; reservedAt: number },
+): Promise<void> {
+  await env.DB.prepare(`
+    delete from machine_pairing_grants
+     where grant_hash = ? and user_id = ? and machine_key = ? and reserved_at = ?
+  `).bind(
+    await sha256Base64Url(args.grant),
+    args.userId,
+    args.machineKey,
+    args.reservedAt,
+  ).run();
+}
+
+/**
+ * Phase two, failure: put the grant back exactly as it was.
+ *
+ * Only `reserved_at` is cleared. `expires_at` is untouched on purpose — an
+ * attacker who can force relay failures must not be able to keep a grant alive
+ * past the TTL it was minted with, so a release restores spendability without
+ * extending the window. Same `reserved_at` predicate as the consume, for the
+ * same reason.
+ */
+async function releaseReservedPairingGrant(
+  env: Env,
+  args: { userId: string; machineKey: string; grant: string; reservedAt: number },
+): Promise<void> {
+  await env.DB.prepare(`
+    update machine_pairing_grants
+       set reserved_at = null
+     where grant_hash = ? and user_id = ? and machine_key = ? and reserved_at = ?
+  `).bind(
+    await sha256Base64Url(args.grant),
+    args.userId,
+    args.machineKey,
+    args.reservedAt,
+  ).run();
+}
+
+/**
+ * How a register call proved that a human just authenticated ON THIS MACHINE.
+ *
+ * Two privileged operations sit behind this one bar — lifting a revocation, and
+ * superseding the rows a rotated machine key left behind — and they must sit
+ * behind the SAME bar. Everything else in a register request (`deviceId`,
+ * `pairing`, the machine key itself) is caller-supplied and therefore forgeable
+ * by exactly the removed machine these gates exist to stop.
+ */
+type PairingProof =
+  /** An `auth_time`/`fva` claim on the caller's own verified token. Costs nothing. */
+  | { kind: "claim" }
+  /** A grant, reserved and still restorable. Must be consumed or released before the response. */
+  | { kind: "grant"; grant: string; reservedAt: number }
+  /** A grant already consumed earlier in this request: still proof, no longer spendable. */
+  | { kind: "spent_grant" }
+  /** Nothing was proven. */
+  | { kind: "none" };
+
+/**
+ * Establish the proof, spending a grant only if the claim path cannot answer.
+ *
+ * The claim is checked first so a genuinely fresh sign-in never burns a grant
+ * it does not need, and it is honored on any register call because it is a
+ * property of the token this worker already verified — no client assertion is
+ * involved. The grant is the fallback, and it is honored ONLY on a deliberate
+ * `pairing: true` link: it is a single-use credential, and a background
+ * heartbeat that happens to still be carrying one must leave it untouched.
+ */
+async function acquirePairingProof(
+  env: Env,
+  args: {
+    userId: string;
+    input: RegisterInput;
+    freshInteractiveAuthentication: boolean;
+    nowMs: number;
+  },
+): Promise<PairingProof> {
+  if (args.freshInteractiveAuthentication) return { kind: "claim" };
+  if (!args.input.pairing || !args.input.pairingGrant) return { kind: "none" };
+  const reserved = await reservePairingGrant(env, {
+    userId: args.userId,
+    machineKey: args.input.machineKey,
+    grant: args.input.pairingGrant,
+    nowMs: args.nowMs,
+  });
+  return reserved
+    ? { kind: "grant", grant: args.input.pairingGrant, reservedAt: args.nowMs }
+    : { kind: "none" };
+}
+
+/**
+ * Other machine keys this account already has for the SAME physical device.
+ *
+ * This is the phantom-duplicate query. A reinstall (or any client-side identity
+ * rotation) mints a fresh machine key, and rows are keyed `(user_id,
+ * machine_key)`, so the old row survives forever as a machine the user never
+ * owned twice. Ordered oldest-seen first so that when the cap bites, it is the
+ * stalest rows that go.
+ */
+async function machineKeysForDevice(
+  env: Env,
+  args: { userId: string; deviceId: string; machineKey: string },
+): Promise<string[]> {
+  const rows = (await env.DB.prepare(`
+    select machine_key
+      from machines
+     where user_id = ? and device_id = ? and machine_key <> ?
+     order by last_seen_at asc
+     limit ?
+  `).bind(
+    args.userId,
+    args.deviceId,
+    args.machineKey,
+    MAX_SUPERSEDED_MACHINES,
+  ).all<{ machine_key: string }>()).results ?? [];
+  return rows.map((row) => row.machine_key);
+}
+
+/**
+ * Cron sweep: an unspent grant is dead weight the moment it expires.
+ *
+ * Reservations are ignored on purpose. A grant that expires while a
+ * registration holds it reserved was already unspendable by the time the sweep
+ * ran — every phase checks `expires_at` — so removing it costs nothing, and the
+ * release that follows simply matches no row.
+ */
 export async function cleanupExpiredPairingGrants(
   env: Pick<Env, "DB">,
   nowMs = Date.now(),
@@ -726,6 +930,36 @@ async function handleRegister(
   const input = parseRegisterInput(raw);
   if (!input) return json({ error: "invalid request body" }, { status: 400 });
 
+  const nowMs = Date.now();
+  const refused = (
+    event: "directory.register_refused" | "directory.supersede_refused",
+    code: string,
+    reason?: string,
+  ): void => logDirectoryRefusal({
+    event,
+    userId,
+    machineKey: input.machineKey,
+    deviceId: input.deviceId,
+    code,
+    correlationId,
+    reason,
+  });
+
+  // Established at most once, and only when something actually needs it: a
+  // plain heartbeat — the overwhelming majority of calls — must not touch the
+  // grants table at all, and a request that clears a revocation and then
+  // supersedes duplicates in the same breath must not pay for the proof twice.
+  let pairingProof: PairingProof | null = null;
+  const provePairing = async (): Promise<PairingProof> => {
+    pairingProof ??= await acquirePairingProof(env, {
+      userId,
+      input,
+      freshInteractiveAuthentication,
+      nowMs,
+    });
+    return pairingProof;
+  };
+
   // Removal is only durable if the removed machine cannot re-register itself.
   // Its heartbeat carries a valid account token for as long as it stays signed
   // in, so the revocation — not the token — is what decides.
@@ -739,6 +973,7 @@ async function handleRegister(
     // recovers the same way every other re-pair does: the user signs in and ADE
     // re-pairs immediately after.
     if (!input.pairing) {
+      refused("directory.register_refused", "machine_revoked");
       return json({
         error: "machine removed from account",
         code: "machine_revoked",
@@ -755,29 +990,29 @@ async function handleRegister(
     // not in the documented default claim set for that token shape. If they are
     // absent in production, claim-only freshness would make every removal
     // permanent — the original Blocker wearing a different hat.
-    if (
-      !freshInteractiveAuthentication
-      && !(input.pairingGrant && await redeemPairingGrant(env, {
-        userId,
-        machineKey: input.machineKey,
-        grant: input.pairingGrant,
-        nowMs: Date.now(),
-      }))
-    ) {
+    const proof = await provePairing();
+    if (proof.kind === "none") {
+      refused(
+        "directory.register_refused",
+        "pairing_authentication_required",
+        // Support's first question is always which of the two it was: a machine
+        // that never presented a grant is a client-side problem, a rejected one
+        // is expired, replayed, or minted for another machine.
+        input.pairingGrant ? "grant_rejected" : "no_proof",
+      );
       return json({
         error: "Sign in again on this computer to reconnect it to your ADE account",
         code: "pairing_authentication_required",
         revokedAt: revocation.revoked_at,
       }, { status: 403 });
     }
-    // A grant is spent above, before the relay is called, and it is NOT put
-    // back if the relay hand-off then fails. That ordering is deliberate:
-    // restoring it would mean either a non-atomic read-then-write (two
-    // concurrent registrations could each see it unspent) or re-issuing it with
-    // a fresh expiry (an attacker who can force relay failures could keep one
-    // alive indefinitely). A relay outage costs the user another sign-in —
-    // exactly what the refusal already tells them to do — and correctness of
-    // single-use wins over convenience on a rare failure path.
+    // A grant is RESERVED above, not destroyed, and the reservation is what
+    // makes the next three lines recoverable. Reserving is one atomic statement,
+    // so single-use is enforced exactly as strictly as the old delete enforced
+    // it — two concurrent registrations still cannot both hold it — but a relay
+    // outage no longer burns the user's only credential. On failure it goes back
+    // with its ORIGINAL expiry, so forcing relay failures buys nothing: the
+    // grant still dies at the moment it was always going to die.
     //
     // Clear the relay's revocation first: a machine back on the roster but
     // unable to publish is a worse state than one that retries the re-pair.
@@ -788,11 +1023,32 @@ async function handleRegister(
       options: relayOptions,
     });
     if (!restored.ok) {
+      if (proof.kind === "grant") {
+        await releaseReservedPairingGrant(env, {
+          userId,
+          machineKey: input.machineKey,
+          grant: proof.grant,
+          reservedAt: proof.reservedAt,
+        });
+        // Nothing is proven any more: the credential is back in circulation.
+        pairingProof = { kind: "none" };
+      }
+      refused("directory.register_refused", "activity_relay_unavailable", restored.reason);
       return json({
         error: "activity relay unavailable",
         code: "activity_relay_unavailable",
         detail: restored.reason,
       }, { status: 503 });
+    }
+    if (proof.kind === "grant") {
+      await consumeReservedPairingGrant(env, {
+        userId,
+        machineKey: input.machineKey,
+        grant: proof.grant,
+        reservedAt: proof.reservedAt,
+      });
+      // Still proof for anything later in this request, never spendable again.
+      pairingProof = { kind: "spent_grant" };
     }
     await env.DB
       .prepare("delete from revoked_machines where user_id = ? and machine_key = ?")
@@ -800,7 +1056,6 @@ async function handleRegister(
       .run();
   }
 
-  const now = Date.now();
   await env.DB.prepare(`
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
@@ -848,10 +1103,81 @@ async function handleRegister(
     input.deviceType,
     input.pubkey,
     JSON.stringify(input.reachableEndpoints),
-    now,
-    now,
+    nowMs,
+    nowMs,
     input.retainRelayEndpoints ? 1 : 0,
   ).run();
+
+  // Phantom duplicates: the OTHER half of the reinstall story.
+  //
+  // Machines are keyed `(user_id, machine_key)`, so a client that rotates its
+  // identity file — a reinstall, a wiped config, a restored backup — lands as a
+  // second row for the same physical computer. The user sees a duplicate,
+  // removes the one that looks stale, and if they guess wrong they have just
+  // revoked the live install. Nothing about that is recoverable by the user, so
+  // the directory folds the old rows into the new one instead of letting them
+  // accumulate.
+  //
+  // The gate is the SAME proof that lifts a revocation, for the same reason:
+  // `deviceId` is caller-supplied and forgeable, so on a plain token it
+  // authorizes nothing — otherwise any machine could claim another's device id
+  // and delete that machine's row. With a proven-fresh human behind the call it
+  // is exactly the signal we want.
+  //
+  // Superseded keys get NO revocation row. The physical device holds the new
+  // key; blocking the old one would trapdoor any client that rolls its identity
+  // file back (a restored snapshot, a failed migration) into a permanent
+  // refusal. An absent key simply registers again. For the same reason the
+  // relay is not called: the device did not leave the account, so its Activity
+  // is still the user's own.
+  let supersededMachineKeys: string[] = [];
+  // The parser already rejects an empty `deviceId`, but this guard is what
+  // stands between a future relaxation of that rule and a query that matches
+  // every row whose device id is unset.
+  if (input.deviceId) {
+    const duplicates = await machineKeysForDevice(env, {
+      userId,
+      deviceId: input.deviceId,
+      machineKey: input.machineKey,
+    });
+    if (duplicates.length > 0) {
+      const proof = await provePairing();
+      if (proof.kind === "none") {
+        // Not a refused REGISTRATION — the machine is registered, the duplicate
+        // simply stays. Logged because "why is my Mac listed twice" is the
+        // support question this whole path exists to answer.
+        refused(
+          "directory.supersede_refused",
+          "supersede_authentication_required",
+          `duplicates=${duplicates.length}`,
+        );
+      } else {
+        // Spend before deleting, not after: a consume that failed once the rows
+        // were already gone would leave the grant reservable again in a minute,
+        // and a credential that can be spent twice is the worse of the two
+        // failures. Both are D1 writes on one database, so the window is a
+        // hypothetical either way.
+        if (proof.kind === "grant") {
+          await consumeReservedPairingGrant(env, {
+            userId,
+            machineKey: input.machineKey,
+            grant: proof.grant,
+            reservedAt: proof.reservedAt,
+          });
+          pairingProof = { kind: "spent_grant" };
+        }
+        for (const machineKey of duplicates) {
+          // `device_id` stays in the predicate: the row was selected a moment
+          // ago, and this is the only thing that authorized deleting it.
+          await env.DB
+            .prepare("delete from machines where user_id = ? and machine_key = ? and device_id = ?")
+            .bind(userId, machineKey, input.deviceId)
+            .run();
+        }
+        supersededMachineKeys = duplicates;
+      }
+    }
+  }
 
   const row = await env.DB.prepare(`
     select user_id, machine_key, device_id, name, custom_name, platform, device_type, pubkey,
@@ -860,7 +1186,12 @@ async function handleRegister(
      where user_id = ? and machine_key = ?
   `).bind(userId, input.machineKey).first<MachineRow>();
   if (!row) return json({ error: "machine was not stored" }, { status: 500 });
-  return json(machineRecord(row));
+  // `supersededMachineKeys` is additive and omitted when empty, so a heartbeat
+  // response is byte-identical to what every deployed client already parses.
+  return json({
+    ...machineRecord(row),
+    ...(supersededMachineKeys.length > 0 ? { supersededMachineKeys } : {}),
+  });
 }
 
 async function handleList(
@@ -947,6 +1278,15 @@ async function handleDelete(
     // The machine is off the roster and blocked, but its Activity is still
     // there. Say so instead of reporting a clean removal the user can see is
     // untrue the next time they open Activity.
+    logDirectoryRefusal({
+      event: "directory.remove_refused",
+      userId,
+      machineKey,
+      deviceId: existing?.device_id ?? null,
+      code: "activity_purge_failed",
+      correlationId,
+      reason: purged.reason,
+    });
     return json({
       ok: false,
       error: "activity purge failed",

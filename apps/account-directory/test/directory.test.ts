@@ -5,6 +5,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   cleanupExpiredPairingGrants,
   handleRequest,
+  MAX_SUPERSEDED_MACHINES,
+  PAIRING_GRANT_RESERVATION_MS,
   PAIRING_GRANT_TTL_MS,
   verifyCallerToken,
   type Env,
@@ -88,6 +90,8 @@ type StoredPairingGrant = {
   machine_key: string;
   created_at: number;
   expires_at: number;
+  /** Non-null while one in-flight registration holds the grant. */
+  reserved_at: number | null;
 };
 
 class FakeD1Database {
@@ -170,6 +174,20 @@ class FakeD1Database {
   all<T>(sql: string, values: unknown[]): T[] {
     const normalized = sql.toLowerCase();
     if (!normalized.includes("from machines")) return [];
+    // Duplicate lookup for one physical device. Mirrors the source predicate
+    // exactly — including the `machine_key <> ?` self-exclusion — so a worker
+    // that drops it deletes the row it just wrote and the test says so.
+    if (normalized.includes("device_id = ?")) {
+      const [userId, deviceId, machineKey, limit] = values;
+      return this.rows
+        .filter((row) =>
+          row.user_id === userId
+          && row.device_id === deviceId
+          && row.machine_key !== machineKey
+        )
+        .sort((left, right) => Number(left.last_seen_at ?? 0) - Number(right.last_seen_at ?? 0))
+        .slice(0, Number(limit)) as T[];
+    }
     const [userId] = values;
     let rows = this.rows.filter((row) => row.user_id === userId);
     if (normalized.includes("order by last_seen_at desc")) {
@@ -192,21 +210,54 @@ class FakeD1Database {
         machine_key: String(machineKey),
         created_at: Number(createdAt),
         expires_at: Number(expiresAt),
+        reserved_at: null,
       });
       return 1;
     }
+    if (normalized.includes("update machine_pairing_grants")) {
+      // Phase two, failure: put the row back exactly as it was. Only the
+      // reservation this request took may be cleared, and `expires_at` is not
+      // in the statement at all — an extended TTL would be the bug.
+      if (normalized.includes("set reserved_at = null")) {
+        const [grantHash, userId, machineKey, reservedAt] = values;
+        const row = this.pairingGrants.find((entry) =>
+          entry.grant_hash === grantHash
+          && entry.user_id === userId
+          && entry.machine_key === machineKey
+          && entry.reserved_at === Number(reservedAt)
+        );
+        if (!row) return 0;
+        row.reserved_at = null;
+        return 1;
+      }
+      // Phase one: the same single-statement guarantee the delete used to give.
+      // User, machine, and expiry are all in the WHERE clause, plus "not held
+      // by another in-flight registration", so a worker that loosens any of
+      // them fails here instead of being absorbed.
+      const [reservedAt, grantHash, userId, machineKey, nowMs, staleBefore] = values;
+      const row = this.pairingGrants.find((entry) =>
+        entry.grant_hash === grantHash
+        && entry.user_id === userId
+        && entry.machine_key === machineKey
+        && entry.expires_at > Number(nowMs)
+        && (entry.reserved_at === null || entry.reserved_at <= Number(staleBefore))
+      );
+      if (!row) return 0;
+      row.reserved_at = Number(reservedAt);
+      return 1;
+    }
     if (normalized.includes("delete from machine_pairing_grants")) {
-      // Mirror the source's single-statement redemption exactly: user, machine,
-      // and expiry are all part of the WHERE clause, so a test that loosens any
-      // of them in the worker fails here instead of being absorbed.
+      // Phase two, success. Bound to the reservation this request took: a
+      // consume that dropped `reserved_at` from the predicate could destroy a
+      // grant another registration is holding.
       if (normalized.includes("grant_hash = ?")) {
-        const [grantHash, userId, machineKey, nowMs] = values;
+        const [grantHash, userId, machineKey, reservedAt] = values;
         const before = this.pairingGrants.length;
         this.pairingGrants = this.pairingGrants.filter((row) =>
           !(row.grant_hash === grantHash
             && row.user_id === userId
             && row.machine_key === machineKey
-            && row.expires_at > Number(nowMs))
+            && row.reserved_at === Number(reservedAt))
         );
         return before - this.pairingGrants.length;
       }
@@ -299,9 +350,17 @@ class FakeD1Database {
       return 1;
     }
     if (normalized.includes("delete from machines")) {
-      const [userId, machineKey] = values;
+      const [userId, machineKey, deviceId] = values;
+      // The supersede delete carries the device id it was authorized by; the
+      // removal delete does not. Honoring it here means a worker that drops the
+      // predicate stops being covered by these tests.
+      const scopedToDevice = normalized.includes("device_id = ?");
       const before = this.rows.length;
-      this.rows = this.rows.filter((row) => row.user_id !== userId || row.machine_key !== machineKey);
+      this.rows = this.rows.filter((row) =>
+        row.user_id !== userId
+        || row.machine_key !== machineKey
+        || (scopedToDevice && row.device_id !== deviceId)
+      );
       return before - this.rows.length;
     }
     if (normalized.includes("delete from device_authorizations")) {
@@ -1909,6 +1968,85 @@ describe("machine directory", () => {
   });
 });
 
+const DEVICE_SECRET = "daemon-device-secret-with-at-least-32-bytes";
+
+/**
+ * Drive a real `/device/*` sign-in end to end and return the grant it hands
+ * back. Nothing here is faked past the Clerk token endpoint: the browser
+ * confirmation, the OAuth state round-trip, and the one-time redemption all
+ * run, because those steps are exactly what a removed machine cannot perform.
+ */
+async function completeDeviceLogin(
+  env: Env & { DB: FakeD1Database },
+  args: { machineKey?: string; sub?: string; now?: number } = {},
+): Promise<{ grant: string | null; accessToken: string }> {
+  const now = args.now ?? Date.now();
+  const accessToken = await mintToken({ sub: args.sub ?? "user_1" });
+  const created = await handleRequest(
+    request("POST", "/device/code", undefined, {
+      device_secret: DEVICE_SECRET,
+      ...(args.machineKey ? { machine_key: args.machineKey } : {}),
+    }),
+    env,
+    { now: () => now },
+  );
+  const device = await created.json() as Record<string, unknown>;
+  const approval = await handleRequest(
+    deviceConfirmationRequest(String(device.user_code)),
+    env,
+    { now: () => now },
+  );
+  const state = new URL(approval.headers.get("location")!).searchParams.get("state")!;
+  const tokenExchange = (async () => new Response(JSON.stringify({
+    access_token: accessToken,
+    refresh_token: "approved-refresh-token",
+    token_type: "Bearer",
+    expires_in: 3600,
+  }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+  await handleRequest(
+    new Request(`https://directory.test/device/callback?code=one-time-code&state=${encodeURIComponent(state)}`),
+    env,
+    { now: () => now, fetchImpl: tokenExchange },
+  );
+  const redeemed = await handleRequest(
+    request("POST", "/device/token", undefined, {
+      device_code: device.device_code,
+      device_secret: DEVICE_SECRET,
+    }),
+    env,
+    { now: () => now + 6_000 },
+  );
+  const payload = await redeemed.json() as Record<string, unknown>;
+  return {
+    grant: typeof payload.pairing_grant === "string" ? payload.pairing_grant : null,
+    accessToken,
+  };
+}
+
+/** Register `machine-a`, then remove it, leaving a live revocation. */
+async function removedMachine(
+  env: Env & { DB: FakeD1Database },
+  token: string,
+): Promise<ReturnType<typeof activityRelayStub>> {
+  await register(env, token, "machine-a");
+  const relay = activityRelayStub();
+  await handleRequest(
+    request("DELETE", "/account/machines/machine-a", token),
+    env,
+    relay.options,
+  );
+  relay.calls.length = 0;
+  return relay;
+}
+
+function pairingRequest(token: string, body: Record<string, unknown>): Request {
+  return request("POST", "/account/machines/register", token, {
+    ...registerBody("machine-a"),
+    pairing: true,
+    ...body,
+  });
+}
+
 /**
  * The second, independent proof that a `pairing: true` registration is backed
  * by a human who just signed in.
@@ -1921,85 +2059,6 @@ describe("machine directory", () => {
  * the only thing that can be doing the work.
  */
 describe("device-login pairing grants", () => {
-  const DEVICE_SECRET = "daemon-device-secret-with-at-least-32-bytes";
-
-  /**
-   * Drive a real `/device/*` sign-in end to end and return the grant it hands
-   * back. Nothing here is faked past the Clerk token endpoint: the browser
-   * confirmation, the OAuth state round-trip, and the one-time redemption all
-   * run, because those steps are exactly what a removed machine cannot perform.
-   */
-  async function completeDeviceLogin(
-    env: Env & { DB: FakeD1Database },
-    args: { machineKey?: string; sub?: string; now?: number } = {},
-  ): Promise<{ grant: string | null; accessToken: string }> {
-    const now = args.now ?? Date.now();
-    const accessToken = await mintToken({ sub: args.sub ?? "user_1" });
-    const created = await handleRequest(
-      request("POST", "/device/code", undefined, {
-        device_secret: DEVICE_SECRET,
-        ...(args.machineKey ? { machine_key: args.machineKey } : {}),
-      }),
-      env,
-      { now: () => now },
-    );
-    const device = await created.json() as Record<string, unknown>;
-    const approval = await handleRequest(
-      deviceConfirmationRequest(String(device.user_code)),
-      env,
-      { now: () => now },
-    );
-    const state = new URL(approval.headers.get("location")!).searchParams.get("state")!;
-    const tokenExchange = (async () => new Response(JSON.stringify({
-      access_token: accessToken,
-      refresh_token: "approved-refresh-token",
-      token_type: "Bearer",
-      expires_in: 3600,
-    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
-    await handleRequest(
-      new Request(`https://directory.test/device/callback?code=one-time-code&state=${encodeURIComponent(state)}`),
-      env,
-      { now: () => now, fetchImpl: tokenExchange },
-    );
-    const redeemed = await handleRequest(
-      request("POST", "/device/token", undefined, {
-        device_code: device.device_code,
-        device_secret: DEVICE_SECRET,
-      }),
-      env,
-      { now: () => now + 6_000 },
-    );
-    const payload = await redeemed.json() as Record<string, unknown>;
-    return {
-      grant: typeof payload.pairing_grant === "string" ? payload.pairing_grant : null,
-      accessToken,
-    };
-  }
-
-  /** Register `machine-a`, then remove it, leaving a live revocation. */
-  async function removedMachine(
-    env: Env & { DB: FakeD1Database },
-    token: string,
-  ): Promise<ReturnType<typeof activityRelayStub>> {
-    await register(env, token, "machine-a");
-    const relay = activityRelayStub();
-    await handleRequest(
-      request("DELETE", "/account/machines/machine-a", token),
-      env,
-      relay.options,
-    );
-    relay.calls.length = 0;
-    return relay;
-  }
-
-  function pairingRequest(token: string, body: Record<string, unknown>): Request {
-    return request("POST", "/account/machines/register", token, {
-      ...registerBody("machine-a"),
-      pairing: true,
-      ...body,
-    });
-  }
-
   it("mints a grant only for a device login that declared a machine key", async () => {
     const withMachine = makeEnv();
     const withMachineResult = await completeDeviceLogin(withMachine, { machineKey: "machine-a" });
@@ -2213,5 +2272,409 @@ describe("device-login pairing grants", () => {
 
     await expect(cleanupExpiredPairingGrants(env, now)).resolves.toBe(1);
     expect(env.DB.pairingGrants.map((row) => row.machine_key)).toEqual(["machine-live"]);
+  });
+});
+
+/**
+ * A grant is the ONLY way back for a machine whose token carries no freshness
+ * claim, so destroying one on a failure the user did not cause is the same
+ * lockout the grant was introduced to prevent. Redemption is therefore two
+ * phases — reserve, then consume or release — and these tests hold both the
+ * safety property (single-use survives) and the liveness property (an outage
+ * costs a retry, not a credential) at once.
+ */
+describe("two-phase pairing-grant redemption", () => {
+  it("returns the grant unchanged when the relay hand-off fails, then lets the retry spend it", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-a" });
+    const mintedExpiry = env.DB.pairingGrants[0]!.expires_at;
+
+    const failing = activityRelayStub(() => new Response("down", { status: 503 }));
+    const outage = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      failing.options,
+    );
+
+    expect(outage.status).toBe(503);
+    expect(await outage.json()).toMatchObject({ code: "activity_relay_unavailable" });
+    expect(env.DB.revocations).toHaveLength(1);
+    // Back exactly as it was. `expires_at` is the load-bearing assertion: a
+    // release that re-issued the grant with a fresh TTL would let anyone who
+    // can force relay failures keep one alive indefinitely.
+    expect(env.DB.pairingGrants).toHaveLength(1);
+    expect(env.DB.pairingGrants[0]).toMatchObject({
+      reserved_at: null,
+      expires_at: mintedExpiry,
+    });
+
+    // The retry the refusal implies now works, with no second sign-in.
+    const retry = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(retry.status).toBe(200);
+    expect(env.DB.revocations).toEqual([]);
+    // Consumed on success: two phases must not become two chances.
+    expect(env.DB.pairingGrants).toEqual([]);
+  });
+
+  it("ignores a reservation left behind by a crashed worker but honors a live one", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedMachine(env, token);
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-a" });
+
+    // Another registration is mid-relay with this grant right now. Single-use
+    // is what the reservation is for, so this one gets nothing.
+    env.DB.pairingGrants[0]!.reserved_at = Date.now();
+    const contended = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(contended.status).toBe(403);
+    expect(await contended.json()).toMatchObject({ code: "pairing_authentication_required" });
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.pairingGrants).toHaveLength(1);
+
+    // Same row, but the holder died without consuming or releasing it. Without
+    // the staleness bound the grant would now be unspendable until it expired
+    // — a lockout with extra steps.
+    env.DB.pairingGrants[0]!.reserved_at = Date.now() - (PAIRING_GRANT_RESERVATION_MS + 1_000);
+    const recovered = await handleRequest(
+      pairingRequest(token, { pairingGrant: grant }),
+      env,
+      relay.options,
+    );
+    expect(recovered.status).toBe(200);
+    expect(env.DB.pairingGrants).toEqual([]);
+    expect(env.DB.revocations).toEqual([]);
+  });
+});
+
+/**
+ * Phantom duplicates. A client that rotates its machine key — a reinstall, a
+ * wiped config directory, a restored backup — lands as a SECOND row for one
+ * physical computer, because rows are keyed `(user_id, machine_key)`. The user
+ * then removes the row that looks stale, and half the time that is the live
+ * install: the incident this whole change exists to stop.
+ */
+describe("device supersede", () => {
+  const DEVICE_ID = "device-macbook";
+
+  function registerForDevice(
+    machineKey: string,
+    body: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return { ...registerBody(machineKey), deviceId: DEVICE_ID, ...body };
+  }
+
+  it("folds a reinstalled machine's old key into the new one on a proven re-pair", async () => {
+    const env = makeEnv();
+    const staleToken = await mintToken({ sub: "user_1" });
+    await handleRequest(
+      request("POST", "/account/machines/register", staleToken, registerForDevice("machine-old")),
+      env,
+    );
+
+    // The reinstall: same computer, new identity file, and a human who just
+    // signed in to produce it.
+    const reinstalled = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerForDevice("machine-new"),
+      ),
+      env,
+    );
+
+    expect(reinstalled.status).toBe(200);
+    expect(await reinstalled.json()).toMatchObject({
+      machineKey: "machine-new",
+      supersededMachineKeys: ["machine-old"],
+    });
+    expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+    // No revocation for the superseded key. The physical device holds the new
+    // one; blocking the old would trapdoor any client that rolls its identity
+    // file back into a permanent refusal.
+    expect(env.DB.revocations).toEqual([]);
+  });
+
+  it("leaves duplicates alone for a plain-token register", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await handleRequest(
+      request("POST", "/account/machines/register", token, registerForDevice("machine-old")),
+      env,
+    );
+
+    // `deviceId` is caller-supplied. Without proof of a fresh human, honoring
+    // it would let any machine name another's device id and delete its row.
+    const rotated = await handleRequest(
+      request("POST", "/account/machines/register", token, registerForDevice("machine-new", {
+        // Even asserting intent changes nothing: the flag is client-supplied too.
+        pairing: true,
+      })),
+      env,
+    );
+
+    expect(rotated.status).toBe(200);
+    expect(await rotated.json()).not.toHaveProperty("supersededMachineKeys");
+    expect(env.DB.rows.map((row) => row.machine_key).sort()).toEqual(["machine-new", "machine-old"]);
+  });
+
+  it("supersedes on a grant-backed pairing register and spends the grant exactly once", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await handleRequest(
+      request("POST", "/account/machines/register", token, registerForDevice("machine-old")),
+      env,
+    );
+    const { grant } = await completeDeviceLogin(env, { machineKey: "machine-new" });
+
+    const rotated = await handleRequest(
+      request("POST", "/account/machines/register", token, registerForDevice("machine-new", {
+        pairing: true,
+        pairingGrant: grant,
+      })),
+      env,
+    );
+
+    expect(rotated.status).toBe(200);
+    expect(await rotated.json()).toMatchObject({ supersededMachineKeys: ["machine-old"] });
+    expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+    expect(env.DB.pairingGrants).toEqual([]);
+  });
+
+  it("never supersedes across accounts", async () => {
+    const env = makeEnv();
+    const other = await mintToken({ sub: "user_2" });
+    await handleRequest(
+      request("POST", "/account/machines/register", other, registerForDevice("machine-old")),
+      env,
+    );
+
+    const mine = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerForDevice("machine-new"),
+      ),
+      env,
+    );
+
+    expect(await mine.json()).not.toHaveProperty("supersededMachineKeys");
+    expect(env.DB.rows.map((row) => row.machine_key).sort()).toEqual(["machine-new", "machine-old"]);
+  });
+
+  it("supersedes at most five rows per call and finishes the job on the next one", async () => {
+    const env = makeEnv();
+    const staleToken = await mintToken({ sub: "user_1" });
+    for (let index = 0; index < 7; index += 1) {
+      await handleRequest(
+        request("POST", "/account/machines/register", staleToken, registerForDevice(`machine-old-${index}`)),
+        env,
+      );
+    }
+
+    const first = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerForDevice("machine-new"),
+      ),
+      env,
+    );
+
+    // One request must never delete an unbounded slice of the roster.
+    expect(((await first.json()) as { supersededMachineKeys: string[] }).supersededMachineKeys)
+      .toHaveLength(MAX_SUPERSEDED_MACHINES);
+    expect(env.DB.rows).toHaveLength(3);
+
+    const second = await handleRequest(
+      request(
+        "POST",
+        "/account/machines/register",
+        await mintFreshAuthToken("user_1"),
+        registerForDevice("machine-new"),
+      ),
+      env,
+    );
+    expect(((await second.json()) as { supersededMachineKeys: string[] }).supersededMachineKeys)
+      .toHaveLength(2);
+    expect(env.DB.rows.map((row) => row.machine_key)).toEqual(["machine-new"]);
+  });
+});
+
+/**
+ * Every refusal here is a user who cannot get their computer back onto their
+ * account, and by the time they ask for help the request is long gone. These
+ * lines are the only window support has into WHY a call was turned away — the
+ * tables record what the state is, never that.
+ */
+describe("refusal observability", () => {
+  const LONG_MACHINE_KEY = "machine-key-0123456789abcdef";
+  const LONG_DEVICE_ID = "device-id-0123456789abcdef";
+  const CORRELATION_ID = "3f1d9c4e-2b7a-4c8d-9e5f-6a1b2c3d4e5f";
+
+  /** Structured lines only; the request-lifecycle log shares the channel. */
+  function captureRefusals(): Array<Record<string, unknown>> {
+    const lines: Array<Record<string, unknown>> = [];
+    vi.spyOn(console, "log").mockImplementation((value: unknown) => {
+      if (typeof value !== "string") return;
+      try {
+        const parsed = JSON.parse(value) as Record<string, unknown>;
+        if (typeof parsed.event === "string") lines.push(parsed);
+      } catch {
+        // Not one of ours.
+      }
+    });
+    return lines;
+  }
+
+  function correlatedRegister(token: string, body: Record<string, unknown>): Request {
+    return new Request("https://directory.test/account/machines/register", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ade-correlation-id": CORRELATION_ID,
+      },
+      body: JSON.stringify({
+        ...registerBody(LONG_MACHINE_KEY),
+        deviceId: LONG_DEVICE_ID,
+        ...body,
+      }),
+    });
+  }
+
+  async function removedLongKeyMachine(
+    env: Env & { DB: FakeD1Database },
+    token: string,
+  ): Promise<ReturnType<typeof activityRelayStub>> {
+    await handleRequest(correlatedRegister(token, {}), env);
+    const relay = activityRelayStub();
+    await handleRequest(
+      request("DELETE", `/account/machines/${LONG_MACHINE_KEY}`, token),
+      env,
+      relay.options,
+    );
+    relay.calls.length = 0;
+    return relay;
+  }
+
+  it("emits one joinable line per refused registration and never a whole key", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedLongKeyMachine(env, token);
+    const lines = captureRefusals();
+
+    const heartbeat = await handleRequest(correlatedRegister(token, {}), env, relay.options);
+
+    expect(heartbeat.status).toBe(403);
+    expect(lines).toEqual([{
+      ts: expect.any(String),
+      svc: "ade-account-directory",
+      event: "directory.register_refused",
+      userId: "user_1",
+      machineKeyPrefix: "machine-",
+      deviceIdPrefix: "device-i",
+      code: "machine_revoked",
+      // Ties the line to the request the client already logged.
+      correlationId: CORRELATION_ID,
+    }]);
+    // Prefixes, not identifiers: a machine key is capability-shaped.
+    expect(JSON.stringify(lines)).not.toContain(LONG_MACHINE_KEY);
+    expect(JSON.stringify(lines)).not.toContain(LONG_DEVICE_ID);
+  });
+
+  it("separates a missing proof from a rejected one", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedLongKeyMachine(env, token);
+    const lines = captureRefusals();
+
+    await handleRequest(correlatedRegister(token, { pairing: true }), env, relay.options);
+    await handleRequest(
+      correlatedRegister(token, { pairing: true, pairingGrant: "not-a-real-grant" }),
+      env,
+      relay.options,
+    );
+
+    // Same wire code both times — the contract is unchanged — but support's
+    // first question is always which of the two it was: a client that never
+    // presented a grant, or one whose grant was expired, replayed, or foreign.
+    expect(lines.map((line) => [line.code, line.reason])).toEqual([
+      ["pairing_authentication_required", "no_proof"],
+      ["pairing_authentication_required", "grant_rejected"],
+    ]);
+    expect(JSON.stringify(lines)).not.toContain("not-a-real-grant");
+  });
+
+  it("reports a relay outage on both the re-pair and the removal that needs it", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relay = await removedLongKeyMachine(env, token);
+    const failing = activityRelayStub(() => new Response("down", { status: 503 }));
+    const lines = captureRefusals();
+
+    await handleRequest(
+      correlatedRegister(await mintFreshAuthToken("user_1"), { pairing: true }),
+      env,
+      failing.options,
+    );
+    expect(lines).toEqual([expect.objectContaining({
+      event: "directory.register_refused",
+      code: "activity_relay_unavailable",
+      reason: expect.stringContaining("503"),
+    })]);
+
+    lines.length = 0;
+    // Put the machine back so there is a live row to remove, this time with a
+    // relay that answers.
+    await handleRequest(
+      correlatedRegister(await mintFreshAuthToken("user_1"), { pairing: true }),
+      env,
+      relay.options,
+    );
+    await handleRequest(
+      request("DELETE", `/account/machines/${LONG_MACHINE_KEY}`, token),
+      env,
+      failing.options,
+    );
+    expect(lines).toEqual([expect.objectContaining({
+      event: "directory.remove_refused",
+      machineKeyPrefix: "machine-",
+      deviceIdPrefix: "device-i",
+      code: "activity_purge_failed",
+    })]);
+  });
+
+  it("records a duplicate the caller could not prove its way past", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await handleRequest(correlatedRegister(token, {}), env);
+    const lines = captureRefusals();
+
+    const rotated = await handleRequest(
+      correlatedRegister(token, { machineKey: "machine-key-rotated" }),
+      env,
+    );
+
+    // The registration itself succeeded — only the dedup was refused — and
+    // "why is my Mac listed twice" is the question this line answers.
+    expect(rotated.status).toBe(200);
+    expect(lines).toEqual([expect.objectContaining({
+      event: "directory.supersede_refused",
+      code: "supersede_authentication_required",
+      reason: "duplicates=1",
+    })]);
   });
 });

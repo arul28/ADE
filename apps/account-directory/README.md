@@ -59,11 +59,10 @@ nothing at all. Two proofs are accepted, either one sufficient:
 2. **A pairing grant (fallback).** 32 random bytes minted at `POST /device/token`
    — the one interactive sign-in this Worker runs end to end — stored as a
    SHA-256 digest in `machine_pairing_grants`, bound to the signing-in user and
-   to the `machine_key` declared back at `POST /device/code`, valid for
-   `PAIRING_GRANT_TTL_MS` (10 minutes), and redeemed by a single conditional
-   `DELETE` so it is spendable exactly once. A removed machine holding only an
-   old access token cannot obtain one: minting requires completing the browser
-   half of the device flow.
+   to the `machine_key` declared back at `POST /device/code`, and valid for
+   `PAIRING_GRANT_TTL_MS` (10 minutes). A removed machine holding only an old
+   access token cannot obtain one: minting requires completing the browser half
+   of the device flow.
 
 The fallback exists because path 1 fails closed and ADE's brain authenticates
 with a Clerk **OAuth access token**, whose documented claim set does not include
@@ -74,6 +73,93 @@ A refusal answers `403` with `code: "pairing_authentication_required"` and an
 actionable message rather than a bare status. An accepted re-pair clears the
 relay's revocation first, so a machine is never back on the roster while still
 unable to publish.
+
+### Spending a grant takes two phases
+
+A grant is spendable exactly once, but a spend is not a single `DELETE`. The
+relay hand-off that follows can fail, and destroying the grant before knowing
+the outcome meant a relay outage burned the only credential a reinstalled
+machine had — the same lockout the grant exists to prevent, moved one step
+later. So redemption is:
+
+1. **Reserve.** One atomic `UPDATE ... SET reserved_at` whose `WHERE` still
+   carries every rule (this user, this machine, inside its TTL, not already
+   held). `changes === 1` is the whole proof, so two concurrent registrations
+   can no more both spend it than they could before.
+2. **Consume** (`DELETE`, scoped to that reservation) once the relay agrees, or
+   **release** (`SET reserved_at = null`) when it does not.
+
+A release restores the row exactly as it was. `expires_at` is never rewritten,
+so an attacker who can force relay failures gains nothing beyond the TTL the
+grant was minted with. A reservation older than `PAIRING_GRANT_RESERVATION_MS`
+(60 s) is ignored, so a Worker that dies mid-hand-off strands the grant for a
+minute rather than until it expires.
+
+## Superseding a rotated machine key
+
+Machines are keyed `(user_id, machine_key)`, so a client that rotates its
+identity file — a reinstall, a wiped config directory, a restored backup —
+arrives as a **second row for one physical computer**. The user then removes the
+row that looks stale, and half the time that is the live install.
+
+A register call whose `deviceId` matches other rows on the same account
+therefore deletes those rows and reports them:
+
+```json
+{ "machineKey": "...", "supersededMachineKeys": ["<older key>"] }
+```
+
+The field is additive and omitted when nothing was superseded, so existing
+clients are unaffected. Two rules bound it:
+
+- **Same trust bar as a re-pair.** `deviceId` is caller-supplied and forgeable,
+  so on a plain token it authorizes nothing — otherwise any machine could claim
+  another's device id and delete its row. The call must carry proven-fresh
+  interactive authentication or spend a pairing grant, exactly as un-revoking
+  does. A grant is only spendable on `pairing: true`; the claim is honored on
+  any register, because it is a property of a token this Worker verified.
+- **At most 5 rows per call**, oldest-seen first. The rest go on the next proven
+  re-pair.
+
+Superseded keys get **no** `revoked_machines` row. The physical device holds the
+new key, and blocking the old one would trapdoor any client that rolls its
+identity file back into a permanent refusal; an absent key simply registers
+again. The relay is not called either — the device never left the account, so
+its Activity is still the user's own.
+
+## Refusal logs
+
+Every refusal on this Worker is a user who cannot get their computer back onto
+their account, and by the time they ask for help the request is gone. Each
+refusal path emits exactly one structured line to `console.log` (Workers
+observability runs at `head_sampling_rate: 1`):
+
+```json
+{"event":"directory.register_refused","userId":"user_…","machineKeyPrefix":"abcdef12",
+ "deviceIdPrefix":"01234567","code":"machine_revoked","correlationId":"…"}
+```
+
+`event` is one of `directory.register_refused`, `directory.remove_refused`, or
+`directory.supersede_refused`; `code` is the wire code the client received
+(`machine_revoked`, `pairing_authentication_required`,
+`activity_relay_unavailable`, `activity_purge_failed`,
+`supersede_authentication_required`), and an optional `reason` carries the finer
+classification support actually needs — `no_proof` versus `grant_rejected`, or
+the relay's own failure text. `correlationId` joins the line to the request the
+client logged.
+
+Identifiers appear as **8-character prefixes only**. A machine key is
+capability-shaped and a grant is a live credential; no full key, token, or grant
+is ever logged.
+
+There is no admin route for restoring a machine by hand, and this change did not
+add one: the Worker has no secret-gated inbound surface to extend
+(`DIRECTORY_AUTH_SECRET` is outbound provenance for the relay, not an inbound
+credential), and adding one would be a new authentication boundary guarding
+exactly the tables `wrangler d1 execute --env production` already reaches.
+Support recovery is a direct D1 statement — typically
+`delete from revoked_machines where user_id = ? and machine_key = ?` — after the
+refusal logs above identify the row.
 
 Machine registration and list records may carry a `pubkey` string. Current ADE
 hosts publish `ed25519:<raw-32-byte-base64>` so clients can verify and seal
