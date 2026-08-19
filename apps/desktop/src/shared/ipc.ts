@@ -83,6 +83,13 @@ export const IPC = {
   diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   /** Renderer-detected failure asking main to consider one automatic send. */
   diagnosticsAutoReport: "ade.diagnostics.autoReport",
+  /**
+   * "Send a report to ADE", pressed by hand in Settings, with nothing visibly
+   * broken. Main owns the report, the per-device manual budget and the upload;
+   * unlike the automatic path it answers with what happened, because someone is
+   * watching.
+   */
+  diagnosticsSendManual: "ade.diagnostics.sendManual",
   /** Read the "share diagnostics automatically" setting. */
   diagnosticsGetSharing: "ade.diagnostics.getSharing",
   /** Flip that setting; also what the toast's "Turn off" action calls. */

@@ -729,6 +729,7 @@ import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
@@ -919,6 +920,14 @@ declare global {
          * not an instruction, and its answer is deliberately uninteresting.
          */
         autoReport: (context: DiagnosticReportRequestPayload) => Promise<void>;
+        /**
+         * The one member here that IS individually optional, and the exception
+         * proves the group's rule: `diagnostics` shipped before this existed,
+         * so a preload that exposes the group need not expose this. The
+         * settings control checks for it and hides itself rather than offering
+         * a button that cannot work.
+         */
+        sendManual?: () => Promise<DiagnosticsManualSendResult>;
         getSharing: () => Promise<DiagnosticsSharingStatus>;
         setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
         revealReport: (reportPath: string) => Promise<void>;

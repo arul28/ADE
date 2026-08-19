@@ -602,19 +602,51 @@ carries only a short stub: GitHub rejects issue URLs somewhere north of 8 KB, so
 characters) and falls back to a title-and-stub URL past it. The full report
 rides the clipboard.
 
+Those surfaces all share one property: something has already visibly broken. A
+user whose app merely *feels* wrong has nothing to press, so **General → Privacy
+→ Diagnostics sharing** also carries a **Send a report to ADE** button
+(`renderer/components/settings/DiagnosticsSharingSection.tsx` →
+`IPC.diagnosticsSendManual` → `autoDiagnosticsService.sendManual()`). It builds
+and uploads the same redacted report the error screens do, under surface
+`settings_manual` and `auto: false`, so a report somebody asked for stays
+separable server-side from one nobody chose to file. It does not open GitHub:
+the point is the send, and the result line offers **View report** for the saved
+copy.
+
+Two things it deliberately does not share with the automatic sender:
+
+- **Its own budget.** Manual sends are capped at
+  `MAX_MANUAL_DIAGNOSTICS_PER_WINDOW` (5 per 24h per install), counted apart
+  from the automatic 3 — matching the account directory's per-identity daily
+  quota so the client never refuses a report the server would still have
+  accepted. Neither budget can spend the other: pressing the button cannot
+  silence the automatic reports that explain a crash, and a crash loop that has
+  burned its three automatic sends cannot lock a user out of asking for help.
+- **Consent.** The toggle governs what ADE sends *by itself*; a deliberate click
+  is not that, so a manual send is allowed with the toggle off — and when it is
+  off, the pane says so next to the button, and the click never flips it back on.
+
+Refusals are three separate sentences, because they are three separate
+situations: the local cap ("you've already sent 5 from this computer today"),
+the account directory's per-caller 429 ("you've already sent several today"),
+and its fleet-wide 429 or 503 ("ADE isn't accepting reports right now"). The
+route answers the two 429s with distinct bodies precisely so a client can tell
+them apart; `uploadDiagnosticReport` reads the body and maps the fleet one to
+`unavailable`. No status code ever reaches the screen.
+
 | Piece | Where |
 | --- | --- |
 | Pure builder + redactor | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` |
 | Shared collection (logs, disk, notes, redaction context) | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` (`collectMachineDiagnosticSources`) |
 | Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
-| IPC | `IPC.diagnosticsOpenIssue` |
+| IPC | `IPC.diagnosticsOpenIssue`; manual send from Settings: `IPC.diagnosticsSendManual` |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
 | Headless equivalent | `ade report-issue [--open] [--send]` |
 | Headless state check | `ade doctor` → the **Diagnostics sharing** row (consent + today's spend) |
 | Settings toggle | `general.diagnostics-sharing` (General → Privacy, `#diagnostics-sharing`, default **on**, hidden on hosted web) |
 | Automatic sending (desktop) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` |
 | Automatic sending (brain) | `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` |
-| Consent flag + shared daily budget | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` → `~/.ade/secrets/diagnostics-autosend.json` |
+| Consent flag + the two daily budgets (automatic and manual) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` → `~/.ade/secrets/diagnostics-autosend.json` |
 | Upload (opt-in) | `POST /diagnostics/upload` on the account directory Worker (`apps/account-directory/src/diagnostics.ts`); one client for both senders — the renderer button and the CLI — in `apps/desktop/src/shared/diagnosticsUpload.ts` |
 
 `ade report-issue` and the desktop button read the same machine sources through

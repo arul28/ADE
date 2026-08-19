@@ -54,10 +54,26 @@ const DEFAULT_UPLOAD_TIMEOUT_MS = 20_000;
  */
 export type DiagnosticUploadFailure =
   | "too_large"
+  /** THIS caller has stored its allowance of reports today. */
   | "rate_limited"
+  /** Nothing to do with this caller: the fleet's day is spent, or the route is down. */
   | "unavailable"
   | "rejected"
   | "network";
+
+/**
+ * The fleet-wide 429's body, mirrored from `apps/account-directory/src/diagnostics.ts`.
+ *
+ * The route answers two DISTINCT 429s on purpose — one about the caller's own
+ * quota, one about the whole fleet's daily ceiling — because only the first is
+ * something the caller can do anything about. Telling someone "you have sent
+ * several today" when in fact ADE stopped taking reports from everyone is a
+ * lie, and the wire already carries enough to avoid it.
+ *
+ * A literal rather than an import: the Worker is a separate deploy unit and this
+ * module is loaded by the renderer, main and the CLI. Change one, change both.
+ */
+const FLEET_BUDGET_EXHAUSTED_ERROR = "daily diagnostics budget exhausted";
 
 export type DiagnosticUploadResult =
   | { ok: true; id: string; reference: string }
@@ -182,7 +198,21 @@ export async function uploadDiagnosticReport(
   }
 
   if (response.status === 413) return { ok: false, reason: "too_large" };
-  if (response.status === 429) return { ok: false, reason: "rate_limited" };
+  if (response.status === 429) {
+    // Which 429 is it? A body we cannot read falls back to the caller-scoped
+    // reading, which is what this returned before there were two of them —
+    // the conservative answer, since it only ever asks the user to wait.
+    let body = "";
+    try {
+      body = await response.text();
+    } catch {
+      body = "";
+    }
+    return {
+      ok: false,
+      reason: body.includes(FLEET_BUDGET_EXHAUSTED_ERROR) ? "unavailable" : "rate_limited",
+    };
+  }
   if (response.status === 503) return { ok: false, reason: "unavailable" };
   if (!response.ok) return { ok: false, reason: "rejected" };
 

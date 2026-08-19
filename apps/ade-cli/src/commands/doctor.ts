@@ -112,8 +112,18 @@ export type DoctorInput = {
   diagnostics?: DoctorDiagnosticsSharing | null;
 };
 
-/** What the shared auto-diagnostics ledger says, verbatim. */
-export type DoctorDiagnosticsSharing = ReturnType<typeof readAutoDiagnosticsState>;
+/**
+ * What the shared auto-diagnostics ledger says about AUTOMATIC sharing.
+ *
+ * Narrowed to the three fields this row reads rather than the ledger's whole
+ * view: the ledger also reports the separate manual-send budget, and `ade
+ * doctor` is a health check for what the machine does on its own — a report a
+ * person deliberately asked for is not a diagnostic about the machine.
+ */
+export type DoctorDiagnosticsSharing = Pick<
+  ReturnType<typeof readAutoDiagnosticsState>,
+  "enabled" | "sendsInWindow" | "limit"
+>;
 
 export type DoctorCommandOptions = {
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
@@ -895,7 +905,12 @@ export function readAutoDiagnosticsSharingForDoctor(
   env: NodeJS.ProcessEnv = process.env,
 ): DoctorDiagnosticsSharing | null {
   try {
-    return readAutoDiagnosticsState(resolveAutoDiagnosticsStateFile(adeDir, env));
+    // Projected down to the automatic budget rather than handed over whole:
+    // the ledger also tracks the separate manual-send budget, and this row is
+    // about what the machine does on its own.
+    const { enabled, sendsInWindow, limit } =
+      readAutoDiagnosticsState(resolveAutoDiagnosticsStateFile(adeDir, env));
+    return { enabled, sendsInWindow, limit };
   } catch {
     return null;
   }
