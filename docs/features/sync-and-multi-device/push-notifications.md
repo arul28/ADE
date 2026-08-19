@@ -399,7 +399,7 @@ code is typed as a plain string across the version boundary — a newer brain ma
 name a refusal an older desktop has never heard of, and anything unrecognized
 (including absence) must read as "unknown", never as "not that code".
 
-Three entry points reach it:
+Four entry points reach it:
 
 - `ade machines reconnect` (alias `repair`), which takes no machine selector
   because a brain can only lift its own machine's revocation. When the directory
@@ -415,6 +415,13 @@ Three entry points reach it:
   device-login recovery when the directory demands fresh proof, and reports the
   honest outcome — including the case where the machine re-joined but push has
   not resumed.
+- `machinePairingAutoRecovery`, the brain's own slow loop, which calls the same
+  function unattended once a refusal has been latched for a while. A headless
+  box has no Settings button to press, so without it a stale row or a key
+  rotation left the machine off the account permanently. It runs on a persisted
+  6-hour budget and stays idle for the first ten minutes after a revocation, so
+  it can never undo a removal the user just performed — see *Getting back on
+  after a refusal* in [README.md](./README.md#getting-back-on-after-a-refusal).
 
 ## Brain publisher
 

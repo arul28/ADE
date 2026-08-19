@@ -8,6 +8,7 @@ import {
   type DoctorInput,
 } from "./doctor";
 import { createSyncAccountDirectoryHealth } from "../../../desktop/src/shared/types/sync";
+import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../services/account/accountMachinePublisherService";
 
 const NOW = Date.parse("2026-07-23T12:00:00.000Z");
 
@@ -324,6 +325,22 @@ describe("doctor row evaluation", () => {
     expect(rows.find((row) => row.key === "publish")?.detail).not.toContain("ade brain restart");
   });
 
+  it("keeps the directory refusal sentence on a long-failing publish row", () => {
+    // A refused machine is terminal, so by the time anyone runs doctor it is
+    // always in the ≥2min branch — the one that used to print the bare state.
+    const input = healthyInput();
+    input.publishHealth = createSyncAccountDirectoryHealth(
+      "http_error",
+      PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+      { failingSinceMs: NOW - 6 * 60_000, lastHttpStatus: 403 },
+    );
+
+    const publish = evaluateDoctorRows(input).find((row) => row.key === "publish");
+
+    expect(publish?.status).toBe("fail");
+    expect(publish?.detail).toContain(PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE);
+  });
+
   it("points an unreadable account session at `ade brain restart`", () => {
     // Desktop's Connections panel shows a Repair (brain restart) button for
     // this state; the CLI has to name the same remedy or an agent is stuck.
@@ -389,6 +406,41 @@ describe("doctor row evaluation", () => {
     expect(relay?.detail).toBe(
       "Another ADE process owns the relay connection for this machine.",
     );
+  });
+
+  it("reports the needs-reconnect reason over a stale relay self-probe failure", () => {
+    const input = healthyInput();
+    input.relayHealth = {
+      ...input.relayHealth!,
+      relayControlConnected: false,
+      relayBridgeValidated: false,
+      relayEndToEndVerifiedAt: null,
+      // Kept across control generations by the tunnel client, so a machine that
+      // is now capped still reports whatever its last probe said.
+      relayEndToEndFailure: "Relay self-probe skipped because the control socket is not connected.",
+      // What the brain ranks into skipReason once the rotation budget is spent.
+      skipReason: "This computer needs to be reconnected to your ADE account.",
+      lastControlError: "claim failed (409)",
+    };
+
+    const relay = evaluateDoctorRows(input).find((row) => row.key === "relay");
+
+    expect(relay?.status).toBe("fail");
+    expect(relay?.detail).toBe("This computer needs to be reconnected to your ADE account.");
+  });
+
+  it("still reports a self-probe failure while relay control is connected", () => {
+    const input = healthyInput();
+    input.relayHealth = {
+      ...input.relayHealth!,
+      relayEndToEndVerifiedAt: null,
+      relayEndToEndFailure: "Relay echo never came back.",
+    };
+
+    const relay = evaluateDoctorRows(input).find((row) => row.key === "relay");
+
+    expect(relay?.status).toBe("fail");
+    expect(relay?.detail).toBe("Relay echo never came back.");
   });
 
   it("compares release versions without depending on tag formatting", () => {

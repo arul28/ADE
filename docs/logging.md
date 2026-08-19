@@ -314,8 +314,11 @@ rejected every action was silent. The channel is deliberately **not** added to
 `MEANINGFUL_ACTIONS`: that set defines the durable `usage_events` mutation
 ledger, and joining it would write a mutation row per brain call. Instead the
 `callAction` error path emits exactly two properties: `action_domain`, the ADE
-action domain, allowlisted against the registry's closed
-`ADE_ACTION_DOMAIN_NAMES` list; and `error_code`, the structured code from
+action domain, allowlisted against the closed `ADE_ACTION_DOMAIN_NAMES` list in
+`services/adeActions/domains.ts` — its own zero-import module, because
+`registry.ts` pulls in the whole runtime service graph and the analytics policy
+needs only the names, which is why it used to keep a hand-written copy of all
+of them; and `error_code`, the structured code from
 `codedError`/`Error.code`/the RPC `code:` prefix — the code only, never the
 message, never a path, and `ipc_timeout` or `unknown` when there is no code.
 Because codes are an open code-authored vocabulary (seeing an unpredicted one is

@@ -235,7 +235,7 @@ itself and the snapshot builder may read through a different handle — without
 it, setting a PIN returned a snapshot claiming there wasn't one.
 
 Relay status is likewise one projection: `buildSyncCloudRelayStatus` in
-`syncCloudRelayStore.ts`, used by both the scoped and machine paths so the
+`syncCloudRelayStatus.ts`, used by both the scoped and machine paths so the
 desktop and the CLI cannot tell two different relay stories about one machine.
 Its `accountSignedIn` gate is *ownership*, not usability — see
 [remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
@@ -563,8 +563,10 @@ Runtime support files outside `services/sync/`:
   the directory records a revocation before deleting the machine row and then
   asks the relay to purge that machine's Activity, and a failed purge surfaces as
   a typed `AccountMachineActivityPurgeError` (`machineRemoved: true`) rather than
-  a clean success. Getting back on requires `machinePairingRepair.ts` and proof
-  of a fresh interactive sign-in — see `push-notifications.md`.
+  a clean success. Getting back on requires `machinePairingRepair.ts` and either
+  proof of a fresh interactive sign-in or a spent pairing grant — pressed by the
+  user, or run unattended by `machinePairingAutoRecovery.ts` once the refusal has
+  outlived the ten-minute quiet window. See `push-notifications.md`.
 - `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts`
   and `workspace/webWorkspaceModel.ts` — hosted-browser directory/session
   projection. `mergeWebMachines` merges account rows with browser-saved
@@ -632,6 +634,26 @@ Runtime support files outside `services/sync/`:
   (`decrypt_failure`, `no_os_key_material`, `store_format`, `session_parse`,
   `read_error`, `unknown`) that `accountAuthService.getSessionReadFailureReason()`
   supplies. See [logging](../../logging.md).
+  Every registration also carries `deviceId` and, when this host can produce
+  one, `hardwareId` — the two identifiers the directory dedups a rotated machine
+  key on. The anchor is read on the publish path rather than inside
+  `buildAccountMachineRegistration`, because the account id is its salt and the
+  builder has no account context (it also runs on the relay-state poll, which
+  only compares route signatures and sends nothing); a reader that throws or is
+  absent is an ordinary "no anchor" and never the reason a publication fails.
+  It is sent on the heartbeat as well as on a deliberate pairing, because a row
+  can only be matched later if it stored an anchor at some point — but storing
+  one authorizes nothing, and superseding still demands the same proof
+  un-revoking does. A directory that answers with `supersededMachineKeys` is
+  reporting which rows it retired for this device; the publisher hands them to
+  the identity store (`confirmSupersededMachineKeys`, on the *same* store
+  instance the machine key comes from, so a confirmation cannot be checked
+  against a different read of the same file), logs only the subset this machine
+  actually retired as `account.machine_identity_superseded_confirmed`, and
+  treats an older directory's empty or absent body as nothing to do. Nothing
+  downstream acts on it: it exists so an unexplained rotation is explainable,
+  which is what nobody could do the last time a working MacBook was deleted by
+  hand.
   Successful account sign-in also requests an immediate publish; the brain
   observes both its local auth event and cross-process credential-file changes
   from desktop sign-in. Separately, a lightweight 2-second observer computes a
@@ -672,6 +694,77 @@ Runtime support files outside `services/sync/`:
   `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
   hatch. Source-checkout runtimes and non-development custom issuers keep their
   existing override behavior.
+- `apps/ade-cli/src/services/account/hardwareAnchor.ts` — the one piece of
+  machine identity a reinstall cannot destroy. Both halves of ADE's identity
+  live under `~/.ade` (the machine key in `sync-cloud-relay.json`, the device id
+  in `sync-device-id`), so a user who deletes that directory and signs in again
+  mints both afresh, the directory's device dedup has nothing to match on, and
+  the account keeps a phantom row for a computer the user owns once. The
+  operating system still knows this machine after the wipe — `IOPlatformUUID`
+  via `ioreg`, `MachineGuid` via the GLOBALROOT-resolved `reg.exe` (a bare
+  `reg` would let a planted binary choose this machine's identity),
+  `/etc/machine-id` or the dbus fallback on Linux. Three rules govern the
+  module. **The raw identifier never leaves the process**: what goes on the wire
+  is `sha256("ade-machine-anchor-v2:" + userId + ":" + rawUuid + ":" +
+  adeHomePath)`, salted with the account id, so one computer signed into two
+  accounts produces two unrelated values and no server-side join can correlate
+  them. **An anchor identifies an ADE install, not a chassis**: the platform
+  UUID is shared by every ADE on the box (Stable in `~/.ade`, Beta in
+  `~/.ade-beta`, a second OS user's home), and hashing it alone made all of them
+  one machine taking turns superseding each other's row, so the canonicalized
+  ADE home path is folded in — a wipe and reinstall lands on the same path and
+  still reproduces the same anchor, which is the whole point. On Windows that
+  path goes through `canonicalWindowsPath` and is lowercased, because an 8.3
+  short name or a differently-cased spelling of one NTFS directory would
+  otherwise split one install into two machines. **It is optional end to end**:
+  a VM with no platform UUID, a hardened image with no machine-id, a sandbox
+  that refuses to spawn `ioreg` all yield null, and every caller behaves exactly
+  as it did before the anchor existed. The probe is bounded at 2 s and cached
+  for the process lifetime including the negative answer, so a machine with no
+  anchor does not respawn `ioreg` twice a minute. `normalizeHardwareAnchorUuid`
+  rejects the two ways these lookups "succeed" while saying nothing — an empty
+  value and the all-zero firmware sentinel, which would be shared by every
+  unprovisioned machine on the account. The `-v2` domain ships no migration and
+  needs none: a v1-hashed row simply stops matching and dedups on `device_id`,
+  as every pre-anchor client's row always did.
+- `apps/ade-cli/src/services/account/machinePairingAutoRecovery.ts` — automatic
+  recovery from "this computer is not in your account any more". Both refusals
+  the directory can answer with are terminal for the heartbeat by design, and
+  were terminal for the machine too: the only way back was a human finding
+  **Reconnect this computer**, which nobody ever sees on a headless box. This
+  loop polls the publisher every 15 s and runs the identical brain action the
+  button runs — it widens nothing, so a genuine removal is refused exactly as it
+  is today. An episode starts on a latched refusal (`machine_revoked` or
+  `pairing_authentication_required`, decoded by the shared
+  `accountMachineRefusal.ts` so the repairer and the reporter cannot disagree
+  about what a response meant) or on a publish leg stuck in `snapshot_failed`
+  for two minutes, and attempts run 1 minute, 5 minutes, then hourly. Three
+  gates keep it from arguing with the user. A revocation younger than
+  `PAIRING_AUTO_REPAIR_REVOCATION_QUIET_MS` (10 minutes) is left alone: that
+  window deliberately mirrors `PAIRING_AUTH_FRESHNESS_MS` in the Worker's
+  `callerToken.ts`, because inside it the directory would still accept the
+  sign-in this machine authenticated with — so a repair sent then is precisely
+  the one that would succeed at undoing a removal the user just performed. The
+  budget is the persisted 6-hour allowance in the identity file, not a closure,
+  since the brain restarts far more often than six hours. And a repair with no
+  account session is not attempted at all, so the schedule slips instead of
+  burning budget proving it. A `snapshot_failed` episode gets exactly one cycle:
+  a publish leg that cannot read a snapshot is not a pairing problem. Everything
+  it does is logged (`account.machine_auto_repair_episode_started`,
+  `_started`, `_failed`, `account.machine_auto_repaired`,
+  `_budget_exhausted`, `_episode_ended`) and none of it changes user-visible
+  state — an exhausted budget simply stops arguing and leaves whatever the
+  publisher already reports.
+- `apps/desktop/src/shared/accountMachineRefusal.ts` — `readAccountRefusalCode`,
+  the single decoder for "why did the directory refuse to register this
+  machine", read by the auto-recovery loop above and by the desktop's
+  reliability telemetry. **403 only**: a 401 is an authentication problem with a
+  different repair, and counting it as a refusal both mis-attributes the
+  incident and hides the auth failure behind it. A refusal is the directory
+  looking at a valid caller and saying no. An unrecognised 403 resolves to
+  `"other"` rather than to null — "turned away for a reason this build cannot
+  name" is exactly the fact the last incident needed — and the server's prose in
+  `lastHttpReason` never travels past this function.
 - `apps/ade-cli/src/services/credentials/credentialStore.ts` — the per-machine
   credential store behind the account session. Two implementations share one
   interface. `EncryptedFileCredentialStore` owns the AES-GCM
@@ -695,7 +788,15 @@ Runtime support files outside `services/sync/`:
   `getLastReadState() === "unreadable"` with a coarse
   `getLastReadFailureReason()` of `decrypt_failure`, `no_os_key_material`, or
   `store_format`. It never writes an empty store over ciphertext it could not
-  decrypt.
+  decrypt. The Electron store records the same two verdicts, because it has one
+  branch that returns an empty view instead of throwing: an aborted legacy
+  migration, where there is no safeStorage file *and* the legacy file store
+  could not decrypt the one that exists. Returning `{}` there without saying so
+  is what let a machine with credentials on disk render as one that was never
+  signed in — see [onboarding and settings → GitHub connection
+  status](../onboarding-and-settings/README.md#github-connection-status-has-the-same-third-state),
+  where the same distinction drives the desktop's `credentialStoreUnreadable`
+  state.
 - `apps/ade-cli/src/services/credentials/osBoundKeyMaterial.ts` — everything
   about obtaining the machine-local secret the file store's key is derived
   from: the `security` invocations, the process-wide cache, the negative-cache
@@ -717,7 +818,83 @@ Runtime support files outside `services/sync/`:
   trusted web-client CORS response exposes that header. Every request also
   receives a validated/generated `X-ADE-Correlation-ID`, echoed on the
   response and included in one privacy-safe structured completion log; trusted
-  web CORS exposes the id and allows the request header.
+  web CORS exposes the id and allows the request header. Registration also
+  **supersedes phantom duplicates**: because machines are keyed
+  `(user_id, machine_key)`, a client that rotates its identity file arrives as a
+  second row for one physical computer, and the owner then deletes whichever row
+  looks stale — half the time the live one. A register call whose `deviceId`
+  *or* `hardwareId` matches other rows on the same account deletes them (at most
+  `MAX_SUPERSEDED_MACHINES`, five, oldest-seen first) and reports them as
+  `supersededMachineKeys`, a field that is additive and omitted when empty. Both
+  identifiers are caller-supplied and therefore forgeable, so on a plain token
+  they authorize nothing: the call must carry the same proof un-revoking needs.
+  It **folds** rather than merely deleting — the one thing a superseded row
+  holds that the new one cannot rebuild is `custom_name`, so the most recently
+  seen superseded name is carried onto the survivor, and only onto a survivor
+  with no name of its own, since a name set on the new row is the fresher
+  statement of intent. The carry-forward and the deletes go out as one
+  `DB.batch()`, because the pairing grant is already spent by the time they run
+  and a half-finished loop would strand phantoms with no credential left to
+  clear them. Superseded keys get no `revoked_machines` row: the physical device
+  holds the new key, and blocking the old one would trapdoor any client that
+  rolls its identity file back; the relay is not called either, because the
+  device never left the account and its Activity is still the user's own.
+- `apps/account-directory/src/callerToken.ts` — Clerk token verification for
+  every route that takes a caller bearer, and the definition of *proven-recent
+  interactive authentication*. `pairing: true` arrives in the request body, so
+  on its own it is an unauthenticated client boolean — a removed-but-still-
+  signed-in machine could set it on its next heartbeat and make the Worker a
+  confused deputy clearing its own removal. Authentication **time** is the
+  credential a removed machine cannot mint: a background heartbeat carries an
+  old authentication even after its access token is refreshed (a refresh renews
+  `exp`/`iat`, never the moment a human authenticated), while a real sign-in
+  carries a new one. `PAIRING_AUTH_FRESHNESS_MS` (10 minutes) is the bound, read
+  from `auth_time` or Clerk's `fva` and never from `iat`, and it fails closed —
+  a token with no such claim proves nothing, which is why a pairing grant exists
+  as the second path. The module declares the slice of the env it needs rather
+  than importing `Env`, which is what keeps an import cycle back into
+  `directory.ts` from forming.
+- `apps/account-directory/src/pairingGrants.ts` — minting, reserving, consuming,
+  releasing, and expiring the single-use grants. A spend is **two phases**, not
+  one `DELETE`: an atomic `UPDATE ... SET reserved_at` whose `WHERE` still
+  carries every rule (this user, this machine, inside its TTL, not already
+  held), proven by `changes === 1`, and then either a scoped `DELETE` once the
+  relay agrees or `SET reserved_at = null` when it does not. Destroying the
+  grant before knowing the relay's answer meant a relay outage burned the only
+  credential a reinstalled machine had — the same lockout the grant exists to
+  prevent, moved one step later. A release restores the row exactly as it was,
+  `expires_at` included, so forcing relay failures buys an attacker nothing
+  beyond the original TTL; a reservation older than
+  `PAIRING_GRANT_RESERVATION_MS` (60 s) counts as unheld, so a Worker that dies
+  mid-hand-off strands the grant for a minute rather than until it expires.
+- `apps/account-directory/src/activityRelay.ts`, `logging.ts`,
+  `trustedOrigin.ts` — the relay hand-off (revocation clear and Activity purge),
+  the structured-log helpers, and the CORS origin rules, split out of
+  `directory.ts` so each has one owner. Every refusal path emits exactly one
+  line — `directory.register_refused`, `.remove_refused`, or
+  `.supersede_refused` — carrying the wire `code` the client received, an
+  optional finer `reason` (`no_proof` versus `grant_rejected`, or the relay's
+  own failure text), and the request's correlation id. Every refusal is a user
+  who cannot get their computer back onto their account, and by the time they
+  ask for help the request is gone; Workers observability runs at
+  `head_sampling_rate: 1` so the line is always there. Identifiers appear as
+  **8-character prefixes only** — a machine key is capability-shaped and a grant
+  is a live credential. There is deliberately no admin restore route: it would
+  be a new authentication boundary guarding exactly the tables
+  `wrangler d1 execute --env production` already reaches, so support recovery is
+  a direct D1 statement after these logs identify the row.
+- `apps/account-directory/src/diagnostics.ts` — `POST /diagnostics/upload`, the
+  write-only R2 sink behind the desktop's **Send to ADE** action and
+  `ade report-issue --send`. It is matched in `index.ts` *before* the directory
+  router, because it is the one route here that is not account-scoped and the
+  directory's exact-origin CORS rule and 404-on-unknown-`OPTIONS` fit neither an
+  unauthenticated Electron renderer nor a CLI. Authentication is optional but
+  never silently downgraded, the body is capped at 512 KB by both
+  `content-length` and a counted stream, and the quota is five a day per signed-
+  in user or per `cf-connecting-ip`. See
+  [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-report-issue)
+  for the client half, and `apps/account-directory/README.md` for the full
+  contract and the R2 bucket + lifecycle setup the deploy does not do for you.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
   origin, bounded success/error response decoding, route allowlisting, machine
   selection, and paired endpoint validation shared by desktop, the brain, ADE
@@ -1594,21 +1771,54 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   the challenge signature input (`aead` field) so it cannot be downgraded by an
   on-path attacker. A client that sends no AEAD list, and both sides by default,
   fall back to `chacha20-poly1305`.
-- `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity, and
-  exports `buildSyncCloudRelayStatus`, the one projection of relay state that
-  the desktop and the CLI read whether a project scope owns sync or the brain
-  answers for the bare machine. Both surfaces had their own copy and they had
+- `syncCloudRelayStatus.ts` — `buildSyncCloudRelayStatus`, the one projection of
+  relay state that the desktop and the CLI read whether a project scope owns
+  sync (`syncService.ts`) or the brain answers for the bare machine
+  (`brainMachineSyncStores.ts`). Both surfaces had their own copy and they had
   already drifted in whitespace, one edit away from telling two different relay
   stories about one machine. `accountSignedIn` is the gate: without it the live
   fields collapse to their off values and `lastError` becomes the sign-in
-  prompt, so a signed-out machine never reports a connection it cannot have.
-  The identity itself lives at
+  prompt, so a signed-out machine never reports a connection it cannot have. It
+  is its own module rather than an export of the identity store because the two
+  have nothing in common but a name — one reads a file of secrets, the other
+  reshapes a status object — and the projection is imported by callers that
+  have no business constructing a store.
+- `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity at
   `~/.ade/secrets/sync-cloud-relay.json` (lazily-minted 32-hex `machineKey` +
-  HMAC `secret`, chmod `0600`). The identity is stable in normal operation.
+  HMAC `secret`, chmod `0600`). Two rules govern every path through it, both
+  bought by a production lockout in which a live MacBook became a stranger to
+  its own account: **an identity is never discarded while any copy on disk still
+  holds it**, and every mint, rotation, or recovery leaves one
+  `sync_cloud_relay.identity_rotated` line naming what changed and why. So the
+  file is written through `writeFileAtomic` (0600 temp, fsync, rename, then a
+  parent-directory fsync everywhere but Windows, which has no directory handle
+  to flush — and never a pre-unlink, which would leave a concurrent reader
+  looking at nothing) and mirrored to a `.bak` sibling *after* the primary
+  lands, so a
+  reader that falls back finds the last identity actually in force. A parse
+  failure is reported as a failure rather than as an empty object: conflating
+  "this machine has no identity yet" with "this machine's identity is
+  temporarily unreadable" is what minted a whole new machine out of one corrupt
+  file. Resolution keeps the machine key from whichever copy still has one and
+  pairs the secret with its own key; only a file pair that yields nothing at all
+  may mint, and it is logged as `corrupt_file_remint` rather than `first_mint`
+  so the roster phantom it may create is explainable.
+  The identity is stable in normal operation.
   Only a claim endpoint response with the exact HTTP status `409` can trigger
-  the tunnel client's one-attempt recovery: the store serializes competing
+  the tunnel client's recovery: the store serializes competing
   brains with an exclusive sibling lock, compare-and-swaps the expected
-  `machineKey`, and mints a replacement key + secret. Generic network, auth,
+  `machineKey`, and mints a replacement key + secret — at most twice per rolling
+  24 hours (`MAX_IDENTITY_ROTATIONS_PER_WINDOW`). That budget lives **in the
+  file**, not in a closure: an in-memory counter reset on every brain restart,
+  so a crash loop could mint one new machine row per boot and bury the owner's
+  roster in phantoms. A budget that cannot be parsed reads as spent, because
+  forgiving an unreadable counter is the same failure mode as not persisting it.
+  The file carries a second persisted allowance on the same terms —
+  `pairingAutoRepairs`, three per rolling six hours, spent by
+  `machinePairingAutoRecovery.ts` — and up to five `previousMachineKeys`, the
+  keys this machine actually retired, so `confirmSupersededMachineKeys` can tell
+  a directory confirming *our* rotation from one describing somebody else's
+  device; confirmed keys are then forgotten. Generic network, auth,
   upgrade, and bridge failures never rotate identity. Legacy `enabled` /
   `enabledSetByUser` fields are accepted only long enough to rewrite the file
   without them; there is no stored enablement or user kill-switch. The store
@@ -1730,6 +1940,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `.control_suppression_cleared`; one edge-triggered `ade_relay_suppressed`
   analytics event (coarse attempt count + `control_replaced` code, no URL,
   `machineKey`, or close reason) is captured per suppression episode.
+  A `409` claim conflict is the other regime. The client asks the identity store
+  to rotate, and when the store refuses because the persisted 24-hour budget is
+  spent it latches `identityRotationCapped` on its status and reports
+  `RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE` — "This computer needs to be
+  reconnected to your ADE account." — in place of the raw `claim failed (409)`.
+  That is not a retry state but a product state: another mint would be another
+  phantom row on the owner's roster, and the row this machine already owns is
+  the one that has to be repaired, which is the only thing `claim failed (409)`
+  never says. `syncRouteHealth.ts` ranks that message above the raw close text
+  for the same reason it ranks `controlSuppressedReason` above it. The latch is
+  cleared by the next successful claim and republished, so a repaired machine
+  stops asking to be repaired without a restart.
   Control observability
   preserves the causal failure rather than replacing it with a generic WebSocket error:
   upgrade rejection captures the HTTP status and at most 512 sanitized response
@@ -2227,6 +2449,62 @@ owner-scoped `PATCH /account/machines/:machineKey` with an additive, nullable
 hostname and reachability lease but never overwrites that custom name. Clients
 preserve both values and use `customName`, then the reported hostname, as the
 display precedence.
+
+### One computer, one row
+
+A directory row is keyed `(user_id, machine_key)`, and the machine key lives in
+a file. Anything that replaces that file — a reinstall, a wiped config
+directory, a restored backup, a relay claim conflict this machine recovered
+from — therefore produces a *second row for one physical computer*. The owner
+sees two, deletes the one that looks stale, and half the time that is the live
+install. Three mechanisms, each in a different layer, keep that from happening:
+
+- **The key is hard to lose.** `sync-cloud-relay.json` is written durably and
+  mirrored to a `.bak` sibling, an unreadable file is distinguished from an
+  absent one, and a machine key is preserved from whichever copy still holds it.
+  A new identity is minted only when both copies yield nothing.
+- **Rotations are budgeted and the budget is persisted.** Two per rolling 24
+  hours, counted in the identity file itself so a crash loop cannot mint one row
+  per boot. A machine that spends the budget stops minting and says so — "This
+  computer needs to be reconnected to your ADE account" — instead of retrying.
+- **The directory dedups what still gets through.** A register call that carries
+  proof of a fresh interactive sign-in (or spends a pairing grant) and whose
+  `deviceId` or `hardwareId` matches other rows on the account retires those
+  rows, folds the most recent user-typed `custom_name` onto the survivor, and
+  returns the retired keys. `hardwareId` is what covers the case `deviceId`
+  cannot: both the machine key and the device id live under `~/.ade`, so a full
+  wipe mints both afresh and matches nothing, while a per-account hash of an
+  OS-level machine identifier survives it. It is salted with the account id and
+  folded with the ADE home path, so it can neither correlate two accounts nor
+  merge a Beta install into Stable's row, and a host that cannot read one simply
+  omits it.
+
+### Getting back on after a refusal
+
+Removal is deliberately durable: the directory records a revocation before
+deleting the row, so a removed machine that still holds a valid account token
+cannot simply re-register itself. Getting back on needs a credential a removed
+machine cannot mint — either an access token whose *interactive* authentication
+happened within the last ten minutes, or the single-use pairing grant minted at
+the end of a device-flow sign-in. Spending a grant is two-phase (reserve, then
+consume or release) so a relay outage during the hand-off no longer burns the
+one credential a reinstalled machine had.
+
+That repair no longer requires a human. `machinePairingAutoRecovery` runs the
+same brain action the **Reconnect this computer** button runs, on a slow
+budgeted schedule (1 minute, 5 minutes, then hourly; three repairs per rolling
+six hours, persisted), for the two refusal codes and for a publish leg wedged in
+`snapshot_failed`. It widens nothing — a genuine removal is refused exactly as
+it would be interactively — and it holds off entirely while a revocation is less
+than ten minutes old, which is the same window in which the directory would
+still accept the machine's existing sign-in. Waiting that window out means the
+only repair this loop can land is one granted on stale-but-valid grounds: a
+stale row, a key rotation, a directory hiccup. A deliberate removal stands, and
+recovering from it needs the user's next interactive sign-in.
+
+Every refusal the Worker issues is also logged with its wire code, a finer
+`reason`, the correlation id, and 8-character identifier prefixes, because by
+the time a locked-out user asks for help the request itself is long gone.
 
 Account adoption captures the account owner/session generation and rechecks it
 before and after credential persistence so a late result cannot recreate trust

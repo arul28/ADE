@@ -766,7 +766,21 @@ desktop "Report issue" button: it reads only local files — it never starts or
 contacts the brain — so it still works on the machine where ADE itself will not
 come up, and on Windows where there is no desktop error screen to press. It
 prints a redacted diagnostic report plus a prefilled GitHub issue URL (`--open`
-also opens that URL, `--json` returns `{ installId, issueUrl, report }`).
+copies the report to the clipboard and opens that URL, `--json` returns
+`{ installId, issueUrl, copied, report }`).
+
+`--send` is the one part of this command that leaves the machine, and it is
+opt-in: it uploads the same redacted report to ADE over HTTPS and prints the
+reference id support quotes back. It is the headless counterpart to the desktop
+button's "Send to ADE", and it reads everything it needs — the account session,
+the directory origin — from local files, so it still works on a machine whose
+brain will not start. A signed-in machine attaches its account token; a
+signed-out one uploads anonymously against the install id already in the report.
+A failed or rate-limited send never changes the printed report or the exit code:
+it prints one line saying so and leaves the user holding everything they need to
+file the issue by hand. With `--json`, `sent` is present only when `--send` was
+asked for, as `{ ok: true, reference }` or `{ ok: false, reason }`, so a script
+can tell "not requested" from "requested and failed".
 
 There is no `ade recovery diagnose` / `ade recovery repair`: those are
 Electron-main IPC (`ade.recovery.diagnose` / `ade.recovery.repair`) backed by
