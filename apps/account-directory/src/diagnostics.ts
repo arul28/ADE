@@ -433,27 +433,51 @@ function parseUpload(contentType: string, raw: string, url: URL): ParsedUpload |
   };
 }
 
-async function withinDailyLimit(
+/**
+ * How much of this identity's day is already spent. READ ONLY.
+ *
+ * Both halves of the quota count STORED OBJECTS, never attempts — the durable
+ * half cannot do otherwise (it is a listing of what is in the bucket) and the
+ * fast path must agree with it or it is not a cache of it. Counting an attempt
+ * would let refusals the caller did not cause — a fleet budget that is out for
+ * the day, a bucket having a bad minute — burn a quota that exists to bound how
+ * much one caller can STORE, and lock an install out over nothing.
+ */
+async function spentToday(
   bucket: R2Bucket,
   identity: string,
   prefix: string,
   dayKey: string,
-): Promise<boolean> {
+): Promise<number> {
   const remembered = isolateUploadCounts.get(identity);
   const rememberedCount = remembered?.dayKey === dayKey ? remembered.count : 0;
-  if (rememberedCount >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) return false;
+  if (rememberedCount >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) return rememberedCount;
 
   // The durable half of the limit. `limit` stops one greedy prefix from
   // listing an unbounded page just to answer a yes/no question.
   const listed = await bucket.list({ prefix, limit: MAX_DIAGNOSTIC_UPLOADS_PER_DAY + 1 });
-  const stored = listed.objects.length;
-  const count = Math.max(stored, rememberedCount);
+  const count = Math.max(listed.objects.length, rememberedCount);
+  // A caller the listing shows is already full stays full for the rest of the
+  // day, so remembering that saves a listing on each further attempt. Still a
+  // count of STORED objects — it is the optimistic `count + 1` that was the bug.
+  if (count >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) remember(identity, dayKey, count);
+  return count;
+}
+
+function remember(identity: string, dayKey: string, count: number): void {
   if (isolateUploadCounts.size >= MAX_TRACKED_IDENTITIES) isolateUploadCounts.clear();
-  isolateUploadCounts.set(identity, {
-    dayKey,
-    count: count >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY ? count : count + 1,
-  });
-  return count < MAX_DIAGNOSTIC_UPLOADS_PER_DAY;
+  isolateUploadCounts.set(identity, { dayKey, count });
+}
+
+/**
+ * Advance the fast path, and only for an object that is actually in the bucket.
+ *
+ * Called after the `put` returns, so the counter tracks the listing rather than
+ * running ahead of it. The listing stays the authority either way: this only
+ * saves a class-A operation on the next request from the same caller.
+ */
+function rememberStored(identity: string, dayKey: string, spentBefore: number): void {
+  remember(identity, dayKey, spentBefore + 1);
 }
 
 export type DiagnosticsRequestOptions = {
@@ -542,7 +566,8 @@ export async function handleDiagnosticsRequest(
   const now = options.now?.() ?? Date.now();
   const dayKey = utcDayKey(now);
   const prefix = `reports/${dayKey}/${identity}/`;
-  if (!(await withinDailyLimit(bucket, identity, prefix, dayKey))) {
+  const spent = await spentToday(bucket, identity, prefix, dayKey);
+  if (spent >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) {
     logDiagnosticsUpload({
       outcome: "rejected",
       status: 429,
@@ -634,6 +659,10 @@ export async function handleDiagnosticsRequest(
     return json({ error: "diagnostics upload failed" }, { status: 502 });
   }
 
+  // Stored, so now it counts. Deliberately after the `put`, for the same reason
+  // the fleet budget refunds itself above: nothing that failed to reach the
+  // bucket may cost a caller part of the day they are allowed to store.
+  rememberStored(identity, dayKey, spent);
   logDiagnosticsUpload({
     outcome: "stored",
     status: 200,

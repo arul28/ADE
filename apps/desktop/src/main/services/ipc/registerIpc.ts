@@ -743,6 +743,7 @@ import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
@@ -811,9 +812,12 @@ import { openExternalUrl } from "../shared/externalLinks";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   collectDiagnosticReport,
+  diagnosticReportRoots,
+  resolveRevealableDiagnosticReport,
   writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
 import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
+import { MAX_AUTO_DIAGNOSTICS_PER_WINDOW } from "../diagnostics/autoDiagnosticsStore";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -4795,6 +4799,13 @@ export function registerIpc({
    * The renderer's failure surfaces (the crash boundaries) asking for one
    * automatic send. Main decides: the setting, the budget and the send all live
    * there, so a renderer that fires this repeatedly changes nothing.
+   *
+   * `projectRoot` is deliberately NOT taken from the payload. It selects which
+   * project's log directory gets read into the report, and a renderer is the
+   * one participant here that must not choose that — the only caller
+   * (`RendererErrorBoundary`) never sends one anyway. Main uses the project it
+   * already has open, or none. The manual `openIssue` path is unchanged: there
+   * a person is choosing to file about the screen they are looking at.
    */
   ipcMain.handle(
     IPC.diagnosticsAutoReport,
@@ -4808,13 +4819,14 @@ export function registerIpc({
         technicalDetail: typeof arg?.technicalDetail === "string"
           ? arg.technicalDetail.slice(0, 16_000)
           : null,
-        projectRoot: typeof arg?.projectRoot === "string" ? arg.projectRoot : null,
+        projectRoot: getCtx().project?.rootPath ?? null,
       });
     },
   );
 
   const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>
-    autoDiagnosticsService?.getStatus() ?? { enabled: true, sendsInWindow: 0, limit: 3 };
+    autoDiagnosticsService?.getStatus()
+    ?? { enabled: true, sendsInWindow: 0, limit: MAX_AUTO_DIAGNOSTICS_PER_WINDOW };
 
   ipcMain.handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
     diagnosticsSharingStatus());
@@ -4848,22 +4860,30 @@ export function registerIpc({
    *
    * Deliberately NOT `appRevealPath`: that one validates against the project
    * root and the user's Downloads/Documents/temp, and diagnostic reports live
-   * under `userData`. Widening that allowlist for every caller to serve one
-   * toast button would be the wrong trade; this handler carries the one
-   * directory it needs instead.
+   * outside all of those. Widening that allowlist for every caller to serve one
+   * toast button would be the wrong trade; this handler carries the two
+   * directories it needs instead.
+   *
+   * BOTH senders write reports, to different places — the desktop under
+   * `userData/diagnostic-reports`, the brain under
+   * `<adeHome>/diagnostic-reports` — and the brain's are precisely the ones a
+   * user is most likely to want, since a headless send is the one they were not
+   * present for. Allowing only the desktop's root left "View" on every brain
+   * toast throwing on click.
    */
   ipcMain.handle(
     IPC.diagnosticsRevealReport,
     async (_event, arg: { reportPath?: string } | undefined): Promise<void> => {
       const raw = typeof arg?.reportPath === "string" ? arg.reportPath.trim() : "";
       if (!raw) return;
-      const reportsDir = path.join(app.getPath("userData"), "diagnostic-reports");
-      let resolved: string;
-      try {
-        resolved = resolvePathWithinRoot(reportsDir, path.resolve(raw));
-      } catch {
-        throw new Error("Path is outside allowed directories.");
-      }
+      const resolved = resolveRevealableDiagnosticReport(
+        diagnosticReportRoots({
+          userDataDir: app.getPath("userData"),
+          adeDir: resolveMachineAdeLayout().adeDir,
+        }),
+        raw,
+      );
+      if (!resolved) throw new Error("Path is outside allowed directories.");
       shell.showItemInFolder(resolved);
     },
   );

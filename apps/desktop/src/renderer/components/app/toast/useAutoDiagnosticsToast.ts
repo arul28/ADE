@@ -15,7 +15,7 @@ import { showToast } from "./toastStore";
 export function useAutoDiagnosticsToast(): void {
   useEffect(() => {
     const bridge = window.ade?.diagnostics;
-    if (!bridge?.onAutoSent) return;
+    if (!bridge) return;
     return bridge.onAutoSent((payload) => {
       const reportPath = payload.reportPath?.trim() || "";
       showToast({
@@ -31,7 +31,7 @@ export function useAutoDiagnosticsToast(): void {
               action: {
                 label: "View",
                 onClick: () => {
-                  void window.ade?.diagnostics?.revealReport?.(reportPath).catch(() => undefined);
+                  void bridge.revealReport(reportPath).catch(() => undefined);
                 },
               },
             }
@@ -39,7 +39,7 @@ export function useAutoDiagnosticsToast(): void {
         secondaryAction: {
           label: "Turn off",
           onClick: () => {
-            void window.ade?.diagnostics?.setSharing?.(false).catch(() => undefined);
+            void bridge.setSharing(false).catch(() => undefined);
           },
         },
       });

@@ -109,10 +109,13 @@ export type ProjectRecoveryServiceDeps = {
    * everything except `healthy` and the transient `brain_starting`. Automatic
    * diagnostics listens here; the callback owns its own budget, so a screen
    * that re-diagnoses on every poll costs nothing.
+   *
+   * Carries only what the one listener uses. `state` is derivable from `code`
+   * and was passed unused, which is how a notification callback turns into a
+   * second, informal copy of the diagnosis type.
    */
   onTerminalDiagnosis?: (input: {
     code: AdeRecoveryErrorCode;
-    state: ProjectRecoveryDiagnosis["state"];
     projectRoot: string;
   }) => void;
   now?: () => number;
@@ -594,7 +597,7 @@ export class ProjectRecoveryService {
 
     if (state !== "healthy" && state !== "brain_starting") {
       try {
-        this.deps.onTerminalDiagnosis?.({ code, state, projectRoot: normalizedRoot });
+        this.deps.onTerminalDiagnosis?.({ code, projectRoot: normalizedRoot });
       } catch {
         // A listener must never cost the user their diagnosis.
       }

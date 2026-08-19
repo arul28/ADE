@@ -106,6 +106,72 @@ describe("auto diagnostics budget", () => {
     ).toEqual({ allowed: false, reason: "state_unavailable" });
   });
 
+  it("waits out a lock the holder releases instead of dropping the write", () => {
+    // The lock used to be one shot: a holder that released microseconds later
+    // still cost the caller its whole operation. Simulated by releasing on the
+    // second `now()` read, which is the retry loop's own tick.
+    const filePath = stateFile();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const lockPath = `${filePath}.lock`;
+    fs.mkdirSync(lockPath);
+    fs.utimesSync(lockPath, T0 / 1_000, T0 / 1_000);
+    let reads = 0;
+    const now = () => {
+      reads += 1;
+      if (reads === 1) fs.rmdirSync(lockPath);
+      return T0;
+    };
+
+    expect(
+      claimAutoDiagnosticsSend({ filePath, failureCode: "disk_full", source: "desktop", now }).allowed,
+    ).toBe(true);
+  });
+
+  it("lands a contended withdrawal of consent without eating the ledger", () => {
+    const filePath = stateFile();
+    const claim = claimAutoDiagnosticsSend({
+      filePath,
+      failureCode: "disk_full",
+      source: "desktop",
+      now: () => T0,
+    });
+    expect(claim.allowed).toBe(true);
+
+    // Another process is holding the lock and does not let go inside the wait.
+    const lockPath = `${filePath}.lock`;
+    fs.mkdirSync(lockPath);
+    fs.utimesSync(lockPath, T0 / 1_000, T0 / 1_000);
+
+    // Consent is the one write that may not be dropped, so it still lands —
+    // and it must not take the spend ledger down with it. The old fallback
+    // wrote whatever it had read and could silently reset the day's count.
+    expect(setAutoDiagnosticsEnabled(filePath, false, { now: () => T0 })).toBe(false);
+    expect(readAutoDiagnosticsState(filePath, { now: () => T0 })).toEqual({
+      enabled: false,
+      sendsInWindow: 1,
+      limit: 3,
+    });
+  });
+
+  // Directory permissions are the lever here, and `chmod` is a no-op on
+  // Windows; the behaviour it pins is platform-independent.
+  it.skipIf(process.platform === "win32")("reports the state on disk when a toggle cannot be persisted at all", () => {
+    const filePath = stateFile();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, enabled: true }), "utf8");
+    // Lock held AND the file itself unwritable: nothing can land. A consent
+    // pane must not then render an "off" that is really on.
+    const lockPath = `${filePath}.lock`;
+    fs.mkdirSync(lockPath);
+    fs.utimesSync(lockPath, T0 / 1_000, T0 / 1_000);
+    fs.chmodSync(path.dirname(filePath), 0o500);
+    try {
+      expect(setAutoDiagnosticsEnabled(filePath, false, { now: () => T0 })).toBe(true);
+    } finally {
+      fs.chmodSync(path.dirname(filePath), 0o700);
+    }
+  });
+
   it("hands a brain-side send to the desktop exactly once", () => {
     const filePath = stateFile();
     const claim = claimAutoDiagnosticsSend({

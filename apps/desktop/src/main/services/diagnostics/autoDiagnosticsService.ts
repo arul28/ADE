@@ -2,15 +2,19 @@ import type { ProductAnalyticsCapture } from "../../../shared/types/productAnaly
 import {
   resolveDiagnosticsUploadBaseUrl,
   uploadDiagnosticReport,
-  type DiagnosticUploadResult,
+  type DiagnosticUploadRequest,
 } from "../../../shared/diagnosticsUpload";
 import { writeDiagnosticReportFile } from "./diagnosticReportService";
 import {
-  claimAutoDiagnosticsSend,
-  completeAutoDiagnosticsSend,
+  runAutoDiagnosticsSend,
+  type AutoDiagnosticsLogger,
+  type AutoDiagnosticsOutcome,
+  type AutoDiagnosticsSentNotice,
+  type AutoDiagnosticsUploadResult,
+} from "./autoDiagnosticsSend";
+import {
   drainAutoDiagnosticsNotices,
   isAutoDiagnosticsEnabled,
-  normalizeAutoDiagnosticsFailureCode,
   readAutoDiagnosticsState,
   setAutoDiagnosticsEnabled,
   type AutoDiagnosticsNotice,
@@ -32,6 +36,10 @@ import {
  *   - a toast on every send, so it is never something that happened silently;
  *   - and total silence on failure. A user staring at a broken app must not
  *     also be told that the thing they did not ask for did not work.
+ *
+ * All of which is `runAutoDiagnosticsSend`, shared with the brain's sender.
+ * What lives here is only what is specific to the desktop: how a report gets
+ * built, that it uploads anonymously, and the toggle the settings pane reads.
  */
 
 export type AutoDiagnosticsRequest = {
@@ -44,23 +52,12 @@ export type AutoDiagnosticsRequest = {
   technicalDetail?: string | null;
 };
 
-export type AutoDiagnosticsOutcome =
-  | "completed"
-  | "skipped_disabled"
-  | "skipped_budget"
-  | "failed";
+export type { AutoDiagnosticsOutcome, AutoDiagnosticsSentNotice };
 
 export type AutoDiagnosticsReport = {
   report: string;
   filePath: string;
   installId: string;
-};
-
-export type AutoDiagnosticsSentNotice = {
-  failureCode: string;
-  /** Empty when the local copy could not be written; the toast hides "View". */
-  reportPath: string;
-  reference: string;
 };
 
 export type AutoDiagnosticsServiceDeps = {
@@ -69,19 +66,20 @@ export type AutoDiagnosticsServiceDeps = {
   buildReport: (request: AutoDiagnosticsRequest) => Promise<AutoDiagnosticsReport>;
   appVersion: string | null;
   /**
-   * Fires once per successful send; the desktop turns it into a toast. Returns
-   * whether a window actually received it — a send made while every window is
-   * closed is held pending rather than silently losing its toast.
+   * Fires once per successful send so a window that is up can toast
+   * immediately. It is a fast path only: the send is recorded pending either
+   * way and a renderer's drain is what actually retires it.
    */
-  onSent?: (notice: AutoDiagnosticsSentNotice) => boolean | void;
+  onSent?: (notice: AutoDiagnosticsSentNotice) => void;
   capture?: (input: ProductAnalyticsCapture) => void;
-  logger?: {
-    info?: (event: string, meta?: Record<string, unknown>) => void;
-    warn?: (event: string, meta?: Record<string, unknown>) => void;
-  };
-  /** Test seams. */
+  logger?: AutoDiagnosticsLogger;
+  /**
+   * Test seams. `upload` is typed by what this service needs of an answer
+   * rather than as `typeof uploadDiagnosticReport`, so a test can pass a plain
+   * stub instead of casting one through `as unknown as`.
+   */
   env?: NodeJS.ProcessEnv;
-  upload?: typeof uploadDiagnosticReport;
+  upload?: (request: DiagnosticUploadRequest) => Promise<AutoDiagnosticsUploadResult>;
   writeReportFile?: (filePath: string, report: string) => boolean;
   now?: () => number;
 };
@@ -93,13 +91,12 @@ export type AutoDiagnosticsService = {
   setEnabled: (enabled: boolean) => boolean;
   getStatus: () => { enabled: boolean; sendsInWindow: number; limit: number };
   /**
-   * Shows the toasts for sends the brain made while no window was listening.
-   * Called when a renderer subscribes, so there is no timer behind it.
+   * Shows the toasts for sends no renderer has drained yet — the brain's, and
+   * any this process made while no window was listening. Called when a renderer
+   * subscribes, so there is no timer behind it.
    */
   flushPendingNotices: () => AutoDiagnosticsNotice[];
 };
-
-const ANALYTICS_DEDUPE_MS = 60 * 60 * 1_000;
 
 export function createAutoDiagnosticsService(
   deps: AutoDiagnosticsServiceDeps,
@@ -113,130 +110,32 @@ export function createAutoDiagnosticsService(
   // that is already unwell.
   let inFlight = false;
 
-  const captureOutcome = (outcome: "completed" | "skipped_budget" | "failed"): void => {
-    try {
-      deps.capture?.({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: { feature: "connections", action: "auto_sent", outcome },
-        projectId: null,
-        dedupeKey: `diagnostics_auto_sent:${outcome}`,
-        minimumIntervalMs: ANALYTICS_DEDUPE_MS,
-      });
-    } catch {
-      // Analytics must never change what the diagnostics path does.
-    }
-  };
-
   const report = async (request: AutoDiagnosticsRequest): Promise<AutoDiagnosticsOutcome> => {
-    const failureCode = normalizeAutoDiagnosticsFailureCode(request.failureCode);
-    if (!failureCode) return "skipped_budget";
-    if (inFlight) return "skipped_budget";
+    if (inFlight) return "skipped_ineligible";
     inFlight = true;
     try {
-      if (!isAutoDiagnosticsEnabled(deps.stateFilePath)) return "skipped_disabled";
-      const claim = claimAutoDiagnosticsSend({
-        filePath: deps.stateFilePath,
-        failureCode,
+      return await runAutoDiagnosticsSend<AutoDiagnosticsReport>({
+        stateFilePath: deps.stateFilePath,
         source: "desktop",
-        now,
-      });
-      if (!claim.allowed) {
-        deps.logger?.info?.("diagnostics.auto_send_skipped", {
-          failureCode,
-          surface: request.surface,
-          reason: claim.reason,
-        });
-        if (claim.reason !== "disabled") captureOutcome("skipped_budget");
-        return claim.reason === "disabled" ? "skipped_disabled" : "skipped_budget";
-      }
-
-      let built: AutoDiagnosticsReport;
-      try {
-        built = await deps.buildReport({ ...request, failureCode });
-      } catch (error) {
-        deps.logger?.warn?.("diagnostics.auto_send_build_failed", {
-          failureCode,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        captureOutcome("failed");
-        return "failed";
-      }
-
-      // Saved exactly like a manual report, and before the upload: the local
-      // copy is the half of this the user can always still get to, so it must
-      // not depend on the network half working.
-      const written = writeReportFile(built.filePath, built.report);
-      const reportPath = written ? built.filePath : null;
-
-      let result: DiagnosticUploadResult;
-      try {
-        result = await upload({
-          baseUrl: resolveDiagnosticsUploadBaseUrl(env.ADE_ACCOUNT_DIRECTORY_URL),
-          report: built.report,
-          installId: built.installId === "unknown" ? null : built.installId,
-          appVersion: deps.appVersion,
-          auto: true,
-          failureCode,
-        });
-      } catch {
-        result = { ok: false, reason: "network" };
-      }
-
-      if (!result.ok) {
-        // Every failure is the same failure here, including a 429 from either
-        // the per-user or the fleet budget: the send does not happen, the log
-        // records why, and nothing reaches the screen. There is no retry — the
-        // reservation is already spent, which is what keeps a server saying no
-        // from turning into a machine asking repeatedly.
-        completeAutoDiagnosticsSend({
-          filePath: deps.stateFilePath,
-          failureCode,
-          atMs: claim.atMs,
-          reportPath,
-          reference: null,
-          pending: false,
-          now,
-        });
-        deps.logger?.warn?.("diagnostics.auto_send_failed", {
-          failureCode,
-          surface: request.surface,
-          reason: result.reason,
-        });
-        captureOutcome("failed");
-        return "failed";
-      }
-
-      let shown = false;
-      try {
-        shown = deps.onSent?.({
-          failureCode,
-          reportPath: reportPath ?? "",
-          reference: result.reference,
-        }) === true;
-      } catch {
-        // A broken listener must not turn a successful send into a failure.
-        shown = false;
-      }
-      completeAutoDiagnosticsSend({
-        filePath: deps.stateFilePath,
-        failureCode,
-        atMs: claim.atMs,
-        reportPath,
-        reference: result.reference,
-        // A send nobody has been shown yet — no window open, or none listening
-        // — stays pending until a renderer drains it.
-        pending: !shown,
-        now,
-      });
-      deps.logger?.info?.("diagnostics.auto_sent", {
-        failureCode,
+        analyticsSurface: "desktop",
+        failureCode: request.failureCode,
         surface: request.surface,
-        reference: result.reference,
-        shown,
+        build: (failureCode) => deps.buildReport({ ...request, failureCode }),
+        reportPathOf: (built) => (writeReportFile(built.filePath, built.report) ? built.filePath : null),
+        send: async (built, failureCode) =>
+          upload({
+            baseUrl: resolveDiagnosticsUploadBaseUrl(env.ADE_ACCOUNT_DIRECTORY_URL),
+            report: built.report,
+            installId: built.installId === "unknown" ? null : built.installId,
+            appVersion: deps.appVersion,
+            auto: true,
+            failureCode,
+          }),
+        onSent: deps.onSent,
+        logger: deps.logger,
+        capture: deps.capture,
+        now,
       });
-      captureOutcome("completed");
-      return "completed";
     } finally {
       inFlight = false;
     }

@@ -45,7 +45,7 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
       this.autoReported = true;
       // Main owns the setting and the budget; this is a request, and its answer
       // is deliberately uninteresting to a screen that is already broken.
-      void window.ade?.diagnostics?.autoReport?.({
+      void window.ade?.diagnostics?.autoReport({
         surface: "renderer_crash",
         code: "renderer_crash",
         headline: "ADE needs to reload this window",

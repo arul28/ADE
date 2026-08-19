@@ -33,7 +33,7 @@ function harness(overrides: Partial<AutoDiagnosticsServiceDeps> = {}) {
     appVersion: "1.2.3",
     env: {},
     now: () => T0,
-    upload: upload as unknown as AutoDiagnosticsServiceDeps["upload"],
+    upload,
     writeReportFile,
     onSent,
     capture,
@@ -111,7 +111,7 @@ describe("createAutoDiagnosticsService", () => {
   it("treats a rate-limited server as a silent skip, with no toast and no retry", async () => {
     const upload = vi.fn(async () => ({ ok: false as const, reason: "rate_limited" as const }));
     const { service, onSent, capture } = harness({
-      upload: upload as unknown as AutoDiagnosticsServiceDeps["upload"],
+      upload,
     });
 
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
@@ -134,7 +134,7 @@ describe("createAutoDiagnosticsService", () => {
       throw new Error("socket hang up");
     });
     const { service, onSent } = harness({
-      upload: upload as unknown as AutoDiagnosticsServiceDeps["upload"],
+      upload,
     });
 
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
@@ -142,10 +142,10 @@ describe("createAutoDiagnosticsService", () => {
     expect(onSent).not.toHaveBeenCalled();
   });
 
-  it("does not spend a send when the report cannot be built", async () => {
+  it("does not attempt an upload when the report cannot be built", async () => {
     const upload = vi.fn();
     const { service } = harness({
-      upload: upload as unknown as AutoDiagnosticsServiceDeps["upload"],
+      upload,
       buildReport: async () => {
         throw new Error("collector wedged");
       },
@@ -154,10 +154,16 @@ describe("createAutoDiagnosticsService", () => {
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
       .resolves.toBe("failed");
     expect(upload).not.toHaveBeenCalled();
+    // The reservation is NOT given back. What the budget bounds is how often
+    // this computer tries on its own, and a collector that wedges every time
+    // would otherwise retry the same failure forever.
+    expect(service.getStatus().sendsInWindow).toBe(1);
+    await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
+      .resolves.toBe("skipped_budget");
   });
 
-  it("holds a send nobody saw until a window drains it", async () => {
-    const { service, filePath } = harness({ onSent: () => false });
+  it("holds a send nobody was listening for until a window drains it", async () => {
+    const { service, filePath } = harness({ onSent: undefined });
 
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
       .resolves.toBe("completed");
@@ -169,6 +175,37 @@ describe("createAutoDiagnosticsService", () => {
     expect(fs.existsSync(filePath)).toBe(true);
   });
 
+  it("still holds the notice when a window took the fast-path toast", async () => {
+    // Regression: `webContents.send` does not throw when the renderer has
+    // crashed or has not mounted its toast host, so "a window existed" was
+    // being recorded as "the user was told" and the notice was retired
+    // unshown. A successful send is now ALWAYS pending until a renderer
+    // drains it; the immediate send is only a fast path.
+    const { service, onSent } = harness();
+
+    await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
+      .resolves.toBe("completed");
+
+    expect(onSent).toHaveBeenCalledTimes(1);
+    expect(service.flushPendingNotices()).toEqual([
+      { failureCode: "disk_full", reportPath: "/tmp/reports/report.md", reference: "abcd1234" },
+    ]);
+    // Drained once and only once, so the redundant delivery is bounded at one.
+    expect(service.flushPendingNotices()).toEqual([]);
+  });
+
+  it("records the send even when the toast listener throws", async () => {
+    const { service } = harness({
+      onSent: () => {
+        throw new Error("renderer is gone");
+      },
+    });
+
+    await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
+      .resolves.toBe("completed");
+    expect(service.flushPendingNotices()).toHaveLength(1);
+  });
+
   it("exposes the toggle the settings pane and the toast both write", async () => {
     const { service } = harness();
     expect(service.isEnabled()).toBe(true);
@@ -177,10 +214,39 @@ describe("createAutoDiagnosticsService", () => {
   });
 
   it("drops a failure code the server would refuse without touching the budget", async () => {
-    const { service, upload } = harness();
+    const { service, upload, capture } = harness();
+    // `skipped_ineligible`, not `skipped_budget`: nothing was refused and
+    // nothing was spent, and — as before — nothing is reported either.
     await expect(service.report({ failureCode: "   ", surface: "project_recovery" }))
-      .resolves.toBe("skipped_budget");
+      .resolves.toBe("skipped_ineligible");
     expect(upload).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
     expect(service.getStatus().sendsInWindow).toBe(0);
+  });
+
+  it("skips a second failure that fires while the first is still sending", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { service, upload } = harness({
+      buildReport: async (request) => {
+        await gate;
+        return {
+          report: `# report for ${request.failureCode}`,
+          filePath: "/tmp/reports/report.md",
+          installId: "install-1",
+        };
+      },
+    });
+
+    const first = service.report({ failureCode: "disk_full", surface: "project_recovery" });
+    // Same reason as above: never sent, never counted, never announced.
+    await expect(service.report({ failureCode: "db_integrity", surface: "project_recovery" }))
+      .resolves.toBe("skipped_ineligible");
+    release();
+    await expect(first).resolves.toBe("completed");
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(service.getStatus().sendsInWindow).toBe(1);
   });
 });

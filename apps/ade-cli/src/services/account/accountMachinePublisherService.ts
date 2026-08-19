@@ -634,8 +634,12 @@ export function createAccountMachinePublisherService(options: {
    * Fired once per failure episode with the health state as the code, so
    * automatic diagnostics can send one report for a machine that has quietly
    * dropped out of the account directory.
+   *
+   * Carries only the code. How long it had been failing is already on the
+   * episode's log line and on the analytics event beside it, and the threshold
+   * that decides "long enough" lives here rather than in a listener.
    */
-  onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"]; failingMs: number }) => void;
+  onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
 }) {
   const heartbeatMs = Math.max(1_000, Math.floor(options.heartbeatMs ?? ACCOUNT_MACHINE_HEARTBEAT_MS));
   const relayStatePollMs = Math.max(
@@ -857,7 +861,7 @@ export function createAccountMachinePublisherService(options: {
         // episode: this must never become a per-attempt loop.
         sustainedFailureReported = true;
         try {
-          options.onSustainedFailure?.({ code: state, failingMs });
+          options.onSustainedFailure?.({ code: state });
         } catch {
           // Best effort; health recording is what matters here.
         }
@@ -1774,10 +1778,7 @@ export function createBrainAccountMachinePublisherService(options: {
   logger: BrainAccountMachinePublisherLogger;
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
   /** See the same option on `createAccountMachinePublisherService`. */
-  onSustainedFailure?: (input: {
-    code: SyncAccountDirectoryHealth["state"];
-    failingMs: number;
-  }) => void;
+  onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
   /**
    * Override the machine power source. Tests pass `null` to keep the brain's
    * poll and gap timers out of a suite; a host with a precise suspend hook can

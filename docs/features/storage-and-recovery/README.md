@@ -738,16 +738,28 @@ toast, no error, no retry. The person is already looking at something broken;
 telling them the thing they did not ask for also did not work is not help.
 
 **Toast and toggle.** Every successful send raises one toast — *"A diagnostic
-report was sent to ADE"* — with **View** (reveals the saved `.md`, through a
-handler scoped to the reports directory rather than by widening
-`appRevealPath`'s allowlist) and **Turn off**. Settings → General → Privacy
-carries the same switch, *"Share diagnostics with ADE when something breaks"*,
-default **on**. The brain has no window to toast, so a headless send is left
-marked pending and drained into the same toast the next time a renderer
-subscribes — event-driven, nothing polls. The desktop and the brain can both
-report one incident; they carry different codes and surfaces, so both are
-individually useful, and the shared three-a-day ceiling bounds the duplication.
-Nothing else coordinates them, deliberately.
+report was sent to ADE"* — with **View** and **Turn off**. Settings → General →
+Privacy carries the same switch, *"Share diagnostics with ADE when something
+breaks"*, default **on**.
+
+**View** reveals the saved `.md` through a handler scoped to the two
+directories reports are written to — the desktop's
+`userData/diagnostic-reports` and the brain's `<adeHome>/diagnostic-reports` —
+rather than by widening `appRevealPath`'s allowlist. Both, because a headless
+send is exactly the one the user was not present for, so a brain report is the
+one they are most likely to open.
+
+Delivery is the ledger's job, not the window's. `webContents.send` does not
+throw when the receiving renderer has crashed or has not mounted its toast
+host, so a successful send is ALWAYS recorded pending and is retired only when
+a renderer drains it (`IPC.diagnosticsFlushAutoSent`, on subscribe —
+event-driven, nothing polls). The immediate send to open windows is a fast path
+on top of that; a window that gets both keys the toast on
+`diagnostics-auto-sent-<reference>` and sees one. The brain has no window at all
+and relies on the same drain. The desktop and the brain can both report one
+incident; they carry different codes and surfaces, so both are individually
+useful, and the shared three-a-day ceiling bounds the duplication. Nothing else
+coordinates them, deliberately.
 
 The button's disclosure text still holds for the manual path — nothing leaves
 the computer unless the user posts the issue or chooses **Send to ADE** — and

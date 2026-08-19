@@ -381,6 +381,22 @@ describe("useAutoDiagnosticsToast", () => {
     expect(api.bridge.diagnostics.setSharing).toHaveBeenCalledWith(false);
   });
 
+  it("shows one toast for a report delivered twice", () => {
+    // Main now keeps a successful send marked pending REGARDLESS of whether a
+    // window was sent the notice, because `webContents.send` cannot report that
+    // anything received it. So the fast-path send and the later drain can both
+    // arrive; keying on the reference is what makes that safe.
+    const api = installDiagnosticsApi();
+    render(React.createElement(AutoDiagnosticsHarness));
+
+    const payload = { failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" };
+    api.emit(payload);
+    api.emit(payload);
+
+    expect(getToasts()).toHaveLength(1);
+    expect(getToasts()[0]?.id).toBe("diagnostics-auto-sent-abcd1234");
+  });
+
   it("still offers the off switch when the local copy could not be written", () => {
     const api = installDiagnosticsApi();
     render(React.createElement(AutoDiagnosticsHarness));

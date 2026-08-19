@@ -297,11 +297,7 @@ describe("ProjectRecoveryService.diagnose", () => {
 
     await service.diagnose(root);
 
-    expect(onTerminalDiagnosis).toHaveBeenCalledWith({
-      code: "disk_full",
-      state: "disk_full",
-      projectRoot: root,
-    });
+    expect(onTerminalDiagnosis).toHaveBeenCalledWith({ code: "disk_full", projectRoot: root });
   });
 
   it("stays quiet for a healthy project and for a brain that is still starting", async () => {

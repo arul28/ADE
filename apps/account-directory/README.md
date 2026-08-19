@@ -204,7 +204,7 @@ commands and paste output is where most of them stalled.
 | Auth | **Optional** `Authorization: Bearer <Clerk token>`, verified exactly as the account routes verify it. Absent, the upload is anonymous. A header that is sent and does not verify — or does not even parse as `Bearer <token>` — is `401`, never silently downgraded. A Worker with no Clerk configuration answers `503`, exactly as the account routes do |
 | Origin | `403` when the browser reports `sec-fetch-site: cross-site` from a real remote origin. ADE's own senders are unaffected: the CLI sends no fetch-metadata header, and the Electron renderer's `null` (packaged `file://`) and loopback (development) origins are exempt |
 | Size | `413` above 512 KB. `content-length` is checked first, then the stream is counted as it arrives, so a missing or dishonest length changes nothing |
-| Per-caller limit | 5 per UTC day per user (signed in) or per `cf-connecting-ip` (anonymous) → `429 {"error":"rate limited"}` with `retry-after: 86400`. Off Cloudflare there is no trustworthy address, so anonymous callers share one bucket; `x-forwarded-for` is caller-controlled and is never read |
+| Per-caller limit | 5 **stored** per UTC day per user (signed in) or per `cf-connecting-ip` (anonymous) → `429 {"error":"rate limited"}` with `retry-after: 86400`. Off Cloudflare there is no trustworthy address, so anonymous callers share one bucket; `x-forwarded-for` is caller-controlled and is never read |
 | Fleet limit | `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` uploads **stored per UTC day across every caller** (default 400) → `429 {"error":"daily diagnostics budget exhausted"}` with `retry-after` counting the seconds to the next UTC midnight. A **distinct body** from the per-caller `429` on purpose: only one of the two is about the caller, and an auto-sender that reads a fleet-wide stop as its own quota retries forever |
 | Budget unavailable | `503 {"error":"diagnostics upload unavailable"}`. The claim **fails closed** — a ceiling that is skipped whenever D1 hiccups is not a ceiling |
 | Success | `200 {"ok": true, "id": "<uuid>"}`. The report is **never** echoed back |
@@ -230,6 +230,14 @@ isolate) backed by an R2 prefix listing on the caller's day (durable and global,
 one class-A operation per upload). The listing is not transactional, so
 genuinely simultaneous requests can land a couple of objects over five — an
 acceptable slop for an abuse bound.
+
+Both halves count **stored objects**, never attempts, and the counter is
+advanced only after the `put` returns. The durable half cannot do otherwise —
+it is a listing of what is in the bucket — and the fast path has to agree with
+it or it is not a cache of it. Counting attempts let refusals the caller did
+not cause (a fleet budget that was out for the day, a bucket having a bad
+minute) lock an install out until UTC midnight having stored nothing, which is
+the same reasoning as the fleet budget's refund below.
 
 The *fleet* budget answers a different question, and it is not allowed any slop
 at all, because it is the storage bill. ADE clients now send reports

@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useEffect, useId, useState } from "react";
 import type { Icon as PhosphorIcon, IconWeight } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, cardStyle } from "../lanes/laneDesignTokens";
 
 export const settingsSectionTitleStyle: React.CSSProperties = {
   fontSize: 13,
@@ -75,6 +75,135 @@ export function SettingsSectionShell({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * One privacy consent control: a labelled switch, what it shares in plain
+ * words, a live footnote, and an error line that never disappears silently.
+ *
+ * ADE has two of these — anonymous analytics and automatic diagnostics — and
+ * they were the same eighty lines twice. They are also the two screens where a
+ * copy-paste divergence matters most: these read and write the real persisted
+ * value rather than assuming, because a consent toggle that renders optimism
+ * is a consent toggle that can show "off" for something that is on.
+ *
+ * `read`/`write` may be absent, which is a build whose preload predates the
+ * setting: the switch renders in its default position and stays disabled
+ * rather than pretending to work.
+ */
+export function ConsentToggleSection<TStatus extends { enabled: boolean }>({
+  id,
+  title,
+  description,
+  icon,
+  brandColor,
+  label,
+  body,
+  footnote,
+  read,
+  write,
+  readErrorMessage,
+  writeErrorMessage,
+}: {
+  id: string;
+  title: string;
+  description: React.ReactNode;
+  icon: PhosphorIcon;
+  brandColor: string;
+  /** The switch's own label: what the user is agreeing to, in one line. */
+  label: string;
+  /** What leaves the computer, and what never does. */
+  body: React.ReactNode;
+  /** The quieter line beneath, given the live status (`null` until it loads). */
+  footnote: (status: TStatus | null) => React.ReactNode;
+  read: (() => Promise<TStatus>) | undefined;
+  write: ((enabled: boolean) => Promise<TStatus>) | undefined;
+  readErrorMessage: string;
+  writeErrorMessage: string;
+}) {
+  const toggleId = useId();
+  const [status, setStatus] = useState<TStatus | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!read) return;
+    void read()
+      .then((next) => {
+        if (!cancelled) setStatus(next);
+      })
+      .catch(() => {
+        if (!cancelled) setError(readErrorMessage);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // `read`/`write` are stable per section; re-running on identity alone would
+    // refetch on every parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setEnabled = async (enabled: boolean) => {
+    if (saving || !write) return;
+    setSaving(true);
+    setError(null);
+    try {
+      setStatus(await write(enabled));
+    } catch {
+      setError(writeErrorMessage);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SettingsSectionShell
+      id={id}
+      title={title}
+      description={description}
+      icon={icon}
+      brandColor={brandColor}
+    >
+      <div style={cardStyle({ padding: 16, maxWidth: 720 })}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <label
+              htmlFor={toggleId}
+              style={{
+                display: "block",
+                color: COLORS.textPrimary,
+                cursor: "pointer",
+                fontFamily: SANS_FONT,
+                fontSize: 14,
+                fontWeight: 600,
+                lineHeight: 1.4,
+              }}
+            >
+              {label}
+            </label>
+            <p style={{ margin: "6px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
+              {body}
+            </p>
+            <p style={{ margin: "8px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5 }}>
+              {footnote(status)}
+            </p>
+            {error ? (
+              <p role="alert" style={{ margin: "8px 0 0", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>
+                {error}
+              </p>
+            ) : null}
+          </div>
+          <SettingsToggle
+            id={toggleId}
+            checked={status?.enabled ?? true}
+            disabled={!status || saving}
+            onChange={(enabled) => void setEnabled(enabled)}
+          />
+        </div>
+      </div>
+    </SettingsSectionShell>
   );
 }
 

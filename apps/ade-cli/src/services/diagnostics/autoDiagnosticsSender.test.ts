@@ -7,7 +7,11 @@ import {
   resolveAutoDiagnosticsStateFile,
   setAutoDiagnosticsEnabled,
 } from "../../../../desktop/src/main/services/diagnostics/autoDiagnosticsStore";
-import { createBrainAutoDiagnostics } from "./autoDiagnosticsSender";
+import {
+  createBrainAutoDiagnostics,
+  type BrainDiagnosticsBuild,
+  type BrainDiagnosticsSend,
+} from "./autoDiagnosticsSender";
 
 const dirs: string[] = [];
 const T0 = Date.parse("2026-08-19T10:00:00.000Z");
@@ -18,19 +22,19 @@ function adeHome(): string {
   return dir;
 }
 
-type SendResult = { ok: true; id: string; reference: string } | { ok: false; reason: string };
+type SendResult = { ok: true; reference: string } | { ok: false; reason: string };
 
 function harness(options: { home?: string; sendResult?: SendResult } = {}) {
   const home = options.home ?? adeHome();
   const env = { ADE_HOME: home } as NodeJS.ProcessEnv;
   const stateFilePath = resolveAutoDiagnosticsStateFile(home, env);
-  const send = vi.fn(async (
-    _built: unknown,
-    _deps?: { auto?: boolean; failureCode?: string | null },
-  ) => options.sendResult ?? { ok: true as const, id: "abcd1234-rest", reference: "abcd1234" });
-  const build = vi.fn((_options: { surface?: string; code?: string | null; cliVersion?: string | null }) => ({
+  // No casts: the seams are structural, so these stubs are checked against the
+  // shape the sender actually calls them with.
+  const send = vi.fn<Parameters<BrainDiagnosticsSend>, ReturnType<BrainDiagnosticsSend>>(
+    async () => options.sendResult ?? { ok: true as const, reference: "abcd1234" },
+  );
+  const build = vi.fn<Parameters<BrainDiagnosticsBuild>, ReturnType<BrainDiagnosticsBuild>>(() => ({
     report: "# brain report",
-    issueUrl: "https://example.invalid/issue",
     installId: "install-1",
     appVersion: "1.2.3",
     secretsDir: path.join(home, "secrets"),
@@ -40,8 +44,8 @@ function harness(options: { home?: string; sendResult?: SendResult } = {}) {
     env,
     cliVersion: "1.2.3",
     now: () => T0,
-    build: build as never,
-    send: send as never,
+    build,
+    send,
     writeReportFile,
   });
   return { sender, stateFilePath, send, build, writeReportFile, home };

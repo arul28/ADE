@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { FAILURE_CODE_PATTERN } from "../../../shared/diagnosticsUpload";
 import { writeFileAtomic } from "../state/durableFile";
 
 /**
@@ -14,8 +15,10 @@ import { writeFileAtomic } from "../state/durableFile";
  * `node:fs`, no Electron, no logger) and is imported by both, exactly the way
  * both already share `~/.ade/secrets/product-analytics.json`.
  *
- * Plain fs with no platform branches: the mkdir lock, the atomic replace and
- * the JSON shape behave identically on Windows.
+ * The JSON shape and the atomic replace behave identically on Windows. The
+ * mkdir lock does NOT quite: see `isLockContention` below for the delete-pending
+ * window that makes Windows report contention as EPERM/EACCES/EBUSY instead of
+ * EEXIST, which this module handles explicitly rather than assuming away.
  */
 
 /** `<adeHome>/secrets/diagnostics-autosend.json`. */
@@ -35,11 +38,14 @@ export const MAX_AUTO_DIAGNOSTICS_PER_CODE = 1;
 export const MAX_AUTO_DIAGNOSTICS_PER_WINDOW = 3;
 
 /**
- * Shape the server accepts for `failureCode`, mirrored from the account
- * directory's route. Checked here so a caller that invents a code never spends
- * a send on a request the Worker will refuse.
+ * Shape the server accepts for `failureCode`. Checked here so a caller that
+ * invents a code never spends a send on a request the Worker will refuse.
+ *
+ * Re-exported from the uploader rather than written out a second time: the
+ * uploader already has to know this shape to decide what it puts on the wire,
+ * and two copies in the same process is how they drift.
  */
-export const AUTO_DIAGNOSTICS_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
+export const AUTO_DIAGNOSTICS_FAILURE_CODE_PATTERN = FAILURE_CODE_PATTERN;
 
 /**
  * Coerces a caller's code into the server's shape, or null when it cannot be.
@@ -66,7 +72,14 @@ export type AutoDiagnosticsSend = {
   reportPath: string | null;
   /** Short upload handle, present once the upload succeeded. */
   reference: string | null;
-  /** A successful send the user has not been shown a toast for yet. */
+  /**
+   * A successful send no renderer has drained yet.
+   *
+   * Set on EVERY successful send, including one made while a window was open:
+   * `webContents.send` does not throw when the receiving renderer has crashed
+   * or has not mounted its toast host, so nothing on the sending side can know
+   * the user was shown anything. Only a renderer draining this clears it.
+   */
   pending: boolean;
 };
 
@@ -168,18 +181,55 @@ function writeState(filePath: string, state: AutoDiagnosticsState): void {
 }
 
 /**
+ * Is this error "somebody else holds the lock", rather than a real fault?
+ *
+ * MIRRORS `isLockContention` in
+ * `apps/ade-cli/src/services/credentials/credentialFileIo.ts`, copied rather
+ * than imported to keep this module's one dependency rule — plain `node:fs`,
+ * nothing from either app's service tree, because both apps import it. Change
+ * one, change the other.
+ *
+ * POSIX reports a taken lock name as EEXIST. Windows does not, always: removing
+ * a directory entry there only frees the name once every handle to it closes,
+ * so between one holder's `rmdir` and the last handle drop the name sits in a
+ * "delete pending" state and a concurrent `mkdir` fails with EPERM, EACCES or
+ * EBUSY. Those are the same condition, and treating them as fatal would make
+ * every concurrent toggle on Windows a coin flip on whether consent persists.
+ */
+function isLockContention(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "EEXIST") return true;
+  if (process.platform !== "win32") return false;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+/** Bounded, synchronous wait. Same `Atomics.wait` idiom as the credential store. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+const LOCK_RETRY_MS = 20;
+const LOCK_RETRY_ATTEMPTS = 5;
+
+/**
  * mkdir-based mutual exclusion, same idiom as the identity/relay store.
  *
- * `mkdir` is atomic on every filesystem ADE runs on including Windows, and a
- * crashed holder is reclaimed after `LOCK_STALE_MS` rather than wedging the
- * feature forever. There is deliberately no wait-and-retry: the critical
- * section is one small file touched a handful of times a day, so genuine
- * contention means two failures fired in the same instant, and dropping one of
- * those two auto-sends is the correct outcome rather than something to queue.
+ * `mkdir` is atomic on every filesystem ADE runs on, and a crashed holder is
+ * reclaimed after `LOCK_STALE_MS` rather than wedging the feature forever.
+ *
+ * The wait is deliberately tiny — five tries, 20ms apart, so at most ~100ms of
+ * blocking. The critical section is one small file rewritten a handful of times
+ * a day, so a contended lock is nearly always the other process finishing its
+ * own write microseconds from now; a spin that short converts almost every
+ * collision into a success while still refusing to queue. Callers keep their
+ * fail-closed fallbacks for the case it does not: giving up on a claim is the
+ * correct outcome, and losing a consent flip is not (see
+ * `setAutoDiagnosticsEnabled`).
  */
 function acquireLock(filePath: string, now: () => number): (() => void) | null {
   const lockPath = `${filePath}.lock`;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < LOCK_RETRY_ATTEMPTS; attempt += 1) {
     try {
       fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
       fs.mkdirSync(lockPath);
@@ -191,17 +241,24 @@ function acquireLock(filePath: string, now: () => number): (() => void) | null {
         }
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code !== "EEXIST") return null;
+      if (!isLockContention(error)) return null;
+      let reclaimed = false;
       try {
         // A negative age is a clock that moved backwards after the lock was
         // taken; treating it as fresh would wedge the feature until the clock
         // caught up, so both directions past the window count as stale.
         const age = now() - fs.statSync(lockPath).mtimeMs;
-        if (age <= LOCK_STALE_MS && age >= -LOCK_STALE_MS) return null;
-        fs.rmdirSync(lockPath);
+        if (age > LOCK_STALE_MS || age < -LOCK_STALE_MS) {
+          fs.rmdirSync(lockPath);
+          reclaimed = true;
+        }
       } catch {
-        // Released or reclaimed underneath us; one more attempt settles it.
+        // Released or reclaimed underneath us; the next attempt settles it.
+        reclaimed = true;
       }
+      // A lock we just reclaimed is free right now, so retry immediately; a
+      // live one needs the holder to finish, which is what the pause is for.
+      if (!reclaimed && attempt < LOCK_RETRY_ATTEMPTS - 1) sleepSync(LOCK_RETRY_MS);
     }
   }
   return null;
@@ -238,29 +295,64 @@ export function isAutoDiagnosticsEnabled(filePath: string): boolean {
   return readState(filePath).state.enabled;
 }
 
-/** Flips the setting, preserving whatever budget has already been spent. */
+/**
+ * Flips the setting, preserving whatever budget has already been spent.
+ *
+ * Returns what is actually persisted, which is not always what was asked for.
+ * This is a consent control: a toggle that reports a state it did not manage to
+ * save would show the user an "off" that is really on.
+ *
+ * Three attempts, weakest last. The lock's own short spin already absorbs
+ * ordinary contention, so reaching the unlocked write means a holder outlived
+ * ~100ms — and dropping a withdrawal of consent is worse than the narrow race
+ * that write carries.
+ */
 export function setAutoDiagnosticsEnabled(
   filePath: string,
   enabled: boolean,
   deps: { now?: () => number } = {},
 ): boolean {
   const now = deps.now ?? Date.now;
-  return mutate<boolean>(
-    filePath,
-    now,
-    (state) => ({ state: { ...state, enabled }, result: enabled }),
-    () => {
-      // A contended store must still record a withdrawal of consent, so the
-      // fallback writes the flag directly rather than dropping it.
-      try {
-        const current = readState(filePath).state;
-        writeState(filePath, { ...current, enabled });
-        return enabled;
-      } catch {
-        return isAutoDiagnosticsEnabled(filePath);
-      }
-    },
-  );
+
+  /** The correct path. `null` means the lock never came free. */
+  const writeUnderLock = (): boolean | null =>
+    mutate<boolean | null>(
+      filePath,
+      now,
+      (state) => ({ state: { ...state, enabled }, result: enabled }),
+      () => null,
+    );
+
+  const sendsFingerprint = (state: AutoDiagnosticsState): string => JSON.stringify(state.sends);
+
+  /**
+   * The same read-modify-write with no lock held, which can clobber a
+   * concurrent ledger write.
+   *
+   * So it refuses to run into one it can see: the ledger is read twice and the
+   * replace is abandoned if it moved in between. That cannot close the window —
+   * only the lock does that — but it shrinks it from the whole read-modify-write
+   * to the gap between two adjacent statements, and an abandoned attempt still
+   * has a locked retry behind it. `null` is "did not write".
+   */
+  const writeWithoutLock = (): boolean | null => {
+    try {
+      const before = readState(filePath).state;
+      if (sendsFingerprint(readState(filePath).state) !== sendsFingerprint(before)) return null;
+      writeState(filePath, { ...before, enabled });
+      // Read back rather than assume: if a writer landed on top of this one,
+      // their value is the truth and the caller has to be told it.
+      return readState(filePath).state.enabled;
+    } catch {
+      return null;
+    }
+  };
+
+  const persisted = writeUnderLock() ?? writeWithoutLock() ?? writeUnderLock();
+  if (persisted != null) return persisted;
+  // Nothing landed. Fail loudly in the only way a boolean can: report the
+  // state on disk, so the pane redraws to what is real.
+  return isAutoDiagnosticsEnabled(filePath);
 }
 
 /**
@@ -319,9 +411,10 @@ export function claimAutoDiagnosticsSend(args: {
 /**
  * Records the result of a claimed send.
  *
- * `pending` is how a brain-side send reaches the user's screen: the brain has
- * no renderer, so it marks the entry pending and the desktop drains it into a
- * toast the next time a window subscribes.
+ * `pending` is how a send reaches the user's screen at all. The brain has no
+ * renderer and the desktop cannot tell whether one received its notice, so a
+ * successful send is left pending either way and a renderer drains it into a
+ * toast the next time one subscribes.
  */
 export function completeAutoDiagnosticsSend(args: {
   filePath: string;

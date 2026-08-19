@@ -632,7 +632,7 @@ describe("account machine publisher health", () => {
     clock = 301_000;
     await service.publishNow();
     expect(onSustainedFailure).toHaveBeenCalledTimes(1);
-    expect(onSustainedFailure).toHaveBeenCalledWith({ code: "http_error", failingMs: 301_000 });
+    expect(onSustainedFailure).toHaveBeenCalledWith({ code: "http_error" });
 
     // Still failing: one report per episode, never one per attempt.
     clock = 600_000;

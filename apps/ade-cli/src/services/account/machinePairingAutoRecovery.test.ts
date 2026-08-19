@@ -47,7 +47,7 @@ function harness(options: {
   repair: () => Promise<MachinePairingRepairResult>;
   hasAccountSession?: () => boolean;
   budgetLimit?: number;
-  onGaveUp?: (input: { trigger: string; code: string; attempts: number }) => void;
+  onGaveUp?: (input: { code: string }) => void;
   now: () => number;
 }) {
   let spent = 0;
@@ -173,11 +173,7 @@ describe("machinePairingAutoRecovery", () => {
     // Once for the episode, not once per tick: this machine is disconnected and
     // saying so repeatedly is what the send budget exists to prevent.
     expect(onGaveUp).toHaveBeenCalledTimes(1);
-    expect(onGaveUp).toHaveBeenCalledWith({
-      trigger: "refusal",
-      code: "machine_revoked",
-      attempts: 1,
-    });
+    expect(onGaveUp).toHaveBeenCalledWith({ code: "machine_revoked" });
   });
 
   it("reports giving up after the single snapshot_failed cycle does not fix it", async () => {
@@ -200,11 +196,7 @@ describe("machinePairingAutoRecovery", () => {
     clock += PAIRING_AUTO_REPAIR_DELAYS_MS[0] + 1;
     await recovery.tick();
 
-    expect(onGaveUp).toHaveBeenCalledWith({
-      trigger: "snapshot_failed",
-      code: "snapshot_failed",
-      attempts: 1,
-    });
+    expect(onGaveUp).toHaveBeenCalledWith({ code: "snapshot_failed" });
   });
 
   it("says nothing when the machine recovers on its own", async () => {

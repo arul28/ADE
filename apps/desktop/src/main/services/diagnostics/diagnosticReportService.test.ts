@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { collectDiagnosticReport } from "./diagnosticReportService";
+import {
+  collectDiagnosticReport,
+  diagnosticReportRoots,
+  resolveRevealableDiagnosticReport,
+} from "./diagnosticReportService";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diag-report-"));
 
@@ -134,5 +138,49 @@ describe("collectDiagnosticReport", () => {
     });
 
     expect(report).not.toContain("requested project root was not recognised");
+  });
+});
+
+describe("resolveRevealableDiagnosticReport", () => {
+  // Regression: the reveal handler carried only the desktop's reports
+  // directory, so "View" on every toast for a BRAIN send — the sends nobody
+  // was present for, and therefore the ones most worth opening — threw.
+  function roots() {
+    const userDataDir = fs.mkdtempSync(path.join(tempRoot, "userData-"));
+    const adeDir = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+    for (const dir of diagnosticReportRoots({ userDataDir, adeDir })) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return { userDataDir, adeDir, list: diagnosticReportRoots({ userDataDir, adeDir }) };
+  }
+
+  it("reveals a report written by either sender", () => {
+    const { userDataDir, adeDir, list } = roots();
+    const desktopReport = path.join(userDataDir, "diagnostic-reports", "ade-desktop.md");
+    const brainReport = path.join(adeDir, "diagnostic-reports", "ade-brain.md");
+    fs.writeFileSync(desktopReport, "# desktop", "utf8");
+    fs.writeFileSync(brainReport, "# brain", "utf8");
+
+    expect(resolveRevealableDiagnosticReport(list, desktopReport)).toBe(desktopReport);
+    expect(resolveRevealableDiagnosticReport(list, brainReport)).toBe(brainReport);
+  });
+
+  it("refuses anything outside both reports directories", () => {
+    const { adeDir, list } = roots();
+    // A neighbour of a reports directory, a walk out of one, and an absolute
+    // path the renderer simply invented.
+    const neighbour = path.join(adeDir, "secrets", "credentials.json");
+    fs.mkdirSync(path.dirname(neighbour), { recursive: true });
+    fs.writeFileSync(neighbour, "{}", "utf8");
+
+    expect(resolveRevealableDiagnosticReport(list, neighbour)).toBeNull();
+    expect(
+      resolveRevealableDiagnosticReport(
+        list,
+        path.join(adeDir, "diagnostic-reports", "..", "secrets", "credentials.json"),
+      ),
+    ).toBeNull();
+    expect(resolveRevealableDiagnosticReport(list, path.join(os.homedir(), ".ssh", "id_rsa")))
+      .toBeNull();
   });
 });

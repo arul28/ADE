@@ -577,6 +577,63 @@ describe("diagnostics upload route", () => {
     expect(spentBudget(env)).toBe(MAX_DIAGNOSTIC_UPLOADS_PER_DAY);
   });
 
+  it("does not spend a caller's day on uploads the fleet budget refused", async () => {
+    // Regression: the per-identity counter advanced when the limit was CHECKED,
+    // so five refusals the caller did not cause — a fleet budget that was out
+    // for the day — locked that install out of the route until UTC midnight,
+    // having stored nothing. Both halves of the quota count stored objects.
+    const env = makeEnv({ DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "0" });
+    const ip = "198.51.100.71";
+    for (let attempt = 0; attempt < MAX_DIAGNOSTIC_UPLOADS_PER_DAY; attempt += 1) {
+      const refused = await handleDiagnosticsRequest(
+        uploadRequest({ body: JSON.stringify({ report: REPORT }), ip }),
+        env,
+        FIXED_CLOCK,
+      );
+      expect(refused.status).toBe(429);
+      expect(await refused.json()).toEqual({ error: "daily diagnostics budget exhausted" });
+    }
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(0);
+
+    // The kill switch comes off and this caller still has their whole day.
+    env.DIAGNOSTICS_DAILY_GLOBAL_LIMIT = "1000";
+    for (let attempt = 0; attempt < MAX_DIAGNOSTIC_UPLOADS_PER_DAY; attempt += 1) {
+      const accepted = await handleDiagnosticsRequest(
+        uploadRequest({ body: JSON.stringify({ report: REPORT }), ip }),
+        env,
+        FIXED_CLOCK,
+      );
+      expect(accepted.status).toBe(200);
+    }
+    expect(env.DIAGNOSTICS.keys()).toHaveLength(MAX_DIAGNOSTIC_UPLOADS_PER_DAY);
+  });
+
+  it("does not spend a caller's day on uploads the bucket dropped", async () => {
+    // Same rule from the other side: the refund the fleet budget already gets
+    // for a failed `put` has to apply to the per-identity quota too, or a
+    // bucket having a bad minute costs the user their reports for the day.
+    const env = makeEnv({ DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "1000" });
+    const ip = "198.51.100.72";
+    env.DIAGNOSTICS.putFailure = new Error("R2 is having a moment");
+    for (let attempt = 0; attempt < MAX_DIAGNOSTIC_UPLOADS_PER_DAY; attempt += 1) {
+      const failed = await handleDiagnosticsRequest(
+        uploadRequest({ body: JSON.stringify({ report: REPORT }), ip }),
+        env,
+        FIXED_CLOCK,
+      );
+      expect(failed.status).toBe(502);
+    }
+    expect(spentBudget(env)).toBe(0);
+
+    env.DIAGNOSTICS.putFailure = null;
+    const accepted = await handleDiagnosticsRequest(
+      uploadRequest({ body: JSON.stringify({ report: REPORT }), ip }),
+      env,
+      FIXED_CLOCK,
+    );
+    expect(accepted.status).toBe(200);
+  });
+
   it("still enforces the per-caller quota under a generous fleet budget", async () => {
     const env = makeEnv({ DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "1000" });
     const ip = "198.51.100.62";

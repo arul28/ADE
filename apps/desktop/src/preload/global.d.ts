@@ -907,6 +907,13 @@ declare global {
        * Absent on older preloads: every call site must tolerate `undefined`
        * and simply not offer the button.
        */
+      /**
+       * Optional as a GROUP, because an older preload has no `diagnostics` at
+       * all and every call site already guards on the group. The members inside
+       * are not: they all shipped together, so a build that exposes the group
+       * exposes all of them, and marking them individually optional would only
+       * teach call sites to write `?.()` chains that can never fire.
+       */
       diagnostics?: {
         openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
         /**
@@ -914,11 +921,11 @@ declare global {
          * detected. Main owns the setting and the budget, so this is a request,
          * not an instruction, and its answer is deliberately uninteresting.
          */
-        autoReport?: (context: DiagnosticReportRequestPayload) => Promise<void>;
-        getSharing?: () => Promise<DiagnosticsSharingStatus>;
-        setSharing?: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
-        revealReport?: (reportPath: string) => Promise<void>;
-        onAutoSent?: (cb: (payload: DiagnosticsAutoSentPayload) => void) => () => void;
+        autoReport: (context: DiagnosticReportRequestPayload) => Promise<void>;
+        getSharing: () => Promise<DiagnosticsSharingStatus>;
+        setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
+        revealReport: (reportPath: string) => Promise<void>;
+        onAutoSent: (cb: (payload: DiagnosticsAutoSentPayload) => void) => () => void;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;

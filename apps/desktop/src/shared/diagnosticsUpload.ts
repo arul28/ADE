@@ -125,8 +125,16 @@ export type DiagnosticUploadRequest = {
   timeoutMs?: number;
 };
 
-/** Mirror of the account directory route's `failureCode` shape. */
-const FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
+/**
+ * Mirror of the account directory route's `failureCode` shape.
+ *
+ * Exported because the auto-send ledger has to reject a code BEFORE it spends
+ * one of the day's three sends on a request this uploader would then strip. The
+ * Worker keeps its own copy (`apps/account-directory/src/diagnostics.ts`) on
+ * purpose — it is a separate deploy unit and must not import from the app — but
+ * inside this process there is exactly one.
+ */
+export const FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
 
 export async function uploadDiagnosticReport(
   request: DiagnosticUploadRequest,

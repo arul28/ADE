@@ -219,6 +219,7 @@ import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
   getSignedInAccountAccessToken,
+  type AccountAuthService,
 } from "../../../ade-cli/src/services/account/accountAuthService";
 import { createPushRelayClient } from "../../../ade-cli/src/services/push/pushRelayClient";
 import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/pushRegistrationStore";
@@ -1651,8 +1652,20 @@ app.whenReady().then(async () => {
    * Late-bound because the account services are built far below, while the
    * diagnostics report builder that hashes this id is built up here next to its
    * triggers. Null before then simply means an unattributed report.
+   *
+   * It has to stay late-bound: `getSharedAccountAuthService` caches ONE service
+   * per secrets directory and the FIRST caller's options are the ones that
+   * survive, so calling it here — before `accountBridge` and `runtimeBridge`
+   * pass theirs — would silently pin the whole app to a default-configured
+   * account service. The reference is filled in beside the call that legitimately
+   * constructs it; the reader itself is a const so no later assignment can
+   * quietly repoint it somewhere else.
    */
-  let readAccountOwnerId: () => string | null = () => null;
+  let accountAuthServiceForOwnerId: AccountAuthService | null = null;
+  const readAccountOwnerId = (): string | null => {
+    const status = accountAuthServiceForOwnerId?.getStatus();
+    return status?.signedIn ? status.userId?.trim() || null : null;
+  };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
   const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
     createProductAnalyticsService({
@@ -2595,17 +2608,19 @@ app.whenReady().then(async () => {
       );
       return { report: result.report, filePath: result.filePath, installId: result.installId };
     },
+    // Fast path only. `webContents.send` does not throw when the renderer has
+    // crashed or has not mounted its toast host, so nothing here can tell that
+    // the user was actually shown anything — which is why the send stays marked
+    // pending regardless and a renderer's drain is what retires it. A window
+    // that gets both keys the toast on the same id and sees one.
     onSent: (notice) => {
-      let delivered = false;
       for (const win of BrowserWindow.getAllWindows()) {
         try {
           win.webContents.send(IPC.diagnosticsAutoSent, notice);
-          delivered = true;
         } catch {
           // A window tearing down simply does not get this toast.
         }
       }
-      return delivered;
     },
   });
 
@@ -7335,10 +7350,7 @@ app.whenReady().then(async () => {
   const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
-  readAccountOwnerId = () => {
-    const status = attentionAccountAuthService.getStatus();
-    return status.signedIn ? status.userId?.trim() || null : null;
-  };
+  accountAuthServiceForOwnerId = attentionAccountAuthService;
   const attentionRelayClient = createPushRelayClient({
     store: createPushRegistrationStore({
       filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
