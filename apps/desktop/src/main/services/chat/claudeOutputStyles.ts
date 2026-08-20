@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { AgentChatClaudeOutputStyle, AgentChatClaudePlugin } from "../../../shared/types/chat";
+import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { writeTextAtomic } from "../shared/utils";
 
@@ -214,21 +215,27 @@ function claudeRootsByPrecedence(cwd: string): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
   const addRoot = (root: string): void => {
-    if (seen.has(root)) return;
-    seen.add(root);
+    // Keyed, not raw: Windows reaches the same directory through more than one
+    // spelling, and a duplicate root would shadow the tier below it.
+    const key = pathKey(root);
+    if (seen.has(key)) return;
+    seen.add(key);
     roots.push(root);
   };
 
-  const userRoot = claudeConfigHome({ homeDir: os.homedir() });
-  const realHomeRoot = path.join(path.resolve(os.homedir()), ".claude");
+  // Passed explicitly so that os.homedir() spies reach the shared helper, which
+  // imports `homedir` by name.
+  const homeDir = os.homedir();
+  const userRoot = claudeConfigHome({ homeDir });
+  const realHomeRoot = path.join(path.resolve(homeDir), ".claude");
   // A lane normally sits under $HOME, so the ancestor walk reaches ~/.claude and
   // would rank it as a project tier ABOVE the user tier. That is wrong whenever
   // CLAUDE_CONFIG_DIR moved the user tier elsewhere: the stale real ~/.claude
   // would outrank the directory the CLI actually reads.
-  const skipRealHomeRoot = userRoot !== realHomeRoot;
+  const skipRealHomeRoot = !pathsEqual(userRoot, realHomeRoot);
 
   for (const root of ancestorClaudeRoots(cwd)) {
-    if (skipRealHomeRoot && root === realHomeRoot) continue;
+    if (skipRealHomeRoot && pathsEqual(root, realHomeRoot)) continue;
     addRoot(root);
   }
   addRoot(userRoot);

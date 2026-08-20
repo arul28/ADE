@@ -67,8 +67,14 @@ export type CursorSdkReadonlyTool = (typeof CURSOR_SDK_READONLY_TOOLS)[number];
  * returns `insecure_none` without ever reading the user's ~/.cursor/sandbox.json,
  * while absent lets that file decide. So ADE needs three states, not two.
  *
+ * When ADE does ask for a sandbox ("enable"), a user policy still wins over
+ * ADE's own — the SDK only falls back to its workspace_readwrite default when
+ * the user has written no policy at all.
+ *
  * "disable" also covers the retry after a ConfigurationError, where the
  * environment cannot sandbox at all and the alternative is a hard failure.
+ *
+ * See services/shared/providerConfigHomes.ts for the rule this follows.
  */
 export type CursorSdkSandboxDirective = "enable" | "disable" | "inherit";
 

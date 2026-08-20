@@ -35103,21 +35103,21 @@ export function createAgentChatService(args: {
     // generic interaction-mode enum — resolve it from droidPermissionMode and
     // let it win over the plan→spec mapping.
     const chosenMode = resolveSessionDroidPermissionModeOrNull(managed.session);
-    const planRequested = managed.session.interactionMode === "plan"
-      || managed.session.permissionMode === "plan";
+    const planRequested = resolveDroidSdkInteractionMode(managed.session) === "spec";
     // Mirrors the terminal path: droidSettingsJson omits sessionDefaultSettings
     // when permissionMode is null, letting the user's settings.json decide.
-    const stated = chosenMode !== null || planRequested || isOrchestrationLeadSession(managed.session)
-      ? {
-          autonomyLevel: resolveDroidSdkAutonomyLevel(chosenMode ?? "auto-low"),
-          interactionMode: chosenMode === "agi"
-            ? "agi" as const
-            : resolveDroidSdkInteractionMode(managed.session),
-        }
-      : null;
+    const stated: Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> | null =
+      chosenMode !== null || planRequested || isOrchestrationLeadSession(managed.session)
+        ? {
+            autonomyLevel: resolveDroidSdkAutonomyLevel(chosenMode ?? "auto-low"),
+            interactionMode: chosenMode === "agi"
+              ? "agi"
+              : resolveDroidSdkInteractionMode(managed.session),
+          }
+        : null;
     return {
       modelId,
-      ...(stated ?? {}),
+      ...stated,
       // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
       // has to have them withheld natively as well.
       ...(isOrchestrationLeadSession(managed.session)

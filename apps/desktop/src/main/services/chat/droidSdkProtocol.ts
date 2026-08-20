@@ -26,6 +26,7 @@ export type DroidSdkSessionSettings = {
    * the SDK, and omission resolves per key — a live probe confirmed an omitted
    * key falls through to the user's file while any stated value outranks it.
    * Never send null: an explicit null wedges the Droid RPC for 30 seconds.
+   * See services/shared/providerConfigHomes.ts for the rule this follows.
    */
   autonomyLevel?: DroidSdkAutonomyLevel;
   interactionMode?: DroidSdkInteractionMode;

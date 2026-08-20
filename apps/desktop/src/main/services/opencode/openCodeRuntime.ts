@@ -515,6 +515,7 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
   // documented default is true. `autoupdate` moved to OPENCODE_DISABLE_AUTOUPDATE
   // in the server env — ADE does pin the binary, but that does not need the
   // highest-precedence config slot.
+  // See services/shared/providerConfigHomes.ts for the rule this follows.
   return {
     ...(provider ? { provider } : {}),
     ...(args.mcp ? { mcp: args.mcp } : {}),

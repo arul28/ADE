@@ -49,6 +49,8 @@ async function getSdk(): Promise<DroidSdkModule> {
   return sdkModule;
 }
 
+// Still accepts null: settings cross a process boundary as JSON, so the
+// protocol type is a contract with the sender rather than a runtime guarantee.
 function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): DroidSdkTypes.ReasoningEffort | undefined {
   return value?.trim() ? value as DroidSdkTypes.ReasoningEffort : undefined;
 }

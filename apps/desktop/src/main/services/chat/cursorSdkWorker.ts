@@ -512,11 +512,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       useHttp1ForAgent,
       mode: agentOptions.mode ?? null,
       autoReview: agentOptions.local?.autoReview === true,
-      // Absent is a third state, not a falsy "off" — logging a boolean here
-      // collapsed "disable" and "inherit" into the same line.
-      sandboxDirective: agentOptions.local?.sandboxOptions === undefined
-        ? "inherit"
-        : agentOptions.local.sandboxOptions.enabled ? "enable" : "disable",
+      sandboxDirective: buildCursorSdkLocalRunOptions(init.policy, { sandboxSupported }).sandboxDirective,
       tools: agentOptions.tools ?? null,
       disallowedTools: agentOptions.disallowedTools ?? null,
     },
