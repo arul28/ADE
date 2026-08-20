@@ -354,6 +354,7 @@ import {
   selectPiStorageSessionCandidate,
 } from "./ptyService";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import { claudeConfigHome } from "../shared/providerConfigHomes";
 
 const originalPlatform = process.platform;
 const originalHome = process.env.HOME;
@@ -6001,8 +6002,7 @@ describe("ptyService", () => {
       try {
         const claudeSessionId = "123e4567-e89b-12d3-a456-426614174000";
         const claudeFilePath = path.join(
-          os.homedir(),
-          ".claude",
+          claudeConfigHome({ homeDir: os.homedir() }),
           "projects",
           "-tmp-test-worktree",
           `${claudeSessionId}.jsonl`,
@@ -8087,7 +8087,7 @@ describe("ptyService", () => {
 
         const matchedId = "11111111-1111-1111-1111-111111111111";
         const newerDifferentId = "22222222-2222-2222-2222-222222222222";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const matchedPath = path.join(claudeProjectDir, `${matchedId}.jsonl`);
         const newerDifferentPath = path.join(claudeProjectDir, `${newerDifferentId}.jsonl`);
         const matchedFirstLine = JSON.stringify({
@@ -8149,7 +8149,7 @@ describe("ptyService", () => {
         vi.setSystemTime(fakeNow);
 
         const otherId = "33333333-3333-3333-3333-333333333333";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const otherPath = path.join(claudeProjectDir, `${otherId}.jsonl`);
         const otherFirstLine = JSON.stringify({
           timestamp: "2026-04-15T21:31:00.000Z",
@@ -8202,7 +8202,7 @@ describe("ptyService", () => {
 
         const firstId = "44444444-4444-4444-4444-444444444444";
         const secondId = "55555555-5555-5555-5555-555555555555";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const firstPath = path.join(claudeProjectDir, `${firstId}.jsonl`);
         const secondPath = path.join(claudeProjectDir, `${secondId}.jsonl`);
         const firstLine = JSON.stringify({
@@ -8422,8 +8422,7 @@ describe("ptyService", () => {
       try {
         const claudeSessionId = "5647da1e-10de-4089-bce2-00b9c2552bfc";
         const filePath = path.join(
-          os.homedir(),
-          ".claude",
+          claudeConfigHome({ homeDir: os.homedir() }),
           "projects",
           "-tmp-test-worktree",
           `${claudeSessionId}.jsonl`,
