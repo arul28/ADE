@@ -447,9 +447,17 @@ describe("createAutoUpdateService", () => {
     await Promise.resolve();
     expect(updater.checkForUpdates).not.toHaveBeenCalled();
 
-    updater.checkForUpdates.mockImplementation(async () => ({
-      updateInfo: { version: "1.2.63" },
-    }));
+    // electron-updater emits these BEFORE checkForUpdates() resolves. A mock
+    // that only resolves cannot see the bug this test exists for: the
+    // update-available handler is what supersedes the staged update, deletes
+    // the finished download, and frees the resolve path to start a new one.
+    const downloadUpdate = vi.fn(async () => null);
+    (updater as unknown as { downloadUpdate: unknown }).downloadUpdate = downloadUpdate;
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", { version: "1.2.63" });
+      return { updateInfo: { version: "1.2.63" } };
+    });
     service.checkForUpdates({ userInitiated: true });
 
     await vi.waitFor(() => {
@@ -461,6 +469,31 @@ describe("createAutoUpdateService", () => {
         latestKnownVersion: "1.2.63",
       });
     });
+    // Asking what the newest version is must not throw away the update the
+    // user already downloaded and is one restart away from installing.
+    expect(downloadUpdate).not.toHaveBeenCalled();
+
+    // Let the first check's promise chain settle: while `checkPromise` is
+    // still set, a second call is swallowed by the in-flight guard and would
+    // assert nothing.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // ...and neither must a check that fails. A feed error here means "nothing
+    // new to tell you", not "discard the finished download".
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("error", new Error("net::ERR_INTERNET_DISCONNECTED"));
+      throw new Error("net::ERR_INTERNET_DISCONNECTED");
+    });
+    service.checkForUpdates({ userInitiated: true });
+
+    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(2));
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.61",
+      latestKnownVersion: "1.2.63",
+    });
+    expect(downloadUpdate).not.toHaveBeenCalled();
 
     service.dispose();
   });
