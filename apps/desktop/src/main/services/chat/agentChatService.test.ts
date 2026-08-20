@@ -28316,7 +28316,7 @@ describe("createAgentChatService", () => {
       }));
     });
 
-    it("explicitly clears Codex service tier when fast mode is off", async () => {
+    it("omits Codex service tier when fast mode was never turned on", async () => {
       mockState.codexResponseOverrides.set("thread/start", (payload) => ({
         thread: { id: "thread-default" },
         serviceTier: (payload.params as { serviceTier?: unknown } | undefined)?.serviceTier ?? null,
@@ -28337,17 +28337,20 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
 
+      // Verified against a live app-server: omitting inherits the user's
+      // config.toml service_tier, while an explicit null forces "default".
+      // ADE has no service-tier UI, so it must not name the key at all.
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.fastMode).toBe(false);
       expect(summary?.codexServiceTier).toBeNull();
       expect(readPersistedChatState(session.id).codexServiceTier).toBeNull();
     });
 
-    it("preserves fast mode selection on unsupported Codex models while sending standard tier", async () => {
+    it("preserves fast mode selection on unsupported Codex models without naming a tier", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -28366,9 +28369,9 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
       expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
     });
 

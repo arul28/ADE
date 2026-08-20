@@ -3655,10 +3655,22 @@ function sessionEffectiveFastMode(
   return session.fastMode === true && sessionSupportsFastMode(session, catalog);
 }
 
-function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexServiceTier | null } {
-  // JSON-RPC needs an explicit null to clear any app-server/config default.
-  const serviceTier = session.fastMode === true && sessionSupportsCodexServiceTier(session) ? "fast" : null;
-  return { serviceTier };
+function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier | null } {
+  if (session.fastMode === true && sessionSupportsCodexServiceTier(session)) {
+    return { serviceTier: "fast" };
+  }
+  // Verified against a live app-server on thread/start: omitting the key inherits
+  // the user's config.toml (service_tier = "priority" -> "priority"; unset -> no
+  // tier), while an explicit null reports "default" in both cases. null is
+  // therefore a real downgrade, not a neutral "no opinion", and ADE has no UI
+  // showing service tier for the user to notice or undo it.
+  //
+  // Fast-off cannot mean "force default" either: fastMode is persisted only when
+  // true and rehydrated as `persisted?.fastMode === true`, so `false` is
+  // indistinguishable from never-set. Omitting is the only honest encoding of
+  // "ADE is not forcing a tier" — the app-server re-resolves per request, so a
+  // turn sent after the toggle goes off inherits the config again.
+  return {};
 }
 
 function codexThreadConfigArgs(
