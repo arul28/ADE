@@ -558,10 +558,27 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     getRemoteStatus: (opts?: unknown) => call("github.getRemoteStatus", opts, { repo: null, hasOrigin: false }),
     setToken: async () => githubDisconnectedStatus(),
     clearToken: async () => githubDisconnectedStatus(),
-    getAppUserAuthStatus: async () => ({ authenticated: false, user: null }),
+    // Deliberately NOT the real GitHubAppUserAuthStatus shape. IntegrationBannerHost
+    // detects the runtime DTO by fields this stub omits (`configured`), and treats
+    // anything else as "App status unsupported here" rather than flashing a false
+    // "not authorized" banner on every hosted-web project. `credentialState` is
+    // carried anyway so any renderer that reads it gets the honest answer.
+    getAppUserAuthStatus: async () => ({
+      authenticated: false,
+      user: null,
+      credentialState: "missing",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+    }),
     startAppUserDeviceAuth: async () => ({ ok: false, error: "unsupported" }),
     pollAppUserDeviceAuth: async () => ({ status: "expired" }),
-    clearAppUserAuth: async () => ({ authenticated: false, user: null }),
+    clearAppUserAuth: async () => ({
+      authenticated: false,
+      user: null,
+      credentialState: "missing",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+    }),
     // Routed to the host: the paired machine spends the quota, so its reserve
     // is the one these pollers must respect.
     getRequestBudget: (opts?: unknown) => call("github.getRequestBudget", opts, {

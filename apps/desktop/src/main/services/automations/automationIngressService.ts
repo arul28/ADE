@@ -773,13 +773,26 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
   };
 
-  const enterHostedAuthPending = (message: string): void => {
+  /**
+   * Records that the GitHub App credential is unusable, and paces the next
+   * attempt.
+   *
+   * Separate from `enterHostedAuthPending` because a signed-in machine can still
+   * poll the relay with its account token, so the failure must not disable the
+   * subscription — but it must still start the cooldown, or the poll loop asks
+   * for the same broken credential every thirty seconds for as long as the app
+   * runs.
+   */
+  const noteHostedAuthFailure = (message: string): void => {
     hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
+    if (hostedAuthPendingLogged) return;
+    hostedAuthPendingLogged = true;
+    args.logger.info("automations.github_relay_auth_pending", { error: message });
+  };
+
+  const enterHostedAuthPending = (message: string): void => {
+    noteHostedAuthFailure(message);
     disableRelaySubscription();
-    if (!hostedAuthPendingLogged) {
-      hostedAuthPendingLogged = true;
-      args.logger.info("automations.github_relay_auth_pending", { error: message });
-    }
     updateGithubRelayStatus({
       healthy: false,
       status: "disabled",
@@ -880,10 +893,15 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           ))) ?? "").trim() || null;
         } catch (error) {
           if (error instanceof GithubRelayPollSupersededError) throw error;
+          const message = error instanceof Error ? error.message : String(error);
           if (!accountAccessToken) {
-            enterHostedAuthPending(error instanceof Error ? error.message : String(error));
+            enterHostedAuthPending(message);
             return;
           }
+          // Signed in, so the poll can still run on the account token — but the
+          // GitHub credential is broken, and asking it again in thirty seconds
+          // is what turned one dead token into a hundred thousand attempts.
+          noteHostedAuthFailure(message);
         }
       }
       const hostedAuth = useLegacyProjectRoute
@@ -893,8 +911,12 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         enterHostedAuthPending(hostedAuth.error);
         return;
       }
-      hostedAuthPendingUntilMs = 0;
-      hostedAuthPendingLogged = false;
+      if (hostedAuth && !hostedAuth.ok) {
+        noteHostedAuthFailure(hostedAuth.error);
+      } else {
+        hostedAuthPendingUntilMs = 0;
+        hostedAuthPendingLogged = false;
+      }
       const authToken = useLegacyProjectRoute
         ? legacyAuthToken
         : hostedAuth?.ok

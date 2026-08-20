@@ -487,12 +487,30 @@ export type GitHubAppInstallationStatus = {
   error: string | null;
 };
 
+export type GitHubAppUserAuthCredentialState = "missing" | "authorized" | "blocked" | "needs_reauth";
+
+export type GitHubAppUserAuthRefreshError = {
+  kind: "rate_limited" | "outage" | "network" | "dead_token" | "unknown";
+  message: string;
+  status: number | null;
+  at: string;
+};
+
 export type GitHubAppUserAuthStatus = {
   configured: boolean;
   tokenStored: boolean;
   userLogin: string | null;
   expiresAt: string | null;
   refreshTokenExpiresAt: string | null;
+  // The honest account state. An access token past its 8-hour life with a live
+  // refresh token is still "authorized": it renews on use. "blocked" means the
+  // refresh endpoint is failing transiently (rate limit, outage, network) and
+  // retries are paused until refreshBlockedUntil. "needs_reauth" means the
+  // refresh token is absent, expired, or rejected by GitHub — only then may the
+  // UI ask the user to re-authorize.
+  credentialState: GitHubAppUserAuthCredentialState;
+  refreshBlockedUntil: string | null;
+  lastRefreshError: GitHubAppUserAuthRefreshError | null;
   checkedAt: string;
   error: string | null;
 };

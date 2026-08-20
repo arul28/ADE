@@ -1,14 +1,25 @@
 import { describe, expect, it } from "vitest";
-import type { GitHubAppInstallationStatus, GitHubStatus } from "../../shared/types";
+import type {
+  GitHubAppInstallationStatus,
+  GitHubAppUserAuthStatus,
+  GitHubStatus,
+} from "../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
 import {
+  deriveGithubAccountAuthState,
+  deriveGithubRealtimeBlock,
   deriveGithubRepoConnectionState,
+  describeGithubAccountAxis,
+  describeGithubAppCredentialBadge,
   describeGithubAuthFailure,
   describeGithubCliBanner,
   describeGithubOutage,
   describeGithubPatVerification,
+  githubAccountIssueCopy,
   githubCredentialPresentation,
+  githubRepoIssueCopy,
   githubStatusHasUsablePat,
+  isGithubAuthorizationPausedMessage,
   isGithubRateLimitMessage,
   isGithubRepoAccessPending,
 } from "./githubIntegrationStatus";
@@ -69,6 +80,160 @@ function makeCliStatus(overrides: Partial<GitHubStatus> = {}): GitHubStatus {
   };
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+function makeAppAuth(overrides: Partial<GitHubAppUserAuthStatus> = {}): GitHubAppUserAuthStatus {
+  return {
+    configured: true,
+    tokenStored: true,
+    userLogin: "arul28",
+    expiresAt: new Date(Date.now() + 8 * HOUR_MS).toISOString(),
+    refreshTokenExpiresAt: new Date(Date.now() + 180 * DAY_MS).toISOString(),
+    credentialState: "authorized",
+    refreshBlockedUntil: null,
+    lastRefreshError: null,
+    checkedAt: new Date().toISOString(),
+    error: null,
+    ...overrides,
+  };
+}
+
+describe("deriveGithubAccountAuthState", () => {
+  // The bug this whole branch exists for. The GitHub App access token lives 8
+  // hours and is renewed from the refresh token on every use, so a lapsed
+  // access token is normal operation, not an expired authorization. Judging by
+  // `expiresAt` told a working account to re-authorize, and the re-authorize
+  // flow hits the very OAuth endpoint that was rate-limiting the renewals.
+  it("keeps an account with a live refresh token authorized after the access token lapses", () => {
+    expect(deriveGithubAccountAuthState(makeAppAuth({
+      expiresAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      credentialState: "authorized",
+    }))).toBe("valid");
+  });
+
+  it("reads a paused renewal as blocked, not as an expired authorization", () => {
+    expect(deriveGithubAccountAuthState(makeAppAuth({
+      expiresAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      credentialState: "blocked",
+      refreshBlockedUntil: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+      lastRefreshError: {
+        kind: "rate_limited",
+        message: "GitHub OAuth request failed (429)",
+        status: 429,
+        at: new Date().toISOString(),
+      },
+    }))).toBe("blocked");
+  });
+
+  it("asks for re-authorization only when the refresh token itself is gone", () => {
+    expect(deriveGithubAccountAuthState(makeAppAuth({
+      credentialState: "needs_reauth",
+      refreshTokenExpiresAt: new Date(Date.now() - DAY_MS).toISOString(),
+    }))).toBe("needs_reauth");
+  });
+
+  it("reports a cleared credential as missing whatever the service says", () => {
+    expect(deriveGithubAccountAuthState(null)).toBe("missing");
+    expect(deriveGithubAccountAuthState(makeAppAuth({ tokenStored: false }))).toBe("missing");
+    expect(deriveGithubAccountAuthState(makeAppAuth({ credentialState: "missing" }))).toBe("missing");
+  });
+
+  // Older hosts (and the web-client stub) send the DTO without credentialState.
+  // The refresh token still decides the truth there, so the same lapsed access
+  // token must not read as expired.
+  it("falls back to the refresh token when the host sends the old shape", () => {
+    const legacy = makeAppAuth({ expiresAt: new Date(Date.now() - 2 * HOUR_MS).toISOString() });
+    delete (legacy as Partial<GitHubAppUserAuthStatus>).credentialState;
+    delete (legacy as Partial<GitHubAppUserAuthStatus>).refreshBlockedUntil;
+    delete (legacy as Partial<GitHubAppUserAuthStatus>).lastRefreshError;
+
+    expect(deriveGithubAccountAuthState(legacy)).toBe("valid");
+
+    const legacyDeadRefresh = { ...legacy, refreshTokenExpiresAt: new Date(Date.now() - DAY_MS).toISOString() };
+    expect(deriveGithubAccountAuthState(legacyDeadRefresh)).toBe("needs_reauth");
+  });
+});
+
+describe("describeGithubAccountAxis", () => {
+  it("says an authorized account renews itself, with nothing to click", () => {
+    const axis = describeGithubAccountAxis("valid", makeAppAuth());
+    expect(axis.label).toBe("Authorized");
+    expect(axis.subtext).toBe("arul28 · renews automatically");
+    expect(axis.cta).toBeNull();
+    // The 8-hour access token expiry taught users to read normal renewal as an
+    // impending failure, so it must not appear here at all.
+    expect(axis.subtext).not.toMatch(/valid to|expires/i);
+  });
+
+  // The whole failure mode in one assertion: while GitHub is refusing renewals,
+  // the panel must not offer the button that walks the user back into the same
+  // refusal.
+  it("offers no re-authorize button while GitHub has renewals paused", () => {
+    const blockedUntil = new Date(Date.now() + 40 * 60 * 1000).toISOString();
+    const axis = describeGithubAccountAxis("blocked", makeAppAuth({
+      credentialState: "blocked",
+      refreshBlockedUntil: blockedUntil,
+      lastRefreshError: { kind: "rate_limited", message: "429", status: 429, at: new Date().toISOString() },
+    }));
+
+    expect(axis.cta).toBeNull();
+    expect(axis.label).toMatch(/^Paused until /);
+    expect(axis.subtext).toContain("retries automatically");
+    expect(axis.subtext).toContain("won't speed this up");
+    expect(axis.note).toContain("unavailable while GitHub");
+    expect(axis.label).not.toMatch(/expired/i);
+  });
+
+  it("falls back to a plain Paused label when GitHub named no deadline", () => {
+    const axis = describeGithubAccountAxis("blocked", makeAppAuth({
+      credentialState: "blocked",
+      refreshBlockedUntil: null,
+    }));
+    expect(axis.label).toBe("Paused");
+  });
+
+  it("asks for re-authorization only in the state that needs one", () => {
+    const reauth = describeGithubAccountAxis("needs_reauth", makeAppAuth({ credentialState: "needs_reauth" }));
+    expect(reauth.cta).toBe("reauthorize");
+    expect(reauth.label).toBe("Authorization expired");
+    expect(reauth.subtext).toBe(githubAccountIssueCopy("needs_reauth").detail);
+
+    const missing = describeGithubAccountAxis("missing", null);
+    expect(missing.cta).toBe("authorize");
+    expect(missing.label).toBe("Not authorized");
+
+    const checking = describeGithubAccountAxis("checking", null);
+    expect(checking.cta).toBeNull();
+    expect(checking.tone).toBe("pending");
+  });
+});
+
+describe("describeGithubAppCredentialBadge", () => {
+  it("separates a paused renewal from a dead authorization in the Settings ladder", () => {
+    expect(describeGithubAppCredentialBadge("blocked", "2026-08-20T15:40:00.000Z")).toMatchObject({
+      tone: "neutral",
+      label: expect.stringMatching(/^Paused until /),
+    });
+    expect(describeGithubAppCredentialBadge("needs_reauth", null)).toEqual({
+      label: "Re-authorize",
+      tone: "warn",
+    });
+    expect(describeGithubAppCredentialBadge("valid", null)).toBeNull();
+    expect(describeGithubAppCredentialBadge("missing", null)).toBeNull();
+  });
+});
+
+describe("isGithubAuthorizationPausedMessage", () => {
+  it("recognizes the OAuth throttle behind ADE's raw transport error", () => {
+    expect(isGithubAuthorizationPausedMessage("GitHub OAuth request failed (429)")).toBe(true);
+    expect(isGithubAuthorizationPausedMessage("Too Many Requests")).toBe(true);
+    expect(isGithubAuthorizationPausedMessage("You have exceeded a secondary rate limit.")).toBe(true);
+    expect(isGithubAuthorizationPausedMessage("GitHub OAuth request failed (400): bad_verification_code")).toBe(false);
+    expect(isGithubAuthorizationPausedMessage(null)).toBe(false);
+  });
+});
+
 describe("isGithubRepoAccessPending", () => {
   it("treats post-authorization GitHub repo 404s as pending repo access", () => {
     expect(isGithubRepoAccessPending(makeStatus())).toBe(true);
@@ -121,6 +286,66 @@ describe("deriveGithubRepoConnectionState", () => {
     expect(
       deriveGithubRepoConnectionState(makeStatus({ installed: false, state: "not_installed", error: null })),
     ).toBe("not_installed");
+  });
+
+  // The second half of the same bug: with the account token unusable, the relay
+  // answered the install check with its own 401 and the repo row reported "not
+  // installed · GitHub auth token is required" — an uninstall that never
+  // happened, phrased in ADE's internal words.
+  it("reports an unproven install as waiting on the account, not as uninstalled", () => {
+    const notInstalled = makeStatus({ installed: false, state: "not_installed", error: null });
+    expect(deriveGithubRepoConnectionState(notInstalled, "blocked")).toBe("waiting_on_account");
+    expect(deriveGithubRepoConnectionState(notInstalled, "needs_reauth")).toBe("waiting_on_account");
+    expect(deriveGithubRepoConnectionState(notInstalled, "missing")).toBe("waiting_on_account");
+    expect(deriveGithubRepoConnectionState(notInstalled, "valid")).toBe("not_installed");
+  });
+
+  it("treats the relay's auth-required answer as waiting even without an account state", () => {
+    expect(deriveGithubRepoConnectionState(
+      makeStatus({ installed: false, state: "error", error: "GitHub auth token is required" }),
+    )).toBe("waiting_on_account");
+  });
+
+  // A rate limit or a GitHub 5xx explains itself, and the check can run on the
+  // ADE account token, so those keep their own honest copy rather than being
+  // folded into the account wait.
+  it("keeps a corroborated GitHub failure out of the account wait", () => {
+    expect(deriveGithubRepoConnectionState(
+      makeStatus({ installed: false, state: "error", error: "GitHub API rate limit reached" }),
+      "missing",
+    )).toBe("unknown");
+    expect(deriveGithubRepoConnectionState(
+      makeStatus({ installed: false, state: "error", error: "No server is currently available to service your request." }),
+      "blocked",
+    )).toBe("unknown");
+  });
+
+  it("keeps a verified installation connected regardless of the account axis", () => {
+    expect(deriveGithubRepoConnectionState(installed(), "blocked")).toBe("connected");
+  });
+
+  it("never repeats the relay's auth-required string to the user", () => {
+    const copy = githubRepoIssueCopy("waiting_on_account", "arul28/ADE", "blocked");
+    expect(copy.title).toContain("Waiting on GitHub authorization");
+    expect(copy.detail).not.toMatch(/auth token/i);
+    expect(githubRepoIssueCopy("waiting_on_account", null, "missing").detail).toContain("Authorize ADE");
+  });
+});
+
+describe("deriveGithubRealtimeBlock", () => {
+  it("raises no banner for a pause the user cannot clear", () => {
+    expect(deriveGithubRealtimeBlock("blocked", "waiting_on_account")).toBeNull();
+    expect(deriveGithubRealtimeBlock("blocked", "not_installed")).toBeNull();
+  });
+
+  it("still names the two account problems the user can fix", () => {
+    expect(deriveGithubRealtimeBlock("needs_reauth", "unknown")).toEqual({
+      kind: "account",
+      account: "needs_reauth",
+    });
+    expect(deriveGithubRealtimeBlock("missing", "unknown")).toEqual({ kind: "account", account: "missing" });
+    expect(deriveGithubRealtimeBlock("valid", "not_installed")).toEqual({ kind: "repo", repo: "not_installed" });
+    expect(deriveGithubRealtimeBlock("valid", "connected")).toBeNull();
   });
 });
 

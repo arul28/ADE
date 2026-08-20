@@ -1,5 +1,6 @@
 import type { GitHubAuthFailure, GitHubRateLimitState } from "../../../shared/types";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+import { isDefinitiveGitHubOAuthError } from "./githubAppUserAuth";
 
 export class GitHubRateLimitError extends Error {
   constructor(
@@ -59,11 +60,27 @@ export function classifyGitHubAuthFailure(args: {
   status?: number;
   message: string;
   headers?: Pick<Headers, "get">;
+  /**
+   * The OAuth `error` code, when the failure came from GitHub's OAuth endpoints.
+   * Those answer a rejected refresh token with HTTP 200, so the status alone
+   * cannot tell a dead credential from a healthy response.
+   */
+  oauthError?: string | null;
+  /**
+   * A deadline the caller already knows — the refresh backoff, typically. It
+   * wins over anything derived from headers, because it is the instant ADE will
+   * actually try again.
+   */
+  retryAt?: string | null;
 }): { authFailure: GitHubAuthFailure; rateLimit: GitHubRateLimitState | null } {
   const message = args.message.trim() || "GitHub token validation failed.";
   const rateLimit = args.headers ? readGitHubRateLimitState(args.headers) : null;
+  const retryAfterSeconds = args.headers ? parseHeaderInteger(args.headers.get("retry-after")) : null;
+  const knownRetryAt = args.retryAt?.trim() || null;
   const rateLimited =
     args.status === 429
+    || retryAfterSeconds != null
+    || args.oauthError === "too_many_requests"
     || rateLimit?.remaining === 0
     || /rate limit|too many requests|abuse detection/i.test(message);
   if (rateLimited) {
@@ -72,11 +89,16 @@ export function classifyGitHubAuthFailure(args: {
       authFailure: {
         kind: "rate_limited",
         message,
-        retryAt: args.headers ? rateLimitRetryAt(args.headers, rateLimit) : rateLimit?.resetAt ?? null,
+        retryAt: knownRetryAt
+          ?? (args.headers ? rateLimitRetryAt(args.headers, rateLimit) : rateLimit?.resetAt ?? null),
       },
     };
   }
-  if (args.status === 401 || /bad credentials|invalid token|requires authentication/i.test(message)) {
+  if (
+    args.status === 401
+    || isDefinitiveGitHubOAuthError(args.oauthError)
+    || /bad credentials|invalid token|requires authentication/i.test(message)
+  ) {
     return {
       rateLimit,
       authFailure: {
@@ -92,7 +114,7 @@ export function classifyGitHubAuthFailure(args: {
       authFailure: {
         kind: "permission_denied",
         message,
-        retryAt: null,
+        retryAt: knownRetryAt,
       },
     };
   }
@@ -105,7 +127,7 @@ export function classifyGitHubAuthFailure(args: {
       authFailure: {
         kind: "service_unavailable",
         message,
-        retryAt: null,
+        retryAt: knownRetryAt,
       },
     };
   }
@@ -115,7 +137,7 @@ export function classifyGitHubAuthFailure(args: {
       authFailure: {
         kind: "network",
         message,
-        retryAt: null,
+        retryAt: knownRetryAt,
       },
     };
   }
@@ -124,7 +146,7 @@ export function classifyGitHubAuthFailure(args: {
     authFailure: {
       kind: "unknown",
       message,
-      retryAt: null,
+      retryAt: knownRetryAt,
     },
   };
 }

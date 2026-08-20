@@ -10,7 +10,9 @@ import {
   EncryptedFileCredentialStore,
   KeytarCredentialStore,
   CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
+  adoptFileBackedCredentials,
   createDefaultCredentialStore,
+  createRoutedCredentialStore,
   inspectCredentialStoreHealth,
   isFileBackedCredentialKey,
   readCredentialStoreQuarantine,
@@ -22,6 +24,7 @@ import {
   DEFAULT_REFRESH_ROTATION_WAIT_MS,
 } from "../account/accountAuthService";
 import { BOOTSTRAP_TOKEN_KEY } from "../sync/brainProjectActionsSyncHandler";
+import { GITHUB_APP_USER_TOKEN_KEY } from "../../../../desktop/src/main/services/github/githubAppUserAuthService";
 import {
   createMacKeychainMaterialResolver,
   resolveMacKeychainMaterialOutcome,
@@ -909,6 +912,82 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(raw).toContain("ADE_SAFE_STORAGE_CREDENTIALS_V1");
   });
 
+  it("leaves the GitHub App user token where the brain and the CLI read it", () => {
+    // Two copies of this record means two processes refreshing one rotating
+    // refresh token, and GitHub answers a reused refresh token by revoking the
+    // credential.
+    const brainWrite = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    brainWrite.setSync("github.appUserToken.v1", JSON.stringify({ accessToken: "ghu_brain" }));
+
+    const desktopStore = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    desktopStore.getSync("linear.token.v1");
+
+    const brainRead = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    expect(brainRead.getSync("github.appUserToken.v1")).toContain("ghu_brain");
+    const safeFile = fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8");
+    expect(safeFile).not.toContain("ghu_brain");
+  });
+
+  it("routes file-backed keys to the shared file and adopts ones stranded in safeStorage", () => {
+    const fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    const primary = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    // What an older build left behind: the App token sealed in the file only the
+    // desktop app can open.
+    fs.writeFileSync(
+      path.join(tempDir, "credentials.safe.enc"),
+      Buffer.concat([
+        Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n"),
+        safeStorage.encryptString(JSON.stringify({
+          "github.appUserToken.v1": "stranded-app-token",
+          "linear.token.v1": "lin_secret",
+        })),
+      ]),
+    );
+
+    const adoption = adoptFileBackedCredentials({ primary, fileStore, identity: tempDir });
+    const routed = createRoutedCredentialStore({ primary, fileStore });
+
+    expect(adoption.adopted).toContain("github.appUserToken.v1");
+    expect(fileStore.getSync("github.appUserToken.v1")).toBe("stranded-app-token");
+    expect(primary.getSync("github.appUserToken.v1")).toBeNull();
+    expect(routed.getSync("github.appUserToken.v1")).toBe("stranded-app-token");
+    // Everything else keeps going to the Electron-only store.
+    expect(routed.getSync("linear.token.v1")).toBe("lin_secret");
+    expect(fileStore.getSync("linear.token.v1")).toBeNull();
+
+    // The read state answers about the file the read actually went to, so an
+    // unreadable sibling cannot make a good credential look unreadable.
+    routed.getSync("linear.token.v1");
+    expect(routed.getLastReadState?.()).toBe("available");
+
+    // A write through the routed store reaches the brain, and so does the
+    // atomic single-key update the refresh ledger runs on.
+    routed.setSync("github.appUserToken.v1", "renewed-app-token");
+    routed.updateKeySync?.("github.appUserToken.v1", (current) => `${current}+ledger`);
+    expect(new EncryptedFileCredentialStore({ secretsDir: tempDir })
+      .getSync("github.appUserToken.v1")).toBe("renewed-app-token+ledger");
+  });
+
+  it("never overwrites the shared file's credential with a stale safeStorage copy", () => {
+    const fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    fileStore.setSync("github.appUserToken.v1", "fresh-from-brain");
+    const primary = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    fs.writeFileSync(
+      path.join(tempDir, "credentials.safe.enc"),
+      Buffer.concat([
+        Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n"),
+        safeStorage.encryptString(JSON.stringify({ "github.appUserToken.v1": "stale-from-june" })),
+      ]),
+    );
+
+    const adoption = adoptFileBackedCredentials({ primary, fileStore, identity: tempDir });
+
+    expect(adoption.adopted).toEqual([]);
+    expect(adoption.pruned).toContain("github.appUserToken.v1");
+    expect(fileStore.getSync("github.appUserToken.v1")).toBe("fresh-from-brain");
+    expect(primary.getSync("github.appUserToken.v1")).toBeNull();
+  });
+
   it("leaves the brain-readable account session in the legacy file store", () => {
     // The ADE brain (com.ade.runtime) and the CLI cannot read the Electron-only
     // safeStorage file. Migrating the account session into it and deleting the
@@ -1079,6 +1158,9 @@ describe("ElectronSafeStorageCredentialStore", () => {
     // Asserted against the real constant: renaming it in the sync handler must
     // fail here instead of silently moving the token into safeStorage.
     expect(isFileBackedCredentialKey(BOOTSTRAP_TOKEN_KEY)).toBe(true);
+    // Same rationale, one incident later: two copies of the GitHub App token
+    // means two processes refreshing one rotating refresh token.
+    expect(isFileBackedCredentialKey(GITHUB_APP_USER_TOKEN_KEY)).toBe(true);
     expect(isFileBackedCredentialKey("linear.token.v1")).toBe(false);
   });
 

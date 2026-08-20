@@ -1538,6 +1538,31 @@ describe("githubService.getStatus", () => {
     );
   });
 
+  it("reports a throttled GitHub App refresh as rate limited with the retry time", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_expiring_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 3_600_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(429, { error: "too_many_requests" }, { "retry-after": "120" }));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status.authFailure?.kind).toBe("rate_limited");
+    // The deadline is ADE's own backoff, which is what actually gates the next
+    // attempt — a cosmetic retryAt would tell the user to wait for nothing.
+    const retryAtMs = Date.parse(status.authFailure?.retryAt ?? "");
+    expect(retryAtMs).toBeGreaterThan(Date.now());
+    expect(retryAtMs).toBeLessThanOrEqual(Date.now() + 121_000);
+  });
+
   it("reports a GitHub App refresh failure instead of treating authorization as missing", async () => {
     stubOriginRemote();
     const credentialStore = new MemoryCredentialStore();
@@ -1564,7 +1589,10 @@ describe("githubService.getStatus", () => {
       connected: false,
       authFailure: {
         kind: "invalid_token",
-        message: "Bad credentials",
+        // GitHub's own wording ("Bad credentials") is kept for the log and the
+        // stored refresh ledger; what reaches a status surface is the sentence
+        // that says what to do about it.
+        message: "ADE GitHub App authorization expired. Re-authorize ADE with GitHub.",
         retryAt: null,
       },
       credentialStates: expect.arrayContaining([
@@ -2824,6 +2852,33 @@ describe("githubService.getAppInstallationStatus", () => {
       error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
     });
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("names the account problem instead of the relay's 401 when authorization is paused", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_stale_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 3_600_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    // GitHub throttles the refresh, then the relay answers the token-less status
+    // request with its own "GitHub auth token is required".
+    mockFetch.mockResolvedValueOnce(jsonResponse(429, { error: "too_many_requests" }, { "retry-after": "120" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(401, { ok: false, error: "GitHub auth token is required" }));
+
+    const status = await makeService({
+      credentialStore,
+      getAccountAccessToken: async () => "clerk-account-token",
+    }).getAppInstallationStatus({ owner: "acme", name: "repo" });
+
+    expect(status.state).toBe("error");
+    expect(status.error).not.toBe("GitHub auth token is required");
+    expect(status.error).toContain("Waiting on GitHub authorization");
   });
 
   it("does not use the user's existing GitHub token for hosted relay checks", async () => {

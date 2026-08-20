@@ -1775,6 +1775,51 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("resolves the GitHub App credential once per window instead of per request", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-app-window-", {
+      emptyGhConfig: true,
+    });
+    // An access token past its life, so every resolution that is not cached
+    // costs a refresh POST — the traffic that rate-limited GitHub for the user.
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_stale_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      refreshToken: "ghr_live_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 3_600_000).toISOString(),
+      userLogin: "octocat",
+      updatedAt: new Date().toISOString(),
+    }));
+    const requestedUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({ login: "octocat" }), {
+        status: 200,
+        headers: { "content-type": "application/json", "x-oauth-scopes": "" },
+      });
+    }) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({ token: null, ghCliPath: null, ghAuthError: null }),
+      },
+    );
+
+    try {
+      await githubService.getStatus();
+      await githubService.getAppInstallationStatus({ owner: "acme", name: "repo" });
+      await githubService.getStatus();
+
+      const refreshPosts = requestedUrls
+        .filter((url) => url === "https://github.com/login/oauth/access_token");
+      expect(refreshPosts).toHaveLength(1);
+    } finally {
+      environment.restore();
+    }
+  });
+
   it("drops a cached headless writer when that credential disappears", async () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-cache-");
     const machineCredentialStore = new EncryptedFileCredentialStore();

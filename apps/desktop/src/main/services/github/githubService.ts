@@ -24,6 +24,7 @@ import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
+  GITHUB_CREDENTIAL_INVENTORY_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -41,7 +42,10 @@ import {
 import { createGithubConditionalRequestCache } from "../../../shared/githubConditionalRequestCache";
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
-import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
+import {
+  classifyAppUserAuthFailure,
+  createGitHubAppUserAuthService,
+} from "./githubAppUserAuthService";
 import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import { readCredentialWithState } from "./credentialReadState";
 import {
@@ -87,7 +91,6 @@ const MACHINE_TOKEN_KEY = "github.token.v1";
 const GITHUB_API_TIMEOUT_MS = 20_000;
 export const GITHUB_API_BODY_TIMEOUT_MS = 30_000;
 const GH_AUTH_TOKEN_CACHE_TTL_MS = 30_000;
-const GITHUB_CREDENTIAL_INVENTORY_CACHE_TTL_MS = 30_000;
 const GH_HOSTS_TOKEN_CACHE_MAX_ENTRIES = 32;
 const GITHUB_STATUS_FAILURE_COOLDOWN_MS = 30_000;
 const execFileAsync = promisify(execFile);
@@ -863,11 +866,13 @@ export function createGithubService({
         ? appUserAuth.getValidTokenForRelay()
             .then((token) => ({ token, failure: null }))
             .catch((error: unknown) => {
-              const message = error instanceof Error ? error.message : String(error);
-              const failure = classifyGitHubAuthFailure({ message });
-              logger.warn("github.app_user_token_refresh_failed", {
-                error: message,
+              const failure = classifyAppUserAuthFailure(error);
+              logger.warn("github.app_user_token_unavailable", {
+                error: failure.described.message,
                 kind: failure.authFailure.kind,
+                credentialState: failure.described.credentialState,
+                status: failure.described.status,
+                oauthError: failure.described.oauthError,
                 retryAt: failure.authFailure.retryAt,
               });
               return { token: null, failure };
@@ -919,7 +924,11 @@ export function createGithubService({
       candidates,
       availableSources: new Set(candidates.map((candidate) => candidate.source)),
       failures: appResult.failure
-        ? [{ source: "app", ...appResult.failure }]
+        ? [{
+          source: "app" as const,
+          authFailure: appResult.failure.authFailure,
+          rateLimit: appResult.failure.rateLimit,
+        }]
         : [],
       appTokenStored,
       patTokenStored,
@@ -2075,7 +2084,21 @@ export function createGithubService({
     const owner = args.owner?.trim();
     const name = args.name?.trim();
     const repo = owner && name ? { owner, name } : await detectRepo();
-    const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
+    // The reason this token is unavailable decides what the repo axis may say.
+    // Swallowing it is how "ADE's authorization is paused" reached the user as
+    // the relay's own "GitHub auth token is required" 401.
+    const appUserToken = await appUserAuth.getValidTokenForRelay()
+      .then((token) => ({ token, failure: null }))
+      .catch((error: unknown) => {
+        const failure = classifyAppUserAuthFailure(error);
+        logger.warn("github.app_installation_status_auth_unavailable", {
+          error: failure.described.message,
+          kind: failure.authFailure.kind,
+          credentialState: failure.described.credentialState,
+          retryAt: failure.authFailure.retryAt,
+        });
+        return { token: null, failure };
+      });
     const accountAccessToken = getAccountAccessToken
       ? await getAccountAccessToken().catch(() => null)
       : null;
@@ -2083,7 +2106,14 @@ export function createGithubService({
       repo,
       secretReader: githubRelaySecretReader,
       forceRefresh: args.forceRefresh === true,
-      githubAppUserToken,
+      githubAppUserToken: appUserToken.token,
+      appUserAuthFailure: appUserToken.failure
+        ? {
+          message: appUserToken.failure.described.message,
+          credentialState: appUserToken.failure.described.credentialState,
+          retryAt: appUserToken.failure.authFailure.retryAt,
+        }
+        : null,
       accountAccessToken,
       auditLog: appUserAuth.auditLog,
     });

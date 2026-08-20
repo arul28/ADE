@@ -8,6 +8,7 @@ import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
 import {
   GITHUB_STATUS_PAGE_URL,
   githubServiceAffectedLabel,
+  isGithubServiceUnavailable,
   type GitHubServiceHealth,
 } from "../../shared/githubServiceHealth";
 
@@ -147,10 +148,9 @@ function githubRepoAccessLabel(repoAccessOk: boolean | null | undefined): string
  * PR updates, and the raw IPC status conflates them:
  *
  *  1. Account axis  — the GitHub App *user token* (one per account). Sourced from
- *     `getAppUserAuthStatus()` → {@link GitHubAppUserAuthStatus}. The token can be
- *     missing, expired, or valid. Expiry is NOT surfaced by the service today
- *     (`expiresAt` is stored but never compared to now, and an expired token is
- *     silently deleted on next relay use), so we compute `expired` here.
+ *     `getAppUserAuthStatus()` → {@link GitHubAppUserAuthStatus}. The service
+ *     decides the honest state and reports it as `credentialState`; this module
+ *     only translates it into copy.
  *  2. Repo axis     — whether the App is *installed on this specific repo*. Sourced
  *     from `getAppInstallationStatus()` → {@link GitHubAppInstallationStatus}.
  *
@@ -158,28 +158,65 @@ function githubRepoAccessLabel(repoAccessOk: boolean | null | undefined): string
  * the derivation here means Settings and the banner can never disagree.
  */
 
-export type GithubAccountAuthState = "valid" | "expired" | "missing";
+export type GithubAccountAuthState =
+  | "valid" // authorized: a live refresh token keeps the access token current
+  | "blocked" // GitHub is refusing renewals for now; ADE retries on its own
+  | "needs_reauth" // the refresh token is gone, expired, or rejected — only this asks the user to act
+  | "missing"; // no credential stored
 
 export type GithubRepoConnectionState =
   | "connected" // App installed on this repo (state === "configured") AND webhook delivery is wired
   | "webhook_off" // App installed but real-time delivery isn't wired — relay unconfigured or webhook deleted
   | "not_installed" // App not installed on this repo
   | "access_pending" // authorized, but GitHub is still propagating repo access
+  | "waiting_on_account" // the account axis isn't authorized, so the install check proves nothing
   | "no_repo" // no GitHub repo detected for this project
   | "unknown"; // status not loaded / indeterminate
 
-// Mirror GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS (githubAppUserAuthService.ts): treat a
-// token that is within the refresh window as already expired for display purposes.
-const TOKEN_EXPIRY_SKEW_MS = 2 * 60_000;
-
+/**
+ * The account axis, judged by the credential that actually keeps the account
+ * connected: the refresh token.
+ *
+ * The GitHub App access token lives 8 hours and is renewed from the refresh
+ * token on every use, so `expiresAt` in the past is ordinary operation. Reading
+ * it as "authorization expired" sent working accounts into a re-authorize flow
+ * that hits the same OAuth endpoint the renewals were already failing on — the
+ * one thing guaranteed to keep the account locked out. Never judge by
+ * `expiresAt`; the service reports the honest state in `credentialState`.
+ */
 export function deriveGithubAccountAuthState(
   appAuth: GitHubAppUserAuthStatus | null,
 ): GithubAccountAuthState {
   if (!appAuth || appAuth.tokenStored !== true) return "missing";
-  const expiresAtMs = appAuth.expiresAt ? Date.parse(appAuth.expiresAt) : NaN;
-  if (Number.isFinite(expiresAtMs) && expiresAtMs - TOKEN_EXPIRY_SKEW_MS <= Date.now()) {
-    return "expired";
+  switch (appAuth.credentialState) {
+    case "authorized":
+      return "valid";
+    case "blocked":
+      return "blocked";
+    case "needs_reauth":
+      return "needs_reauth";
+    case "missing":
+      return "missing";
+    default:
+      return legacyAccountAuthState(appAuth);
   }
+}
+
+/**
+ * Older hosts and the web-client stub send the status without `credentialState`.
+ * The refresh token still decides the truth there, so read that rather than the
+ * 8-hour access token. Only a credential with no refresh-token expiry at all
+ * falls back to the access token, because then nothing else is known.
+ */
+function legacyAccountAuthState(appAuth: GitHubAppUserAuthStatus): GithubAccountAuthState {
+  const refreshExpiresAtMs = appAuth.refreshTokenExpiresAt
+    ? Date.parse(appAuth.refreshTokenExpiresAt)
+    : NaN;
+  if (Number.isFinite(refreshExpiresAtMs)) {
+    return refreshExpiresAtMs <= Date.now() ? "needs_reauth" : "valid";
+  }
+  const expiresAtMs = appAuth.expiresAt ? Date.parse(appAuth.expiresAt) : NaN;
+  if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return "needs_reauth";
   return "valid";
 }
 
@@ -203,8 +240,23 @@ export function isGithubRepoAccessPending(
   return REPO_ACCESS_PENDING_ERROR_MATCHES.some((match) => err === match || err.includes(match));
 }
 
+/**
+ * The relay answers the installation check with a 401 when ADE sends no usable
+ * GitHub App token. That answer says nothing about the installation, so the repo
+ * axis must not repeat it: rendering ADE's own "GitHub auth token is required"
+ * turned an account-token problem into an accusation against the repo setup.
+ */
+function isGithubAuthTokenRequiredError(error: string | null | undefined): boolean {
+  const normalized = error?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  return normalized.includes("auth token is required")
+    || normalized.includes("authorization is required")
+    || normalized.includes("not authorized");
+}
+
 export function deriveGithubRepoConnectionState(
   status: GitHubAppInstallationStatus | null,
+  account?: GithubAccountAuthState,
 ): GithubRepoConnectionState {
   if (!status) return "unknown";
   if (status.repo === null) return "no_repo";
@@ -214,6 +266,17 @@ export function deriveGithubRepoConnectionState(
     // report the honest "webhook_off" rather than a false-healthy "connected".
     return status.relayConfigured && status.webhookState !== "deleted" ? "connected" : "webhook_off";
   }
+  if (isGithubAuthTokenRequiredError(status.error)) return "waiting_on_account";
+  // An unauthorized account cannot check an installation, so every "not
+  // installed" reading below it is unproven. Say what ADE is actually waiting
+  // for instead of reporting an uninstall that never happened.
+  //
+  // A rate limit or a GitHub 5xx is exempt: those are specific, corroborated
+  // reasons that hold whichever credential the check ran with (it can fall back
+  // to the ADE account token), and the panel has honest copy for each.
+  const failureIsExplained = isGithubRateLimitMessage(status.error)
+    || isGithubServiceUnavailable({ message: status.error });
+  if (account != null && account !== "valid" && !failureIsExplained) return "waiting_on_account";
   if (status.state === "not_installed") return "not_installed";
   if (isGithubRepoAccessPending(status)) return "access_pending";
   return "unknown";
@@ -225,7 +288,7 @@ export function deriveGithubRepoConnectionState(
  * be verified), so the banner shows one clear next action at a time.
  */
 export type GithubRealtimeBlock =
-  | { kind: "account"; account: Extract<GithubAccountAuthState, "expired" | "missing"> }
+  | { kind: "account"; account: Extract<GithubAccountAuthState, "needs_reauth" | "missing"> }
   | {
       kind: "repo";
       repo: Extract<GithubRepoConnectionState, "not_installed" | "access_pending" | "webhook_off">;
@@ -241,7 +304,11 @@ export function deriveGithubRealtimeBlock(
   // device-flow user token. Real-time updates flow, so surface no blocker even if
   // the device-flow token is absent (which would otherwise read as "missing").
   if (repo === "connected") return null;
-  if (account === "missing" || account === "expired") return { kind: "account", account };
+  // A paused renewal is not a blocker the user can clear. ADE retries on its
+  // own, and every repo reading taken while it is paused is unproven, so this
+  // state raises no banner at all rather than a banner nobody can act on.
+  if (account === "blocked") return null;
+  if (account === "missing" || account === "needs_reauth") return { kind: "account", account };
   if (repo === "not_installed" || repo === "access_pending" || repo === "webhook_off") {
     return { kind: "repo", repo };
   }
@@ -259,9 +326,9 @@ export function isGithubRealtimeHealthy(
 // --- Shared copy (kept here so Settings and the banner stay in lockstep) ---
 
 export function githubAccountIssueCopy(
-  account: Extract<GithubAccountAuthState, "expired" | "missing">,
+  account: Extract<GithubAccountAuthState, "needs_reauth" | "missing">,
 ): { title: string; detail: string; action: string } {
-  if (account === "expired") {
+  if (account === "needs_reauth") {
     return {
       title: "GitHub App authorization expired",
       detail: "Re-authorize ADE so it can keep pull request status up to date.",
@@ -275,11 +342,146 @@ export function githubAccountIssueCopy(
   };
 }
 
+/**
+ * The account axis exactly as the Settings panel renders it: one pill, one line
+ * of subtext, and at most one button. Every state that ADE recovers from on its
+ * own returns `cta: null` — offering a button there is what walked users into
+ * re-authorizing against an endpoint that was already refusing them.
+ */
+export type GithubAccountAxisTone = "ok" | "warn" | "pending" | "neutral";
+
+export type GithubAccountAxisPresentation = {
+  tone: GithubAccountAxisTone;
+  label: string;
+  subtext: string;
+  cta: "authorize" | "reauthorize" | null;
+  /** Extra sentence shown under the row; only the paused state needs one. */
+  note: string | null;
+};
+
+export function describeGithubAccountAxis(
+  account: GithubAccountAuthState | "checking",
+  appAuth: GitHubAppUserAuthStatus | null,
+): GithubAccountAxisPresentation {
+  if (account === "checking") {
+    return {
+      tone: "pending",
+      label: "Checking…",
+      subtext: "Checking your GitHub authorization…",
+      cta: null,
+      note: null,
+    };
+  }
+  if (account === "valid") {
+    const who = appAuth?.userLogin ?? "GitHub account";
+    return {
+      tone: "ok",
+      label: "Authorized",
+      // Deliberately silent about the 8-hour access token. Showing its expiry
+      // taught users to read a normal renewal cycle as a countdown to breakage.
+      subtext: `${who} · renews automatically`,
+      cta: null,
+      note: null,
+    };
+  }
+  if (account === "blocked") {
+    const until = formatGithubShortTime(appAuth?.refreshBlockedUntil ?? null);
+    return {
+      tone: "neutral",
+      label: until ? `Paused until ${until}` : "Paused",
+      subtext: githubRefreshPauseCopy(appAuth?.lastRefreshError?.kind ?? null),
+      cta: null,
+      note: "Re-authorizing is unavailable while GitHub has these requests paused.",
+    };
+  }
+  if (account === "needs_reauth") {
+    return {
+      tone: "warn",
+      label: "Authorization expired",
+      subtext: githubAccountIssueCopy("needs_reauth").detail,
+      cta: "reauthorize",
+      note: null,
+    };
+  }
+  return {
+    tone: "neutral",
+    label: "Not authorized",
+    subtext: githubAccountIssueCopy("missing").detail,
+    cta: "authorize",
+    note: null,
+  };
+}
+
+/** Why the renewal is paused, in the user's words rather than GitHub's. */
+export function githubRefreshPauseCopy(
+  kind: NonNullable<GitHubAppUserAuthStatus["lastRefreshError"]>["kind"] | null,
+): string {
+  if (kind === "rate_limited") {
+    return "GitHub is limiting authorization requests for this account. ADE retries automatically — reconnecting won't speed this up.";
+  }
+  if (kind === "outage") {
+    return "GitHub isn't answering authorization requests right now. ADE retries automatically — nothing here needs changing.";
+  }
+  if (kind === "network") {
+    return "ADE couldn't reach GitHub to renew this authorization. It retries automatically once the connection is back.";
+  }
+  return "ADE couldn't renew this authorization just now. It retries automatically — reconnecting won't speed this up.";
+}
+
+/**
+ * The App row in the Settings connection ladder. Same honesty rule as the panel:
+ * a paused renewal reads as a wait, and only a dead refresh token asks for one.
+ */
+export function describeGithubAppCredentialBadge(
+  account: GithubAccountAuthState,
+  blockedUntil: string | null,
+): { label: string; tone: GithubAccountAxisTone } | null {
+  if (account === "blocked") {
+    const until = formatGithubShortTime(blockedUntil);
+    return { label: until ? `Paused until ${until}` : "Paused", tone: "neutral" };
+  }
+  if (account === "needs_reauth") return { label: "Re-authorize", tone: "warn" };
+  return null;
+}
+
+/** Short wall-clock time for a deadline ADE is waiting on ("3:40 PM"). */
+export function formatGithubShortTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * True when GitHub itself paused the OAuth request, rather than rejecting it.
+ * The raw transport error reads "GitHub OAuth request failed (429)", which tells
+ * the user nothing and looks like ADE broke.
+ */
+export function isGithubAuthorizationPausedMessage(message: string | null | undefined): boolean {
+  const normalized = message?.trim().toLowerCase() ?? "";
+  if (!normalized) return false;
+  if (isGithubRateLimitMessage(normalized)) return true;
+  return normalized.includes("too many requests") || /\b429\b/.test(normalized);
+}
+
 export function githubRepoIssueCopy(
-  repo: Extract<GithubRepoConnectionState, "not_installed" | "access_pending" | "webhook_off">,
+  repo: Extract<
+    GithubRepoConnectionState,
+    "not_installed" | "access_pending" | "webhook_off" | "waiting_on_account"
+  >,
   repoLabel: string | null,
+  account?: GithubAccountAuthState,
 ): { title: string; detail: string; action: string } {
   const label = repoLabel ?? "this repository";
+  if (repo === "waiting_on_account") {
+    return {
+      title: `Waiting on GitHub authorization for ${label}`,
+      detail: account === "missing"
+        ? "Authorize ADE with GitHub above, then this repo's app status appears here."
+        : "ADE can't check this repo until the GitHub authorization above is working again.",
+      action: "Recheck",
+    };
+  }
   if (repo === "access_pending") {
     return {
       title: `Finishing GitHub setup for ${label}`,

@@ -9,6 +9,16 @@ import type {
 } from "./types/git";
 import { getGitHubTokenAccessState } from "./githubScopes";
 
+/**
+ * How long a built credential inventory is reused.
+ *
+ * Shared by the desktop service and its headless twin: building an inventory
+ * asks for a GitHub App user token, and asking for one on an expired access
+ * token is a refresh POST. The headless side lacked this cache, which made the
+ * brain the loudest refresher on the machine.
+ */
+export const GITHUB_CREDENTIAL_INVENTORY_CACHE_TTL_MS = 30_000;
+
 export type GithubOperationCredentialSource = GitHubCredentialSource;
 export type GithubOperationCredentialCapability = GitHubCredentialCapability;
 

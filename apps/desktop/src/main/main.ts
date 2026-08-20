@@ -250,6 +250,8 @@ import {
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
+  adoptFileBackedCredentials,
+  createRoutedCredentialStore,
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
   isElectronSafeStorageCredentialFile,
@@ -637,13 +639,20 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
+  // Credentials the ADE brain and the CLI co-own live in the shared machine
+  // file, so the desktop app must READ them there too — the Electron-only store
+  // cannot see them, and a build that wrote one into it signs the brain out.
+  const routeFileBackedKeys = (primary: SyncCredentialStore): SyncCredentialStore => {
+    adoptFileBackedCredentials({ primary, fileStore: legacyStore, identity: secretsDir });
+    return createRoutedCredentialStore({ primary, fileStore: legacyStore });
+  };
   try {
     if (safeStorage.isEncryptionAvailable()) {
-      return new ElectronSafeStorageCredentialStore({
+      return routeFileBackedKeys(new ElectronSafeStorageCredentialStore({
         secretsDir,
         safeStorage,
         legacyStore,
-      });
+      }));
     }
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.
@@ -653,26 +662,31 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
     || isElectronSafeStorageCredentialFile(legacyCredentialsPath)
   ) {
     const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
-    return {
-      get: async () => {
-        throw new Error(message);
+    // The shared file needs no keychain, so the credentials the brain co-owns
+    // stay reachable even while the Electron-only ones are locked away.
+    return createRoutedCredentialStore({
+      primary: {
+        get: async () => {
+          throw new Error(message);
+        },
+        set: async () => {
+          throw new Error(message);
+        },
+        delete: async () => {
+          throw new Error(message);
+        },
+        getSync: () => {
+          throw new Error(message);
+        },
+        setSync: () => {
+          throw new Error(message);
+        },
+        deleteSync: () => {
+          throw new Error(message);
+        },
       },
-      set: async () => {
-        throw new Error(message);
-      },
-      delete: async () => {
-        throw new Error(message);
-      },
-      getSync: () => {
-        throw new Error(message);
-      },
-      setSync: () => {
-        throw new Error(message);
-      },
-      deleteSync: () => {
-        throw new Error(message);
-      },
-    };
+      fileStore: legacyStore,
+    });
   }
   return legacyStore;
 }

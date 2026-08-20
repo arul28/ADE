@@ -250,7 +250,7 @@ export function IntegrationBannerHost({
     if (!currentProjectRoot) return;
     if (appStatusLoaded && loadedRoot === currentProjectRoot) {
       const account = deriveGithubAccountAuthState(appAuth);
-      const repo = deriveGithubRepoConnectionState(appInstall);
+      const repo = deriveGithubRepoConnectionState(appInstall, account);
       if (account === "valid") clearDismissal("github-app-account");
       if (repo === "connected") {
         const repoKey = appInstall?.repo ? `${appInstall.repo.owner}/${appInstall.repo.name}` : currentProjectRoot;
@@ -334,7 +334,7 @@ export function IntegrationBannerHost({
       && (!rawAuth || typeof rawAuth.configured === "boolean");
     if (!githubSuppressed && appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
       const account = deriveGithubAccountAuthState(appAuth);
-      const repo = deriveGithubRepoConnectionState(appInstall);
+      const repo = deriveGithubRepoConnectionState(appInstall, account);
       const block = deriveGithubRealtimeBlock(account, repo);
       if (block?.kind === "account") {
         const copy = githubAccountIssueCopy(block.account);

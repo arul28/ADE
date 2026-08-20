@@ -119,6 +119,23 @@ export type SyncCredentialStore = CredentialStore & {
   deleteSync(key: string): void;
   /** Atomically update the complete synchronous store when supported. */
   updateSync?(updater: (values: Record<string, string>) => boolean | void): void;
+  /**
+   * Atomically update ONE key when supported.
+   *
+   * Distinct from `updateSync` because a store that routes keys to different
+   * files cannot answer a whole-map updater, while it can always say which file
+   * one key lives in. Return `undefined` to write nothing, `null` to delete.
+   */
+  updateKeySync?(
+    key: string,
+    mutator: (current: string | null) => string | null | undefined,
+  ): void;
+  /**
+   * A stable name for the storage behind this store, equal for every store
+   * object over the same file. Callers that coordinate across instances (the
+   * GitHub App token refresh) key their process-wide state on it.
+   */
+  credentialStoreIdentity?(): string;
   /** Best-effort cross-process notification that persisted credentials changed. */
   onDidChange?(listener: () => void): () => void;
   /** Result of the most recent synchronous credential-file read. */
@@ -199,6 +216,7 @@ const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n")
  * app is signed in. Keep the literals in sync with:
  *   - ACCOUNT_SESSION_CREDENTIAL_KEY (services/account/accountAuthService.ts)
  *   - BOOTSTRAP_TOKEN_KEY (services/sync/brainProjectActionsSyncHandler.ts)
+ *   - GITHUB_APP_USER_TOKEN_KEY (desktop services/github/githubAppUserAuthService.ts)
  * They are duplicated here rather than imported to keep this module free of
  * service-layer dependencies; credentialStore.test.ts asserts they match.
  */
@@ -210,6 +228,12 @@ const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
   // the process pair the journal exists to coordinate.
   "account.session.rotation.v1",
   "sync.bootstrapToken.v1",
+  // The GitHub App user token carries a rotating refresh token and, next to it,
+  // the refresh ledger every ADE process coordinates through. Two copies of that
+  // record means two processes refreshing the same rotating token, which GitHub
+  // answers by revoking the credential — so it has to live in the one file the
+  // app, the brain and the CLI all read.
+  "github.appUserToken.v1",
 ];
 
 export function isFileBackedCredentialKey(key: string): boolean {
@@ -854,6 +878,34 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         this.writeAll(values);
       }
     });
+  }
+
+  updateKeySync(
+    key: string,
+    mutator: (current: string | null) => string | null | undefined,
+  ): void {
+    const normalized = normalizeKey(key);
+    this.updateSync((values) => {
+      const next = mutator(values[normalized] ?? null);
+      if (next === undefined) return false;
+      if (next === null) {
+        if (!(normalized in values)) return false;
+        delete values[normalized];
+        return true;
+      }
+      const trimmed = next.trim();
+      if (!trimmed.length) {
+        if (!(normalized in values)) return false;
+        delete values[normalized];
+        return true;
+      }
+      values[normalized] = trimmed;
+      return true;
+    });
+  }
+
+  credentialStoreIdentity(): string {
+    return this.credentialsPath;
   }
 
   /**
@@ -1578,6 +1630,125 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private withLock<T>(fn: () => T): T {
     return withCredentialFileLock(this.lockPath, fn);
   }
+}
+
+/**
+ * One store that keeps file-backed keys in the shared machine file and
+ * everything else in `primary`.
+ *
+ * The desktop app's own store is Electron-only, and the migration that keeps
+ * file-backed keys OUT of it only runs once. That left the reader with nowhere
+ * to look: `account.session.v1` and the GitHub App token stayed in
+ * `credentials.json.enc` while every desktop read went to `credentials.safe.enc`
+ * and answered "not connected". Routing per key is what makes "the brain and the
+ * app share this credential" true for readers, not just for writers.
+ */
+export function createRoutedCredentialStore(args: {
+  primary: SyncCredentialStore;
+  fileStore: SyncCredentialStore;
+}): SyncCredentialStore {
+  const storeFor = (key: string): SyncCredentialStore =>
+    isFileBackedCredentialKey(normalizeKey(key)) ? args.fileStore : args.primary;
+  // `getLastReadState()` describes the store's MOST RECENT read, and a caller
+  // asks it immediately after the read it means. Answering from the wrong file
+  // is how a readable credential gets reported as "can't read your sign-in".
+  let lastReadStore: SyncCredentialStore = args.primary;
+  const readStoreFor = (key: string): SyncCredentialStore => {
+    lastReadStore = storeFor(key);
+    return lastReadStore;
+  };
+  return {
+    get: async (key) => readStoreFor(key).get(key),
+    set: async (key, value) => storeFor(key).set(key, value),
+    delete: async (key) => storeFor(key).delete(key),
+    getSync: (key) => readStoreFor(key).getSync(key),
+    setSync: (key, value) => storeFor(key).setSync(key, value),
+    deleteSync: (key) => storeFor(key).deleteSync(key),
+    // A whole-map updater cannot be split across two files, so it keeps the
+    // meaning it had before routing existed: it updates the primary store.
+    updateSync: args.primary.updateSync?.bind(args.primary),
+    updateKeySync: (key, mutator) => {
+      const store = storeFor(key);
+      if (store.updateKeySync) {
+        store.updateKeySync(key, mutator);
+        return;
+      }
+      const next = mutator(store.getSync(key));
+      if (next === undefined) return;
+      if (next === null) store.deleteSync(key);
+      else store.setSync(key, next);
+    },
+    credentialStoreIdentity: () => args.fileStore.credentialStoreIdentity?.()
+      ?? args.primary.credentialStoreIdentity?.()
+      ?? "ade.routed-credential-store",
+    onDidChange: (listener) => {
+      const unsubscribes = [
+        args.primary.onDidChange?.(listener),
+        args.fileStore.onDidChange?.(listener),
+      ];
+      return () => {
+        for (const unsubscribe of unsubscribes) unsubscribe?.();
+      };
+    },
+    getLastReadState: () => lastReadStore.getLastReadState?.() ?? "missing",
+    getLastReadFailureReason: () => lastReadStore.getLastReadFailureReason?.() ?? null,
+  };
+}
+
+/**
+ * Moves file-backed credentials a previous build left in the Electron-only
+ * store back into the shared machine file.
+ *
+ * Runs once per secrets directory per process. Never overwrites: the shared file
+ * is where the brain writes, so a value there is at least as fresh as the
+ * desktop copy — and the desktop copy of the GitHub App token is exactly the
+ * stale one whose refresh token GitHub has already rotated away. A value is only
+ * removed from the Electron-only store once the shared file holds one.
+ */
+const adoptedSecretsDirs = new Set<string>();
+
+export function adoptFileBackedCredentials(args: {
+  primary: SyncCredentialStore;
+  fileStore: SyncCredentialStore;
+  identity: string;
+}): { adopted: string[]; pruned: string[] } {
+  const adopted: string[] = [];
+  const pruned: string[] = [];
+  if (adoptedSecretsDirs.has(args.identity)) return { adopted, pruned };
+  adoptedSecretsDirs.add(args.identity);
+  for (const key of FILE_BACKED_CREDENTIAL_KEYS) {
+    let stranded: string | null = null;
+    try {
+      stranded = args.primary.getSync(key);
+    } catch {
+      // An unreadable Electron store has nothing to adopt, and saying so is the
+      // job of `getLastReadState`, not of this migration.
+      return { adopted, pruned };
+    }
+    if (!stranded?.trim()) continue;
+    try {
+      if (args.fileStore.updateKeySync) {
+        // Atomic: a brain write racing this adoption must win over the stale
+        // desktop copy, and check-then-set leaves a window where it would not.
+        let wrote = false;
+        args.fileStore.updateKeySync(key, (current) => {
+          if (current?.trim()) return undefined;
+          wrote = true;
+          return stranded;
+        });
+        if (wrote) adopted.push(key);
+      } else if (!args.fileStore.getSync(key)?.trim()) {
+        args.fileStore.setSync(key, stranded);
+        adopted.push(key);
+      }
+      args.primary.deleteSync(key);
+      pruned.push(key);
+    } catch {
+      // Best effort: leaving the duplicate behind is survivable, losing the
+      // credential is not.
+    }
+  }
+  return { adopted, pruned };
 }
 
 type KeytarModule = {

@@ -40,6 +40,61 @@ export type GitHubAppDevicePollResult =
 
 type FetchImpl = typeof fetch;
 
+/** Which GitHub OAuth endpoint produced a failure. */
+export type GitHubOAuthEndpoint = "device_code" | "token";
+
+/**
+ * A GitHub OAuth failure with the parts a caller has to act on.
+ *
+ * GitHub answers a rejected refresh token with HTTP 200 and an `error` field, so
+ * the transport cannot report failure by status alone; and it answers a
+ * rate-limited client with 429 plus `retry-after`, which is the only honest
+ * source for how long to wait. A bare `Error` carrying a string threw both away,
+ * which is how a dead refresh token became an unbounded retry loop.
+ */
+export class GitHubOAuthError extends Error {
+  constructor(
+    message: string,
+    readonly endpoint: GitHubOAuthEndpoint,
+    readonly status: number,
+    readonly oauthError: string | null,
+    readonly errorDescription: string | null,
+    readonly retryAfterSec: number | null,
+  ) {
+    super(message);
+    this.name = "GitHubOAuthError";
+  }
+}
+
+/**
+ * OAuth error codes that mean "this credential will never work again".
+ *
+ * Everything outside this set is treated as transient, because retrying a
+ * transient failure costs a request while giving up on a live credential costs
+ * the user their connection.
+ */
+const DEFINITIVE_OAUTH_ERRORS: ReadonlySet<string> = new Set([
+  "bad_refresh_token",
+  "incorrect_client_credentials",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+]);
+
+export function isDefinitiveGitHubOAuthError(oauthError: string | null | undefined): boolean {
+  return typeof oauthError === "string" && DEFINITIVE_OAUTH_ERRORS.has(oauthError.trim());
+}
+
+function parseRetryAfterSeconds(response: Response): number | null {
+  const raw = response.headers.get("retry-after")?.trim();
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.trunc(seconds));
+  const at = Date.parse(raw);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, Math.ceil((at - Date.now()) / 1000));
+}
+
 function readString(source: Record<string, unknown>, key: string): string {
   const value = source[key];
   return typeof value === "string" ? value.trim() : "";
@@ -64,9 +119,10 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
 async function postGitHubOAuthForm(args: {
   fetchImpl: FetchImpl;
   url: string;
+  endpoint: GitHubOAuthEndpoint;
   userAgent: string;
   body: Record<string, string>;
-}): Promise<Record<string, unknown>> {
+}): Promise<{ payload: Record<string, unknown>; status: number; retryAfterSec: number | null }> {
   const response = await args.fetchImpl(args.url, {
     method: "POST",
     headers: {
@@ -77,13 +133,25 @@ async function postGitHubOAuthForm(args: {
     body: new URLSearchParams(args.body).toString(),
   });
   const payload = parseJsonRecord(await response.json().catch(() => ({})));
+  const retryAfterSec = parseRetryAfterSeconds(response);
   if (!response.ok) {
-    const message = readString(payload, "error_description")
-      || readString(payload, "error")
-      || `GitHub OAuth request failed (${response.status})`;
-    throw new Error(message);
+    const oauthError = readString(payload, "error") || null;
+    const errorDescription = readString(payload, "error_description") || null;
+    throw new GitHubOAuthError(
+      errorDescription
+        || oauthError
+        || `GitHub OAuth request failed (${response.status})`,
+      args.endpoint,
+      response.status,
+      oauthError,
+      errorDescription,
+      retryAfterSec,
+    );
   }
-  return payload;
+  // An OK response keeps its payload: the device flow reads `error` itself to
+  // tell "still waiting" from "denied", and only the refresh path treats an
+  // error field as a failure.
+  return { payload, status: response.status, retryAfterSec };
 }
 
 export async function startGitHubAppDeviceFlow(args: {
@@ -92,9 +160,10 @@ export async function startGitHubAppDeviceFlow(args: {
   userAgent: string;
 }): Promise<GitHubAppDeviceCode> {
   const clientId = args.clientId?.trim() || ADE_GITHUB_APP_CLIENT_ID;
-  const payload = await postGitHubOAuthForm({
+  const { payload } = await postGitHubOAuthForm({
     fetchImpl: args.fetchImpl ?? fetch,
     url: GITHUB_DEVICE_CODE_URL,
+    endpoint: "device_code",
     userAgent: args.userAgent,
     body: { client_id: clientId },
   });
@@ -125,9 +194,10 @@ export async function pollGitHubAppDeviceFlow(args: {
   fetchUserLogin?: (accessToken: string) => Promise<string | null>;
 }): Promise<GitHubAppDevicePollResult> {
   const clientId = args.clientId?.trim() || ADE_GITHUB_APP_CLIENT_ID;
-  const payload = await postGitHubOAuthForm({
+  const { payload } = await postGitHubOAuthForm({
     fetchImpl: args.fetchImpl ?? fetch,
     url: GITHUB_OAUTH_TOKEN_URL,
+    endpoint: "token",
     userAgent: args.userAgent,
     body: {
       client_id: clientId,
@@ -182,9 +252,10 @@ export async function refreshGitHubAppUserToken(args: {
   fetchUserLogin?: (accessToken: string) => Promise<string | null>;
 }): Promise<GitHubAppUserTokenRecord> {
   const clientId = args.clientId?.trim() || ADE_GITHUB_APP_CLIENT_ID;
-  const payload = await postGitHubOAuthForm({
+  const { payload, status, retryAfterSec } = await postGitHubOAuthForm({
     fetchImpl: args.fetchImpl ?? fetch,
     url: GITHUB_OAUTH_TOKEN_URL,
+    endpoint: "token",
     userAgent: args.userAgent,
     body: {
       client_id: clientId,
@@ -192,8 +263,32 @@ export async function refreshGitHubAppUserToken(args: {
       refresh_token: args.refreshToken,
     },
   });
+  // GitHub reports a rejected refresh token as HTTP 200 with an error body. It
+  // has to be read here, or a dead credential looks exactly like a malformed
+  // response and gets retried forever.
+  const oauthError = readString(payload, "error");
+  if (oauthError) {
+    const errorDescription = readString(payload, "error_description") || null;
+    throw new GitHubOAuthError(
+      errorDescription || `GitHub rejected the refresh token (${oauthError}).`,
+      "token",
+      status,
+      oauthError,
+      errorDescription,
+      retryAfterSec,
+    );
+  }
   const accessToken = readString(payload, "access_token");
-  if (!accessToken) throw new Error("GitHub did not return a refreshed user access token.");
+  if (!accessToken) {
+    throw new GitHubOAuthError(
+      "GitHub did not return a refreshed user access token.",
+      "token",
+      status,
+      null,
+      null,
+      retryAfterSec,
+    );
+  }
   const userLogin = args.fetchUserLogin ? await args.fetchUserLogin(accessToken).catch(() => null) : null;
   return {
     accessToken,
