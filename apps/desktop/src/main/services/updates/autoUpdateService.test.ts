@@ -473,6 +473,28 @@ describe("createAutoUpdateService", () => {
     // user already downloaded and is one restart away from installing.
     expect(downloadUpdate).not.toHaveBeenCalled();
 
+    // Let the first check's promise chain settle: while `checkPromise` is
+    // still set, a second call is swallowed by the in-flight guard and would
+    // assert nothing.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // ...and neither must a check that fails. A feed error here means "nothing
+    // new to tell you", not "discard the finished download".
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("error", new Error("net::ERR_INTERNET_DISCONNECTED"));
+      throw new Error("net::ERR_INTERNET_DISCONNECTED");
+    });
+    service.checkForUpdates({ userInitiated: true });
+
+    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(2));
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.61",
+      latestKnownVersion: "1.2.63",
+    });
+    expect(downloadUpdate).not.toHaveBeenCalled();
+
     service.dispose();
   });
 

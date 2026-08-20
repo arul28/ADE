@@ -953,6 +953,19 @@ export function createAutoUpdateService({
       phase: classified.phase,
     });
     ignoredDownloadVersion = null;
+    if (readyMetadataRefreshInProgress) {
+      // The user asked what the newest version is and the feed did not answer.
+      // That is a reason to tell them nothing new, not a reason to throw away
+      // the update they already downloaded: setErrorSnapshot would replace the
+      // `ready` snapshot and, with currentPhase already moved to "download" by
+      // `checking-for-update`, take the finished download with it.
+      logger.warn("autoUpdate.metadata_refresh_failed", {
+        message,
+        kind: classified.kind,
+        readyVersion: snapshot.version,
+      });
+      return;
+    }
     if (readyRefreshInProgress) {
       readyRefreshFailure.current = {
         error: err,
@@ -1048,6 +1061,15 @@ export function createAutoUpdateService({
         }
       })
       .catch((error) => {
+        // Same reasoning as onError: a metadata-only refresh must leave the
+        // staged update exactly as it found it, however it fails.
+        if (readyMetadataRefreshInProgress) {
+          logger.warn("autoUpdate.metadata_refresh_failed", {
+            message: formatErrorMessage(error),
+            readyVersion: snapshot.version,
+          });
+          return;
+        }
         if (readyRefreshInProgress) {
           readyRefreshFailure.current = {
             error,
