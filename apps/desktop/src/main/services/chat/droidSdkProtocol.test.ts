@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { droidDisabledToolIdsForCategories, droidMcpToolsToDisable } from "./droidSdkProtocol";
+import {
+  droidDisabledToolIdsForCategories,
+  droidInteractionModeValue,
+  droidMcpToolsToDisable,
+} from "./droidSdkProtocol";
 import { ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES } from "../../../shared/orchestrationRuntimePolicy";
 
 // Shape mirrors Droid's `session.listTools()` result. Ids are build-specific
@@ -77,5 +81,23 @@ describe("droidMcpToolsToDisable", () => {
     ], [])).toEqual([
       { serverName: "filesystem", toolName: "unknown_state" },
     ]);
+  });
+});
+
+describe("droidInteractionModeValue", () => {
+  const table = { Auto: "AUTO", Spec: "SPEC", AGI: "AGI" } as const;
+
+  it("returns undefined for an omitted mode so the user's settings decide", () => {
+    // The regression: the worker mapped undefined onto Auto, which restated the
+    // mode at the highest precedence and undid the omission the service had
+    // deliberately made. A live probe showed omission resolves each key from the
+    // user's own ~/.factory/settings.json.
+    expect(droidInteractionModeValue(table, undefined)).toBeUndefined();
+  });
+
+  it("maps every stated mode onto its SDK enum value", () => {
+    expect(droidInteractionModeValue(table, "auto")).toBe("AUTO");
+    expect(droidInteractionModeValue(table, "spec")).toBe("SPEC");
+    expect(droidInteractionModeValue(table, "agi")).toBe("AGI");
   });
 });

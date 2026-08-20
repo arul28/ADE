@@ -319,6 +319,16 @@ configuration, and MCP servers. Only an OpenCode orchestration lead receives
 ADE's isolated configuration and ADE-owned MCP lease. Other providers apply
 their equivalent lead gate without changing ordinary-chat configuration.
 
+That is one instance of a rule every provider adapter follows: ADE's settings
+land at the highest precedence tier each SDK offers, so ADE names a config key
+only when it genuinely owns it and leaves everything else absent for the
+provider's own precedence to resolve. The isolated orchestration-lead server is
+where the rule needs care, because `buildIsolatedOpenCodeEnv` rebuilds the
+environment from scratch and drops every inherited `OPENCODE_*` variable — the
+lead's server therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than
+inheriting it, so it cannot self-update the binary ADE pinned. See
+[Provider config ownership](../chat/agent-routing.md#provider-config-ownership).
+
 ## Smart memory and reconstruction
 
 The CTO's durable memory lives in files under `.ade/cto/` (`MEMORY.md`, `thread-state.md`, `daily/<date>.md`) owned by `ctoMemoryService`. A deterministic flush writes the rolling summary before compaction and before model switches; a best-effort LLM upgrade refines it. `refreshReconstructionContext()` re-injects identity plus memory after compaction and switches. Full details in [Identity and Personas](identity-and-personas.md#smart-memory-system).

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,
@@ -8,6 +8,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
+import { factoryConfigHome } from "../shared/providerConfigHomes";
 
 export type DroidExecHelpModelRow = {
   id: string;
@@ -319,7 +320,7 @@ function getCachedDroidModels(droidPathForRevalidate?: string | null): DroidExec
  */
 async function readFactoryConfigCustomModels(): Promise<DroidExecHelpModelRow[]> {
   try {
-    const configPath = join(homedir(), ".factory", "config.json");
+    const configPath = join(factoryConfigHome(), "config.json");
     const raw = await readFile(configPath, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const customModels = parsed.custom_models;

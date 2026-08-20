@@ -3508,8 +3508,13 @@ describe("createAgentChatService", () => {
       ]));
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);
+      // No settings file names a style here, so ADE must not name one either:
+      // its settings land at flag tier, above every file the SDK reads, so an
+      // "outputStyle" key would override the user's global selection.
+      expect(opts?.settings).not.toHaveProperty("outputStyle");
       expect(opts?.settings).toEqual(expect.objectContaining({
-        outputStyle: "Default",
+        // ADE's own default, which applies only while no settings file states one.
+        workflowSizeGuideline: "medium",
         fastMode: false,
         enabledPlugins: expect.objectContaining({
           "learning-output-style@claude-code-plugins": false,
@@ -3518,6 +3523,52 @@ describe("createAgentChatService", () => {
           "explanatory-output-style@claude-plugins-official": false,
         }),
       }));
+    });
+
+    it("passes the user's global output style through instead of pinning Default", async () => {
+      // The regression this guards: ADE substituted "Default" for "nothing is
+      // set" and passed it at flag tier, so a style configured in the user's
+      // settings.json never took effect in any ADE chat.
+      const userClaudeDir = path.join(tmpRoot, "user-claude-config");
+      fs.mkdirSync(path.join(userClaudeDir, "output-styles"), { recursive: true });
+      fs.writeFileSync(
+        path.join(userClaudeDir, "output-styles", "asd-ste100.md"),
+        ["---", "name: ASD-STE100", "description: Simplified Technical English", "---", "", "Write short sentences.", ""].join("\n"),
+      );
+      fs.writeFileSync(
+        path.join(userClaudeDir, "settings.json"),
+        JSON.stringify({ outputStyle: "ASD-STE100", workflowSizeGuideline: "large" }),
+      );
+      const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_CONFIG_DIR = userClaudeDir;
+
+      try {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send: vi.fn(),
+          stream: vi.fn(async function* () {
+            return;
+          }),
+          close: vi.fn(),
+          sessionId: "sdk-session-user-output-style",
+        } as any);
+
+        const { service } = createService();
+        await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+
+        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+          settings?: { outputStyle?: string; workflowSizeGuideline?: string };
+        } | undefined;
+        expect(opts?.settings?.outputStyle).toBe("ASD-STE100");
+        // A user-stated guideline replaces ADE's default rather than losing to it.
+        expect(opts?.settings).not.toHaveProperty("workflowSizeGuideline");
+      } finally {
+        if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      }
     });
 
     it("passes Claude fast mode through SDK flag settings for Opus sessions", async () => {
@@ -5937,6 +5988,76 @@ describe("createAgentChatService", () => {
         })).rejects.toThrow("transcript history without fork mode");
       });
 
+      it("derives Droid autonomy from ADE's own permission chip", async () => {
+        // ADE always carries a generic permissionMode, and it maps onto a Droid
+        // mode — so ADE does state autonomy here, deliberately. This is the
+        // ADE-owned half of the rule: there IS a control for it, so ADE's value
+        // wins. The omission path exists for launches that carry no permission
+        // mode at all (programmatic/mobile), not for this one.
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "hello" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.autonomyLevel).toBe("low");
+        expect(settings.interactionMode).toBe("auto");
+        // Never null: an explicit null wedges the Droid RPC for 30 seconds.
+        expect(settings.autonomyLevel).not.toBeNull();
+        expect(settings.interactionMode).not.toBeNull();
+      });
+
+      it("states the Droid autonomy the user picked explicitly", async () => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+          droidPermissionMode: "auto-high",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "hello" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.autonomyLevel).toBe("high");
+        expect(settings.interactionMode).toBe("auto");
+        expect(settings).not.toHaveProperty("specModeModelId");
+      });
+
+      it("maps a Droid plan session onto spec mode with autonomy off", async () => {
+        // Plan must stay read-only. Spec dominates Droid's compound autonomyMode,
+        // and the spec-mode model fields have to ride along with it — they are
+        // gated on the stated interaction mode, so they cannot be emitted for a
+        // session that stated none.
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+          interactionMode: "plan",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "plan this" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.interactionMode).toBe("spec");
+        expect(settings.autonomyLevel).toBe("off");
+        expect(settings.specModeModelId).toBeTruthy();
+      });
+
       it("refuses a cross-machine Droid fork with the portability message", async () => {
         installCleanCrossMachineGitFixture();
         const { service } = createService();
@@ -7690,7 +7811,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("passes the selected Codex reasoning effort into app-server config", async () => {
+    it("passes the selected Codex reasoning effort per thread, not on the process", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
 
@@ -7711,11 +7832,13 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
       });
 
-      expect(spawn).toHaveBeenCalledWith(
-        "codex",
-        ["app-server", "-c", "model_reasoning_effort=\"low\""],
-        expect.any(Object),
-      );
+      // Reasoning effort is a per-chat choice, so it must ride the thread and
+      // never the process: `-c` is the highest config layer (above the user's
+      // ~/.codex/config.toml and their per-project .codex/config.toml) and a
+      // spawn arg would apply to every thread on this app-server.
+      expect(spawn).toHaveBeenCalledWith("codex", ["app-server"], expect.any(Object));
+      const spawnArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[] | undefined;
+      expect(spawnArgs?.join(" ")).not.toContain("model_reasoning_effort");
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       const startParams = startPayload?.params as {
@@ -7810,7 +7933,7 @@ describe("createAgentChatService", () => {
       expect(getAdeCliAgentEnv).toHaveBeenCalled();
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server", "-c", "model_reasoning_effort=\"medium\""],
+        ["app-server"],
         expect.objectContaining({
           env: expect.objectContaining({
             PATH: "/tmp/ade-cli/bin",
@@ -20222,7 +20345,7 @@ describe("createAgentChatService", () => {
 
         expect(spawn).toHaveBeenCalledWith(
           "codex",
-          ["app-server", "-c", "model_reasoning_effort=\"medium\""],
+          ["app-server"],
           expect.objectContaining({ detached: process.platform !== "win32" }),
         );
         expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGTERM");
@@ -28265,7 +28388,7 @@ describe("createAgentChatService", () => {
       }));
     });
 
-    it("explicitly clears Codex service tier when fast mode is off", async () => {
+    it("omits Codex service tier when fast mode was never turned on", async () => {
       mockState.codexResponseOverrides.set("thread/start", (payload) => ({
         thread: { id: "thread-default" },
         serviceTier: (payload.params as { serviceTier?: unknown } | undefined)?.serviceTier ?? null,
@@ -28286,17 +28409,20 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
 
+      // Verified against a live app-server: omitting inherits the user's
+      // config.toml service_tier, while an explicit null forces "default".
+      // ADE has no service-tier UI, so it must not name the key at all.
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.fastMode).toBe(false);
       expect(summary?.codexServiceTier).toBeNull();
       expect(readPersistedChatState(session.id).codexServiceTier).toBeNull();
     });
 
-    it("preserves fast mode selection on unsupported Codex models while sending standard tier", async () => {
+    it("preserves fast mode selection on unsupported Codex models without naming a tier", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -28315,9 +28441,9 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
       expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
     });
 
@@ -42247,5 +42373,25 @@ describe("host sleep narration", () => {
     } finally {
       await service.disposeAll();
     }
+  });
+});
+
+describe("claude output style listing", () => {
+  it("does not persist an output style just because the list was shown", async () => {
+    // Listing styles used to write the resolved name onto the session and
+    // persist it. Every later option build then treated that cache as a real
+    // selection, so ADE sent outputStyle at flag tier and suppressed Claude's
+    // own resolution — the override this branch exists to stop.
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+    });
+
+    await service.sendMessage({ sessionId: session.id, text: "/output-style" });
+
+    expect(readPersistedChatState(session.id).claudeOutputStyle ?? null).toBeNull();
+    expect((await service.getSessionSummary(session.id))?.claudeOutputStyle ?? null).toBeNull();
   });
 });

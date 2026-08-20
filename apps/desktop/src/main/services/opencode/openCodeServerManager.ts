@@ -773,6 +773,9 @@ function buildIsolatedOpenCodeEnv(
     OPENCODE_CONFIG_DIR: path.join(paths.configHome, "opencode"),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config ?? {}),
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    // This builder strips every OPENCODE_* var from process.env, so the
+    // suppression set in buildUserOpenCodeEnv does not reach an isolated lead.
+    OPENCODE_DISABLE_AUTOUPDATE: "1",
     [ADE_OPENCODE_MANAGED_ENV]: "1",
     [ADE_OPENCODE_OWNER_PID_ENV]: String(process.pid),
   };
@@ -798,6 +801,9 @@ function mergeOpenCodeConfig(
 
 function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  // ADE resolves and pins the OpenCode binary, so its updater must stay off.
+  // OpenCode's dedicated env var does this without occupying a config key.
+  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
   const inheritedContent = env.OPENCODE_CONFIG_CONTENT?.trim();
   if (inheritedContent) {
     try {

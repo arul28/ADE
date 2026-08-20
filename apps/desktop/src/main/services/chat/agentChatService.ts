@@ -70,6 +70,7 @@ import {
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
   readClaudeOutputStyleSelection,
+  readClaudeWorkflowSizeGuideline,
   resolveClaudeOutputStyle,
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
@@ -3654,10 +3655,22 @@ function sessionEffectiveFastMode(
   return session.fastMode === true && sessionSupportsFastMode(session, catalog);
 }
 
-function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexServiceTier | null } {
-  // JSON-RPC needs an explicit null to clear any app-server/config default.
-  const serviceTier = session.fastMode === true && sessionSupportsCodexServiceTier(session) ? "fast" : null;
-  return { serviceTier };
+function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier } {
+  if (session.fastMode === true && sessionSupportsCodexServiceTier(session)) {
+    return { serviceTier: "fast" };
+  }
+  // Verified against a live app-server on thread/start: omitting the key inherits
+  // the user's config.toml (service_tier = "priority" -> "priority"; unset -> no
+  // tier), while an explicit null reports "default" in both cases. null is
+  // therefore a real downgrade, not a neutral "no opinion", and ADE has no UI
+  // showing service tier for the user to notice or undo it.
+  //
+  // Fast-off cannot mean "force default" either: fastMode is persisted only when
+  // true and rehydrated as `persisted?.fastMode === true`, so `false` is
+  // indistinguishable from never-set. Omitting is the only honest encoding of
+  // "ADE is not forcing a tier" — the app-server re-resolves per request, so a
+  // turn sent after the toggle goes off inherits the config again.
+  return {};
 }
 
 function codexThreadConfigArgs(
@@ -7115,14 +7128,24 @@ function resolveSessionOpenCodePermissionMode(
     ?? fallback;
 }
 
-function resolveSessionDroidPermissionMode(
+/**
+ * The Droid permission mode the user actually chose, or null when they have
+ * chosen nothing.
+ *
+ * Droid has no "use my config" mode — cliLaunch rejects config-toml for it — so
+ * null is the only way ADE can express "no opinion", and it matters: a live probe
+ * showed omitting these keys resolves them from the user's
+ * ~/.factory/settings.json, per key, while any value ADE states outranks that
+ * file. Droid's own documented default is autonomyLevel "off" (read-only), so a
+ * substituted fallback here hands out write access the CLI would not.
+ */
+function resolveSessionDroidPermissionModeOrNull(
   session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
-  fallback: AgentChatDroidPermissionMode,
-): AgentChatDroidPermissionMode {
+): AgentChatDroidPermissionMode | null {
   return session.droidPermissionMode
     ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
     ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode)
-    ?? fallback;
+    ?? null;
 }
 
 function applyLocalHarnessPermissionMode(args: {
@@ -7293,9 +7316,8 @@ function resolveDroidRuntimeModelId(
 }
 
 function resolveDroidSdkAutonomyLevel(
-  session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
+  mode: AgentChatDroidPermissionMode,
 ): DroidSdkSessionSettings["autonomyLevel"] {
-  const mode = resolveSessionDroidPermissionMode(session, "auto-low");
   switch (mode) {
     case "read-only":
       return "off";
@@ -7309,8 +7331,6 @@ function resolveDroidSdkAutonomyLevel(
       return "medium";
     case "auto-high":
       return "high";
-    default:
-      return "low";
   }
 }
 
@@ -7393,7 +7413,12 @@ function normalizeSessionNativePermissionControls(
     session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
       : "default");
-    session.droidPermissionMode = resolveSessionDroidPermissionMode(session, "auto-low");
+    // Materialising a fallback here would be read back as a real choice on the
+    // next launch and pin it forever, which is what made the equivalent Claude
+    // bug durable. Absence has to stay absent.
+    const chosenDroidMode = resolveSessionDroidPermissionModeOrNull(session);
+    if (chosenDroidMode) session.droidPermissionMode = chosenDroidMode;
+    else delete session.droidPermissionMode;
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
     delete session.codexSandbox;
@@ -28251,17 +28276,10 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
+    // Reasoning effort travels with the thread (codexThreadConfigArgs), never on
+    // the process: `-c` outranks the user's config.toml and would apply to every
+    // thread on this app-server, not just this chat.
     const appServerArgs = ["app-server"];
-    if (sessionSupportsReasoning(managed.session)) {
-      const descriptor = resolveSessionModelDescriptor(managed.session);
-      const reasoningEffort = resolveCodexReasoningEffortForRuntime(
-        managed.session.reasoningEffort,
-        null,
-        descriptor,
-      );
-      managed.session.reasoningEffort = reasoningEffort;
-      appServerArgs.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
-    }
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
@@ -28948,14 +28966,15 @@ export function createAgentChatService(args: {
   /**
    * Build stable Agent SDK query options from the managed session state.
    */
-  const resolveManagedClaudeOutputStyle = (managed: ManagedChatSession): string => {
-    const requested = normalizePersistedOutputStyle(managed.session.claudeOutputStyle)
-      ?? readClaudeOutputStyleSelection(managed.laneWorktreePath);
-    const resolved = resolveClaudeOutputStyle(managed.laneWorktreePath, requested)
-      ?? resolveClaudeOutputStyle(managed.laneWorktreePath, "Default");
-    const outputStyle = resolved?.name ?? "Default";
-    managed.session.claudeOutputStyle = outputStyle;
-    return outputStyle;
+  const resolveManagedClaudeOutputStyle = (managed: ManagedChatSession): string | null => {
+    // Settings files first, session cache second: the cache is a display value we
+    // wrote ourselves last run, so consulting it first would pin whatever it holds
+    // and make an unset lane permanently ignore the user's global selection.
+    const requested = readClaudeOutputStyleSelection(managed.laneWorktreePath)
+      ?? normalizePersistedOutputStyle(managed.session.claudeOutputStyle);
+    const resolved = requested ? resolveClaudeOutputStyle(managed.laneWorktreePath, requested) : null;
+    managed.session.claudeOutputStyle = resolved?.name ?? null;
+    return resolved?.name ?? null;
   };
 
   const buildClaudeQueryOptions = (
@@ -28980,6 +28999,10 @@ export function createAgentChatService(args: {
     };
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
+    // ADE's preferred default, supplied only when no settings file states one.
+    const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
+      ? undefined
+      : "medium";
     const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
     const pluginPaths = personalSession
       ? []
@@ -29006,11 +29029,16 @@ export function createAgentChatService(args: {
       // back. Workers/validators do real work and keep user MCP. strictMcpConfig still
       // permits the programmatic orchestration MCP server added below for bundled leads.
       ...((lightweight || isOrchestrationLeadSession(managed.session)) ? { strictMcpConfig: true } : {}),
+      // ADE's settings land at flag tier, above every settings.json the SDK reads.
+      // Only name a key ADE actually owns; anything else must stay absent so the
+      // SDK's own local > project > user precedence resolves it. `enabledPlugins`
+      // is safe to always send because the CLI merges it per plugin key rather
+      // than replacing the map.
       settings: {
-        outputStyle,
+        ...(outputStyle ? { outputStyle } : {}),
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
-        workflowSizeGuideline: "medium",
+        ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       permissionMode: claudePermissionMode as any,
@@ -31132,10 +31160,13 @@ export function createAgentChatService(args: {
           interactionMode: effectiveInteractionMode === "plan" || effectivePermissionMode === "plan"
             ? "plan" as const
             : "default" as const,
+          // No fallback: a substituted mode here is persisted and then read back
+          // as a real selection, which is what kept the inheritance path dead.
+          // The desktop composer always sends one; a launch that sends nothing
+          // is saying nothing, and Droid resolves it from settings.json.
           droidPermissionMode: requestedDroidPermissionMode
             ?? legacyPermissionModeToDroidPermissionMode(effectivePermissionMode)
-            ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode)
-            ?? "auto-low",
+            ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode),
         };
       }
       if (effectiveProvider === "pi") {
@@ -31150,7 +31181,8 @@ export function createAgentChatService(args: {
       };
       })();
       const initialClaudeOutputStyle = effectiveProvider === "claude"
-        ? normalizePersistedOutputStyle(requestedClaudeOutputStyle) ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
+        ? normalizePersistedOutputStyle(requestedClaudeOutputStyle)
+          ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
         : null;
 
     const normalizedGoal = typeof requestedGoal === "string" && requestedGoal.trim().length
@@ -35073,21 +35105,38 @@ export function createAgentChatService(args: {
     // AGI (orchestrator) is a Droid-specific permission mode, not part of the
     // generic interaction-mode enum — resolve it from droidPermissionMode and
     // let it win over the plan→spec mapping.
-    const interactionMode: DroidSdkSessionSettings["interactionMode"] =
-      resolveSessionDroidPermissionMode(managed.session, "auto-low") === "agi"
-        ? "agi"
-        : resolveDroidSdkInteractionMode(managed.session);
+    const chosenMode = resolveSessionDroidPermissionModeOrNull(managed.session);
+    const planRequested = resolveDroidSdkInteractionMode(managed.session) === "spec";
+    // Mirrors the terminal path: droidSettingsJson omits sessionDefaultSettings
+    // when permissionMode is null, letting the user's settings.json decide.
+    const stated: Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> | null =
+      chosenMode !== null || planRequested || isOrchestrationLeadSession(managed.session)
+        ? ((): Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> => {
+            const interactionMode = chosenMode === "agi"
+              ? "agi" as const
+              : resolveDroidSdkInteractionMode(managed.session);
+            return {
+              // Spec collapses Droid's compound autonomyMode to "spec" and reads
+              // back as level "off", so pairing it with anything else is a claim
+              // Droid discards. droidSettingsJson already sends "off" for plan on
+              // the terminal path; state the same thing here.
+              autonomyLevel: interactionMode === "spec"
+                ? "off"
+                : resolveDroidSdkAutonomyLevel(chosenMode ?? "auto-low"),
+              interactionMode,
+            };
+          })()
+        : null;
     return {
       modelId,
-      autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
-      interactionMode,
+      ...stated,
       // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
       // has to have them withheld natively as well.
       ...(isOrchestrationLeadSession(managed.session)
         ? { disabledToolCategories: ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES }
         : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
-      ...(interactionMode === "spec"
+      ...(stated?.interactionMode === "spec"
         ? {
             specModeModelId: modelId,
             ...(reasoningEffort ? { specModeReasoningEffort: reasoningEffort } : {}),
@@ -45995,13 +46044,19 @@ export function createAgentChatService(args: {
       const requestedStyle = match[1]?.trim() ?? "";
       managed.session.lastActivityAt = nowIso();
       if (!requestedStyle.length) {
-        managed.session.claudeOutputStyle = managed.session.claudeOutputStyle ?? readClaudeOutputStyleSelection(managed.laneWorktreePath);
+        // Display only. Writing the resolved name back would persist "Default"
+        // as though the user had picked it, and ADE would then send it at flag
+        // tier and suppress Claude's own resolution — the override this branch
+        // exists to stop. Read the files first so a newer selection wins.
+        const listedStyle = readClaudeOutputStyleSelection(managed.laneWorktreePath)
+          ?? normalizePersistedOutputStyle(managed.session.claudeOutputStyle)
+          ?? "Default";
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
           message: renderClaudeOutputStyleList(
             discoverClaudeOutputStyles(managed.laneWorktreePath),
-            managed.session.claudeOutputStyle,
+            listedStyle,
           ),
         });
         persistChatState(managed);

@@ -149,8 +149,17 @@ describe("openCodeRuntime", () => {
       config: expect.objectContaining({
         agent: expect.objectContaining({
           "ade-plan": expect.objectContaining({
-            tools: expect.objectContaining({ code_search: false, web_search: false }),
-            permission: expect.objectContaining({ question: "allow" }),
+            // The deprecated `tools` map is gone; OpenCode desugars it into
+            // these same permission keys and an explicit permission block wins.
+            permission: expect.objectContaining({
+              question: "allow",
+              websearch: "deny",
+              skill: "deny",
+              // Plan denies edit, so it must deny task: a spawned subagent runs
+              // under its own ruleset with edit allowed, which let plan mode
+              // write files through a child session.
+              task: "deny",
+            }),
           }),
           "ade-helper": expect.objectContaining({
             permission: expect.objectContaining({ question: "deny" }),
@@ -358,5 +367,77 @@ describe("refreshOpenCodeSessionToolSelection", () => {
       await expect(refreshOpenCodeSessionToolSelection(handle as never, options)).resolves.toBeNull();
       expect(handle.toolSelection).toBeNull();
     }
+  });
+});
+
+describe("buildOpenCodeConfig user-owned keys", () => {
+  const config = (): Record<string, any> =>
+    buildOpenCodeConfig({ projectConfig: { ai: {} } as any }) as Record<string, any>;
+
+  it("does not force share or snapshot over the user's opencode.json", () => {
+    // OPENCODE_CONFIG_CONTENT merges last, so naming these would beat the user's
+    // own file. snapshot's documented default is true, and forcing false
+    // silently disables OpenCode's /undo and /revert.
+    expect(config()).not.toHaveProperty("share");
+    expect(config()).not.toHaveProperty("snapshot");
+    expect(config()).not.toHaveProperty("autoupdate");
+  });
+
+  it("denies task in plan mode so a subagent cannot write for it", () => {
+    // The regression: plan denied `edit` but left `task` open, and a spawned
+    // subagent runs under its own ruleset where edit is allowed.
+    const plan = config().agent["ade-plan"].permission;
+    expect(plan.edit).toBe("deny");
+    expect(plan.task).toBe("deny");
+  });
+
+  it("lets full access read without prompting", () => {
+    // OpenCode's base ruleset asks before reading *.env, so full access
+    // prompted until read was stated.
+    expect(config().agent["ade-full-auto"].permission.read).toBe("allow");
+  });
+
+  it("keeps ADE's own modes out of the user's agent picker", () => {
+    for (const name of ["ade-plan", "ade-edit", "ade-full-auto", "ade-helper"]) {
+      expect(config().agent[name].hidden).toBe(true);
+    }
+  });
+
+  it("gives an isolated lead's discovered ollama models an endpoint to run against", () => {
+    // A lead inherits no user config, so nothing else can supply the address and
+    // there is no user endpoint to clobber.
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as any,
+      isolatedConfig: true,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.models).toHaveProperty("llama3");
+    expect(cfg.provider.ollama.options.baseURL).toBe("http://localhost:11434/v1");
+  });
+
+  it("does not invent an ollama endpoint for an ordinary session", () => {
+    // OPENCODE_CONFIG_CONTENT merges last, so an ADE default would replace a
+    // remote host in the user's own opencode.json — which ADE cannot read.
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as any,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.models).toHaveProperty("llama3");
+    expect(cfg.provider.ollama.options?.baseURL).toBeUndefined();
+  });
+
+  it("keeps a user-configured ollama endpoint over ADE's default", () => {
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: { localProviders: { ollama: { endpoint: "http://remote-box:11434" } } } } as any,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.options.baseURL).toBe("http://remote-box:11434/v1");
+  });
+
+  it("omits local providers the user never configured", () => {
+    // An ADE-invented baseURL merges over the endpoint in the user's own
+    // opencode.json, repointing a configured remote host back at localhost.
+    expect(config().provider ?? {}).not.toHaveProperty("ollama");
+    expect(config().provider ?? {}).not.toHaveProperty("lmstudio");
   });
 });

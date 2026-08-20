@@ -1,5 +1,9 @@
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  claudeHomePath,
+  defaultKeybindingsPath,
   dispatchKeybinding,
   keybindingsEditorCommand,
   keypressToChord,
@@ -162,5 +166,25 @@ describe("keybindings", () => {
       command: "emacsclient",
       args: ["-a", "", "/tmp/keybindings.json"],
     });
+  });
+});
+
+describe("claudeHomePath", () => {
+  it("follows CLAUDE_CONFIG_DIR, which is the directory the claude binary reads", () => {
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      delete process.env.CLAUDE_CONFIG_DIR;
+      expect(claudeHomePath("settings.json")).toBe(path.join(os.homedir(), ".claude", "settings.json"));
+
+      process.env.CLAUDE_CONFIG_DIR = path.join(os.tmpdir(), "ade-claude-config-dir");
+      // The env var names the config directory itself — no ".claude" is appended.
+      expect(defaultKeybindingsPath()).toBe(
+        path.join(os.tmpdir(), "ade-claude-config-dir", "keybindings.json"),
+      );
+      expect(claudeHomePath("agents")).toBe(path.join(os.tmpdir(), "ade-claude-config-dir", "agents"));
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previous;
+    }
   });
 });

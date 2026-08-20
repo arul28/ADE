@@ -58,13 +58,13 @@ describe("Cursor SDK policy", () => {
     const expected: Record<string, {
       mode: "agent" | "plan";
       tools?: string[];
-      sandboxEnabled: boolean;
+      sandboxDirective: "enable" | "disable" | "inherit";
       autoReview: boolean;
     }> = {
-      agent: { mode: "agent", sandboxEnabled: false, autoReview: true },
-      ask: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxEnabled: true, autoReview: false },
-      plan: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxEnabled: true, autoReview: false },
-      "full-auto": { mode: "agent", sandboxEnabled: false, autoReview: false },
+      agent: { mode: "agent", sandboxDirective: "inherit", autoReview: true },
+      ask: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxDirective: "enable", autoReview: false },
+      plan: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxDirective: "enable", autoReview: false },
+      "full-auto": { mode: "agent", sandboxDirective: "disable", autoReview: false },
     };
     for (const modeId of ["agent", "ask", "plan", "full-auto"] as const) {
       const policy = resolveCursorSdkPolicy({ cursorModeId: modeId });
@@ -74,7 +74,7 @@ describe("Cursor SDK policy", () => {
       expect(local.mode).toBe(expected[modeId]!.mode);
       expect(local.mode).not.toBe("auto");
       expect(local.autoReview).toBe(expected[modeId]!.autoReview);
-      expect(local.sandboxEnabled).toBe(expected[modeId]!.sandboxEnabled);
+      expect(local.sandboxDirective).toBe(expected[modeId]!.sandboxDirective);
       if (expected[modeId]!.tools) {
         expect(local.tools).toEqual(expected[modeId]!.tools);
       } else {
@@ -100,7 +100,7 @@ describe("Cursor SDK policy", () => {
       mode: "plan",
       tools: ["read", "grep", "glob", "ls"],
       autoReview: false,
-      sandboxEnabled: false,
+      sandboxDirective: "disable",
     });
   });
 
@@ -432,5 +432,37 @@ describe("Cursor SDK policy", () => {
       toolInput: { command: "npm install", cwd: laneRoot },
     }, laneRoot);
     expect(evaluateCursorSdkHook({ request: shell, policy, laneRoot })).toBe("allow");
+  });
+});
+
+describe("cursor sandbox directive", () => {
+  const directiveFor = (mode: string, sandboxSupported = true): string =>
+    buildCursorSdkLocalRunOptions(
+      resolveCursorSdkPolicy({ cursorModeId: mode }),
+      { sandboxSupported },
+    ).sandboxDirective;
+
+  it("asks for a sandbox in the read-only modes", () => {
+    expect(directiveFor("ask")).toBe("enable");
+    expect(directiveFor("plan")).toBe("enable");
+  });
+
+  it("says nothing in agent mode so the user's sandbox.json decides", () => {
+    // An explicit false would return insecure_none without ever reading the
+    // user's policy file. ADE has no sandbox UI for this mode, so it must not
+    // state an opinion either way.
+    expect(directiveFor("agent")).toBe("inherit");
+  });
+
+  it("disables the sandbox outright for full access", () => {
+    // Full access means no sandbox, including for a user who wrote a policy.
+    expect(directiveFor("full-auto")).toBe("disable");
+  });
+
+  it("disables the sandbox when the environment cannot provide one", () => {
+    // The retry after a ConfigurationError: the alternative is a hard failure,
+    // so this is the one case where "false" is the honest answer.
+    expect(directiveFor("ask", false)).toBe("disable");
+    expect(directiveFor("agent", false)).toBe("disable");
   });
 });

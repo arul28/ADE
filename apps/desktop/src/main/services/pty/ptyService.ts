@@ -135,6 +135,7 @@ import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService"
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
+import { claudeConfigHome, codexConfigHome, factoryConfigHome } from "../shared/providerConfigHomes";
 import {
   clearTuiWaitingInput,
   createTuiMarkerState,
@@ -2956,7 +2957,7 @@ export function createPtyService({
     // every non-alphanumeric character into `-` without collapsing runs or
     // trimming. Cursor and Droid each escape differently; reuse the one that
     // already encodes Claude's rule rather than generalise across vendors.
-    return path.join(os.homedir(), ".claude", "projects", claudeProjectSlugForCwd(cwd));
+    return path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", claudeProjectSlugForCwd(cwd));
   }
 
   function claudeSessionFilePathForCwd(cwd: string, claudeSessionId: string): string {
@@ -3207,7 +3208,7 @@ export function createPtyService({
   }
 
   function readCodexThreadNameFromIndex(codexSessionId: string): string | null {
-    const indexPath = path.join(os.homedir(), ".codex", "session_index.jsonl");
+    const indexPath = path.join(codexConfigHome({ homeDir: os.homedir() }), "session_index.jsonl");
     const text = readFileSuffix(indexPath, CODEX_THREAD_NAME_SCAN_BYTES);
     if (!text) return null;
     const lines = text.split(/\r?\n/).filter(Boolean);
@@ -3249,7 +3250,7 @@ export function createPtyService({
     ownershipOriginator?: string | null;
   }): CodexStorageSessionMatch | null => {
     try {
-      const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
+      const sessionsBase = path.join(codexConfigHome({ homeDir: os.homedir() }), "sessions");
       if (!fs.existsSync(sessionsBase)) return null;
 
       const now = new Date();
@@ -3384,7 +3385,7 @@ export function createPtyService({
     maxStartDeltaMs?: number;
   }): string | null => {
     try {
-      const droidSessionsDir = path.join(os.homedir(), ".factory", "sessions");
+      const droidSessionsDir = path.join(factoryConfigHome({ homeDir: os.homedir() }), "sessions");
       if (!fs.existsSync(droidSessionsDir)) return null;
       const projectEntries = fs.readdirSync(droidSessionsDir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory());
@@ -3944,7 +3945,7 @@ export function createPtyService({
   ): void => {
     const startedAtMs = Date.parse(startedAt);
     const startedAtFinite = Number.isFinite(startedAtMs) ? startedAtMs : null;
-    const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
+    const sessionsBase = path.join(codexConfigHome({ homeDir: os.homedir() }), "sessions");
     let captured = false;
     const watchers: Array<{ close: () => void }> = [];
     const timers = new Set<NodeJS.Timeout>();

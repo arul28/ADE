@@ -700,7 +700,17 @@ finalized at close time, and also on demand via
 `ensureResumeTargets(sessionIds)`. `backfillResumeTargetFromTranscriptBestEffort`
 is the fire-and-forget wrapper used by close/dispose paths; the
 on-demand call path is `async` and returns whether a target was
-resolved. Strategies, in order:
+resolved.
+
+Every provider-storage path below is resolved through
+`services/shared/providerConfigHomes.ts`, never a hardcoded `~/.codex` or
+`~/.factory`: `CODEX_HOME` and `CLAUDE_CONFIG_DIR` name the config directory,
+while `FACTORY_HOME_OVERRIDE` replaces the HOME that `.factory` is appended to.
+Hardcoding the default makes recovery read a different directory than the CLI
+ADE just spawned, so a user with an override would silently never recover a
+resume target.
+
+Strategies, in order:
 
 1. Scan the transcript tail with provider-specific regexes
    (`extractResumeCommandFromOutput`). The regex now matches resume /
@@ -715,7 +725,7 @@ resolved. Strategies, in order:
    (`CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1 s`,
    `CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5 s`).
 3. Read Codex's rollout storage:
-   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. The scan now covers
+   `<codexConfigHome>/sessions/YYYY/MM/DD/rollout-*.jsonl`. The scan now covers
    up to 7 days of dated directories and up to 80 candidate files.
    Each candidate's first JSONL line is parsed; sessions whose
    `session_meta.payload.cwd` matches are scored by closeness between
@@ -734,7 +744,7 @@ resolved. Strategies, in order:
    only enforces a 10-minute drift window so it can match older
    sessions on resume.
 4. Read Droid's local storage:
-   `~/.factory/sessions/<escaped-cwd>/*.jsonl`. Each candidate's first
+   `<factoryConfigHome>/sessions/<escaped-cwd>/*.jsonl`. Each candidate's first
    line must be a `session_start` record whose `cwd` matches the ADE
    session; the file's mtime is scored against `startedAt` with a
    10-minute drift window. The recovered session UUID becomes
@@ -763,7 +773,7 @@ never throws.
 
 The Codex storage scan is gated by the `reason` argument that the
 backfill runs under: `"close"` and `"dispose"` consult
-`~/.codex/sessions` with the 10-minute drift window; `"session-list"`
+`<codexConfigHome>/sessions` with the 10-minute drift window; `"session-list"`
 skips the storage lookup entirely; `"resume-launch"` is allowed to use
 the storage lookup because the user is actively trying to continue that
 specific session. Lazy hydration over `sessions.list` therefore relies
@@ -791,7 +801,7 @@ UUID since codex has no pre-assigned-id flag (unlike Claude's
 
 - **`fs.watch` on the day directory.** A fresh codex run almost always
   writes its rollout JSONL within ~1 s. The service watches today's
-  `~/.codex/sessions/YYYY/MM/DD/` (and tomorrow's, to handle UTC
+  `<codexConfigHome>/sessions/YYYY/MM/DD/` (and tomorrow's, to handle UTC
   rollover near midnight); each `add`/`change` event triggers a
   200 ms-debounced parse pass against any new candidate file matching
   the identification rules below.
@@ -829,7 +839,7 @@ never captured live.
 When a UUID is captured, the service writes the row's
 `resumeMetadata.targetId` and **registers a stable thread name in
 codex's index**: it appends `{ id, thread_name, updated_at }` to
-`~/.codex/session_index.jsonl` with a derived `ade-<sessionId>`
+`<codexConfigHome>/session_index.jsonl` with a derived `ade-<sessionId>`
 name. This is codex's public on-disk format for `SetThreadName`, so
 once the line lands, `codex resume ade-<id>` resolves through the
 index regardless of where the rollout file ends up on disk. We

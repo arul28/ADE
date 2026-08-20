@@ -315,7 +315,9 @@ describe("runProviderTask", () => {
     const createOptions = cursorAgentCreateMock.mock.calls[0]![0] as Record<string, any>;
     expect(createOptions.mode).toBe("agent");
     expect(createOptions.local.autoReview).toBe(true);
-    expect(createOptions.local.sandboxOptions).toEqual({ enabled: false });
+    // Middle-trust maps to Cursor "agent", where ADE has no sandbox opinion: an
+    // explicit false would make the SDK skip the user's ~/.cursor/sandbox.json.
+    expect(createOptions.local.sandboxOptions).toBeUndefined();
     expect(createOptions.tools).toBeUndefined();
   });
 
