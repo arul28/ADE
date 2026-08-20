@@ -19,11 +19,19 @@ function createWatchableStore(
 ) {
   const listeners = new Set<() => void>();
   const values: Record<string, string> = { ...(options.values ?? {}) };
+  let reads = 0;
+  let readsFail = false;
   const fire = (): void => {
     for (const listener of [...listeners]) listener();
   };
   return {
     fire,
+    /** How many times the credential was actually decrypted. */
+    readCount: () => reads,
+    /** Stands in for a locked or corrupt store: every read throws. */
+    setReadsFail: (fail: boolean) => {
+      readsFail = fail;
+    },
     /** Write one key and notify, the way a real credential write does. */
     write: (key: string, value: string) => {
       values[key] = value;
@@ -35,7 +43,11 @@ function createWatchableStore(
     },
     listenerCount: () => listeners.size,
     store: {
-      getSync: (key: string) => values[key] ?? null,
+      getSync: (key: string) => {
+        reads += 1;
+        if (readsFail) throw new Error("credential store unreadable");
+        return values[key] ?? null;
+      },
       ...(options.identity === undefined
         ? {}
         : { credentialStoreIdentity: () => options.identity as string }),
@@ -140,6 +152,115 @@ describe("watchCredentialsForRelayRepair", () => {
     watchable.writeAppToken("token-2");
 
     expect(pollNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("forces a poll when the App credential cannot be read", () => {
+    // A read failure says nothing about whether the App credential moved, so
+    // it must fail OPEN. Treating it as "unchanged" is how a repair the user
+    // already finished sat out the full five-minute cooldown.
+    const watchable = createWatchableStore({
+      values: { [APP_TOKEN_KEY]: "token-1" },
+    });
+    watchable.setReadsFail(true);
+    const pollNow = vi.fn(async () => undefined);
+    let nowMs = 1_000;
+
+    watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow,
+      credentialStore: watchable.store,
+      now: () => nowMs,
+    });
+    watchable.fire();
+    expect(pollNow).toHaveBeenCalledTimes(1);
+
+    nowMs += CREDENTIAL_CHANGE_POLL_COALESCE_MS;
+    watchable.fire();
+    expect(pollNow).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers from an unreadable baseline instead of suppressing every later poll", () => {
+    // The baseline is read at install time. If the store was locked then, the
+    // watcher must not compare later reads against that non-answer forever.
+    const watchable = createWatchableStore({
+      values: { [APP_TOKEN_KEY]: "token-1" },
+    });
+    watchable.setReadsFail(true);
+    const pollNow = vi.fn(async () => undefined);
+    let nowMs = 1_000;
+
+    watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow,
+      credentialStore: watchable.store,
+      now: () => nowMs,
+    });
+
+    watchable.setReadsFail(false);
+    nowMs += CREDENTIAL_CHANGE_POLL_COALESCE_MS * 2;
+    watchable.fire();
+    expect(pollNow).toHaveBeenCalledTimes(1);
+
+    // Readable again and unchanged: the scoped comparison is back on.
+    nowMs += CREDENTIAL_CHANGE_POLL_COALESCE_MS * 2;
+    watchable.fire();
+    expect(pollNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("decrypts the credential once per change however many watchers share the file", () => {
+    // Reading this key takes the file lock and decrypts the whole store. Ten
+    // open projects must not pay for that ten times to learn the same fact.
+    const watchable = createWatchableStore({ identity: "shared-file-read-count" });
+    const now = () => 0;
+
+    const stopFirst = watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow: vi.fn(async () => undefined),
+      credentialStore: watchable.store,
+      now,
+    });
+    const stopSecond = watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow: vi.fn(async () => undefined),
+      credentialStore: watchable.store,
+      now,
+    });
+    expect(watchable.readCount()).toBe(1);
+
+    watchable.writeAppToken("token-1");
+    expect(watchable.readCount()).toBe(2);
+
+    stopFirst();
+    stopSecond();
+  });
+
+  it("keeps notifying the other watchers when one of them throws", () => {
+    // The shared watch is an aggregate over independent subscribers, so it owes
+    // them the same per-subscriber isolation the store's own watcher documents.
+    const watchable = createWatchableStore({ identity: "shared-file-isolation" });
+    const survivingPoll = vi.fn(async () => undefined);
+
+    const stopThrowing = watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow: vi.fn(async () => undefined),
+      credentialStore: watchable.store,
+      // Throws from inside the listener itself, before the poll is reached.
+      now: () => {
+        throw new Error("clock unavailable");
+      },
+    });
+    const stopSurviving = watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow: survivingPoll,
+      credentialStore: watchable.store,
+      now: () => 0,
+    });
+
+    expect(() => watchable.writeAppToken("token-1")).not.toThrow();
+    expect(survivingPoll).toHaveBeenCalledTimes(1);
+
+    stopThrowing();
+    stopSurviving();
   });
 
   it("shares one underlying watcher across stores over the same file", () => {

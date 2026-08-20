@@ -759,6 +759,22 @@ export function createHeadlessGitHubService(
     failure: AppUserAuthFailure | null;
     status: GitHubAppUserAuthStatus;
   };
+  /**
+   * The App credential is resolved at most once per TTL window, matching the
+   * desktop service's inventory cache.
+   *
+   * Every status read, PR call and relay poll builds an inventory, and building
+   * one asks for a GitHub App token — which on a stale access token is a refresh
+   * POST. The headless twin had no such window, which is why the brain, not the
+   * desktop app, drove most of the refresh traffic. Only the App lookup is
+   * cached: the `gh` CLI and PAT reads keep answering live, so signing out of
+   * `gh` still demotes the write credential immediately.
+   */
+  const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+    build: buildAppCredentialAsync,
+  });
+
   const invalidateStatusCache = (): void => {
     cachedStatus = null;
     cachedAt = 0;
@@ -817,7 +833,9 @@ export function createHeadlessGitHubService(
     return read.value;
   };
 
-  const buildAppCredentialAsync = async (): Promise<AppCredentialLookup> => {
+  // A hoisted declaration, so the cache that names it can be declared next to
+  // the invalidator that owns it rather than after every function it calls.
+  async function buildAppCredentialAsync(): Promise<AppCredentialLookup> {
     const status = appUserAuth.getAuthStatus();
     const resolved = await resolveStoredAppUserTokenForRelay({
       status,
@@ -826,23 +844,7 @@ export function createHeadlessGitHubService(
       event: "github.app_user_token_unavailable",
     });
     return { ...resolved, status };
-  };
-
-  /**
-   * The App credential is resolved at most once per TTL window, matching the
-   * desktop service's inventory cache.
-   *
-   * Every status read, PR call and relay poll builds an inventory, and building
-   * one asks for a GitHub App token — which on a stale access token is a refresh
-   * POST. The headless twin had no such window, which is why the brain, not the
-   * desktop app, drove most of the refresh traffic. Only the App lookup is
-   * cached: the `gh` CLI and PAT reads keep answering live, so signing out of
-   * `gh` still demotes the write credential immediately.
-   */
-  const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
-    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
-    build: buildAppCredentialAsync,
-  });
+  }
 
   const readAppCredentialAsync = async (): Promise<AppCredentialLookup> =>
     await appCredentialCache.read();

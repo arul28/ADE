@@ -48,8 +48,43 @@ export type CredentialChangeRelayRepairArgs = {
   now?: () => number;
 };
 
+/**
+ * What one read of the App credential produced.
+ *
+ * "The read failed" is a separate answer from "the value is null", because the
+ * two must lead to opposite decisions: an absent credential is a fact worth
+ * comparing against, an unreadable store is no information at all.
+ */
+type AppUserTokenRead =
+  | { kind: "value"; value: string | null }
+  | { kind: "read_failed" };
+
+type AppUserTokenListener = (read: AppUserTokenRead) => void;
+
+/**
+ * Reads the App credential, or reports that it could not be read.
+ *
+ * A store with no `getSync` is reported the same way a throwing one is: there
+ * is nothing to scope the repair to, so every change has to force a poll.
+ */
+function readAppUserToken(store: WatchableCredentialStore): AppUserTokenRead {
+  const getSync = store.getSync;
+  if (typeof getSync !== "function") return { kind: "read_failed" };
+  try {
+    return { kind: "value", value: getSync.call(store, GITHUB_APP_USER_TOKEN_KEY) ?? null };
+  } catch {
+    return { kind: "read_failed" };
+  }
+}
+
 type SharedWatch = {
-  listeners: Set<() => void>;
+  listeners: Set<AppUserTokenListener>;
+  /**
+   * The most recent read over this file, and the baseline a listener that joins
+   * later starts from. Kept here so N runtimes cost ONE locked decrypt per
+   * change instead of one each.
+   */
+  lastRead: AppUserTokenRead;
   dispose: () => void;
 };
 
@@ -63,36 +98,71 @@ type SharedWatch = {
  */
 const sharedWatches = new Map<string, SharedWatch>();
 
+function createWatch(
+  store: WatchableCredentialStore,
+  onDidChange: (listener: () => void) => () => void,
+): SharedWatch {
+  const listeners = new Set<AppUserTokenListener>();
+  const watch: SharedWatch = {
+    listeners,
+    lastRead: readAppUserToken(store),
+    dispose: () => undefined,
+  };
+  watch.dispose = onDidChange(() => {
+    const read = readAppUserToken(store);
+    watch.lastRead = read;
+    for (const each of [...listeners]) {
+      try {
+        each(read);
+      } catch {
+        // Per-subscriber isolation, the same guarantee the store's own change
+        // watcher documents: one runtime's repair throwing must not stop the
+        // other runtimes on this file from hearing about the change.
+      }
+    }
+  });
+  return watch;
+}
+
 function subscribeShared(
   store: WatchableCredentialStore,
   onDidChange: (listener: () => void) => () => void,
-  listener: () => void,
-): () => void {
+  listener: AppUserTokenListener,
+): { baseline: AppUserTokenRead; unsubscribe: () => void } {
   let identity: string | null = null;
   try {
     identity = store.credentialStoreIdentity?.() ?? null;
   } catch {
     identity = null;
   }
-  if (identity === null) return onDidChange(listener);
+  if (identity === null) {
+    const watch = createWatch(store, onDidChange);
+    watch.listeners.add(listener);
+    return {
+      baseline: watch.lastRead,
+      unsubscribe: () => {
+        if (!watch.listeners.delete(listener)) return;
+        watch.dispose();
+      },
+    };
+  }
 
   const key = identity;
   let shared = sharedWatches.get(key);
   if (!shared) {
-    const listeners = new Set<() => void>();
-    const dispose = onDidChange(() => {
-      for (const each of [...listeners]) each();
-    });
-    shared = { listeners, dispose };
+    shared = createWatch(store, onDidChange);
     sharedWatches.set(key, shared);
   }
   shared.listeners.add(listener);
-  return () => {
-    const current = sharedWatches.get(key);
-    if (!current?.listeners.delete(listener)) return;
-    if (current.listeners.size > 0) return;
-    sharedWatches.delete(key);
-    current.dispose();
+  return {
+    baseline: shared.lastRead,
+    unsubscribe: () => {
+      const current = sharedWatches.get(key);
+      if (!current?.listeners.delete(listener)) return;
+      if (current.listeners.size > 0) return;
+      sharedWatches.delete(key);
+      current.dispose();
+    },
   };
 }
 
@@ -121,27 +191,11 @@ export function watchCredentialsForRelayRepair(
   };
 
   /**
-   * False for a store that cannot be read by key, which keeps the old
-   * behaviour — every change forces a poll — because there is nothing to scope
-   * the repair to.
+   * The last read this watcher acted on. Whole-file re-encryption changes every
+   * byte on disk on every write, so only the decrypted value says whether THIS
+   * key moved.
    */
-  const scoped = typeof watched.getSync === "function";
-
-  /**
-   * The App credential's current value, or the last known one when the file
-   * cannot be read. Whole-file re-encryption changes every byte on disk on
-   * every write, so only the decrypted value says whether THIS key moved.
-   */
-  const readAppUserToken = (previous: string | null): string | null => {
-    if (!scoped) return previous;
-    try {
-      return watched.getSync?.(GITHUB_APP_USER_TOKEN_KEY) ?? null;
-    } catch {
-      return previous;
-    }
-  };
-
-  let lastSeenAppUserToken = readAppUserToken(null);
+  let lastSeenAppUserToken: AppUserTokenRead = { kind: "read_failed" };
   let lastForcedPollMs = Number.NEGATIVE_INFINITY;
   let pendingPoll: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -155,14 +209,27 @@ export function watchCredentialsForRelayRepair(
     }
   };
 
-  const onChange = (): void => {
+  const onChange = (read: AppUserTokenRead): void => {
     if (stopped) return;
-    const token = readAppUserToken(lastSeenAppUserToken);
+    const previous = lastSeenAppUserToken;
+    lastSeenAppUserToken = read;
     // Every ADE process sees every write to this file, and account sessions
     // rotate far more often than the App credential does. Only the credential
     // the relay is waiting on is worth a forced poll.
-    if (scoped && token === lastSeenAppUserToken) return;
-    lastSeenAppUserToken = token;
+    //
+    // Fail OPEN when the read did not produce a value: a store that cannot be
+    // decrypted right now tells us nothing about whether the App credential
+    // moved, and the cost of a poll nobody needed is one HTTP call, while the
+    // cost of skipping one is the full five-minute cooldown. The same rule run
+    // against the baseline is what keeps an unreadable store at install time
+    // from suppressing every later poll.
+    if (
+      read.kind === "value"
+      && previous.kind === "value"
+      && read.value === previous.value
+    ) {
+      return;
+    }
 
     const nowMs = now();
     const sinceLastPoll = nowMs - lastForcedPollMs;
@@ -184,7 +251,9 @@ export function watchCredentialsForRelayRepair(
 
   let unsubscribe: () => void;
   try {
-    unsubscribe = subscribeShared(watched, onDidChange.bind(watched), onChange);
+    const subscription = subscribeShared(watched, onDidChange.bind(watched), onChange);
+    lastSeenAppUserToken = subscription.baseline;
+    unsubscribe = subscription.unsubscribe;
   } catch {
     return () => undefined;
   }

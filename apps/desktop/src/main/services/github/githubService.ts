@@ -603,6 +603,15 @@ export function createGithubService({
   const sharedGhAuth = processGithubAuthState(ghAuthProvider);
   let statusInFlight: Promise<GitHubStatus> | null = null;
   let cachedStatusCredentialInventoryKey: string | null = null;
+
+  // The revision guard rides alongside the TTL: signing out of the `gh` CLI
+  // bumps it, and that must demote the write credential now rather than in
+  // thirty seconds.
+  const credentialInventoryCache = createExpiringPromiseCache<GitHubCredentialInventory>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+    build: buildCredentialInventory,
+  });
+
   const invalidateCredentialInventory = (): void => {
     credentialInventoryCache.clear();
     sharedGhAuth.credentialInventoryRevision += 1;
@@ -869,7 +878,9 @@ export function createGithubService({
       : null;
   };
 
-  const buildCredentialInventory = async (): Promise<GitHubCredentialInventory> => {
+  // A hoisted declaration, so the cache that names it can be declared next to
+  // the invalidator that owns it rather than after every function it calls.
+  async function buildCredentialInventory(): Promise<GitHubCredentialInventory> {
     const patLookup = readPatAuthToken();
     const patTokenStored = Boolean(patLookup);
     // Snapshotted here, next to `patTokenStored`, because the read that just ran
@@ -942,15 +953,7 @@ export function createGithubService({
       // inventory rather than per source.
       credentialStoreUnreadable: storeUnreadableForThisRead,
     };
-  };
-
-  // The revision guard rides alongside the TTL: signing out of the `gh` CLI
-  // bumps it, and that must demote the write credential now rather than in
-  // thirty seconds.
-  const credentialInventoryCache = createExpiringPromiseCache<GitHubCredentialInventory>({
-    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
-    build: buildCredentialInventory,
-  });
+  }
 
   const readCredentialInventory = async (): Promise<GitHubCredentialInventory> =>
     await credentialInventoryCache.read(sharedGhAuth.credentialInventoryRevision);

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { updateCredentialKeySync } from "../../../../../ade-cli/src/services/credentials/updateCredentialKey";
 import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
@@ -336,9 +337,9 @@ export function createGitHubAppUserAuthService(args: {
 
   /**
    * Applies `mutator` to the stored credential as one step, and returns what the
-   * mutator decided. A store without `updateKeySync` degrades to a plain
-   * read-modify-write: still correct inside one process, and the only stores
-   * without it are process-local ones.
+   * mutator decided. `updateCredentialKeySync` holds the ladder: a store with no
+   * atomic update degrades to a plain read-modify-write, still correct inside
+   * one process, and the only stores without one are process-local ones.
    */
   const updateStoredAuth = <T>(
     mutator: (stored: StoredAppUserAuth) => { next: StoredAppUserAuth | null | undefined; result: T },
@@ -371,14 +372,7 @@ export function createGitHubAppUserAuthService(args: {
       return decision.result;
     }
     try {
-      if (store.updateKeySync) {
-        store.updateKeySync(GITHUB_APP_USER_TOKEN_KEY, applyRaw);
-        return result;
-      }
-      const next = applyRaw(store.getSync(GITHUB_APP_USER_TOKEN_KEY)?.trim() || null);
-      if (next === undefined) return result;
-      if (next === null) store.deleteSync(GITHUB_APP_USER_TOKEN_KEY);
-      else store.setSync(GITHUB_APP_USER_TOKEN_KEY, next);
+      updateCredentialKeySync(store, GITHUB_APP_USER_TOKEN_KEY, applyRaw);
       return result;
     } catch (error) {
       args.logger.warn("github.app_user_token_write_failed", {

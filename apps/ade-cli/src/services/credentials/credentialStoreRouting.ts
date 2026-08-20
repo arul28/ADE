@@ -3,6 +3,7 @@ import {
   normalizeCredentialKey,
   type SyncCredentialStore,
 } from "./credentialStore";
+import { updateCredentialKeySync } from "./updateCredentialKey";
 
 /**
  * Stores that stand in front of the real ones: the per-key router, and the
@@ -64,15 +65,7 @@ export function createRoutedCredentialStore(args: {
     // document a non-atomic get/set fallback, and that fallback routes per key,
     // which is the behaviour they actually want here.
     updateKeySync: (key, mutator) => {
-      const store = storeFor(key);
-      if (store.updateKeySync) {
-        store.updateKeySync(key, mutator);
-        return;
-      }
-      const next = mutator(store.getSync(key));
-      if (next === undefined) return;
-      if (next === null) store.deleteSync(key);
-      else store.setSync(key, next);
+      updateCredentialKeySync(storeFor(key), key, mutator);
     },
     credentialStoreIdentity: () => args.fileStore.credentialStoreIdentity?.()
       ?? args.primary.credentialStoreIdentity?.()

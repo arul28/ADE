@@ -3185,3 +3185,88 @@ describe("AccountAuthService over a store with only updateKeySync", () => {
     });
   });
 });
+
+/**
+ * A store that reads fine but whose atomic write always throws — a keychain
+ * that locked, a file that went read-only, a peer holding the lock past the
+ * timeout.
+ */
+function createFailingWriteStore(): SyncCredentialStore {
+  const backing = new MemoryCredentialStore();
+  return {
+    get: (key) => backing.get(key),
+    set: (key, value) => backing.set(key, value),
+    delete: (key) => backing.delete(key),
+    getSync: (key) => backing.getSync(key),
+    setSync: (key, value) => backing.setSync(key, value),
+    deleteSync: (key) => backing.deleteSync(key),
+    getLastReadState: () => backing.getLastReadState(),
+    updateKeySync: () => {
+      throw new Error("credential store is locked");
+    },
+  };
+}
+
+describe("AccountAuthService when the credential store cannot be written", () => {
+  it("keeps the provider's error and rejects the grant locally when the marker cannot be written", async () => {
+    // A throwing store must not replace the `invalid_grant` the caller has to
+    // see, and must not cost this process the local rejection either: the dead
+    // grant still has to stop being served here.
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = createFailingWriteStore();
+    const raw = JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    }));
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, raw);
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async () => jsonResponse({
+        error: "invalid_grant",
+        error_description: "refresh token is invalid",
+      }, 400)),
+      refreshRotationWaitMs: 0,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    const error = await service.getAccessToken().then(() => null, (raised: unknown) => raised as Error);
+    expect(error?.message).toMatch(/invalid/i);
+    expect(error?.message).not.toMatch(/locked/i);
+    // The record is untouched, and the rejection lives in this process only.
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(raw);
+    expect(service.getStatus()).toMatchObject({ signedIn: false, sessionState: "expired" });
+  });
+
+  it("reports a refreshed session as not persisted instead of failing the refresh", async () => {
+    // The exchange succeeded. Raising the store's error here would turn a good
+    // refresh into a failed one and sign the user out of a live session.
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = createFailingWriteStore();
+    const raw = JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    }));
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, raw);
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async (input: string) => {
+        if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
+        return jsonResponse({
+          access_token: refreshedAccessToken,
+          refresh_token: "refresh-rotated",
+          expires_in: 3_600,
+        });
+      }),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(raw);
+  });
+});

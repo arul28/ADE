@@ -15,6 +15,10 @@ import {
   type CredentialStoreReadFailureReason,
   type SyncCredentialStore,
 } from "../credentials/credentialStore";
+import {
+  supportsAtomicCredentialUpdate,
+  updateCredentialKeySync,
+} from "../credentials/updateCredentialKey";
 import { runWithAbortSignal } from "../sync/abortSignal";
 import { createRotationJournal } from "./accountSessionRotationJournal";
 
@@ -1034,6 +1038,23 @@ export function createAccountAuthService(args: {
     else logger.info("account.session_mutation", meta);
   };
 
+  /**
+   * Reports a credential write that threw, and swallows it.
+   *
+   * Every caller below is already handling something else — a rejected grant, a
+   * development credential, a completed refresh — and the store failing is not
+   * a reason to lose that outcome or to replace the error the caller is about
+   * to raise. Each of them has a documented degraded path for "not written".
+   */
+  const warnSessionWriteFailed = (reason: string, error: unknown): void => {
+    logger.warn("account.session_write_failed", {
+      reason,
+      pid: mutationPid,
+      source: mutationSource,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+
   const readRawEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
 
   const resolveOAuthConfig = async (): Promise<AccountOAuthConfig> =>
@@ -1141,29 +1162,32 @@ export function createAccountAuthService(args: {
   };
 
   const invalidateStoredSessionIfCurrent = (raw: string): void => {
-    const updateKeySync = args.credentialStore.updateKeySync;
-    const updateSync = args.credentialStore.updateSync;
+    let erased = false;
     // Atomic compare-and-delete: remove only the development session we
     // observed, so a production credential a peer wrote after our read is
-    // never clobbered. `updateKeySync` first — the routed desktop store can
-    // answer for one key but not for the whole credential map.
-    const erasedAtomically = Boolean(updateKeySync ?? updateSync);
-    if (updateKeySync) {
-      updateKeySync.call(
-        args.credentialStore,
-        ACCOUNT_SESSION_CREDENTIAL_KEY,
-        (current) => (current === raw ? null : undefined),
-      );
-    } else if (updateSync) {
-      updateSync.call(args.credentialStore, (values) => {
-        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
-        delete values[ACCOUNT_SESSION_CREDENTIAL_KEY];
-        return true;
-      });
-    }
+    // never clobbered.
+    //
     // Without atomic compare-and-delete we do NOT get-then-delete — that races a
     // peer-written production replacement. The development session is simply
     // rejected on every read instead of being erased.
+    if (supportsAtomicCredentialUpdate(args.credentialStore)) {
+      try {
+        updateCredentialKeySync(
+          args.credentialStore,
+          ACCOUNT_SESSION_CREDENTIAL_KEY,
+          (current) => {
+            if (current !== raw) return undefined;
+            erased = true;
+            return null;
+          },
+        );
+      } catch (error) {
+        // A write that threw is a write that did not happen. The local
+        // rejection below still stops this process serving the session.
+        erased = false;
+        warnSessionWriteFailed("development_material_rejected", error);
+      }
+    }
     authEpoch += 1;
     lastObservedSignedIn = false;
     setSessionReadState("missing");
@@ -1171,7 +1195,9 @@ export function createAccountAuthService(args: {
       action: "delete",
       reason: "development_material_rejected",
       level: "warn",
-      outcome: erasedAtomically ? "erased" : "rejected_locally",
+      // The real outcome of the write, not merely whether the store claimed to
+      // support one: the mutator declines when a peer replaced the record.
+      outcome: erased ? "erased" : "rejected_locally",
     });
     warnDevelopmentClerkIgnored();
   };
@@ -1288,34 +1314,29 @@ export function createAccountAuthService(args: {
       needsReauth: true,
       ...(oauthErrorCode ? { rejectedReason: oauthErrorCode } : {}),
     };
-    const updateKeySync = args.credentialStore.updateKeySync;
-    const updateSync = args.credentialStore.updateSync;
     let marked = false;
     // Compare-and-swap on the exact bytes we were rejected for: a replacement
-    // a peer persisted after our read must never be condemned. `updateKeySync`
-    // first, so the routed desktop store writes the marker instead of falling
-    // through to the local-only rejection.
-    if (updateKeySync) {
-      updateKeySync.call(
-        args.credentialStore,
-        ACCOUNT_SESSION_CREDENTIAL_KEY,
-        (current) => {
-          if (current !== raw) return undefined;
-          marked = true;
-          return JSON.stringify(rejected);
-        },
-      );
-    } else if (updateSync) {
-      updateSync.call(args.credentialStore, (values) => {
-        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
-        values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(rejected);
-        marked = true;
-        return true;
-      });
-    }
+    // a peer persisted after our read must never be condemned.
+    //
     // Without compare-and-swap the marker cannot be written safely, but this
     // process must still stop serving the dead grant. It is rejected on every
-    // local read instead.
+    // local read instead — which is also what a failed write leaves behind.
+    if (supportsAtomicCredentialUpdate(args.credentialStore)) {
+      try {
+        updateCredentialKeySync(
+          args.credentialStore,
+          ACCOUNT_SESSION_CREDENTIAL_KEY,
+          (current) => {
+            if (current !== raw) return undefined;
+            marked = true;
+            return JSON.stringify(rejected);
+          },
+        );
+      } catch (error) {
+        marked = false;
+        warnSessionWriteFailed("refresh_grant_rejected", error);
+      }
+    }
     authEpoch += 1;
     lastObservedSignedIn = false;
     setSessionReadState("missing");
@@ -1388,16 +1409,25 @@ export function createAccountAuthService(args: {
     }
   };
 
+  /**
+   * Why a rotated session did not reach the store.
+   *
+   * The two failures need opposite handling and must never be collapsed into
+   * one boolean. `superseded_by_peer` means the store now holds something
+   * NEWER, so the caller starts over and picks it up. `write_failed` means the
+   * store holds something OLDER and always will, so starting over is an
+   * infinite loop — the caller serves the credential it just obtained instead.
+   */
+  type PersistRefreshedOutcome = "persisted" | "superseded_by_peer" | "write_failed";
+
   const persistRefreshedSessionIfCurrent = (
     refreshed: AccountSessionRecord,
     expectedRaw: string,
     reason: string,
     /** Generation this exchange journaled, so only our own entry is cleared. */
     journaledTokenGeneration?: string | null,
-  ): boolean => {
-    const updateKeySync = args.credentialStore.updateKeySync;
-    const updateSync = args.credentialStore.updateSync;
-    if (!updateKeySync && !updateSync) {
+  ): PersistRefreshedOutcome => {
+    if (!supportsAtomicCredentialUpdate(args.credentialStore)) {
       if (args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY) !== expectedRaw) {
         // A peer persisted first, but our exchange is still over — the
         // generation we journaled is spent either way. Scoped, so a peer's
@@ -1408,16 +1438,17 @@ export function createAccountAuthService(args: {
         if (journaledTokenGeneration) {
           rotationJournal.clear("rotation_superseded", journaledTokenGeneration);
         }
-        return false;
+        return "superseded_by_peer";
       }
       // persistSession clears the journal on the way through.
       persistSession(refreshed, reason);
-      return true;
+      return "persisted";
     }
 
     let persisted = false;
-    if (updateKeySync) {
-      updateKeySync.call(
+    let writeFailed = false;
+    try {
+      updateCredentialKeySync(
         args.credentialStore,
         ACCOUNT_SESSION_CREDENTIAL_KEY,
         (current) => {
@@ -1426,13 +1457,12 @@ export function createAccountAuthService(args: {
           return JSON.stringify(refreshed);
         },
       );
-    } else if (updateSync) {
-      updateSync.call(args.credentialStore, (values) => {
-        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== expectedRaw) return false;
-        values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
-        persisted = true;
-        return true;
-      });
+    } catch (error) {
+      // The exchange itself succeeded. Raising here would turn a SUCCESSFUL
+      // refresh into a failed one and sign the user out of a live session.
+      persisted = false;
+      writeFailed = true;
+      warnSessionWriteFailed(reason, error);
     }
     if (persisted) {
       lastObservedSignedIn = true;
@@ -1448,13 +1478,18 @@ export function createAccountAuthService(args: {
         journaledTokenGeneration,
       );
     }
+    const outcome: PersistRefreshedOutcome = persisted
+      ? "persisted"
+      : writeFailed
+        ? "write_failed"
+        : "superseded_by_peer";
     logSessionMutation({
       action: "rotate",
       reason,
       tokenGeneration: accountTokenGeneration(refreshed.refreshToken),
-      outcome: persisted ? "persisted" : "superseded_by_peer",
+      outcome,
     });
-    return persisted;
+    return outcome;
   };
 
   const finishPendingSession = (
@@ -2440,17 +2475,21 @@ export function createAccountAuthService(args: {
             { fetchUserinfo: false, obtainedAtMs, signal: sharedSignal },
           );
           if (authEpoch !== epochAtJoin) return null;
-          if (!persistRefreshedSessionIfCurrent(
+          const rotationOutcome = persistRefreshedSessionIfCurrent(
             refreshed,
             refreshSnapshot.raw,
             "refresh_token_rotated",
             accountTokenGeneration(refreshSnapshot.session.refreshToken),
-          )) {
-            // Persist path clears our journaled generation; skip the finally clear.
-            journaledGeneration = null;
-            return null;
-          }
+          );
+          // Persist path clears our journaled generation; skip the finally clear.
           journaledGeneration = null;
+          if (rotationOutcome === "write_failed") {
+            // The store will keep holding the OLD record, so starting over
+            // would refresh again against a grant this exchange already spent.
+            // Serve the pair we just obtained and let the next process retry.
+            return refreshed;
+          }
+          if (rotationOutcome !== "persisted") return null;
 
           // The rotated access/refresh pair is durable before optional profile
           // enrichment. Identity is carried from the previously verified subject,
@@ -2474,13 +2513,16 @@ export function createAccountAuthService(args: {
           }
           if (authEpoch !== epochAtJoin) return null;
           const refreshedRaw = JSON.stringify(refreshed);
+          // Only a peer's newer record is worth re-reading for. The rotated
+          // pair is already durable, so a failed enrichment write costs nothing
+          // but the profile fields, which this record carries anyway.
           return persistRefreshedSessionIfCurrent(
             enriched,
             refreshedRaw,
             "refresh_profile_enriched",
-          )
-            ? enriched
-            : readSession();
+          ) === "superseded_by_peer"
+            ? readSession()
+            : enriched;
         } finally {
           if (journaledGeneration) {
             rotationJournal.clear("refresh_finished", journaledGeneration);

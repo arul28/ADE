@@ -3,6 +3,7 @@ import {
   credentialPathKey,
   type SyncCredentialStore,
 } from "./credentialStore";
+import { updateCredentialKeySync } from "./updateCredentialKey";
 
 /**
  * The one-way migration that moves file-backed credentials out of the
@@ -117,15 +118,11 @@ export function adoptFileBackedCredentials(args: {
         wrote = true;
         return strandedValue;
       };
-      if (args.fileStore.updateKeySync) {
-        // Atomic: a brain write racing this adoption must be compared against
-        // what it actually wrote, and check-then-set leaves a window where the
-        // comparison is made against a value that is already gone.
-        args.fileStore.updateKeySync(key, nextValue);
-      } else {
-        const next = nextValue(args.fileStore.getSync(key));
-        if (next !== undefined) args.fileStore.setSync(key, next);
-      }
+      // Atomic when the store can be: a brain write racing this adoption must
+      // be compared against what it actually wrote, and check-then-set leaves a
+      // window where the comparison is made against a value that is already
+      // gone.
+      updateCredentialKeySync(args.fileStore, key, nextValue);
       if (wrote) adopted.push(key);
       if (!wrote && undatedStandoff) continue;
       args.primary.deleteSync(key);
