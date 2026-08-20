@@ -3508,8 +3508,13 @@ describe("createAgentChatService", () => {
       ]));
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);
+      // No settings file names a style here, so ADE must not name one either:
+      // its settings land at flag tier, above every file the SDK reads, so an
+      // "outputStyle" key would override the user's global selection.
+      expect(opts?.settings).not.toHaveProperty("outputStyle");
       expect(opts?.settings).toEqual(expect.objectContaining({
-        outputStyle: "Default",
+        // ADE's own default, which applies only while no settings file states one.
+        workflowSizeGuideline: "medium",
         fastMode: false,
         enabledPlugins: expect.objectContaining({
           "learning-output-style@claude-code-plugins": false,
@@ -3518,6 +3523,52 @@ describe("createAgentChatService", () => {
           "explanatory-output-style@claude-plugins-official": false,
         }),
       }));
+    });
+
+    it("passes the user's global output style through instead of pinning Default", async () => {
+      // The regression this guards: ADE substituted "Default" for "nothing is
+      // set" and passed it at flag tier, so a style configured in the user's
+      // settings.json never took effect in any ADE chat.
+      const userClaudeDir = path.join(tmpRoot, "user-claude-config");
+      fs.mkdirSync(path.join(userClaudeDir, "output-styles"), { recursive: true });
+      fs.writeFileSync(
+        path.join(userClaudeDir, "output-styles", "asd-ste100.md"),
+        ["---", "name: ASD-STE100", "description: Simplified Technical English", "---", "", "Write short sentences.", ""].join("\n"),
+      );
+      fs.writeFileSync(
+        path.join(userClaudeDir, "settings.json"),
+        JSON.stringify({ outputStyle: "ASD-STE100", workflowSizeGuideline: "large" }),
+      );
+      const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_CONFIG_DIR = userClaudeDir;
+
+      try {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send: vi.fn(),
+          stream: vi.fn(async function* () {
+            return;
+          }),
+          close: vi.fn(),
+          sessionId: "sdk-session-user-output-style",
+        } as any);
+
+        const { service } = createService();
+        await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+
+        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+          settings?: { outputStyle?: string; workflowSizeGuideline?: string };
+        } | undefined;
+        expect(opts?.settings?.outputStyle).toBe("ASD-STE100");
+        // A user-stated guideline replaces ADE's default rather than losing to it.
+        expect(opts?.settings).not.toHaveProperty("workflowSizeGuideline");
+      } finally {
+        if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      }
     });
 
     it("passes Claude fast mode through SDK flag settings for Opus sessions", async () => {

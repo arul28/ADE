@@ -7,20 +7,29 @@ import {
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
   readClaudeOutputStyleSelection,
+  readClaudeWorkflowSizeGuideline,
   resolveClaudeOutputStyle,
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
 
 let tmpRoot: string;
 let homeRoot: string;
+let previousClaudeConfigDir: string | undefined;
 
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-claude-output-styles-test-"));
   homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-claude-output-styles-home-"));
   vi.spyOn(os, "homedir").mockReturnValue(homeRoot);
+  // The shared test setup points CLAUDE_CONFIG_DIR at its own temp dir, which now
+  // wins over homedir(). Aim it at this test's home so the user tier is the one
+  // these cases write to, and so no case can read the developer's real ~/.claude.
+  previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = path.join(homeRoot, ".claude");
 });
 
 afterEach(() => {
+  if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
   vi.restoreAllMocks();
   fs.rmSync(tmpRoot, { recursive: true, force: true });
   fs.rmSync(homeRoot, { recursive: true, force: true });
@@ -236,5 +245,40 @@ describe("discoverClaudePlugins", () => {
     }));
 
     expect(discoverClaudePlugins(tmpRoot).map((plugin) => plugin.name)).toEqual(["review-pack"]);
+  });
+});
+
+describe("settings precedence", () => {
+  const writeSettings = (root: string, fileName: string, value: Record<string, unknown>): void => {
+    const dir = path.join(root, ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, fileName), JSON.stringify(value, null, 2));
+  };
+
+  it("returns null rather than \"Default\" when no settings file names a style", () => {
+    // "Default" is a real style that suppresses a globally configured one. ADE
+    // passes its settings at flag tier, so a substituted default would silently
+    // override the user's ~/.claude selection in every lane.
+    expect(readClaudeOutputStyleSelection(tmpRoot)).toBeNull();
+  });
+
+  it("falls back to the user's ~/.claude selection when the lane declares none", () => {
+    writeSettings(homeRoot, "settings.json", { outputStyle: "ASD-STE100" });
+    expect(readClaudeOutputStyleSelection(tmpRoot)).toBe("ASD-STE100");
+  });
+
+  it("prefers lane settings.local.json over lane settings.json over the user file", () => {
+    writeSettings(homeRoot, "settings.json", { outputStyle: "UserStyle" });
+    writeSettings(tmpRoot, "settings.json", { outputStyle: "ProjectStyle" });
+    expect(readClaudeOutputStyleSelection(tmpRoot)).toBe("ProjectStyle");
+
+    writeSettings(tmpRoot, "settings.local.json", { outputStyle: "LaneStyle" });
+    expect(readClaudeOutputStyleSelection(tmpRoot)).toBe("LaneStyle");
+  });
+
+  it("reads workflowSizeGuideline through the same ladder", () => {
+    expect(readClaudeWorkflowSizeGuideline(tmpRoot)).toBeNull();
+    writeSettings(homeRoot, "settings.json", { workflowSizeGuideline: "large" });
+    expect(readClaudeWorkflowSizeGuideline(tmpRoot)).toBe("large");
   });
 });

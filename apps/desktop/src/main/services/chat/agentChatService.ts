@@ -70,6 +70,7 @@ import {
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
   readClaudeOutputStyleSelection,
+  readClaudeWorkflowSizeGuideline,
   resolveClaudeOutputStyle,
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
@@ -28948,14 +28949,15 @@ export function createAgentChatService(args: {
   /**
    * Build stable Agent SDK query options from the managed session state.
    */
-  const resolveManagedClaudeOutputStyle = (managed: ManagedChatSession): string => {
-    const requested = normalizePersistedOutputStyle(managed.session.claudeOutputStyle)
-      ?? readClaudeOutputStyleSelection(managed.laneWorktreePath);
-    const resolved = resolveClaudeOutputStyle(managed.laneWorktreePath, requested)
-      ?? resolveClaudeOutputStyle(managed.laneWorktreePath, "Default");
-    const outputStyle = resolved?.name ?? "Default";
-    managed.session.claudeOutputStyle = outputStyle;
-    return outputStyle;
+  const resolveManagedClaudeOutputStyle = (managed: ManagedChatSession): string | null => {
+    // Settings files first, session cache second: the cache is a display value we
+    // wrote ourselves last run, so consulting it first would pin whatever it holds
+    // and make an unset lane permanently ignore the user's global selection.
+    const requested = readClaudeOutputStyleSelection(managed.laneWorktreePath)
+      ?? normalizePersistedOutputStyle(managed.session.claudeOutputStyle);
+    const resolved = requested ? resolveClaudeOutputStyle(managed.laneWorktreePath, requested) : null;
+    managed.session.claudeOutputStyle = resolved?.name ?? null;
+    return resolved?.name ?? null;
   };
 
   const buildClaudeQueryOptions = (
@@ -28980,6 +28982,10 @@ export function createAgentChatService(args: {
     };
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
+    // ADE's preferred default, supplied only when no settings file states one.
+    const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
+      ? undefined
+      : "medium";
     const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
     const pluginPaths = personalSession
       ? []
@@ -29006,11 +29012,16 @@ export function createAgentChatService(args: {
       // back. Workers/validators do real work and keep user MCP. strictMcpConfig still
       // permits the programmatic orchestration MCP server added below for bundled leads.
       ...((lightweight || isOrchestrationLeadSession(managed.session)) ? { strictMcpConfig: true } : {}),
+      // ADE's settings land at flag tier, above every settings.json the SDK reads.
+      // Only name a key ADE actually owns; anything else must stay absent so the
+      // SDK's own local > project > user precedence resolves it. `enabledPlugins`
+      // is safe to always send because the CLI merges it per plugin key rather
+      // than replacing the map.
       settings: {
-        outputStyle,
+        ...(outputStyle ? { outputStyle } : {}),
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
-        workflowSizeGuideline: "medium",
+        ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       permissionMode: claudePermissionMode as any,
@@ -31150,7 +31161,8 @@ export function createAgentChatService(args: {
       };
       })();
       const initialClaudeOutputStyle = effectiveProvider === "claude"
-        ? normalizePersistedOutputStyle(requestedClaudeOutputStyle) ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
+        ? normalizePersistedOutputStyle(requestedClaudeOutputStyle)
+          ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
         : null;
 
     const normalizedGoal = typeof requestedGoal === "string" && requestedGoal.trim().length
@@ -45995,7 +46007,9 @@ export function createAgentChatService(args: {
       const requestedStyle = match[1]?.trim() ?? "";
       managed.session.lastActivityAt = nowIso();
       if (!requestedStyle.length) {
-        managed.session.claudeOutputStyle = managed.session.claudeOutputStyle ?? readClaudeOutputStyleSelection(managed.laneWorktreePath);
+        managed.session.claudeOutputStyle = managed.session.claudeOutputStyle
+          ?? readClaudeOutputStyleSelection(managed.laneWorktreePath)
+          ?? "Default";
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",

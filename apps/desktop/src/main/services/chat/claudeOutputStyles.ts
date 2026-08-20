@@ -208,10 +208,19 @@ function ancestorClaudeRoots(cwd: string): string[] {
   return roots;
 }
 
+/**
+ * The user-level Claude root. `CLAUDE_CONFIG_DIR` relocates it wholesale — the
+ * CLI reads settings, styles and plugins from there instead of `~/.claude`, and
+ * every other ADE module that touches Claude config already honours it.
+ */
+function userClaudeRoot(): string {
+  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return configured?.length ? path.resolve(configured) : path.join(path.resolve(os.homedir()), ".claude");
+}
+
 function claudeRootsByPrecedence(cwd: string): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
-  const home = path.resolve(os.homedir());
   const addRoot = (root: string): void => {
     if (seen.has(root)) return;
     seen.add(root);
@@ -219,7 +228,7 @@ function claudeRootsByPrecedence(cwd: string): string[] {
   };
 
   for (const root of ancestorClaudeRoots(cwd)) addRoot(root);
-  addRoot(path.join(home, ".claude"));
+  addRoot(userClaudeRoot());
   return roots;
 }
 
@@ -343,7 +352,7 @@ export function discoverClaudeOutputStyles(cwd: string): AgentChatClaudeOutputSt
   for (const style of CLAUDE_BUILT_IN_OUTPUT_STYLES) add(style);
 
   const roots = claudeRootsByPrecedence(cwd);
-  const homeClaudeRoot = path.resolve(os.homedir(), ".claude");
+  const homeClaudeRoot = userClaudeRoot();
   const cwdClaudeRoot = path.resolve(cwd, ".claude");
   for (const root of roots) {
     const resolvedRoot = path.resolve(root);
@@ -370,8 +379,7 @@ export function claudeSettingsLocalPath(cwd: string): string {
   return path.join(cwd, ".claude", "settings.local.json");
 }
 
-export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
-  const settingsPath = claudeSettingsLocalPath(cwd);
+function readClaudeSettingsFile(settingsPath: string): ClaudeSettingsLocal {
   try {
     const raw = fs.readFileSync(settingsPath, "utf8");
     const parsed = JSON.parse(raw);
@@ -383,8 +391,43 @@ export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
   }
 }
 
-export function readClaudeOutputStyleSelection(cwd: string): string {
-  return maybeString(readClaudeSettingsLocal(cwd).outputStyle) ?? "Default";
+export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
+  return readClaudeSettingsFile(claudeSettingsLocalPath(cwd));
+}
+
+/**
+ * First value for `key` across the same settings files, in the same order, that
+ * the Agent SDK itself resolves with `settingSources: ["user", "project", "local"]`:
+ * lane `settings.local.json`, lane `settings.json`, each ancestor root, then
+ * `~/.claude`. Returns null when no file declares the key.
+ *
+ * ADE reads these only to decide whether it has anything to say. A key nobody
+ * declares must stay absent from the SDK options — ADE passes its settings at
+ * flag tier, which outranks every file, so substituting a default here silently
+ * overrides the user's global configuration.
+ */
+function readClaudeSettingsValue(cwd: string, key: string): string | null {
+  for (const root of claudeRootsByPrecedence(cwd)) {
+    for (const fileName of ["settings.local.json", "settings.json"]) {
+      const value = maybeString(readClaudeSettingsFile(path.join(root, fileName))[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * The output style the user selected, or null when no settings file names one.
+ * Null means "ADE has no opinion" — never "Default", which is a real style that
+ * would suppress a globally configured one.
+ */
+export function readClaudeOutputStyleSelection(cwd: string): string | null {
+  return readClaudeSettingsValue(cwd, "outputStyle");
+}
+
+/** The workflow size guideline the user configured, or null when none is set. */
+export function readClaudeWorkflowSizeGuideline(cwd: string): string | null {
+  return readClaudeSettingsValue(cwd, "workflowSizeGuideline");
 }
 
 export function writeClaudeOutputStyleSelection(cwd: string, outputStyle: string): string {
