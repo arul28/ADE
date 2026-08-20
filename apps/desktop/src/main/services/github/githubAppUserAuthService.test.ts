@@ -51,6 +51,97 @@ function createFakeStore(values: StoredValues) {
   };
 }
 
+/**
+ * A store whose Nth atomic update throws, counting from the first one.
+ *
+ * Counting is how these suites name one specific write. Update 1 takes the
+ * refresh lease, update 2 records the outcome, update 3 is the immediate retry
+ * of that outcome write, and anything after belongs to the next call. Several
+ * numbers may fail at once, which is what a store that refuses an outcome write
+ * AND its retry looks like.
+ */
+function createStoreFailingUpdates(values: StoredValues, ...failAt: number[]) {
+  const base = createFakeStore(values);
+  const failing = new Set(failAt);
+  let updates = 0;
+  return {
+    ...base,
+    updateKeySync: (
+      key: string,
+      mutator: (current: string | null) => string | null | undefined,
+    ): void => {
+      updates += 1;
+      if (failing.has(updates)) throw new Error("credential store write failed");
+      base.updateKeySync(key, mutator);
+    },
+  };
+}
+
+/**
+ * A store that refuses every write carrying a NEW credential while
+ * `gate.accepts` is false, and accepts the ledger-only writes around it — the
+ * lease being taken, and the lease being handed back.
+ *
+ * The counting store above cannot express that: the retry of a refused outcome
+ * write and the lease release that would follow it are the same update number,
+ * so a counter can never say which of the two a run actually skipped. The gate
+ * is what makes the store recover mid-test, the way a held file lock or a
+ * momentary permission error clears on the machine.
+ */
+function createStoreGatingCredentialWrites(
+  values: StoredValues,
+  gate: { accepts: boolean },
+) {
+  const base = createFakeStore(values);
+  return {
+    ...base,
+    updateKeySync: (
+      key: string,
+      mutator: (current: string | null) => string | null | undefined,
+    ): void => {
+      base.updateKeySync(key, (current) => {
+        const next = mutator(current);
+        if (next == null) return next;
+        const before = current ? JSON.parse(current) as Record<string, unknown> : null;
+        const after = JSON.parse(next) as Record<string, unknown>;
+        if (!gate.accepts && before?.accessToken !== after.accessToken) {
+          throw new Error("credential store write failed");
+        }
+        return next;
+      });
+    },
+  };
+}
+
+/** The gating store above, with the gate shut for the whole test. */
+function createStoreRefusingCredentialWrites(values: StoredValues) {
+  return createStoreGatingCredentialWrites(values, { accepts: false });
+}
+
+/**
+ * A store whose Nth atomic update LANDS its write and then throws.
+ *
+ * The one failure the counting store cannot express, and the one that misled a
+ * reader: from the caller's side it is indistinguishable from a write that
+ * never happened, so the retry finds this process's own record on disk and
+ * declines — which used to be reported as a peer superseding the refresh.
+ */
+function createStoreWritingThenFailing(values: StoredValues, failAt: number) {
+  const base = createFakeStore(values);
+  let updates = 0;
+  return {
+    ...base,
+    updateKeySync: (
+      key: string,
+      mutator: (current: string | null) => string | null | undefined,
+    ): void => {
+      updates += 1;
+      base.updateKeySync(key, mutator);
+      if (updates === failAt) throw new Error("credential store write failed");
+    },
+  };
+}
+
 function createLogger() {
   return { info: vi.fn(), warn: vi.fn() };
 }
@@ -576,28 +667,6 @@ describe("poisoned deadlines in the shared ledger", () => {
 });
 
 describe("refresh lease release", () => {
-  /**
-   * A store that refuses the write recording a SUCCESSFUL refresh.
-   *
-   * Update 1 takes the lease, update 2 records the refreshed credential, and
-   * update 3 is the lease release the failure path falls back on.
-   */
-  function createStoreRefusingTheOutcomeWrite(values: StoredValues) {
-    const base = createFakeStore(values);
-    let updates = 0;
-    return {
-      ...base,
-      updateKeySync: (
-        key: string,
-        mutator: (current: string | null) => string | null | undefined,
-      ): void => {
-        updates += 1;
-        if (updates === 2) throw new Error("credential store write failed");
-        base.updateKeySync(key, mutator);
-      },
-    };
-  }
-
   const freshTokenEndpoint = () => vi.fn(async () => jsonResponse({
     access_token: "ghu_fresh",
     token_type: "bearer",
@@ -606,28 +675,79 @@ describe("refresh lease release", () => {
     refresh_token_expires_in: 15_811_200,
   }));
 
+  const buildService = (
+    store: GitHubAppUserAuthCredentialStore,
+    fetchImpl: unknown,
+    logger = createLogger(),
+  ) => createGitHubAppUserAuthService({
+    credentialStore: store,
+    logger,
+    fetchImpl: fetchImpl as typeof fetch,
+    userAgent: "ade-test",
+    storeIdentity: nextIdentity(),
+    now,
+    sleep,
+  });
+
   // The lease is written before the POST and cleared by whichever outcome gets
-  // recorded. A credential store that throws while recording one records
+  // recorded. A credential store that throws while recording a FAILURE records
   // nothing — and used to leave the lease behind, which stalls every other
-  // process for the full minute for no reason at all.
-  it("hands the lease back when the store refuses to record the outcome", async () => {
+  // process for the full minute for no reason at all. Nothing was spent at
+  // GitHub on this path, so there is no reason to keep peers out.
+  it("hands the lease back when the store refuses to record a failed refresh", async () => {
     const values: StoredValues = {};
     writeRecord(values);
-    const service = createGitHubAppUserAuthService({
-      credentialStore: createStoreRefusingTheOutcomeWrite(values),
-      logger: createLogger(),
-      fetchImpl: freshTokenEndpoint() as unknown as typeof fetch,
-      userAgent: "ade-test",
-      storeIdentity: nextIdentity(),
-      now,
-      sleep,
-    });
+    const service = buildService(
+      // Update 2 is the failure write; update 3 is the release it falls back on.
+      createStoreFailingUpdates(values, 2),
+      vi.fn(async () => {
+        throw new Error("network down");
+      }),
+    );
 
-    await service.getValidTokenForRelay();
+    await expect(service.getValidTokenForRelay()).rejects.toThrow();
 
     const ledger = storedRecord(values)?.refresh as Record<string, unknown> | undefined;
     expect(ledger?.leaseUntil).toBeNull();
     expect(ledger?.leaseHolder).toBeNull();
+  });
+
+  /**
+   * A credential-store write fails for reasons that pass in milliseconds — a
+   * peer holding the file lock, a momentary permission error. The POST has
+   * already spent the stored refresh token by then, so the difference between
+   * one attempt and two is the difference between a durable record and a spent
+   * token left on disk.
+   */
+  it("retries the outcome write once and lands it", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const logger = createLogger();
+    // Update 2 is the first outcome write; update 3 is its retry, and passes.
+    const service = buildService(
+      createStoreFailingUpdates(values, 2),
+      freshTokenEndpoint(),
+      logger,
+    );
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh");
+
+    expect(storedRecord(values)).toMatchObject({
+      accessToken: "ghu_fresh",
+      refreshToken: "ghr_rotated",
+    });
+    const ledger = storedRecord(values)?.refresh as Record<string, unknown> | undefined;
+    expect(ledger?.leaseUntil).toBeNull();
+    expect(ledger?.leaseHolder).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "github.app_user_token_refresh_persist_retried",
+      expect.objectContaining({ error: "credential store write failed" }),
+    );
+    // The retry landed, so nothing is being held back for a later write.
+    expect(logger.info).not.toHaveBeenCalledWith(
+      "github.app_user_token_refresh_unpersisted",
+      expect.anything(),
+    );
   });
 
   /**
@@ -641,15 +761,12 @@ describe("refresh lease release", () => {
     const values: StoredValues = {};
     writeRecord(values);
     const logger = createLogger();
-    const service = createGitHubAppUserAuthService({
-      credentialStore: createStoreRefusingTheOutcomeWrite(values),
+    // Both the outcome write and its retry fail.
+    const service = buildService(
+      createStoreFailingUpdates(values, 2, 3),
+      freshTokenEndpoint(),
       logger,
-      fetchImpl: freshTokenEndpoint() as unknown as typeof fetch,
-      userAgent: "ade-test",
-      storeIdentity: nextIdentity(),
-      now,
-      sleep,
-    });
+    );
 
     await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh");
 
@@ -673,6 +790,61 @@ describe("refresh lease release", () => {
       expect.anything(),
     );
   });
+
+  /**
+   * The one case where the lease must NOT be handed back.
+   *
+   * The exchange succeeded, so the refresh token on disk is already spent, and
+   * the record that replaces it exists only in this process's memory. Releasing
+   * the lease here lets a peer take it, read that spent token, and POST it —
+   * the exact double-spend the lease exists to prevent, and the one GitHub
+   * answers by revoking the credential.
+   */
+  it("keeps the lease when its replacement never reached the store", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const identity = nextIdentity();
+    const service = createGitHubAppUserAuthService({
+      // Content-based, not counted: a counter cannot tell the RETRY of a
+      // refused outcome write apart from the lease release that would follow
+      // it, so counting proves nothing about which of the two was skipped.
+      credentialStore: createStoreRefusingCredentialWrites(values),
+      logger: createLogger(),
+      fetchImpl: freshTokenEndpoint() as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: identity,
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh");
+
+    const ledger = storedRecord(values)?.refresh as Record<string, unknown> | undefined;
+    expect(ledger?.leaseHolder).toEqual(expect.any(String));
+    expect(Date.parse(String(ledger?.leaseUntil))).toBeGreaterThan(now());
+
+    // A PEER process — its own service instance, its own lease holder id, its
+    // own coordinator — must be refused for as long as this lease stands.
+    const peerFetch = vi.fn(async () => jsonResponse({
+      error: "bad_refresh_token",
+      error_description: "The refresh token passed is incorrect or expired.",
+    }));
+    const peer = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: peerFetch as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: `${identity}-peer`,
+      now,
+      sleep,
+    });
+    await expect(peer.getValidTokenForRelay()).rejects.toThrow();
+    // The whole point: the peer never reached GitHub at all, so the spent token
+    // was never POSTed a second time and the credential is still alive.
+    expect(peerFetch).not.toHaveBeenCalled();
+    expect(storedRecord(values)?.refreshToken).toBe("ghr_live");
+    expect(peer.getAuthStatus().credentialState).not.toBe("needs_reauth");
+  });
 });
 
 /**
@@ -686,22 +858,12 @@ describe("refresh lease release", () => {
  * re-authorize a session nobody revoked.
  */
 describe("refresh whose replacement never reached the store", () => {
-  /** Fails ONLY the write that records a successful refresh; recovers after. */
-  function createStoreFailingOneOutcomeWrite(values: StoredValues) {
-    const base = createFakeStore(values);
-    let updates = 0;
-    return {
-      ...base,
-      updateKeySync: (
-        key: string,
-        mutator: (current: string | null) => string | null | undefined,
-      ): void => {
-        updates += 1;
-        if (updates === 2) throw new Error("credential store write failed");
-        base.updateKeySync(key, mutator);
-      },
-    };
-  }
+  /**
+   * Fails the write that records a successful refresh AND its immediate retry,
+   * then recovers. Updates 2 and 3 are that write and that retry.
+   */
+  const createStoreFailingOneOutcomeWrite = (values: StoredValues) =>
+    createStoreFailingUpdates(values, 2, 3);
 
   const buildService = (
     store: GitHubAppUserAuthCredentialStore,
@@ -771,6 +933,101 @@ describe("refresh whose replacement never reached the store", () => {
     expect(storedRecord(values)).toBeNull();
     expect(tokenPostCount(fetchImpl)).toBe(1);
   });
+
+  /**
+   * The held-back record belongs to the PROCESS, so any service instance over
+   * the same credential file has to be able to finish it.
+   *
+   * The lease holder id used to belong to the instance instead. The instance
+   * that took the lease was then the only one whose holder check could pass, so
+   * a sibling — one of the several project scopes the desktop app and the brain
+   * each build — read its own process's lease as a peer's, waited it out, and
+   * threw `blocked`. The spent refresh token stayed on disk for the whole lease
+   * while the live credential sat in memory one instance away.
+   */
+  it("lets a sibling instance finish the refresh its own process is holding", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const endpoint = createRotatingRefreshEndpoint();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => endpoint.respond(
+      typeof init?.body === "string" ? init.body : null,
+    ));
+    const identity = nextIdentity();
+    const gate = { accepts: false };
+    // One credential file, one process: the two instances share both.
+    const store = createStoreGatingCredentialWrites(values, gate);
+    const first = buildService(store, fetchImpl, identity);
+    const second = buildService(store, fetchImpl, identity);
+
+    // GitHub answered, so the stored refresh token is spent — and the store
+    // refused to record the credential that replaces it.
+    await expect(first.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+    expect(storedRecord(values)?.refreshToken).toBe("ghr_live");
+    gate.accepts = true;
+
+    // The sibling must recover, not wait: it is the same process.
+    await expect(second.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+
+    // A second POST would carry the spent token, and GitHub answers that with
+    // `bad_refresh_token` — the credential dying for good.
+    expect(tokenPostCount(fetchImpl)).toBe(1);
+    expect(endpoint.rotations).toBe(1);
+    expect(storedRecord(values)).toMatchObject({
+      accessToken: "ghu_fresh_1",
+      refreshToken: "ghr_rotated_1",
+    });
+    const ledger = storedRecord(values)?.refresh as Record<string, unknown> | undefined;
+    expect(ledger?.leaseUntil).toBeNull();
+    expect(ledger?.leaseHolder).toBeNull();
+  });
+
+  /**
+   * The mirror case: the write that DID land, and then threw.
+   *
+   * Nothing is held back here — the record is on disk. The retry finds it,
+   * declines because the stored refresh token is no longer the one that was
+   * POSTed, and that decline must not be reported as a peer's credential
+   * arriving. It sent readers of this log hunting for a second writer that was
+   * never there.
+   */
+  it("names its own landed write rather than blaming a peer for it", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const logger = createLogger();
+    const endpoint = createRotatingRefreshEndpoint();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => endpoint.respond(
+      typeof init?.body === "string" ? init.body : null,
+    ));
+    const service = createGitHubAppUserAuthService({
+      // Update 1 takes the lease; update 2 is the outcome write that lands and
+      // then reports failure.
+      credentialStore: createStoreWritingThenFailing(values, 2),
+      logger,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+
+    expect(storedRecord(values)).toMatchObject({
+      accessToken: "ghu_fresh_1",
+      refreshToken: "ghr_rotated_1",
+    });
+    expect(tokenPostCount(fetchImpl)).toBe(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      "github.app_user_token_refresh_superseded",
+      expect.objectContaining({ supersededBy: "own_first_attempt" }),
+    );
+    // The record reached the store, so nothing is being held back for later.
+    expect(logger.info).not.toHaveBeenCalledWith(
+      "github.app_user_token_refresh_unpersisted",
+      expect.anything(),
+    );
+    expect(service.getAuthStatus().credentialState).toBe("authorized");
+  });
 });
 
 describe("refresh failure classification", () => {
@@ -799,6 +1056,43 @@ describe("refresh failure classification", () => {
     expect(status.credentialState).toBe("blocked");
     expect(status.lastRefreshError?.kind).toBe("rate_limited");
     expect(Date.parse(status.refreshBlockedUntil ?? "")).toBeGreaterThan(clockNowMs);
+  });
+
+  /**
+   * The refresh lease is what stops a peer POSTing the same refresh token, and
+   * it expires on a timer. A request nobody bounds outlives that lease and
+   * becomes the second POST the lease exists to prevent, so the exchange gives
+   * up first — and giving up says nothing about the credential, which makes it
+   * a transient network failure and never a dead one.
+   */
+  it("gives up on a refresh that outlives its budget, and blames the network", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const neverResolves = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>(
+      (_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      },
+    ));
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: neverResolves as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+      refreshTimeoutMs: 10,
+    });
+
+    await expect(service.getValidTokenForRelay()).rejects.toThrow();
+
+    const status = service.getAuthStatus();
+    expect(status.credentialState).toBe("blocked");
+    expect(status.lastRefreshError?.kind).toBe("network");
+    expect(status.lastRefreshError?.message).toContain("within 10 ms");
+    // The refresh token is still the live one: a request ADE abandoned is not
+    // evidence that GitHub rejected anything.
+    expect(storedRecord(values)?.refreshToken).toBe("ghr_live");
   });
 
   // A proxy or captive portal answers with HTML and a 4xx. Nothing about that

@@ -59,6 +59,7 @@ import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { readBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
@@ -67,6 +68,53 @@ process.env.ADE_ENABLE_AUTOMATIONS = "1";
 process.env.ADE_ENABLE_MACOS_VM = "1";
 
 const crdtHostIt = process.platform === "darwin" ? it : it.skip;
+
+/**
+ * Waits for a DETACHED test brain to leave, and kills it if it will not.
+ *
+ * A brain owns its ADE_HOME for as long as it runs: it writes the credential
+ * store, that store's lock file, and the relay configuration under
+ * `secrets/`, plus its heartbeat under `runtime/`. `ade runtime stop` returns
+ * when the shutdown request is answered, not when the process is gone, and it
+ * reports rather than throws when it never reached a brain at all. A teardown
+ * that removes ADE_HOME on that signal alone races those writes: one file
+ * created between `rmSync`'s readdir and its rmdir fails the whole teardown
+ * with ENOTEMPTY.
+ */
+async function waitForDetachedProcessExit(
+  pid: number | null,
+  timeoutMs = 10_000,
+): Promise<void> {
+  if (pid === null || !Number.isInteger(pid) || pid <= 0) return;
+  // Same rule as the brain's "self" heartbeat verdict: never signal your own
+  // process. A stale heartbeat naming this pid would SIGKILL the test runner.
+  if (pid === process.pid) return;
+  const isRunning = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error: unknown) {
+      // EPERM means the process exists and belongs to somebody else, which is
+      // still "running" for this purpose. Only ESRCH means it is gone.
+      return (error as NodeJS.ErrnoException | null)?.code !== "ESRCH";
+    }
+  };
+  const waitUntilGone = async (deadline: number): Promise<boolean> => {
+    while (Date.now() < deadline) {
+      if (!isRunning()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return !isRunning();
+  };
+  if (await waitUntilGone(Date.now() + timeoutMs)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone, or not ours to signal.
+  }
+  // SIGKILL is not synchronous either: the process still has to be reaped.
+  await waitUntilGone(Date.now() + 2_000);
+}
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -5591,11 +5639,17 @@ describe("ADE CLI", () => {
       expect(codeRequests).toBe(1);
       expect(tokenRequests).toBe(1);
     } finally {
+      // Read the pid BEFORE the stop: a clean shutdown removes the heartbeat
+      // file on its way out.
+      const brainPid = readBrainHeartbeat(path.join(adeHome, "runtime"))?.pid ?? null;
       try {
         await runCli(["--socket", socketPath, "runtime", "stop", "--text"]);
       } catch {
         // Best-effort cleanup if the detached test runtime never became available.
       }
+      // The brain writes into `adeHome` for as long as it lives. Removing the
+      // directory under a live one is what fails this teardown with ENOTEMPTY.
+      await waitForDetachedProcessExit(brainPid);
       stderrWrite.mockRestore();
       process.argv[1] = previousArgvEntry;
       for (const [key, value] of previousEnv) {
@@ -5605,7 +5659,9 @@ describe("ADE CLI", () => {
       await new Promise<void>((resolve) => directory.close(() => resolve()));
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
-  }, 30_000);
+    // The teardown above waits for a detached brain to leave, which costs up to
+    // 12 seconds on its own before the login flow's own budget is counted.
+  }, 45_000);
 
   posixIt("accepts current-session deadline success but rejects a stale signed-in account", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-deadline-sock-"));

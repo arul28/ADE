@@ -40,7 +40,12 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   const [status, setStatus] = useState<GitHubAppInstallationStatus | null>(null);
   // Shared with the Settings connection ladder, so disconnecting here updates
   // the badge there instead of leaving it reporting a removed authorization.
-  const { appAuth, refresh: refreshAppAuth, set: setAppAuth } = useGithubAppUserAuth();
+  const {
+    appAuth,
+    loaded: appAuthLoaded,
+    refresh: refreshAppAuth,
+    set: setAppAuth,
+  } = useGithubAppUserAuth();
   const [deviceSession, setDeviceSession] = useState<GitHubAppDeviceAuthStartResult | null>(null);
   const [deviceMessage, setDeviceMessage] = useState<string | null>(null);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
@@ -261,8 +266,12 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   const appAuthorized = accountState === "valid";
   const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
   const healthy = isGithubRealtimeHealthy(accountState, repoState);
-  // `appAuth === null` = not fetched yet (distinct from a fetched "no token").
-  const accountChecking = appAuth === null && loading;
+  // The account axis is "checking" until the account read lands, and nothing
+  // else decides that. `loading` belongs to the REPO status beside it, and
+  // gating on it reported an unread account as `missing` — an offer to
+  // authorize a machine that may already be authorized — whenever the repo
+  // status settled first.
+  const accountChecking = !appAuthLoaded;
 
   const secondaryBtnStyle = outlineButton(compact ? compactSecondaryButtonStyle : undefined);
   const primaryBtnStyle = primaryButton(compact ? compactPrimaryButtonStyle : undefined);

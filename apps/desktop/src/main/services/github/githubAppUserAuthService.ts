@@ -37,6 +37,18 @@ export const GITHUB_APP_USER_TOKEN_KEY = "github.appUserToken.v1";
 const GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 /** How long one process may hold the right to run the refresh POST. */
 const REFRESH_LEASE_MS = 60_000;
+/**
+ * How long the whole refresh exchange may take: the OAuth POST plus the
+ * `/user` lookup that names the account.
+ *
+ * Deliberately BELOW {@link REFRESH_LEASE_MS}. The lease is the only thing that
+ * stops a peer process from POSTing the same refresh token, and GitHub answers
+ * a refresh token POSTed twice by revoking the credential. A request still
+ * running when the lease expires is exactly that second POST, so the request
+ * has to give up first — with the margin covering the store writes that record
+ * the outcome.
+ */
+const REFRESH_REQUEST_TIMEOUT_MS = 45_000;
 const REFRESH_BACKOFF_BASE_MS = 60_000;
 const REFRESH_BACKOFF_MAX_MS = 60 * 60_000;
 const LEASE_POLL_INTERVAL_MS = 250;
@@ -74,6 +86,20 @@ type GitHubAppUserAuthLogger = {
  */
 type StoreCoordinator = {
   inFlight: Promise<GitHubAppUserTokenRecord> | null;
+  /**
+   * The name this process writes into the on-disk refresh lease, shared by every
+   * service instance over one storage.
+   *
+   * It belongs to the coordinator and NOT to the instance, because the record a
+   * refresh holds back after a failed store write also belongs to the
+   * coordinator. An id per instance made the two disagree: the instance that
+   * held the lease was the only one whose `leaseHolder` check could pass, so a
+   * SIBLING instance read the held lease as a peer's, refused to run
+   * `recoverUnpersistedRefresh`, and left the spent refresh token on disk for
+   * the whole lease. One id per storage lets any sibling re-acquire the lease
+   * its own process took and finish the write.
+   */
+  leaseHolderId: string;
   /**
    * When a peer process was still holding the on-disk lease at the end of a
    * wait, in epoch milliseconds, or 0 when no peer is known to hold it.
@@ -129,7 +155,12 @@ function resolveStoreIdentity(
 function coordinatorFor(identity: string): StoreCoordinator {
   let coordinator = storeCoordinators.get(identity);
   if (!coordinator) {
-    coordinator = { inFlight: null, peerLeaseUntilMs: 0, unpersisted: null };
+    coordinator = {
+      inFlight: null,
+      leaseHolderId: randomUUID(),
+      peerLeaseUntilMs: 0,
+      unpersisted: null,
+    };
     storeCoordinators.set(identity, coordinator);
   }
   return coordinator;
@@ -270,7 +301,7 @@ function credentialStateOf(
  */
 type RefreshLeaseAttempt =
   | Exclude<StoredAuthVerdict, { outcome: "refreshable" }>
-  | { outcome: "held"; leaseUntil: string | null }
+  | { outcome: "held"; leaseUntil: string | null; leaseHolder: string | null }
   | { outcome: "acquired"; record: UsableRefreshRecord };
 
 export function createGitHubAppUserAuthService(args: {
@@ -286,6 +317,13 @@ export function createGitHubAppUserAuthService(args: {
   storeIdentity?: string | null;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Bounds one refresh exchange. Defaults to
+   * {@link REFRESH_REQUEST_TIMEOUT_MS}; tests set it to a few milliseconds so a
+   * request that never resolves can be exercised without waiting out the real
+   * budget.
+   */
+  refreshTimeoutMs?: number;
 }): {
   getAuthStatus(patch?: Partial<GitHubAppUserAuthStatus>): GitHubAppUserAuthStatus;
   startDeviceAuth(): Promise<GitHubAppDeviceAuthStartResult>;
@@ -300,7 +338,7 @@ export function createGitHubAppUserAuthService(args: {
     const timer = setTimeout(resolve, ms);
     timer.unref?.();
   }));
-  const leaseHolderId = randomUUID();
+  const refreshTimeoutMs = args.refreshTimeoutMs ?? REFRESH_REQUEST_TIMEOUT_MS;
   // Only serves a service built WITHOUT a credential store. A store that reads
   // empty is a cleared credential, not a cache miss: falling back to memory
   // there resurrected credentials another process had signed out.
@@ -421,7 +459,10 @@ export function createGitHubAppUserAuthService(args: {
     };
   };
 
-  const fetchAppUserLogin = async (accessToken: string): Promise<string | null> => {
+  const fetchAppUserLogin = async (
+    accessToken: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
     const response = await args.fetchImpl("https://api.github.com/user", {
       method: "GET",
       headers: {
@@ -430,6 +471,7 @@ export function createGitHubAppUserAuthService(args: {
         "user-agent": args.userAgent,
         "x-github-api-version": GITHUB_REST_API_VERSION,
       },
+      signal,
     });
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) return null;
@@ -495,6 +537,7 @@ export function createGitHubAppUserAuthService(args: {
   const acquireRefreshLease = (): RefreshLeaseAttempt =>
     updateStoredAuth<RefreshLeaseAttempt>((stored) => {
       const nowMs = now();
+      const leaseHolderId = coordinatorFor(storeIdentity).leaseHolderId;
       const decline = (result: RefreshLeaseAttempt) => ({ next: undefined, result });
       const verdict = judgeStoredAuth(stored, nowMs);
       if (verdict.outcome !== "refreshable") return decline(verdict);
@@ -504,7 +547,11 @@ export function createGitHubAppUserAuthService(args: {
       ) {
         // No failure travels with this one: a peer holding the lease is ADE
         // renewing the credential, and GitHub has said nothing about it.
-        return decline({ outcome: "held", leaseUntil: stored.refresh.leaseUntil });
+        return decline({
+          outcome: "held",
+          leaseUntil: stored.refresh.leaseUntil,
+          leaseHolder: stored.refresh.leaseHolder,
+        });
       }
       const leaseUntil = new Date(nowMs + REFRESH_LEASE_MS).toISOString();
       return {
@@ -526,6 +573,22 @@ export function createGitHubAppUserAuthService(args: {
     at: new Date(now()).toISOString(),
   });
 
+  type PersistedRefreshSuccess = {
+    written: boolean;
+    generation: number;
+    /**
+     * Why the write was declined, or null when it landed.
+     *
+     * `peer` is another writer's credential on disk — a sign-out, or a device
+     * flow that finished meanwhile. `own_first_attempt` is this process finding
+     * its OWN rotated record already stored, which happens when the first write
+     * attempt reached the store and then threw. Nothing superseded that one, and
+     * logging it as if a peer had written it sent readers hunting for a second
+     * writer that does not exist.
+     */
+    supersededBy: "own_first_attempt" | "peer" | null;
+  };
+
   /**
    * Writes a refreshed credential back, but only over the credential that was
    * POSTed.
@@ -538,15 +601,22 @@ export function createGitHubAppUserAuthService(args: {
   const persistRefreshSuccess = (
     refreshed: GitHubAppUserTokenRecord,
     postedRefreshToken: string | null,
-  ): { written: boolean; generation: number } =>
-    updateStoredAuth<{ written: boolean; generation: number }>((stored) => {
+  ): PersistedRefreshSuccess =>
+    updateStoredAuth<PersistedRefreshSuccess>((stored) => {
       if (!stored.token || stored.token.refreshToken !== postedRefreshToken) {
-        return { next: undefined, result: { written: false, generation: 0 } };
+        // Only this process ever saw the rotated token, so a stored record
+        // carrying it is a write of ours that landed and then reported failure —
+        // never a peer's newer credential.
+        const supersededBy = refreshed.refreshToken != null
+          && stored.token?.refreshToken === refreshed.refreshToken
+          ? "own_first_attempt"
+          : "peer";
+        return { next: undefined, result: { written: false, generation: 0, supersededBy } };
       }
       const generation = stored.refresh.generation + 1;
       return {
         next: { token: refreshed, refresh: { ...emptyLedger(), generation } },
-        result: { written: true, generation },
+        result: { written: true, generation, supersededBy: null },
       };
     });
 
@@ -628,7 +698,10 @@ export function createGitHubAppUserAuthService(args: {
    */
   const releaseRefreshLease = (): void => {
     updateStoredAuth<void>((stored) => {
-      if (!stored.token || stored.refresh.leaseHolder !== leaseHolderId) {
+      if (
+        !stored.token
+        || stored.refresh.leaseHolder !== coordinatorFor(storeIdentity).leaseHolderId
+      ) {
         return { next: undefined, result: undefined };
       }
       return {
@@ -657,6 +730,31 @@ export function createGitHubAppUserAuthService(args: {
   };
 
   /**
+   * Persists a successful refresh, with ONE immediate retry.
+   *
+   * By the time this runs GitHub has already spent the stored refresh token, so
+   * a write that never lands leaves that spent token on disk for the next
+   * reader to POST — and a refresh token POSTed twice is what GitHub answers by
+   * revoking the credential. Credential-store writes fail for reasons that pass
+   * in milliseconds: a peer holding the file lock, a momentary permission
+   * error. One retry converts most of that window into a durable record.
+   */
+  const persistRefreshSuccessDurably = (
+    refreshed: GitHubAppUserTokenRecord,
+    storedRefreshToken: string,
+  ): PersistedRefreshSuccess => {
+    try {
+      return persistRefreshSuccess(refreshed, storedRefreshToken);
+    } catch (error) {
+      args.logger.warn("github.app_user_token_refresh_persist_retried", {
+        error: error instanceof Error ? error.message : String(error),
+        userLogin: refreshed.userLogin,
+      });
+      return persistRefreshSuccess(refreshed, storedRefreshToken);
+    }
+  };
+
+  /**
    * Runs the refresh POST for `record`.
    *
    * `storedRefreshToken` names the refresh token the STORE holds, which every
@@ -674,22 +772,41 @@ export function createGitHubAppUserAuthService(args: {
     // Both persist paths clear the lease as part of the record they write, so
     // only an exit that reaches NEITHER of them leaves it held.
     let ledgerWritten = false;
+    // Set when this process must KEEP the lease rather than hand it back: the
+    // exchange succeeded but its replacement never reached the store, so the
+    // spent refresh token is still what a peer would read and POST. The lease
+    // is the only thing stopping that until this process re-persists the record
+    // (see `recoverUnpersistedRefresh`) or the lease expires on its own.
+    let holdLeaseForUnpersisted = false;
+    // The whole exchange is bounded well inside the lease. See
+    // REFRESH_REQUEST_TIMEOUT_MS: a request that outlives the lease becomes the
+    // duplicate POST the lease exists to prevent.
+    const requestAbort = new AbortController();
+    let requestTimedOut = false;
+    const requestTimer = setTimeout(() => {
+      requestTimedOut = true;
+      requestAbort.abort();
+    }, refreshTimeoutMs);
+    requestTimer.unref?.();
     try {
       const refreshed = await refreshGitHubAppUserToken({
         clientId: ADE_GITHUB_APP_CLIENT_ID,
         refreshToken: postedRefreshToken,
-        fetchImpl: (input, init) => args.fetchImpl(String(input), init),
+        fetchImpl: (input, init) => args.fetchImpl(
+          String(input),
+          { ...init, signal: requestAbort.signal },
+        ),
         userAgent: args.userAgent,
-        fetchUserLogin: fetchAppUserLogin,
+        fetchUserLogin: (accessToken) => fetchAppUserLogin(accessToken, requestAbort.signal),
       });
       if (authEpoch !== epochAtStart) {
         // Auth was cleared or replaced while this POST was in flight; the store
         // is the truth, not this result.
         return serveCurrentStoredAuth();
       }
-      let persisted: { written: boolean; generation: number };
+      let persisted: PersistedRefreshSuccess;
       try {
-        persisted = persistRefreshSuccess(refreshed, storedRefreshToken);
+        persisted = persistRefreshSuccessDurably(refreshed, storedRefreshToken);
       } catch (error) {
         // The POST succeeded, so the refresh token on disk is already spent and
         // this record is the only live credential there is. Falling into the
@@ -704,6 +821,12 @@ export function createGitHubAppUserAuthService(args: {
           spentRefreshToken: postedRefreshToken,
           record: refreshed,
         };
+        // Keep the lease. Handing it back here lets a PEER acquire it, read the
+        // spent refresh token this process failed to replace, and POST it —
+        // the exact double-spend the lease exists to prevent. Holding it costs
+        // peers the remainder of one lease at worst, and the recovery path
+        // re-persists and clears it as soon as the store accepts a write.
+        holdLeaseForUnpersisted = true;
         args.logger.info("github.app_user_token_refresh_unpersisted", {
           error: error instanceof Error ? error.message : String(error),
           userLogin: refreshed.userLogin,
@@ -718,6 +841,7 @@ export function createGitHubAppUserAuthService(args: {
       if (!persisted.written) {
         args.logger.info("github.app_user_token_refresh_superseded", {
           userLogin: refreshed.userLogin,
+          supersededBy: persisted.supersededBy,
         });
         return serveCurrentStoredAuth();
       }
@@ -730,7 +854,17 @@ export function createGitHubAppUserAuthService(args: {
       return refreshed;
     } catch (error) {
       if (error instanceof GitHubAppUserAuthError) throw error;
-      const failure = classifyRefreshFailure(error);
+      // A request this process gave up on says nothing about the credential, so
+      // it is a transient network failure — the classification that keeps the
+      // refresh token alive and retries it later. The abort reason itself reads
+      // as "This operation was aborted", which tells a reader nothing.
+      const failure = classifyRefreshFailure(
+        requestTimedOut
+          ? new Error(
+            `GitHub did not answer the token refresh within ${refreshTimeoutMs} ms.`,
+          )
+          : error,
+      );
       const stamped = stampFailure(failure);
       const persisted = persistRefreshFailure(stamped, failure.dead, storedRefreshToken);
       ledgerWritten = true;
@@ -753,17 +887,26 @@ export function createGitHubAppUserAuthService(args: {
         ? needsReauthError(stamped)
         : blockedError(persisted.notBeforeAt, stamped);
     } finally {
-      if (!ledgerWritten) releaseRefreshLeaseQuietly();
+      clearTimeout(requestTimer);
+      if (!ledgerWritten && !holdLeaseForUnpersisted) releaseRefreshLeaseQuietly();
     }
   };
 
   /**
    * Remembers, for this process only, that a peer still held the lease when the
    * wait ran out.
+   *
+   * A lease carrying THIS coordinator's holder id is not a peer's, whoever took
+   * it. Remembering it as one would make every sibling instance over the same
+   * storage refuse a refresh its own process is already holding — the gate in
+   * `getValidAppUserTokenForRelay` throws `blocked` on that memory alone,
+   * without looking at the store.
    */
-  const rememberPeerLease = (leaseUntil: string | null): void => {
+  const rememberPeerLease = (leaseUntil: string | null, leaseHolder: string | null): void => {
+    const coordinator = coordinatorFor(storeIdentity);
+    if (leaseHolder && leaseHolder === coordinator.leaseHolderId) return;
     if (!leaseUntil || !leaseActive(leaseUntil, now())) return;
-    coordinatorFor(storeIdentity).peerLeaseUntilMs = Date.parse(leaseUntil);
+    coordinator.peerLeaseUntilMs = Date.parse(leaseUntil);
   };
 
   /**
@@ -798,7 +941,7 @@ export function createGitHubAppUserAuthService(args: {
     if (!pending || pending.spentRefreshToken !== record.refreshToken) return null;
     let storedRefreshToken = pending.spentRefreshToken;
     try {
-      const persisted = persistRefreshSuccess(pending.record, pending.spentRefreshToken);
+      const persisted = persistRefreshSuccessDurably(pending.record, pending.spentRefreshToken);
       coordinator.unpersisted = null;
       if (!persisted.written) {
         // The store holds a different credential now — a sign-out or a finished
@@ -848,7 +991,7 @@ export function createGitHubAppUserAuthService(args: {
       // peer may already have rotated it, and GitHub answers a reused refresh
       // token by revoking the credential outright.
       if (attempt === LEASE_POLL_MAX_ATTEMPTS) {
-        rememberPeerLease(lease.leaseUntil);
+        rememberPeerLease(lease.leaseUntil, lease.leaseHolder);
         // No failure: ADE is renewing, and every surface that reads this must
         // say so rather than blame GitHub for a wait ADE itself is causing.
         throw blockedError(lease.leaseUntil, null);
