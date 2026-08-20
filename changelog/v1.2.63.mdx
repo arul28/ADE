@@ -1,0 +1,23 @@
+---
+title: "v1.2.63"
+description: "Release notes for ADE v1.2.63 - August 19, 2026"
+---
+
+Asking ADE for help now works the first time: the `ade` command sets itself up, a report can be sent whenever you want one, and the report finally contains the things support actually needs.
+
+---
+
+## Getting help
+
+- **Send a report whenever you want.** Settings now has a Send button next to Diagnostics sharing. Until now a report could only be sent from a screen that had already failed — so if something merely felt wrong, there was nothing to click.
+- **Reports work with no project open.** A report used to leave out ADE's own log unless a project happened to be open, which is exactly the case where a report matters most.
+- **Reports carry what was missing.** The background service's full output and its startup configuration are now included. Several problems left their only trace in files no report ever read.
+- **A report that could not be saved no longer says it was.** The message told you to open a file that was never written.
+
+## The `ade` terminal command
+
+- **ADE sets up the `ade` command once, properly.** It used to be re-run on every launch and could overwrite a copy you installed yourself; now it runs once, and never touches an `ade` you already have.
+
+## Fixes
+
+- **ADE no longer freezes while a report is being prepared.** On Windows and Linux, gathering a report could lock the window for a few seconds — usually for an automatic report nobody asked for.
