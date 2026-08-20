@@ -24,7 +24,17 @@ type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;
 let sdkModule: DroidSdkModule | null = null;
 let initState: DroidSdkWorkerInit | null = null;
 let session: DroidSession | null = null;
-// Set when ADE itself put this session into Spec mode; see applySettings.
+/**
+ * Set when ADE put THIS session into Spec mode — on create, on the
+ * resume-failure fallback, or in applySettings. It is the only way back out,
+ * because the SDK has no exitSpecMode.
+ *
+ * Known limit: a session resumed into a fresh worker that a PREVIOUS worker had
+ * put into Spec starts with the flag false, and the SDK exposes no way to read
+ * the live mode back. Reaching that case needs a plan session, a worker
+ * restart, plan turned off, and no chosen permission mode — and the alternative
+ * (assuming Spec on every resume) would state a mode ADE does not own.
+ */
 let enteredSpecMode = false;
 const activeAborts = new Set<AbortController>();
 let waiterSeq = 0;
@@ -366,9 +376,11 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         detail: { resumeSessionId: resumeId, error: errorMessage(error) },
       });
       session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+      enteredSpecMode = init.settings.interactionMode === "spec";
     }
   } else {
     session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+    enteredSpecMode = init.settings.interactionMode === "spec";
   }
   // `createSession`/`resumeSession` take `disabledToolIds`, but the ids are
   // only discoverable from the live session, so the lead's denial is pushed

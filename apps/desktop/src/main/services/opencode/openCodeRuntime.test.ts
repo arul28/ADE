@@ -403,6 +403,26 @@ describe("buildOpenCodeConfig user-owned keys", () => {
     }
   });
 
+  it("gives discovered ollama models an endpoint to run against", () => {
+    // Naming the models without an address leaves them unrunnable, and ollama is
+    // not in OpenCode's catalog so nothing else can supply one — an isolated
+    // lead inherits no user config at all.
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as any,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.models).toHaveProperty("llama3");
+    expect(cfg.provider.ollama.options.baseURL).toBeTruthy();
+  });
+
+  it("keeps a user-configured ollama endpoint over ADE's default", () => {
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: { localProviders: { ollama: { endpoint: "http://remote-box:11434" } } } } as any,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.options.baseURL).toContain("remote-box");
+  });
+
   it("omits local providers the user never configured", () => {
     // An ADE-invented baseURL merges over the endpoint in the user's own
     // opencode.json, repointing a configured remote host back at localhost.

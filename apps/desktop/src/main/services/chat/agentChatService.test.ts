@@ -42375,3 +42375,23 @@ describe("host sleep narration", () => {
     }
   });
 });
+
+describe("claude output style listing", () => {
+  it("does not persist an output style just because the list was shown", async () => {
+    // Listing styles used to write the resolved name onto the session and
+    // persist it. Every later option build then treated that cache as a real
+    // selection, so ADE sent outputStyle at flag tier and suppressed Claude's
+    // own resolution — the override this branch exists to stop.
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+    });
+
+    await service.sendMessage({ sessionId: session.id, text: "/output-style" });
+
+    expect(readPersistedChatState(session.id).claudeOutputStyle ?? null).toBeNull();
+    expect((await service.getSessionSummary(session.id))?.claudeOutputStyle ?? null).toBeNull();
+  });
+});

@@ -31160,10 +31160,13 @@ export function createAgentChatService(args: {
           interactionMode: effectiveInteractionMode === "plan" || effectivePermissionMode === "plan"
             ? "plan" as const
             : "default" as const,
+          // No fallback: a substituted mode here is persisted and then read back
+          // as a real selection, which is what kept the inheritance path dead.
+          // The desktop composer always sends one; a launch that sends nothing
+          // is saying nothing, and Droid resolves it from settings.json.
           droidPermissionMode: requestedDroidPermissionMode
             ?? legacyPermissionModeToDroidPermissionMode(effectivePermissionMode)
-            ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode)
-            ?? "auto-low",
+            ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode),
         };
       }
       if (effectiveProvider === "pi") {
@@ -46041,15 +46044,19 @@ export function createAgentChatService(args: {
       const requestedStyle = match[1]?.trim() ?? "";
       managed.session.lastActivityAt = nowIso();
       if (!requestedStyle.length) {
-        managed.session.claudeOutputStyle = managed.session.claudeOutputStyle
-          ?? readClaudeOutputStyleSelection(managed.laneWorktreePath)
+        // Display only. Writing the resolved name back would persist "Default"
+        // as though the user had picked it, and ADE would then send it at flag
+        // tier and suppress Claude's own resolution — the override this branch
+        // exists to stop. Read the files first so a newer selection wins.
+        const listedStyle = readClaudeOutputStyleSelection(managed.laneWorktreePath)
+          ?? normalizePersistedOutputStyle(managed.session.claudeOutputStyle)
           ?? "Default";
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
           message: renderClaudeOutputStyleList(
             discoverClaudeOutputStyles(managed.laneWorktreePath),
-            managed.session.claudeOutputStyle,
+            listedStyle,
           ),
         });
         persistChatState(managed);

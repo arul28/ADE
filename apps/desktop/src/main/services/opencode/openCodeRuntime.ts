@@ -14,6 +14,7 @@ import {
   type OpencodeClient as OpenCodeV2Client,
 } from "@opencode-ai/sdk/v2/client";
 import {
+  getLocalProviderDefaultEndpoint,
   decodeOpenCodeRegistryId,
   ensureOpenCodeBaseURL,
   type LocalProviderFamily,
@@ -387,18 +388,26 @@ function buildProviderConfig(
       }
     }
     const endpoint = trimToUndefined(settings?.endpoint);
+    const discoveredModelCount = Object.keys(models).length;
     // Say nothing about a provider the user never set up. This config is merged
     // last and per key, so an ADE-invented baseURL would overwrite the endpoint
     // in the user's own opencode.json — repointing a configured remote host back
     // at localhost. Only an endpoint the user actually typed, or models ADE
     // discovered, justify naming the provider at all.
-    if (!endpoint && !Object.keys(models).length) return;
+    if (!endpoint && !discoveredModelCount) return;
+    // ollama is not in OpenCode's provider catalog, so nothing else can supply
+    // its package or address. If ADE discovered models it reached them at some
+    // endpoint, and naming the models without one leaves them unrunnable —
+    // especially for an isolated lead, which inherits no user config at all.
+    // A user-typed endpoint always wins; this only fills the gap.
+    const resolvedEndpoint = endpoint
+      ?? (family === "ollama" && discoveredModelCount ? getLocalProviderDefaultEndpoint(family) : undefined);
     provider[family] = {
       // lmstudio ships in OpenCode's provider catalog with its own npm package
       // and baseURL; ollama does not, so only ollama needs one stated here.
       ...(family === "ollama" ? { npm: "@ai-sdk/openai-compatible" } : {}),
-      ...(endpoint ? { options: { baseURL: ensureOpenCodeBaseURL(endpoint) } } : {}),
-      ...(Object.keys(models).length > 0 ? { models } : {}),
+      ...(resolvedEndpoint ? { options: { baseURL: ensureOpenCodeBaseURL(resolvedEndpoint) } } : {}),
+      ...(discoveredModelCount > 0 ? { models } : {}),
     };
   };
 
