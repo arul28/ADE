@@ -447,9 +447,17 @@ describe("createAutoUpdateService", () => {
     await Promise.resolve();
     expect(updater.checkForUpdates).not.toHaveBeenCalled();
 
-    updater.checkForUpdates.mockImplementation(async () => ({
-      updateInfo: { version: "1.2.63" },
-    }));
+    // electron-updater emits these BEFORE checkForUpdates() resolves. A mock
+    // that only resolves cannot see the bug this test exists for: the
+    // update-available handler is what supersedes the staged update, deletes
+    // the finished download, and frees the resolve path to start a new one.
+    const downloadUpdate = vi.fn(async () => null);
+    (updater as unknown as { downloadUpdate: unknown }).downloadUpdate = downloadUpdate;
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", { version: "1.2.63" });
+      return { updateInfo: { version: "1.2.63" } };
+    });
     service.checkForUpdates({ userInitiated: true });
 
     await vi.waitFor(() => {
@@ -461,6 +469,9 @@ describe("createAutoUpdateService", () => {
         latestKnownVersion: "1.2.63",
       });
     });
+    // Asking what the newest version is must not throw away the update the
+    // user already downloaded and is one restart away from installing.
+    expect(downloadUpdate).not.toHaveBeenCalled();
 
     service.dispose();
   });

@@ -513,6 +513,12 @@ export function createAutoUpdateService({
   let installReadySnapshot: AutoUpdateSnapshot | null = null;
   let ignoredDownloadVersion: string | null = null;
   let readyRefreshInProgress = false;
+  /**
+   * A user-initiated check while an update is already staged. The answer they
+   * want is "what is the newest version" — throwing away the update they have
+   * already downloaded in order to answer it is not a service.
+   */
+  let readyMetadataRefreshInProgress = false;
   const readyRefreshFailure: {
     current: { error: unknown; phase: AutoUpdatePhase } | null;
   } = { current: null };
@@ -815,6 +821,20 @@ export function createAutoUpdateService({
         });
         return;
       }
+      if (readyMetadataRefreshInProgress) {
+        // electron-updater emits `update-available` BEFORE checkForUpdates()
+        // resolves, so without this the newer version would supersede the
+        // staged one here — deleting the finished download from the cache and
+        // leaving the resolve path free to start a fresh one — purely because
+        // someone pressed a button to ask a question.
+        ignoredDownloadVersion = info.version;
+        patchSnapshot({ latestKnownVersion: info.version });
+        logger.info("autoUpdate.update_available_metadata_only", {
+          version: info.version,
+          readyVersion: snapshot.version,
+        });
+        return;
+      }
       if (!readyRefreshInProgress) {
         cleanupUpdaterCacheDir({
           updaterCacheDir,
@@ -964,7 +984,9 @@ export function createAutoUpdateService({
   updater.on("update-cancelled", onUpdateCancelled);
   updater.on("error", onError);
 
-  async function runUpdateCheck(args: { allowReady?: boolean } = {}): Promise<void> {
+  async function runUpdateCheck(
+    args: { allowReady?: boolean; metadataOnlyWhenReady?: boolean } = {},
+  ): Promise<void> {
     if (checkPromise) {
       await checkPromise;
       return;
@@ -984,6 +1006,8 @@ export function createAutoUpdateService({
     preservedDownloadRetry = reusableDownloadedVersion
       ? { version: reusableDownloadedVersion, releaseNotesUrl: snapshot.releaseNotesUrl }
       : null;
+    readyMetadataRefreshInProgress = args.metadataOnlyWhenReady === true
+      && snapshot.status === "ready";
     checkPromise = updater.checkForUpdates()
       .then(async (result) => {
         const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
@@ -1046,6 +1070,7 @@ export function createAutoUpdateService({
       .finally(() => {
         checkPromise = null;
         preservedDownloadRetry = null;
+        readyMetadataRefreshInProgress = false;
       });
     await checkPromise;
   }
@@ -1062,7 +1087,8 @@ export function createAutoUpdateService({
    * refreshes the newest known version without disturbing the staged download.
    */
   function checkForUpdates(options: { userInitiated?: boolean } = {}): void {
-    void runUpdateCheck({ allowReady: options.userInitiated === true });
+    const userInitiated = options.userInitiated === true;
+    void runUpdateCheck({ allowReady: userInitiated, metadataOnlyWhenReady: userInitiated });
   }
 
   async function refreshReadyUpdateBeforeInstall(): Promise<boolean> {
