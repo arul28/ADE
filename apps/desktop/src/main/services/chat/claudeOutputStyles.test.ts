@@ -282,3 +282,42 @@ describe("settings precedence", () => {
     expect(readClaudeWorkflowSizeGuideline(tmpRoot)).toBe("large");
   });
 });
+
+describe("CLAUDE_CONFIG_DIR vs the ancestor walk", () => {
+  it("does not let a stale real ~/.claude outrank the relocated config dir", () => {
+    // The regression: a lane normally sits UNDER $HOME, so the ancestor walk
+    // reaches ~/.claude and ranked it as a project tier above the user tier.
+    // With CLAUDE_CONFIG_DIR pointing elsewhere the stale home settings won,
+    // and ADE then passed that at flag tier — overriding the very directory the
+    // CLI reads. The other tests cannot catch this: their cwd is a SIBLING of
+    // the fake home, so the walk never reaches it.
+    const laneRoot = path.join(homeRoot, "proj", "lane");
+    fs.mkdirSync(path.join(laneRoot, ".claude"), { recursive: true });
+
+    const relocated = path.join(homeRoot, "relocated-claude");
+    fs.mkdirSync(relocated, { recursive: true });
+    fs.writeFileSync(path.join(relocated, "settings.json"), JSON.stringify({ outputStyle: "RelocatedStyle" }));
+
+    fs.mkdirSync(path.join(homeRoot, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeRoot, ".claude", "settings.json"),
+      JSON.stringify({ outputStyle: "StaleHomeStyle" }),
+    );
+
+    process.env.CLAUDE_CONFIG_DIR = relocated;
+    expect(readClaudeOutputStyleSelection(laneRoot)).toBe("RelocatedStyle");
+  });
+
+  it("still reads the real home when no override is set", () => {
+    const laneRoot = path.join(homeRoot, "proj", "lane");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fs.mkdirSync(path.join(homeRoot, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeRoot, ".claude", "settings.json"),
+      JSON.stringify({ outputStyle: "HomeStyle" }),
+    );
+
+    delete process.env.CLAUDE_CONFIG_DIR;
+    expect(readClaudeOutputStyleSelection(laneRoot)).toBe("HomeStyle");
+  });
+});

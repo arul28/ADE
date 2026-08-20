@@ -3655,7 +3655,7 @@ function sessionEffectiveFastMode(
   return session.fastMode === true && sessionSupportsFastMode(session, catalog);
 }
 
-function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier | null } {
+function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier } {
   if (session.fastMode === true && sessionSupportsCodexServiceTier(session)) {
     return { serviceTier: "fast" };
   }
@@ -7148,13 +7148,6 @@ function resolveSessionDroidPermissionModeOrNull(
     ?? null;
 }
 
-function resolveSessionDroidPermissionMode(
-  session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
-  fallback: AgentChatDroidPermissionMode,
-): AgentChatDroidPermissionMode {
-  return resolveSessionDroidPermissionModeOrNull(session) ?? fallback;
-}
-
 function applyLocalHarnessPermissionMode(args: {
   descriptor?: ModelDescriptor;
   requestedPermissionMode?: AgentChatSession["permissionMode"];
@@ -7323,9 +7316,8 @@ function resolveDroidRuntimeModelId(
 }
 
 function resolveDroidSdkAutonomyLevel(
-  session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
+  mode: AgentChatDroidPermissionMode,
 ): DroidSdkSessionSettings["autonomyLevel"] {
-  const mode = resolveSessionDroidPermissionMode(session, "auto-low");
   switch (mode) {
     case "read-only":
       return "off";
@@ -7339,8 +7331,6 @@ function resolveDroidSdkAutonomyLevel(
       return "medium";
     case "auto-high":
       return "high";
-    default:
-      return "low";
   }
 }
 
@@ -28286,22 +28276,10 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
+    // Reasoning effort travels with the thread (codexThreadConfigArgs), never on
+    // the process: `-c` outranks the user's config.toml and would apply to every
+    // thread on this app-server, not just this chat.
     const appServerArgs = ["app-server"];
-    if (sessionSupportsReasoning(managed.session)) {
-      const descriptor = resolveSessionModelDescriptor(managed.session);
-      // Resolve for display only. Reasoning effort is a per-chat choice, so it
-      // travels with the thread (codexThreadConfigArgs), never on the process.
-      // A `-c model_reasoning_effort=...` spawn flag applied to every thread on
-      // this app-server, not just this chat, and `-c` is the highest config
-      // layer — above the user's ~/.codex/config.toml AND their per-project
-      // .codex/config.toml. It also defeated the per-thread overlay, which
-      // already omits the key correctly when nothing is chosen.
-      managed.session.reasoningEffort = resolveCodexReasoningEffortForRuntime(
-        managed.session.reasoningEffort,
-        null,
-        descriptor,
-      );
-    }
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
@@ -35127,31 +35105,26 @@ export function createAgentChatService(args: {
     const chosenMode = resolveSessionDroidPermissionModeOrNull(managed.session);
     const planRequested = managed.session.interactionMode === "plan"
       || managed.session.permissionMode === "plan";
-    // Say nothing when the user picked nothing, so Droid resolves autonomy from
-    // their own settings.json exactly as the terminal path already does —
-    // droidSettingsJson omits sessionDefaultSettings when permissionMode is null.
-    const statesAutonomy = chosenMode !== null
-      || planRequested
-      || isOrchestrationLeadSession(managed.session);
-    const interactionMode: DroidSdkSessionSettings["interactionMode"] =
-      chosenMode === "agi"
-        ? "agi"
-        : resolveDroidSdkInteractionMode(managed.session);
+    // Mirrors the terminal path: droidSettingsJson omits sessionDefaultSettings
+    // when permissionMode is null, letting the user's settings.json decide.
+    const stated = chosenMode !== null || planRequested || isOrchestrationLeadSession(managed.session)
+      ? {
+          autonomyLevel: resolveDroidSdkAutonomyLevel(chosenMode ?? "auto-low"),
+          interactionMode: chosenMode === "agi"
+            ? "agi" as const
+            : resolveDroidSdkInteractionMode(managed.session),
+        }
+      : null;
     return {
       modelId,
-      ...(statesAutonomy
-        ? {
-            autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
-            interactionMode,
-          }
-        : {}),
+      ...(stated ?? {}),
       // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
       // has to have them withheld natively as well.
       ...(isOrchestrationLeadSession(managed.session)
         ? { disabledToolCategories: ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES }
         : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
-      ...(interactionMode === "spec"
+      ...(stated?.interactionMode === "spec"
         ? {
             specModeModelId: modelId,
             ...(reasoningEffort ? { specModeReasoningEffort: reasoningEffort } : {}),

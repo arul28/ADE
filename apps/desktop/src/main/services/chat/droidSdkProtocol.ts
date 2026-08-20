@@ -29,9 +29,9 @@ export type DroidSdkSessionSettings = {
    */
   autonomyLevel?: DroidSdkAutonomyLevel;
   interactionMode?: DroidSdkInteractionMode;
-  reasoningEffort?: DroidSdkReasoningEffort | null;
-  specModeModelId?: string | null;
-  specModeReasoningEffort?: DroidSdkReasoningEffort | null;
+  reasoningEffort?: DroidSdkReasoningEffort;
+  specModeModelId?: string;
+  specModeReasoningEffort?: DroidSdkReasoningEffort;
   /**
    * Droid tool categories to withhold from the model, resolved to concrete
    * `disabledToolIds` in the worker (tool ids are build-specific, categories

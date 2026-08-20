@@ -2,7 +2,29 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 /**
- * Where each provider CLI keeps its user-level config.
+ * Provider config: where it lives, and who owns each key.
+ *
+ * THE RULE. ADE hands its settings to every provider SDK at the highest
+ * precedence tier available — above the user's own config files, and in some
+ * cases above their per-project config too. So ADE must name a key only when it
+ * genuinely owns it: there is ADE UI for it and ADE's value is the truth.
+ * Otherwise the key stays absent and the provider's own precedence resolves it.
+ *
+ * Absence is the only way to say nothing. A substituted default is a real value
+ * that wins, which is how ADE spent five providers silently overriding
+ * configuration the user had set. Verified per provider by live probe:
+ *
+ *   Claude   omit -> the user's settings.json applies; "Default" is a real style
+ *   Codex    omit -> config.toml service_tier applies; null forces "default"
+ *   Droid    omit -> ~/.factory/settings.json applies, per key; null wedges the
+ *                    RPC for 30s, so omit, never null
+ *   Cursor   three states — absent lets ~/.cursor/sandbox.json decide, an
+ *                    explicit false skips the file entirely
+ *   OpenCode OPENCODE_CONFIG_CONTENT deep-merges last, so any key ADE names wins
+ *
+ * Each adapter states only its own non-derivable fact and points here.
+ *
+ * Where each provider CLI keeps its user-level config:
  *
  * Every one of these has an env override that the provider's own binary honours,
  * and the overrides do NOT share a shape — `CODEX_HOME` and `CLAUDE_CONFIG_DIR`

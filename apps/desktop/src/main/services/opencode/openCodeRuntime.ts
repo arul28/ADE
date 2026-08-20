@@ -16,7 +16,6 @@ import {
 import {
   decodeOpenCodeRegistryId,
   ensureOpenCodeBaseURL,
-  getLocalProviderDefaultEndpoint,
   type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
@@ -184,9 +183,29 @@ export function resolveOpenCodeModelSelection(descriptor: ModelDescriptor): {
 
 type OpenCodePermissionAction = "allow" | "ask" | "deny";
 
+/**
+ * The permission keys ADE sets. The OpenCode SDK's own type declares only five
+ * of these and absorbs the rest through an index signature, so a typo would
+ * compile and silently fail to apply — `websearch` vs `web_search` is a pair
+ * this codebase has already been bitten by.
+ */
+type OpenCodePermissionKey =
+  | "edit"
+  | "bash"
+  | "webfetch"
+  | "doom_loop"
+  | "external_directory"
+  | "question"
+  | "read"
+  | "task"
+  | "websearch"
+  | "skill";
+
+type OpenCodePermissionConfig = Partial<Record<OpenCodePermissionKey, OpenCodePermissionAction>>;
+
 function buildPermissionConfig(
   permissionMode: PermissionMode,
-): Record<string, OpenCodePermissionAction | Record<string, OpenCodePermissionAction>> {
+): OpenCodePermissionConfig {
   if (permissionMode === "full-auto") {
     return {
       edit: "allow",
@@ -487,7 +506,7 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     doom_loop: "deny",
     external_directory: "deny",
     question: "deny",
-  } as const;
+  } as const satisfies OpenCodePermissionConfig;
 
   // OPENCODE_CONFIG_CONTENT is merged last, so anything named here outranks the
   // user's opencode.json and only managed/MDM config beats it. `share` and

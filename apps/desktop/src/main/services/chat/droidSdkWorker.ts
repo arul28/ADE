@@ -53,17 +53,24 @@ function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): Dro
   return value?.trim() ? value as DroidSdkTypes.ReasoningEffort : undefined;
 }
 
+/**
+ * Undefined in, undefined out. An omitted interactionMode means "ADE has no
+ * opinion, let ~/.factory/settings.json decide" — materialising a default here
+ * would restate it at the highest precedence and undo the omission upstream.
+ */
 function toDroidInteractionMode(
   sdk: DroidSdkModule,
   mode: DroidSdkSessionSettings["interactionMode"],
-): DroidSdkTypes.DroidInteractionMode {
+): DroidSdkTypes.DroidInteractionMode | undefined {
   switch (mode) {
     case "spec":
       return sdk.DroidInteractionMode.Spec;
     case "agi":
       return sdk.DroidInteractionMode.AGI;
-    default:
+    case "auto":
       return sdk.DroidInteractionMode.Auto;
+    default:
+      return undefined;
   }
 }
 
@@ -72,12 +79,15 @@ function sessionOptions(
   init: DroidSdkWorkerInit,
   settings: DroidSdkSessionSettings,
 ): DroidSdkTypes.CreateSessionOptions {
+  const interactionMode = toDroidInteractionMode(sdk, settings.interactionMode);
   return {
     cwd: init.laneRoot,
     execPath: init.droidPath,
     modelId: settings.modelId,
-    autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel,
-    interactionMode: toDroidInteractionMode(sdk, settings.interactionMode),
+    // Omitted, not defaulted: both keys are optional in the SDK and each
+    // resolves independently from the user's settings.json when absent.
+    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
+    ...(interactionMode ? { interactionMode } : {}),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
     specModeModelId: settings.specModeModelId?.trim() || undefined,
     specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort),
@@ -239,9 +249,7 @@ function normalizeAvailableModels(initResult: unknown): DroidSdkReady["available
  * The model Droid actually resolved for this session.
  *
  * `initResult.currentModelId` does not exist — @factory/droid-sdk reports the
- * resolved settings under `initResult.settings`, so the old read was dead code
- * that always produced null, and every caller downstream silently fell back to
- * ADE's own value instead of adopting Droid's.
+ * resolved settings under `initResult.settings`.
  */
 function readResolvedModelId(initResult: unknown): string | null {
   const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
@@ -334,10 +342,11 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
     if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
     return;
   }
+  const updateInteractionMode = toDroidInteractionMode(sdk, settings.interactionMode);
   await session.updateSettings({
     modelId: settings.modelId,
-    autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel,
-    interactionMode: toDroidInteractionMode(sdk, settings.interactionMode),
+    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
+    ...(updateInteractionMode ? { interactionMode: updateInteractionMode } : {}),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
     ...(disabledToolIds ? { disabledToolIds } : {}),
   });

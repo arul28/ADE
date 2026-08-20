@@ -67,11 +67,8 @@ export type CursorSdkReadonlyTool = (typeof CURSOR_SDK_READONLY_TOOLS)[number];
  * returns `insecure_none` without ever reading the user's ~/.cursor/sandbox.json,
  * while absent lets that file decide. So ADE needs three states, not two.
  *
- * - "enable"  — ADE asks for a sandbox (ask/plan). A user policy still wins.
- * - "disable" — full access means no sandbox, even for a user who wrote a policy.
- *               Also used after a ConfigurationError, where the environment
- *               cannot sandbox and the alternative is a hard failure.
- * - "inherit" — ADE has no opinion. The user's sandbox.json decides.
+ * "disable" also covers the retry after a ConfigurationError, where the
+ * environment cannot sandbox at all and the alternative is a hard failure.
  */
 export type CursorSdkSandboxDirective = "enable" | "disable" | "inherit";
 
@@ -80,7 +77,6 @@ export type CursorSdkLocalRunOptions = {
   tools?: string[];
   disallowedTools?: string[];
   autoReview: boolean;
-  sandboxEnabled: boolean;
   sandboxDirective: CursorSdkSandboxDirective;
 };
 
@@ -103,7 +99,6 @@ export function buildCursorSdkLocalRunOptions(
   args?: { sandboxSupported?: boolean },
 ): CursorSdkLocalRunOptions {
   const sandboxSupported = args?.sandboxSupported !== false;
-  const sandboxEnabled = policy.sandbox === "cursor-native" && sandboxSupported;
   const sandboxDirective: CursorSdkSandboxDirective = !sandboxSupported
     ? "disable"
     : policy.sandbox === "cursor-native"
@@ -116,7 +111,6 @@ export function buildCursorSdkLocalRunOptions(
     ...(policy.tools?.length ? { tools: [...policy.tools] } : {}),
     ...(policy.disallowedTools?.length ? { disallowedTools: [...policy.disallowedTools] } : {}),
     autoReview: policy.autoReview,
-    sandboxEnabled,
     sandboxDirective,
   };
 }

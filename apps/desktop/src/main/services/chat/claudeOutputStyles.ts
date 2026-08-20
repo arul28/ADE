@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { AgentChatClaudeOutputStyle, AgentChatClaudePlugin } from "../../../shared/types/chat";
+import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { writeTextAtomic } from "../shared/utils";
 
 const MAX_ANCESTOR_DEPTH = 25;
@@ -45,6 +46,7 @@ type ClaudePluginManifest = {
 
 type ClaudeSettingsLocal = Record<string, unknown> & {
   outputStyle?: unknown;
+  workflowSizeGuideline?: unknown;
   enabledPlugins?: unknown;
 };
 
@@ -158,7 +160,7 @@ function pathsOverlap(left: string, right: string): boolean {
 }
 
 function installedClaudePluginPaths(cwd: string, enabledKeys: Set<string>, enabledNames: Set<string>): string[] {
-  const registry = readJsonObject(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"));
+  const registry = readJsonObject(path.join(claudeConfigHome({ homeDir: os.homedir() }), "plugins", "installed_plugins.json"));
   const plugins = isRecord(registry?.plugins) ? registry.plugins : null;
   if (!plugins) return [];
 
@@ -208,16 +210,6 @@ function ancestorClaudeRoots(cwd: string): string[] {
   return roots;
 }
 
-/**
- * The user-level Claude root. `CLAUDE_CONFIG_DIR` relocates it wholesale — the
- * CLI reads settings, styles and plugins from there instead of `~/.claude`, and
- * every other ADE module that touches Claude config already honours it.
- */
-function userClaudeRoot(): string {
-  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
-  return configured?.length ? path.resolve(configured) : path.join(path.resolve(os.homedir()), ".claude");
-}
-
 function claudeRootsByPrecedence(cwd: string): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
@@ -227,8 +219,19 @@ function claudeRootsByPrecedence(cwd: string): string[] {
     roots.push(root);
   };
 
-  for (const root of ancestorClaudeRoots(cwd)) addRoot(root);
-  addRoot(userClaudeRoot());
+  const userRoot = claudeConfigHome({ homeDir: os.homedir() });
+  const realHomeRoot = path.join(path.resolve(os.homedir()), ".claude");
+  // A lane normally sits under $HOME, so the ancestor walk reaches ~/.claude and
+  // would rank it as a project tier ABOVE the user tier. That is wrong whenever
+  // CLAUDE_CONFIG_DIR moved the user tier elsewhere: the stale real ~/.claude
+  // would outrank the directory the CLI actually reads.
+  const skipRealHomeRoot = userRoot !== realHomeRoot;
+
+  for (const root of ancestorClaudeRoots(cwd)) {
+    if (skipRealHomeRoot && root === realHomeRoot) continue;
+    addRoot(root);
+  }
+  addRoot(userRoot);
   return roots;
 }
 
@@ -352,7 +355,7 @@ export function discoverClaudeOutputStyles(cwd: string): AgentChatClaudeOutputSt
   for (const style of CLAUDE_BUILT_IN_OUTPUT_STYLES) add(style);
 
   const roots = claudeRootsByPrecedence(cwd);
-  const homeClaudeRoot = userClaudeRoot();
+  const homeClaudeRoot = claudeConfigHome({ homeDir: os.homedir() });
   const cwdClaudeRoot = path.resolve(cwd, ".claude");
   for (const root of roots) {
     const resolvedRoot = path.resolve(root);
@@ -401,10 +404,7 @@ export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
  * lane `settings.local.json`, lane `settings.json`, each ancestor root, then
  * `~/.claude`. Returns null when no file declares the key.
  *
- * ADE reads these only to decide whether it has anything to say. A key nobody
- * declares must stay absent from the SDK options — ADE passes its settings at
- * flag tier, which outranks every file, so substituting a default here silently
- * overrides the user's global configuration.
+ * See providerConfigHomes.ts for why absence must stay absent.
  */
 function readClaudeSettingsValue(cwd: string, key: string): string | null {
   for (const root of claudeRootsByPrecedence(cwd)) {

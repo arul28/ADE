@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,

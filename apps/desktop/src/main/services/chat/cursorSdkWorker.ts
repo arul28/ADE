@@ -245,10 +245,7 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     local: {
       cwd: init.laneRoot,
       settingSources: cursorSdkSettingSources(init.policy),
-      // `false` and absent are not the same thing here. An explicit `false`
-      // returns `insecure_none` without ever reading the user's
-      // ~/.cursor/sandbox.json, so it is a deliberate statement rather than a
-      // neutral default. See CursorSdkSandboxDirective for the three cases.
+      // See CursorSdkSandboxDirective: absent is a third state, not a falsy off.
       ...(local.sandboxDirective === "inherit"
         ? {}
         : { sandboxOptions: { enabled: local.sandboxDirective === "enable" } }),
@@ -515,7 +512,11 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       useHttp1ForAgent,
       mode: agentOptions.mode ?? null,
       autoReview: agentOptions.local?.autoReview === true,
-      sandboxEnabled: agentOptions.local?.sandboxOptions?.enabled === true,
+      // Absent is a third state, not a falsy "off" — logging a boolean here
+      // collapsed "disable" and "inherit" into the same line.
+      sandboxDirective: agentOptions.local?.sandboxOptions === undefined
+        ? "inherit"
+        : agentOptions.local.sandboxOptions.enabled ? "enable" : "disable",
       tools: agentOptions.tools ?? null,
       disallowedTools: agentOptions.disallowedTools ?? null,
     },

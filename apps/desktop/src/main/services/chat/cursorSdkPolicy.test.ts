@@ -58,13 +58,13 @@ describe("Cursor SDK policy", () => {
     const expected: Record<string, {
       mode: "agent" | "plan";
       tools?: string[];
-      sandboxEnabled: boolean;
+      sandboxDirective: "enable" | "disable" | "inherit";
       autoReview: boolean;
     }> = {
-      agent: { mode: "agent", sandboxEnabled: false, autoReview: true },
-      ask: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxEnabled: true, autoReview: false },
-      plan: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxEnabled: true, autoReview: false },
-      "full-auto": { mode: "agent", sandboxEnabled: false, autoReview: false },
+      agent: { mode: "agent", sandboxDirective: "inherit", autoReview: true },
+      ask: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxDirective: "enable", autoReview: false },
+      plan: { mode: "plan", tools: ["read", "grep", "glob", "ls"], sandboxDirective: "enable", autoReview: false },
+      "full-auto": { mode: "agent", sandboxDirective: "disable", autoReview: false },
     };
     for (const modeId of ["agent", "ask", "plan", "full-auto"] as const) {
       const policy = resolveCursorSdkPolicy({ cursorModeId: modeId });
@@ -74,7 +74,7 @@ describe("Cursor SDK policy", () => {
       expect(local.mode).toBe(expected[modeId]!.mode);
       expect(local.mode).not.toBe("auto");
       expect(local.autoReview).toBe(expected[modeId]!.autoReview);
-      expect(local.sandboxEnabled).toBe(expected[modeId]!.sandboxEnabled);
+      expect(local.sandboxDirective).toBe(expected[modeId]!.sandboxDirective);
       if (expected[modeId]!.tools) {
         expect(local.tools).toEqual(expected[modeId]!.tools);
       } else {
@@ -100,7 +100,7 @@ describe("Cursor SDK policy", () => {
       mode: "plan",
       tools: ["read", "grep", "glob", "ls"],
       autoReview: false,
-      sandboxEnabled: false,
+      sandboxDirective: "disable",
     });
   });
 
