@@ -779,9 +779,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
    *
    * Separate from `enterHostedAuthPending` because a signed-in machine can still
    * poll the relay with its account token, so the failure must not disable the
-   * subscription — but it must still start the cooldown, or the poll loop asks
-   * for the same broken credential every thirty seconds for as long as the app
-   * runs.
+   * subscription — but it must still start the cooldown, which is what stops the
+   * poll loop asking for the same broken credential every thirty seconds.
    */
   const noteHostedAuthFailure = (message: string): void => {
     hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
@@ -886,7 +885,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       }
 
       let githubAppUserToken: string | null = null;
-      if (!useLegacyProjectRoute) {
+      // A signed-in machine reaches this line during the cooldown, because the
+      // account token can still carry the poll. Asking for the App token anyway
+      // is what turned one broken credential into a request every thirty
+      // seconds, so the cooldown gates the LOOKUP, not just the subscription.
+      const appTokenLookupPaused = !useLegacyProjectRoute
+        && Date.now() < hostedAuthPendingUntilMs;
+      if (!useLegacyProjectRoute && !appTokenLookupPaused) {
         try {
           githubAppUserToken = ((await run.wait(Promise.resolve(
             args.githubService?.getAppUserTokenForRelay(),
@@ -898,9 +903,6 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             enterHostedAuthPending(message);
             return;
           }
-          // Signed in, so the poll can still run on the account token — but the
-          // GitHub credential is broken, and asking it again in thirty seconds
-          // is what turned one dead token into a hundred thousand attempts.
           noteHostedAuthFailure(message);
         }
       }
@@ -912,7 +914,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         return;
       }
       if (hostedAuth && !hostedAuth.ok) {
-        noteHostedAuthFailure(hostedAuth.error);
+        // While the lookup is paused there is no new failure to record, and
+        // re-stamping the deadline on every poll would push it out forever —
+        // the App credential would never be tried again.
+        if (!appTokenLookupPaused) noteHostedAuthFailure(hostedAuth.error);
       } else {
         hostedAuthPendingUntilMs = 0;
         hostedAuthPendingLogged = false;

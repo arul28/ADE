@@ -184,6 +184,30 @@ export type GithubRepoConnectionState =
  * one thing guaranteed to keep the account locked out. Never judge by
  * `expiresAt`; the service reports the honest state in `credentialState`.
  */
+/**
+ * Whether the host behind this renderer really implements the GitHub App
+ * account API.
+ *
+ * The standalone web-client adapter answers those calls with stubs, because a
+ * hosted-web build has no machine to hold the credential. Reading a stub as a
+ * real answer flashed a false "not authorized" banner on every hosted-web
+ * project, and offered a Disconnect button that silently did nothing.
+ *
+ * The stub declares itself with `appUserAuthSupported: false`. Hosts older than
+ * that field are still recognised the way they always were: by `configured`,
+ * which the stub has never carried.
+ */
+export function isGithubAppUserAuthSupported(
+  appAuth: GitHubAppUserAuthStatus | null | undefined,
+): boolean {
+  const raw = appAuth as Record<string, unknown> | null | undefined;
+  // Nothing fetched yet says nothing about the host. Callers gate on their own
+  // "loaded" signal before they act on this.
+  if (!raw) return true;
+  if (raw.appUserAuthSupported === false) return false;
+  return typeof raw.configured === "boolean";
+}
+
 export function deriveGithubAccountAuthState(
   appAuth: GitHubAppUserAuthStatus | null,
 ): GithubAccountAuthState {
@@ -241,6 +265,25 @@ export function isGithubRepoAccessPending(
 }
 
 /**
+ * Every phrasing ADE or its relay emits for "there is no usable GitHub App
+ * token", enumerated rather than guessed.
+ *
+ * A loose substring here is worse than a missing one: "not authorized" also
+ * appears in messages about the REPOSITORY, and matching those reported a real
+ * install problem as an account problem the user could not act on.
+ */
+const GITHUB_ACCOUNT_AUTH_ERROR_MATCHES = [
+  // The webhook relay's own 401 body (apps/webhook-relay/src/relay.ts).
+  "auth token is required",
+  // githubRelayConfig refusing before any request goes out.
+  "github auth is required to check",
+  "authorize the ade github app",
+  // appUserAuthUnavailableCopy, one phrase per credential state.
+  "ade's github authorization expired",
+  "waiting on github authorization",
+];
+
+/**
  * The relay answers the installation check with a 401 when ADE sends no usable
  * GitHub App token. That answer says nothing about the installation, so the repo
  * axis must not repeat it: rendering ADE's own "GitHub auth token is required"
@@ -249,9 +292,7 @@ export function isGithubRepoAccessPending(
 function isGithubAuthTokenRequiredError(error: string | null | undefined): boolean {
   const normalized = error?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
-  return normalized.includes("auth token is required")
-    || normalized.includes("authorization is required")
-    || normalized.includes("not authorized");
+  return GITHUB_ACCOUNT_AUTH_ERROR_MATCHES.some((match) => normalized.includes(match));
 }
 
 export function deriveGithubRepoConnectionState(
@@ -462,6 +503,21 @@ export function isGithubAuthorizationPausedMessage(message: string | null | unde
   if (!normalized) return false;
   if (isGithubRateLimitMessage(normalized)) return true;
   return normalized.includes("too many requests") || /\b429\b/.test(normalized);
+}
+
+/** What replaces GitHub's transport error when the sign-in host is throttling. */
+export const GITHUB_AUTHORIZATION_PAUSED_COPY =
+  "GitHub is limiting authorization requests for this account right now. ADE keeps trying on its own — try again in a few minutes.";
+
+/** Replaces GitHub's transport error ("...failed (429)") with what it means. */
+export function deviceAuthMessageCopy(message: string | null): string | null {
+  if (!message) return message;
+  return isGithubAuthorizationPausedMessage(message) ? GITHUB_AUTHORIZATION_PAUSED_COPY : message;
+}
+
+export function deviceAuthErrorCopy(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return deviceAuthMessageCopy(message) ?? message;
 }
 
 export function githubRepoIssueCopy(

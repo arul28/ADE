@@ -474,6 +474,14 @@ describe("automationIngressService", () => {
     expect(logger.info).toHaveBeenCalledWith("automations.github_relay_auth_pending", expect.objectContaining({
       error: expect.stringContaining("paused ADE's authorization renewal"),
     }));
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
+
+    // The cooldown has to gate the LOOKUP as well. Every later poll runs on the
+    // account token alone until the window expires, so one broken credential
+    // costs one request rather than one every thirty seconds.
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
   });
 
   it("can read GitHub relay config from runtime environment variables", async () => {

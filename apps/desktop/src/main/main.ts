@@ -639,20 +639,19 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
-  // Credentials the ADE brain and the CLI co-own live in the shared machine
-  // file, so the desktop app must READ them there too — the Electron-only store
-  // cannot see them, and a build that wrote one into it signs the brain out.
-  const routeFileBackedKeys = (primary: SyncCredentialStore): SyncCredentialStore => {
-    adoptFileBackedCredentials({ primary, fileStore: legacyStore, identity: secretsDir });
-    return createRoutedCredentialStore({ primary, fileStore: legacyStore });
-  };
   try {
     if (safeStorage.isEncryptionAvailable()) {
-      return routeFileBackedKeys(new ElectronSafeStorageCredentialStore({
+      const primary = new ElectronSafeStorageCredentialStore({
         secretsDir,
         safeStorage,
         legacyStore,
-      }));
+      });
+      // Credentials the ADE brain and the CLI co-own live in the shared machine
+      // file, so the desktop app must READ them there too — the Electron-only
+      // store cannot see them, and a build that wrote one into it signs the
+      // brain out.
+      adoptFileBackedCredentials({ primary, fileStore: legacyStore, identity: secretsDir });
+      return createRoutedCredentialStore({ primary, fileStore: legacyStore });
     }
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.

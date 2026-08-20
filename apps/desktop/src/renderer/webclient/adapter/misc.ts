@@ -558,27 +558,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     getRemoteStatus: (opts?: unknown) => call("github.getRemoteStatus", opts, { repo: null, hasOrigin: false }),
     setToken: async () => githubDisconnectedStatus(),
     clearToken: async () => githubDisconnectedStatus(),
-    // Deliberately NOT the real GitHubAppUserAuthStatus shape. IntegrationBannerHost
-    // detects the runtime DTO by fields this stub omits (`configured`), and treats
-    // anything else as "App status unsupported here" rather than flashing a false
-    // "not authorized" banner on every hosted-web project. `credentialState` is
-    // carried anyway so any renderer that reads it gets the honest answer.
-    getAppUserAuthStatus: async () => ({
-      authenticated: false,
-      user: null,
-      credentialState: "missing",
-      refreshBlockedUntil: null,
-      lastRefreshError: null,
-    }),
+    getAppUserAuthStatus: async () => ({ ...GITHUB_APP_USER_AUTH_UNSUPPORTED }),
     startAppUserDeviceAuth: async () => ({ ok: false, error: "unsupported" }),
     pollAppUserDeviceAuth: async () => ({ status: "expired" }),
-    clearAppUserAuth: async () => ({
-      authenticated: false,
-      user: null,
-      credentialState: "missing",
-      refreshBlockedUntil: null,
-      lastRefreshError: null,
-    }),
+    clearAppUserAuth: async () => ({ ...GITHUB_APP_USER_AUTH_UNSUPPORTED }),
     // Routed to the host: the paired machine spends the quota, so its reserve
     // is the one these pollers must respect.
     getRequestBudget: (opts?: unknown) => call("github.getRequestBudget", opts, {
@@ -950,6 +933,25 @@ function aiStatus(): Record<string, unknown> {
     modelsDevLastFetchedAt: null,
   };
 }
+
+/**
+ * What the web client answers for the GitHub App account, and how a renderer
+ * knows it is a stub.
+ *
+ * Deliberately NOT the real `GitHubAppUserAuthStatus` shape: this build has no
+ * machine to hold the credential. `appUserAuthSupported: false` says so out
+ * loud, so a renderer can skip the App surfaces instead of flashing a false
+ * "not authorized" banner on every hosted-web project. `credentialState` is
+ * carried anyway, so anything that reads it gets the honest answer.
+ */
+const GITHUB_APP_USER_AUTH_UNSUPPORTED = {
+  appUserAuthSupported: false,
+  authenticated: false,
+  user: null,
+  credentialState: "missing",
+  refreshBlockedUntil: null,
+  lastRefreshError: null,
+} as const;
 
 function githubDisconnectedStatus(): GitHubStatus {
   return {

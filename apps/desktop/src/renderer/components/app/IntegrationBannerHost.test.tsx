@@ -4,12 +4,12 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   GitHubAppInstallationStatus,
-  GitHubAppUserAuthStatus,
   GitHubStatus,
   SyncRouteHealth,
 } from "../../../shared/types";
 import { IntegrationBannerHost, type IntegrationBannerHostProps } from "./IntegrationBannerHost";
 import { deriveGitHubServiceHealth } from "../../../shared/githubServiceHealth";
+import { makeAppAuth } from "../../lib/githubIntegrationStatus.testFixtures";
 
 // Built through the real parser rather than hand-written, so the fixture stays
 // honest against deriveGitHubServiceHealth's own rules.
@@ -58,22 +58,6 @@ function makeInstall(overrides: Partial<GitHubAppInstallationStatus> = {}): GitH
     missingWebhookEvents: [],
     webhookState: "unknown",
     webhookLastSeenAt: null,
-    checkedAt: "2026-07-01T00:00:00.000Z",
-    error: null,
-    ...overrides,
-  };
-}
-
-function makeAuth(overrides: Partial<GitHubAppUserAuthStatus> = {}): GitHubAppUserAuthStatus {
-  return {
-    configured: true,
-    tokenStored: true,
-    userLogin: "octocat",
-    expiresAt: null,
-    refreshTokenExpiresAt: null,
-    credentialState: "authorized",
-    refreshBlockedUntil: null,
-    lastRefreshError: null,
     checkedAt: "2026-07-01T00:00:00.000Z",
     error: null,
     ...overrides,
@@ -158,7 +142,7 @@ describe("IntegrationBannerHost", () => {
   it("caps at two banners and collapses the rest behind an expandable row", async () => {
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth()),
       onStatusChanged: vi.fn(() => () => {}),
     });
 
@@ -366,7 +350,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
   it("replaces every GitHub credential complaint with one neutral outage notice", async () => {
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth({ tokenStored: false })),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false })),
       onStatusChanged: vi.fn(() => () => {}),
     });
 
@@ -402,7 +386,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     // an outage must not hide the one thing the user can actually fix.
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth({ tokenStored: false })),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false })),
       onStatusChanged: vi.fn(() => () => {}),
     });
 
@@ -462,7 +446,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
   it("keeps the outage notice visible when higher-severity banners compete", async () => {
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth()),
       onStatusChanged: vi.fn(() => () => {}),
     });
 

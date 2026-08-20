@@ -24,6 +24,7 @@ import {
   isGithubRepoAccessPending,
 } from "./githubIntegrationStatus";
 import { deriveGitHubServiceHealth } from "../../shared/githubServiceHealth";
+import { makeAppAuth } from "./githubIntegrationStatus.testFixtures";
 
 function outageHealth(components = [{ id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" }]) {
   return deriveGitHubServiceHealth(
@@ -82,22 +83,6 @@ function makeCliStatus(overrides: Partial<GitHubStatus> = {}): GitHubStatus {
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-
-function makeAppAuth(overrides: Partial<GitHubAppUserAuthStatus> = {}): GitHubAppUserAuthStatus {
-  return {
-    configured: true,
-    tokenStored: true,
-    userLogin: "arul28",
-    expiresAt: new Date(Date.now() + 8 * HOUR_MS).toISOString(),
-    refreshTokenExpiresAt: new Date(Date.now() + 180 * DAY_MS).toISOString(),
-    credentialState: "authorized",
-    refreshBlockedUntil: null,
-    lastRefreshError: null,
-    checkedAt: new Date().toISOString(),
-    error: null,
-    ...overrides,
-  };
-}
 
 describe("deriveGithubAccountAuthState", () => {
   // The bug this whole branch exists for. The GitHub App access token lives 8

@@ -12,14 +12,17 @@ import {
   deriveGithubAccountAuthState,
   deriveGithubRepoConnectionState,
   describeGithubAccountAxis,
+  deviceAuthErrorCopy,
+  deviceAuthMessageCopy,
   githubRepoIssueCopy,
-  isGithubAuthorizationPausedMessage,
   isGithubRateLimitMessage,
+  isGithubAppUserAuthSupported,
   isGithubRealtimeHealthy,
   isGithubRepoAccessPending,
   type GithubAccountAuthState,
   type GithubAccountAxisTone,
 } from "../../lib/githubIntegrationStatus";
+import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 
 const ADE_GITHUB_APP_NAME = "ADE";
@@ -35,7 +38,9 @@ type GitHubAppInstallPanelProps = {
 export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstallPanelProps) {
   const compact = variant === "onboarding";
   const [status, setStatus] = useState<GitHubAppInstallationStatus | null>(null);
-  const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(null);
+  // Shared with the Settings connection ladder, so disconnecting here updates
+  // the badge there instead of leaving it reporting a removed authorization.
+  const { appAuth, refresh: refreshAppAuth, set: setAppAuth } = useGithubAppUserAuth();
   const [deviceSession, setDeviceSession] = useState<GitHubAppDeviceAuthStartResult | null>(null);
   const [deviceMessage, setDeviceMessage] = useState<string | null>(null);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
@@ -100,9 +105,8 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       // expired stored token can be cleared during the status check, and the
       // panel must reflect that immediately.
       if (isCurrentRequest()) {
-        const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
+        await refreshAppAuth();
         if (isCurrentRequest()) {
-          setAppAuth(authStatus ?? null);
           if (opts.retryAfterAuthorization) {
             setDeviceMessage(
               latestStatus && isGithubRepoAccessPending(latestStatus)
@@ -114,7 +118,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         }
       }
     }
-  }, []);
+  }, [refreshAppAuth]);
 
   const startAppAuthorization = useCallback(async () => {
     autoRenewCountRef.current = 0;
@@ -147,7 +151,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       setDisconnecting(false);
       setDisconnectArmed(false);
     }
-  }, []);
+  }, [setAppAuth]);
 
   const copyDeviceCode = useCallback(async () => {
     if (!deviceSession) return;
@@ -224,7 +228,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [deviceSession, loadStatus]);
+  }, [deviceSession, loadStatus, setAppAuth]);
 
   useEffect(() => {
     setDeviceCodeCopied(false);
@@ -281,9 +285,12 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   const showDisconnect = accountState !== "missing"
     && !accountChecking
     && !deviceSession
-    // Hosts without the clear action (the web client, older brains) must not
-    // show a control that silently does nothing.
-    && typeof window.ade?.github?.clearAppUserAuth === "function";
+    // Hosts without the clear action (older brains) must not show a control
+    // that silently does nothing — and neither must the web client, whose stub
+    // implements the call but has no credential to clear. Both are judged by
+    // one mechanism, so a new stub cannot pass half of the check.
+    && typeof window.ade?.github?.clearAppUserAuth === "function"
+    && isGithubAppUserAuthSupported(appAuth);
   const disconnectControl = showDisconnect ? (
     disconnectArmed ? (
       <>
@@ -498,20 +505,6 @@ const PILL_TONE_COLORS: Record<GithubAccountAxisTone, string> = {
 
 function accountPill(tone: GithubAccountAxisTone, label: string): PillSpec {
   return { tone, color: PILL_TONE_COLORS[tone], label };
-}
-
-const GITHUB_AUTHORIZATION_PAUSED_COPY =
-  "GitHub is limiting authorization requests for this account right now. ADE keeps trying on its own — try again in a few minutes.";
-
-/** Replaces GitHub's transport error ("...failed (429)") with what it means. */
-function deviceAuthMessageCopy(message: string | null): string | null {
-  if (!message) return message;
-  return isGithubAuthorizationPausedMessage(message) ? GITHUB_AUTHORIZATION_PAUSED_COPY : message;
-}
-
-function deviceAuthErrorCopy(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return deviceAuthMessageCopy(message) ?? message;
 }
 
 function repoView(

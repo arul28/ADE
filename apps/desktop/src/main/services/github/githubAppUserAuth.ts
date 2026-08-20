@@ -67,6 +67,21 @@ export class GitHubOAuthError extends Error {
 }
 
 /**
+ * True when `error` is a {@link GitHubOAuthError}, whichever module instance
+ * created it.
+ *
+ * Name-based rather than `instanceof`: the desktop service and the headless CLI
+ * twin load this module through different paths, and a cross-realm `instanceof`
+ * answers wrong — which is how a classified OAuth failure fell through to the
+ * "network" branch and kept its retry loop alive.
+ */
+export function isGitHubOAuthError(error: unknown): error is GitHubOAuthError {
+  return typeof error === "object"
+    && error !== null
+    && (error as { name?: unknown }).name === "GitHubOAuthError";
+}
+
+/**
  * OAuth error codes that mean "this credential will never work again".
  *
  * Everything outside this set is treated as transient, because retrying a

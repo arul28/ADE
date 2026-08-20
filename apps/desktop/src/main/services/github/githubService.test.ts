@@ -61,6 +61,7 @@ import {
   githubCredentialRepositoryAccess,
   recordGithubCredentialFailure,
 } from "./githubCredentialHealth";
+import { makeStoredAppUserToken } from "./githubAppUserAuth.testFixtures";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -98,6 +99,8 @@ afterAll(() => {
   }
 });
 
+let memoryCredentialStoreCounter = 0;
+
 class MemoryCredentialStore {
   values = new Map<string, string>();
 
@@ -124,6 +127,31 @@ class MemoryCredentialStore {
   deleteSync(key: string): void {
     this.values.delete(key);
   }
+
+  /**
+   * The atomic single-key update the shipped store provides, and the one the
+   * refresh ledger actually writes through. Without it these tests exercised
+   * the read-modify-write fallback instead of the production path.
+   */
+  updateKeySync(
+    key: string,
+    mutator: (current: string | null) => string | null | undefined,
+  ): void {
+    const next = mutator(this.values.get(key) ?? null);
+    if (next === undefined) return;
+    if (next === null) this.values.delete(key);
+    else this.values.set(key, next);
+  }
+
+  /**
+   * Distinct per instance: the refresh coordinator is keyed on this, and two
+   * unrelated stores in one suite must not share one.
+   */
+  credentialStoreIdentity(): string {
+    return `memory-credential-store-${this.storeId}`;
+  }
+
+  private readonly storeId = (memoryCredentialStoreCounter += 1);
 }
 
 /**
@@ -1541,16 +1569,7 @@ describe("githubService.getStatus", () => {
   it("reports a throttled GitHub App refresh as rate limited with the retry time", async () => {
     stubOriginRemote();
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
-      accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
-      expiresAt: new Date(Date.now() - 60_000).toISOString(),
-      refreshToken: "ghr_refresh_token",
-      refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 3_600_000).toISOString(),
-      userLogin: "alice",
-      updatedAt: new Date().toISOString(),
-    }));
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
     mockFetch.mockResolvedValueOnce(jsonResponse(429, { error: "too_many_requests" }, { "retry-after": "120" }));
 
     const status = await makeService({ credentialStore }).getStatus();
@@ -1566,18 +1585,17 @@ describe("githubService.getStatus", () => {
   it("reports a GitHub App refresh failure instead of treating authorization as missing", async () => {
     stubOriginRemote();
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
-    mockFetch.mockResolvedValueOnce(jsonResponse(400, {
-      error: "bad_verification_code",
+    // GitHub's real answer for a rejected refresh token: HTTP 200 with an error
+    // body. Only a definitive code like this one may write the credential off.
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, {
+      error: "bad_refresh_token",
       error_description: "Bad credentials",
     }));
 
@@ -1610,19 +1628,16 @@ describe("githubService.getStatus", () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
     mockFetch
-      .mockResolvedValueOnce(jsonResponse(400, {
-        error: "bad_verification_code",
+      .mockResolvedValueOnce(jsonResponse(200, {
+        error: "bad_refresh_token",
         error_description: "Bad credentials",
       }))
       .mockResolvedValueOnce(
@@ -2856,16 +2871,7 @@ describe("githubService.getAppInstallationStatus", () => {
 
   it("names the account problem instead of the relay's 401 when authorization is paused", async () => {
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
-      accessToken: "ghu_stale_app_token",
-      tokenType: "bearer",
-      scope: null,
-      expiresAt: new Date(Date.now() - 60_000).toISOString(),
-      refreshToken: "ghr_refresh_token",
-      refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 3_600_000).toISOString(),
-      userLogin: "alice",
-      updatedAt: new Date().toISOString(),
-    }));
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
     // GitHub throttles the refresh, then the relay answers the token-less status
     // request with its own "GitHub auth token is required".
     mockFetch.mockResolvedValueOnce(jsonResponse(429, { error: "too_many_requests" }, { "retry-after": "120" }));

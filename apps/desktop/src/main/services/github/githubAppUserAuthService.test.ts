@@ -70,6 +70,7 @@ function jsonResponse(
 }
 
 const TOKEN_URL = "https://github.com/login/oauth/access_token";
+const DEVICE_CODE_URL = "https://github.com/login/device/code";
 
 function tokenPostCount(fetchImpl: { mock: { calls: unknown[][] } }): number {
   return fetchImpl.mock.calls.filter((call) => String(call[0]) === TOKEN_URL).length;
@@ -286,6 +287,118 @@ describe("app user token refresh", () => {
     expect(endpoint.rotations).toBe(1);
   });
 
+  // The "I re-authorized and nothing changed" incident. A refresh POST was
+  // already in flight when the user finished the device flow, and its
+  // bad_refresh_token answer — about the credential that had just been
+  // REPLACED — was written over the brand-new one, which put the account
+  // straight back into "re-authorize".
+  it("keeps a credential the device flow just wrote when the older refresh POST is rejected", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    let releaseRefresh: () => void = () => undefined;
+    const refreshReleased = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (String(url) === DEVICE_CODE_URL) {
+        return jsonResponse({
+          device_code: "dev_code",
+          user_code: "ADE-CODE",
+          verification_uri: "https://github.com/login/device",
+          expires_in: 900,
+          interval: 1,
+        });
+      }
+      if (String(url) === TOKEN_URL && body.includes("grant_type=refresh_token")) {
+        await refreshReleased;
+        return jsonResponse({
+          error: "bad_refresh_token",
+          error_description: "The refresh token passed is incorrect or expired.",
+        });
+      }
+      if (String(url) === TOKEN_URL) {
+        return jsonResponse({
+          access_token: "ghu_after_reauth",
+          token_type: "bearer",
+          expires_in: 28_800,
+          refresh_token: "ghr_after_reauth",
+          refresh_token_expires_in: 15_811_200,
+        });
+      }
+      return jsonResponse({ login: "octocat" });
+    });
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    const inFlight = service.getValidTokenForRelay();
+    // Let the refresh POST reach the (blocked) endpoint before the user
+    // finishes authorizing.
+    await sleep();
+    const session = await service.startDeviceAuth();
+    const authorized = await service.pollDeviceAuth({ sessionId: session.sessionId });
+    expect(authorized.status).toBe("authorized");
+    releaseRefresh();
+
+    await expect(inFlight).resolves.toBe("ghu_after_reauth");
+    const status = service.getAuthStatus();
+    expect(status.credentialState).toBe("authorized");
+    expect(status.lastRefreshError).toBeNull();
+    expect(storedRecord(values)).toMatchObject({ accessToken: "ghu_after_reauth" });
+  });
+
+  // The same race with a SUCCESSFUL POST, and with the newer credential written
+  // by a peer process — so nothing in this process knows the record changed and
+  // the refresh token itself is the only evidence.
+  it("does not write a successful refresh over a credential a peer authorized meanwhile", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    let releaseRefresh: () => void = () => undefined;
+    const refreshReleased = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchImpl = vi.fn(async () => {
+      await refreshReleased;
+      return jsonResponse({
+        access_token: "ghu_from_stale_refresh",
+        token_type: "bearer",
+        expires_in: 28_800,
+        refresh_token: "ghr_from_stale_refresh",
+        refresh_token_expires_in: 15_811_200,
+      });
+    });
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    const inFlight = service.getValidTokenForRelay();
+    // Let the refresh POST reach the (blocked) endpoint, then let another
+    // process finish its own device flow into the shared credential file.
+    await sleep();
+    writeRecord(values, {
+      accessToken: "ghu_after_peer_reauth",
+      expiresAt: new Date(clockNowMs + 8 * 3_600_000).toISOString(),
+      refreshToken: "ghr_after_peer_reauth",
+    });
+    releaseRefresh();
+
+    await expect(inFlight).resolves.toBe("ghu_after_peer_reauth");
+    expect(storedRecord(values)).toMatchObject({ accessToken: "ghu_after_peer_reauth" });
+  });
+
   it("does not resurrect a credential another instance cleared", async () => {
     const values: StoredValues = {};
     writeRecord(values, { expiresAt: new Date(clockNowMs + 3_600_000).toISOString() });
@@ -309,6 +422,67 @@ describe("app user token refresh", () => {
     expect(service.getStoredTokenForHealth()).toBeNull();
     expect(service.getAuthStatus().tokenStored).toBe(false);
     expect(service.getAuthStatus().credentialState).toBe("missing");
+  });
+});
+
+describe("refresh failure classification", () => {
+  const buildService = (values: StoredValues, fetchImpl: unknown) =>
+    createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+  // GitHub's secondary rate limits answer 403, sometimes with no body and no
+  // retry-after at all. Reading that as a dead grant signed working accounts
+  // out and told them to re-authorize against the endpoint doing the limiting.
+  it("treats a bare 403 as a pause rather than a dead credential", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const service = buildService(values, vi.fn(async () => new Response("", { status: 403 })));
+
+    await expect(service.getValidTokenForRelay()).rejects.toThrow();
+
+    const status = service.getAuthStatus();
+    expect(status.credentialState).toBe("blocked");
+    expect(status.lastRefreshError?.kind).toBe("rate_limited");
+    expect(Date.parse(status.refreshBlockedUntil ?? "")).toBeGreaterThan(clockNowMs);
+  });
+
+  // A proxy or captive portal answers with HTML and a 4xx. Nothing about that
+  // is evidence against the credential.
+  it("treats a 400 with a non-OAuth body as unknown rather than a dead credential", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const service = buildService(values, vi.fn(async () => new Response(
+      "<html><body>Bad Request</body></html>",
+      { status: 400, headers: { "content-type": "text/html" } },
+    )));
+
+    await expect(service.getValidTokenForRelay()).rejects.toThrow();
+
+    const status = service.getAuthStatus();
+    expect(status.credentialState).toBe("blocked");
+    expect(status.lastRefreshError?.kind).toBe("unknown");
+  });
+
+  it("treats a 200 carrying bad_refresh_token as a dead credential", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const service = buildService(values, vi.fn(async () => jsonResponse({
+      error: "bad_refresh_token",
+      error_description: "The refresh token passed is incorrect or expired.",
+    })));
+
+    await expect(service.getValidTokenForRelay()).rejects.toThrow();
+
+    const status = service.getAuthStatus();
+    expect(status.credentialState).toBe("needs_reauth");
+    expect(status.lastRefreshError?.kind).toBe("dead_token");
   });
 });
 

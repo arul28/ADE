@@ -3,24 +3,10 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { GitHubAppInstallationStatus, GitHubAppUserAuthStatus } from "../../../shared/types";
+import type { GitHubAppInstallationStatus } from "../../../shared/types";
 import { GitHubAppInstallPanel } from "./GitHubAppInstallPanel";
-
-function makeAppAuth(overrides: Partial<GitHubAppUserAuthStatus> = {}): GitHubAppUserAuthStatus {
-  return {
-    configured: true,
-    tokenStored: true,
-    userLogin: "arul28",
-    expiresAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
-    credentialState: "authorized",
-    refreshBlockedUntil: null,
-    lastRefreshError: null,
-    checkedAt: new Date().toISOString(),
-    error: null,
-    ...overrides,
-  };
-}
+import { resetGithubAppUserAuthForTests } from "../../lib/useGithubAppUserAuth";
+import { makeAppAuth } from "../../lib/githubIntegrationStatus.testFixtures";
 
 function installedStatus(): GitHubAppInstallationStatus {
   return {
@@ -50,6 +36,9 @@ describe("GitHubAppInstallPanel", () => {
   afterEach(() => {
     cleanup();
     window.ade = originalAde;
+    // The App account status is shared across surfaces, so it outlives one
+    // render and would otherwise carry into the next test.
+    resetGithubAppUserAuthForTests();
   });
 
   it("does not claim account authorization while a repo check is rate limited", async () => {

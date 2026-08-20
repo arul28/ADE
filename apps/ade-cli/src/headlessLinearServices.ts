@@ -53,10 +53,13 @@ import {
   fetchGitHubAppInstallationStatus,
   type GitHubRelaySecretReader,
 } from "../../desktop/src/main/services/github/githubRelayConfig";
+import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
 import {
-  classifyAppUserAuthFailure,
-  createGitHubAppUserAuthService,
-} from "../../desktop/src/main/services/github/githubAppUserAuthService";
+  appCredentialFailureEntry,
+  describeAppUserAuthUnavailable,
+  resolveAppUserTokenForRelay,
+  type AppUserAuthFailure,
+} from "../../desktop/src/main/services/github/githubAppUserAuthFailure";
 import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
@@ -78,7 +81,7 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import {
-  GITHUB_CREDENTIAL_INVENTORY_CACHE_TTL_MS,
+  GITHUB_CREDENTIAL_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -753,7 +756,7 @@ export function createHeadlessGitHubService(
 
   type AppCredentialLookup = {
     token: string | null;
-    failure: ReturnType<typeof classifyAppUserAuthFailure> | null;
+    failure: AppUserAuthFailure | null;
     status: GitHubAppUserAuthStatus;
   };
   let appCredentialCache: {
@@ -822,20 +825,12 @@ export function createHeadlessGitHubService(
   const buildAppCredentialAsync = async (): Promise<AppCredentialLookup> => {
     const status = appUserAuth.getAuthStatus();
     if (!status.tokenStored) return { token: null, failure: null, status };
-    try {
-      return { token: await appUserAuth.getValidTokenForRelay(), failure: null, status };
-    } catch (error: unknown) {
-      const failure = classifyAppUserAuthFailure(error);
-      logger.warn("github.app_user_token_unavailable", {
-        error: failure.described.message,
-        kind: failure.authFailure.kind,
-        credentialState: failure.described.credentialState,
-        status: failure.described.status,
-        oauthError: failure.described.oauthError,
-        retryAt: failure.authFailure.retryAt,
-      });
-      return { token: null, failure, status };
-    }
+    const resolved = await resolveAppUserTokenForRelay({
+      appUserAuth,
+      logger,
+      event: "github.app_user_token_unavailable",
+    });
+    return { ...resolved, status };
   };
 
   /**
@@ -856,7 +851,7 @@ export function createHeadlessGitHubService(
     }
     const promise = buildAppCredentialAsync();
     appCredentialCache = {
-      expiresAt: now + GITHUB_CREDENTIAL_INVENTORY_CACHE_TTL_MS,
+      expiresAt: now + GITHUB_CREDENTIAL_CACHE_TTL_MS,
       promise,
     };
     try {
@@ -927,13 +922,7 @@ export function createHeadlessGitHubService(
     return {
       candidates,
       availableSources: new Set(candidates.map((candidate) => candidate.source)),
-      failures: appResult.failure
-        ? [{
-          source: "app" as const,
-          authFailure: appResult.failure.authFailure,
-          rateLimit: appResult.failure.rateLimit,
-        }]
-        : [],
+      failures: appCredentialFailureEntry(appResult.failure),
       appTokenStored: appToken != null || appStatus.tokenStored,
       patTokenStored,
       ghCliPath: gh.ghCliPath,
@@ -2095,18 +2084,11 @@ export function createHeadlessGitHubService(
       const repo = owner && name ? { owner, name } : await detectGitHubRepoAsync(projectRoot);
       // Same reason as the desktop service: the reason the token is missing is
       // what the repo axis is allowed to say, so it cannot be swallowed.
-      const appUserToken = await appUserAuth.getValidTokenForRelay()
-        .then((token) => ({ token, failure: null }))
-        .catch((error: unknown) => {
-          const failure = classifyAppUserAuthFailure(error);
-          logger.warn("github.app_installation_status_auth_unavailable", {
-            error: failure.described.message,
-            kind: failure.authFailure.kind,
-            credentialState: failure.described.credentialState,
-            retryAt: failure.authFailure.retryAt,
-          });
-          return { token: null, failure };
-        });
+      const appUserToken = await resolveAppUserTokenForRelay({
+        appUserAuth,
+        logger,
+        event: "github.app_installation_status_auth_unavailable",
+      });
       const accountAccessToken = options.getAccountAccessToken
         ? await options.getAccountAccessToken().catch(() => null)
         : null;
@@ -2115,13 +2097,7 @@ export function createHeadlessGitHubService(
         secretReader: options.githubRelaySecretReader,
         forceRefresh: args.forceRefresh === true,
         githubAppUserToken: appUserToken.token,
-        appUserAuthFailure: appUserToken.failure
-          ? {
-            message: appUserToken.failure.described.message,
-            credentialState: appUserToken.failure.described.credentialState,
-            retryAt: appUserToken.failure.authFailure.retryAt,
-          }
-          : null,
+        appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
         accountAccessToken,
         auditLog: appUserAuth.auditLog,
       });

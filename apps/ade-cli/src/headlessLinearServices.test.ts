@@ -35,6 +35,7 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
 }));
 
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { makeStoredAppUserToken } from "../../desktop/src/main/services/github/githubAppUserAuth.testFixtures";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
 import { resetGitHubServiceHealthCache } from "../../desktop/src/main/services/github/githubStatusPage";
@@ -1644,21 +1645,20 @@ describe("headlessLinearServices", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-", {
       emptyGhConfig: true,
     });
-    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
+    // GitHub's real answer for a rejected refresh token: HTTP 200 with an error
+    // body. Only a definitive code like this one may write the credential off.
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      error: "bad_verification_code",
+      error: "bad_refresh_token",
       error_description: "Bad credentials",
     }), {
-      status: 400,
+      status: 200,
       headers: { "content-type": "application/json" },
     })) as unknown as typeof fetch;
     const githubService = createHeadlessGitHubService(
@@ -1693,22 +1693,19 @@ describe("headlessLinearServices", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-fallback-", {
       emptyGhConfig: true,
     });
-    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        error: "bad_verification_code",
+        error: "bad_refresh_token",
         error_description: "Bad credentials",
       }), {
-        status: 400,
+        status: 200,
         headers: { "content-type": "application/json" },
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ login: "bob" }), {
@@ -1781,16 +1778,10 @@ describe("headlessLinearServices", () => {
     });
     // An access token past its life, so every resolution that is not cached
     // costs a refresh POST — the traffic that rate-limited GitHub for the user.
-    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
-      accessToken: "ghu_stale_app_token",
-      tokenType: "bearer",
-      scope: null,
-      expiresAt: new Date(Date.now() - 60_000).toISOString(),
-      refreshToken: "ghr_live_refresh_token",
-      refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 3_600_000).toISOString(),
-      userLogin: "octocat",
-      updatedAt: new Date().toISOString(),
-    }));
+    new EncryptedFileCredentialStore().setSync(
+      "github.appUserToken.v1",
+      makeStoredAppUserToken(),
+    );
     const requestedUrls: string[] = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       requestedUrls.push(String(input));

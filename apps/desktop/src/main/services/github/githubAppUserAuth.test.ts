@@ -1,17 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  GitHubOAuthError,
   pollGitHubAppDeviceFlow,
   refreshGitHubAppUserToken,
   startGitHubAppDeviceFlow,
 } from "./githubAppUserAuth";
-
-type OAuthErrorShape = {
-  name?: string;
-  status?: number | null;
-  oauthError?: string | null;
-  errorDescription?: string | null;
-  retryAfterSec?: number | null;
-};
 
 function jsonResponse(
   body: unknown,
@@ -23,11 +16,12 @@ function jsonResponse(
   });
 }
 
-async function captureError(run: () => Promise<unknown>): Promise<OAuthErrorShape & { message: string }> {
+async function captureError(run: () => Promise<unknown>): Promise<GitHubOAuthError> {
   try {
     await run();
   } catch (error) {
-    return error as OAuthErrorShape & { message: string };
+    expect(error).toBeInstanceOf(GitHubOAuthError);
+    return error as GitHubOAuthError;
   }
   throw new Error("Expected the call to reject.");
 }
@@ -49,7 +43,6 @@ describe("refreshGitHubAppUserToken", () => {
       userAgent: "ade-test",
     }));
 
-    expect(error.name).toBe("GitHubOAuthError");
     expect(error.oauthError).toBe("bad_refresh_token");
     expect(error.status).toBe(200);
     expect(error.message).toContain("refresh token");
@@ -67,7 +60,6 @@ describe("refreshGitHubAppUserToken", () => {
       userAgent: "ade-test",
     }));
 
-    expect(error.name).toBe("GitHubOAuthError");
     expect(error.status).toBe(429);
     expect(error.retryAfterSec).toBe(120);
     expect(error.oauthError).toBe("too_many_requests");
@@ -105,7 +97,6 @@ describe("device flow transport", () => {
       userAgent: "ade-test",
     }));
 
-    expect(error.name).toBe("GitHubOAuthError");
     expect(error.status).toBe(429);
     expect(error.retryAfterSec).toBe(60);
   });

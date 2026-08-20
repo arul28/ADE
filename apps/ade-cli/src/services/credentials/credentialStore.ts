@@ -136,6 +136,14 @@ export type SyncCredentialStore = CredentialStore & {
    * GitHub App token refresh) key their process-wide state on it.
    */
   credentialStoreIdentity?(): string;
+  /**
+   * An asynchronous read paired with the state THAT read produced. Preferred
+   * over `get()` + `getLastReadState()`, which answers about the store's most
+   * recent read — not necessarily this one.
+   */
+  getWithReadState?(
+    key: string,
+  ): Promise<{ value: string | null; state: CredentialStoreReadState }>;
   /** Best-effort cross-process notification that persisted credentials changed. */
   onDidChange?(listener: () => void): () => void;
   /** Result of the most recent synchronous credential-file read. */
@@ -255,6 +263,22 @@ export const CREDENTIAL_STORE_LOCK_TIMEOUT_MS = CREDENTIAL_FILE_LOCK_TIMEOUT_MS;
 const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
 /** Bounds OS key-material re-reads when a store keeps failing to decrypt. */
 const KEY_MATERIAL_SELF_HEAL_INTERVAL_MS = 30_000;
+
+
+/**
+ * The key a credential path is compared and looked up by.
+ *
+ * Windows and macOS filesystems are case-insensitive, so two spellings of one
+ * secrets directory must never read as two different stores: the GitHub App
+ * refresh coordinates through this identity, and two identities for one file
+ * means two processes each believing they hold the only refresh lease. Linux
+ * stays case-sensitive, so the folding is never unconditional.
+ */
+function credentialPathKey(value: string): string {
+  return process.platform === "win32" || process.platform === "darwin"
+    ? value.toLowerCase()
+    : value;
+}
 
 
 function normalizeKey(key: string): string {
@@ -905,7 +929,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   credentialStoreIdentity(): string {
-    return this.credentialsPath;
+    return credentialPathKey(this.credentialsPath);
   }
 
   /**
@@ -1659,6 +1683,16 @@ export function createRoutedCredentialStore(args: {
   };
   return {
     get: async (key) => readStoreFor(key).get(key),
+    // Forwarded per call rather than through `lastReadStore`: this accessor
+    // exists precisely so an async caller learns the state of ITS read, and
+    // routing it through shared mutable state would hand back whichever file
+    // some interleaved read touched last.
+    getWithReadState: async (key) => {
+      const store = storeFor(key);
+      if (store.getWithReadState) return await store.getWithReadState(key);
+      const value = await readStoreFor(key).get(key);
+      return { value, state: store.getLastReadState?.() ?? "missing" };
+    },
     set: async (key, value) => storeFor(key).set(key, value),
     delete: async (key) => storeFor(key).delete(key),
     getSync: (key) => readStoreFor(key).getSync(key),
@@ -1695,18 +1729,58 @@ export function createRoutedCredentialStore(args: {
   };
 }
 
+const adoptedSecretsDirs = new Set<string>();
+
+/**
+ * When one stored credential was last written, in epoch milliseconds, or `NaN`
+ * when the record does not say.
+ *
+ * Deliberately generic JSON rather than a typed credential: this module stays
+ * free of service-layer imports, and every record that can be stranded in the
+ * Electron-only store carries an ISO `updatedAt`.
+ */
+function credentialUpdatedAtMs(raw: string | null | undefined): number {
+  if (!raw?.trim()) return Number.NaN;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return Number.NaN;
+    const updatedAt = (parsed as Record<string, unknown>).updatedAt;
+    return typeof updatedAt === "string" ? Date.parse(updatedAt) : Number.NaN;
+  } catch {
+    return Number.NaN;
+  }
+}
+
+/**
+ * True when the stranded desktop copy is provably newer than the shared one.
+ *
+ * A copy that does not say when it was written loses to one that does, and two
+ * silent copies leave the shared file alone — the shared file is where the
+ * brain writes, so it is the safer default.
+ */
+function strandedCopyIsFresher(stranded: string, shared: string): boolean {
+  const strandedAt = credentialUpdatedAtMs(stranded);
+  if (!Number.isFinite(strandedAt)) return false;
+  const sharedAt = credentialUpdatedAtMs(shared);
+  return !Number.isFinite(sharedAt) || strandedAt > sharedAt;
+}
+
 /**
  * Moves file-backed credentials a previous build left in the Electron-only
  * store back into the shared machine file.
  *
- * Runs once per secrets directory per process. Never overwrites: the shared file
- * is where the brain writes, so a value there is at least as fresh as the
- * desktop copy — and the desktop copy of the GitHub App token is exactly the
- * stale one whose refresh token GitHub has already rotated away. A value is only
- * removed from the Electron-only store once the shared file holds one.
+ * Runs once per secrets directory per process, and only a pass that completes
+ * counts: a pass that could not read the Electron store is retried by the next
+ * store built in this process, rather than leaving the credential stranded for
+ * the life of the app.
+ *
+ * When both stores hold the key, the fresher record wins by its `updatedAt`.
+ * The shared file is usually the fresher one, because the brain writes there —
+ * but a desktop build that wrote the GitHub App token into the Electron-only
+ * store left the ONLY current copy there, and keeping the older shared copy
+ * would hand GitHub a refresh token it has already rotated away. A value is
+ * only removed from the Electron-only store once the shared file holds one.
  */
-const adoptedSecretsDirs = new Set<string>();
-
 export function adoptFileBackedCredentials(args: {
   primary: SyncCredentialStore;
   fileStore: SyncCredentialStore;
@@ -1714,40 +1788,50 @@ export function adoptFileBackedCredentials(args: {
 }): { adopted: string[]; pruned: string[] } {
   const adopted: string[] = [];
   const pruned: string[] = [];
-  if (adoptedSecretsDirs.has(args.identity)) return { adopted, pruned };
-  adoptedSecretsDirs.add(args.identity);
+  const identity = credentialPathKey(args.identity);
+  if (adoptedSecretsDirs.has(identity)) return { adopted, pruned };
+  let completed = true;
   for (const key of FILE_BACKED_CREDENTIAL_KEYS) {
     let stranded: string | null = null;
     try {
       stranded = args.primary.getSync(key);
     } catch {
-      // An unreadable Electron store has nothing to adopt, and saying so is the
-      // job of `getLastReadState`, not of this migration.
-      return { adopted, pruned };
+      // An unreadable Electron store has nothing to adopt for this key, and
+      // saying so is the job of `getLastReadState`, not of this migration. The
+      // pass stays incomplete so a later one can try again.
+      completed = false;
+      continue;
     }
     if (!stranded?.trim()) continue;
+    const strandedValue = stranded;
     try {
+      let wrote = false;
       if (args.fileStore.updateKeySync) {
-        // Atomic: a brain write racing this adoption must win over the stale
-        // desktop copy, and check-then-set leaves a window where it would not.
-        let wrote = false;
+        // Atomic: a brain write racing this adoption must be compared against
+        // what it actually wrote, and check-then-set leaves a window where the
+        // comparison is made against a value that is already gone.
         args.fileStore.updateKeySync(key, (current) => {
-          if (current?.trim()) return undefined;
+          if (current?.trim() && !strandedCopyIsFresher(strandedValue, current)) return undefined;
           wrote = true;
-          return stranded;
+          return strandedValue;
         });
-        if (wrote) adopted.push(key);
-      } else if (!args.fileStore.getSync(key)?.trim()) {
-        args.fileStore.setSync(key, stranded);
-        adopted.push(key);
+      } else {
+        const current = args.fileStore.getSync(key);
+        if (!current?.trim() || strandedCopyIsFresher(strandedValue, current)) {
+          args.fileStore.setSync(key, strandedValue);
+          wrote = true;
+        }
       }
+      if (wrote) adopted.push(key);
       args.primary.deleteSync(key);
       pruned.push(key);
     } catch {
       // Best effort: leaving the duplicate behind is survivable, losing the
       // credential is not.
+      completed = false;
     }
   }
+  if (completed) adoptedSecretsDirs.add(identity);
   return { adopted, pruned };
 }
 
