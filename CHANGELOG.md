@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.63] - 2026-08-19
+
+### Getting help
+
+- Settings gained a Send button beside Diagnostics sharing; previously a report could only be sent from a surface that had already failed.
+- Diagnostic reports no longer require an open project: the machine-scoped main log, the most recent project's log, the background service's stdout as well as stderr, and the service definition are all collected.
+- The desktop main process now writes a machine-scoped log from process start (`~/.ade/runtime/desktop-main.jsonl`), so startup, deeplink, single-instance and CLI-install events are recorded even when no project is ever opened.
+- Linux reports now collect the service journal instead of asking for a macOS log path that never existed there.
+- A failed report save no longer claims the report is on disk.
+
+### The `ade` terminal command
+
+- The CLI install now runs once, is skipped when `ade` already resolves from any source, and never re-runs on every launch.
+
+### Fixes
+
+- Report collection no longer blocks the Electron main thread or the brain's event loop on subprocesses (Windows and Linux).
+- The Windows installed-product smoke test no longer fails a passing run on a benign cleanup `taskkill`, and its process-ownership checks re-verify identity rather than trusting a recycled PID.
+- The account-directory production deploy preflight now checks all four required secrets and both required vars, instead of one secret and one var.
+
 ## [1.2.62] - 2026-08-19
 
 ### Automatic diagnostic reports
@@ -1634,7 +1654,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.62...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.63...HEAD
+[1.2.63]: https://github.com/arul28/ADE/compare/v1.2.62...v1.2.63
 [1.2.62]: https://github.com/arul28/ADE/compare/v1.2.61...v1.2.62
 [1.2.61]: https://github.com/arul28/ADE/compare/v1.2.60...v1.2.61
 [1.2.60]: https://github.com/arul28/ADE/compare/v1.2.59...v1.2.60
