@@ -41,6 +41,7 @@ import {
   startHeadlessRpcTcpServer,
   shouldAutoRegisterProjectForPlan,
   formatBrainStatus,
+  formatGithubAppUserAuth,
   shouldBlockManualMachineRuntimeSpawn,
   shouldProbeBrainStartupState,
   shouldEnforceMachineRuntimeBuildCompatibility,
@@ -1305,6 +1306,74 @@ describe("ADE CLI", () => {
     // The same output has to read as a plain failure when nothing is coming up.
     expect(formatBrainStatus({ ok: false, starting: false, runtime: { running: false } }))
       .not.toContain("nothing to repair");
+  });
+
+  it("reports the GitHub App credential state, not the access-token expiry", () => {
+    // A lapsed 8-hour access token behind a live refresh token is healthy. An
+    // agent that reads `expiresAt` re-authorizes a working credential, so the
+    // printed verdict has to come from `credentialState`.
+    const authorized = formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: "2026-08-20T01:00:00.000Z",
+      refreshTokenExpiresAt: "2026-11-18T01:00:00.000Z",
+      credentialState: "authorized",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    });
+    expect(authorized).toContain("Authorized as octocat");
+    expect(authorized).not.toContain("app-auth login");
+
+    // "blocked" must never read as a request to re-authorize, and the reason
+    // must survive whole — the generic record renderer truncates it as JSON.
+    const blocked = formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: null,
+      refreshTokenExpiresAt: "2026-11-18T01:00:00.000Z",
+      credentialState: "blocked",
+      refreshBlockedUntil: "2026-08-20T12:05:00.000Z",
+      lastRefreshError: {
+        kind: "rate_limited",
+        message: "GitHub is rate-limiting ADE's sign-in requests right now. Try again in a few minutes.",
+        status: 429,
+        at: "2026-08-20T12:00:00.000Z",
+      },
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    });
+    expect(blocked).toContain("do not re-authorize");
+    expect(blocked).toContain("2026-08-20T12:05:00.000Z");
+    expect(blocked).toContain("rate_limited (HTTP 429)");
+    expect(blocked).toContain("Try again in a few minutes.");
+
+    // Only a dead refresh token may ask for a login.
+    expect(formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: null,
+      refreshTokenExpiresAt: null,
+      credentialState: "needs_reauth",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    })).toContain("ade --role cto github app-auth login");
+
+    // A host that cannot hold the credential reports a stub, not "not
+    // authorized" — telling its user to log in would be a false instruction.
+    expect(formatGithubAppUserAuth({
+      configured: false,
+      tokenStored: false,
+      userLogin: null,
+      credentialState: "missing",
+      appUserAuthSupported: false,
+    })).toContain("cannot hold a GitHub App authorization");
   });
 
   it("skips the brain-starting probe inside supervisor and handover probe children", () => {

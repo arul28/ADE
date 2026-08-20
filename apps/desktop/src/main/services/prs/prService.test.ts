@@ -1698,6 +1698,31 @@ describe("prService.getGithubSnapshot", () => {
     expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
 
+  // ADE renewing its own App authorization is not a credential problem, so the
+  // snapshot error must not send the user to Settings to replace anything.
+  it("says ADE is renewing rather than blaming the credential mid-renewal", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        connected: false,
+        authFailure: {
+          kind: "renewing",
+          message: "ADE is renewing this authorization — this takes a moment.",
+          retryAt: null,
+        },
+      })),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const error = await service.getGithubSnapshot().then(
+      () => { throw new Error("expected getGithubSnapshot to reject"); },
+      (reason: unknown) => reason as Error,
+    );
+    expect(error.message).toContain("renewing its GitHub authorization");
+    expect(error.message).not.toContain("Update it in Settings");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
   // Corroboration is attached to `unknown` failures too (GitHub answered with
   // something we could not classify). A confirmed incident is positive evidence
   // regardless of how the response itself was classified.
