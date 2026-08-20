@@ -97,11 +97,11 @@ export function providerSessionRoots(args: {
     : path.join(homeDir, ".local", "share");
   // Each provider's config-dir override has its own shape; providerConfigHomes
   // keeps them straight so ADE reads the same directory the CLI writes.
-  const providerEnv = { ...env, HOME: homeDir };
+  const providerHome = { env, homeDir };
   return [
-    { provider: "claude", root: path.join(claudeConfigHome(providerEnv), "projects") },
-    { provider: "codex", root: path.join(codexConfigHome(providerEnv), "sessions") },
-    { provider: "droid", root: path.join(factoryConfigHome(providerEnv), "sessions") },
+    { provider: "claude", root: path.join(claudeConfigHome(providerHome), "projects") },
+    { provider: "codex", root: path.join(codexConfigHome(providerHome), "sessions") },
+    { provider: "droid", root: path.join(factoryConfigHome(providerHome), "sessions") },
     { provider: "cursor", root: path.join(homeDir, ".cursor", "chats") },
     { provider: "cursor", root: path.join(homeDir, ".cursor", "projects") },
     { provider: "opencode", root: path.join(xdgData, "opencode") },

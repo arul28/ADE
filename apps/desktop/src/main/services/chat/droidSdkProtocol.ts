@@ -20,8 +20,15 @@ export type DroidSdkReasoningEffort =
 
 export type DroidSdkSessionSettings = {
   modelId: string;
-  autonomyLevel: DroidSdkAutonomyLevel;
-  interactionMode: DroidSdkInteractionMode;
+  /**
+   * Omitted when the user has chosen no ADE permission mode, so Droid resolves
+   * autonomy from their own ~/.factory/settings.json. Both keys are optional in
+   * the SDK, and omission resolves per key — a live probe confirmed an omitted
+   * key falls through to the user's file while any stated value outranks it.
+   * Never send null: an explicit null wedges the Droid RPC for 30 seconds.
+   */
+  autonomyLevel?: DroidSdkAutonomyLevel;
+  interactionMode?: DroidSdkInteractionMode;
   reasoningEffort?: DroidSdkReasoningEffort | null;
   specModeModelId?: string | null;
   specModeReasoningEffort?: DroidSdkReasoningEffort | null;

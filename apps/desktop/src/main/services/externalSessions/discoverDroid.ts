@@ -82,7 +82,7 @@ export async function discoverDroidSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
-  const sessionsDir = path.join(factoryConfigHome({ ...process.env, HOME: resolveHomeDir(args) }), "sessions");
+  const sessionsDir = path.join(factoryConfigHome({ homeDir: resolveHomeDir(args) }), "sessions");
   const lookupId = args.sessionId?.trim() || null;
   // A session id can be written under more than one escaped cwd; keeping one
   // candidate per id stops duplicates from spending the read budget twice and

@@ -1,4 +1,4 @@
-import os from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
 
 /**
@@ -10,11 +10,16 @@ import path from "node:path";
  * HOME that `.factory` is then appended to. Hardcoding `~/.codex` or `~/.factory`
  * makes ADE read a different directory than the process it spawns, so ADE and the
  * CLI disagree about the user's configuration inside a single session.
+ *
+ * `homeDir` is for callers that already resolved a home of their own; everything
+ * else stays on `homedir()` so this matches how ADE resolved these paths
+ * before, and so tests that stub `os.homedir()` keep working.
  */
 
-function home(env: NodeJS.ProcessEnv): string {
-  const configured = env.HOME?.trim() || env.USERPROFILE?.trim();
-  return configured?.length ? path.resolve(configured) : path.resolve(os.homedir());
+type HomeArg = { env?: NodeJS.ProcessEnv; homeDir?: string };
+
+function baseHome(args: HomeArg): string {
+  return path.resolve(args.homeDir?.trim().length ? args.homeDir : homedir());
 }
 
 function trimmed(value: string | undefined): string | null {
@@ -23,15 +28,15 @@ function trimmed(value: string | undefined): string | null {
 }
 
 /** `CLAUDE_CONFIG_DIR` names the config directory itself. */
-export function claudeConfigHome(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = trimmed(env.CLAUDE_CONFIG_DIR);
-  return configured ? path.resolve(configured) : path.join(home(env), ".claude");
+export function claudeConfigHome(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).CLAUDE_CONFIG_DIR);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".claude");
 }
 
 /** `CODEX_HOME` names the config directory itself, not the parent. */
-export function codexConfigHome(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = trimmed(env.CODEX_HOME);
-  return configured ? path.resolve(configured) : path.join(home(env), ".codex");
+export function codexConfigHome(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).CODEX_HOME);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".codex");
 }
 
 /**
@@ -39,7 +44,7 @@ export function codexConfigHome(env: NodeJS.ProcessEnv = process.env): string {
  * to it (`join($R(), ".factory")` in the v0.70.0 binary, where `$R()` is
  * `process.env.FACTORY_HOME_OVERRIDE || homedir()`).
  */
-export function factoryConfigHome(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = trimmed(env.FACTORY_HOME_OVERRIDE);
-  return path.join(configured ? path.resolve(configured) : home(env), ".factory");
+export function factoryConfigHome(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).FACTORY_HOME_OVERRIDE);
+  return path.join(configured ? path.resolve(configured) : baseHome(args), ".factory");
 }

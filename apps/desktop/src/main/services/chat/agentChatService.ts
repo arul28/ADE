@@ -7128,14 +7128,31 @@ function resolveSessionOpenCodePermissionMode(
     ?? fallback;
 }
 
+/**
+ * The Droid permission mode the user actually chose, or null when they have
+ * chosen nothing.
+ *
+ * Droid has no "use my config" mode — cliLaunch rejects config-toml for it — so
+ * null is the only way ADE can express "no opinion", and it matters: a live probe
+ * showed omitting these keys resolves them from the user's
+ * ~/.factory/settings.json, per key, while any value ADE states outranks that
+ * file. Droid's own documented default is autonomyLevel "off" (read-only), so a
+ * substituted fallback here hands out write access the CLI would not.
+ */
+function resolveSessionDroidPermissionModeOrNull(
+  session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
+): AgentChatDroidPermissionMode | null {
+  return session.droidPermissionMode
+    ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+    ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode)
+    ?? null;
+}
+
 function resolveSessionDroidPermissionMode(
   session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
   fallback: AgentChatDroidPermissionMode,
 ): AgentChatDroidPermissionMode {
-  return session.droidPermissionMode
-    ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
-    ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode)
-    ?? fallback;
+  return resolveSessionDroidPermissionModeOrNull(session) ?? fallback;
 }
 
 function applyLocalHarnessPermissionMode(args: {
@@ -7406,7 +7423,12 @@ function normalizeSessionNativePermissionControls(
     session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
       : "default");
-    session.droidPermissionMode = resolveSessionDroidPermissionMode(session, "auto-low");
+    // Materialising a fallback here would be read back as a real choice on the
+    // next launch and pin it forever, which is what made the equivalent Claude
+    // bug durable. Absence has to stay absent.
+    const chosenDroidMode = resolveSessionDroidPermissionModeOrNull(session);
+    if (chosenDroidMode) session.droidPermissionMode = chosenDroidMode;
+    else delete session.droidPermissionMode;
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
     delete session.codexSandbox;
@@ -35097,14 +35119,27 @@ export function createAgentChatService(args: {
     // AGI (orchestrator) is a Droid-specific permission mode, not part of the
     // generic interaction-mode enum — resolve it from droidPermissionMode and
     // let it win over the plan→spec mapping.
+    const chosenMode = resolveSessionDroidPermissionModeOrNull(managed.session);
+    const planRequested = managed.session.interactionMode === "plan"
+      || managed.session.permissionMode === "plan";
+    // Say nothing when the user picked nothing, so Droid resolves autonomy from
+    // their own settings.json exactly as the terminal path already does —
+    // droidSettingsJson omits sessionDefaultSettings when permissionMode is null.
+    const statesAutonomy = chosenMode !== null
+      || planRequested
+      || isOrchestrationLeadSession(managed.session);
     const interactionMode: DroidSdkSessionSettings["interactionMode"] =
-      resolveSessionDroidPermissionMode(managed.session, "auto-low") === "agi"
+      chosenMode === "agi"
         ? "agi"
         : resolveDroidSdkInteractionMode(managed.session);
     return {
       modelId,
-      autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
-      interactionMode,
+      ...(statesAutonomy
+        ? {
+            autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
+            interactionMode,
+          }
+        : {}),
       // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
       // has to have them withheld natively as well.
       ...(isOrchestrationLeadSession(managed.session)

@@ -235,14 +235,29 @@ function normalizeAvailableModels(initResult: unknown): DroidSdkReady["available
   });
 }
 
+/**
+ * The model Droid actually resolved for this session.
+ *
+ * `initResult.currentModelId` does not exist — @factory/droid-sdk reports the
+ * resolved settings under `initResult.settings`, so the old read was dead code
+ * that always produced null, and every caller downstream silently fell back to
+ * ADE's own value instead of adopting Droid's.
+ */
+function readResolvedModelId(initResult: unknown): string | null {
+  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
+  const settings = record?.settings && typeof record.settings === "object"
+    ? record.settings as Record<string, unknown>
+    : null;
+  const modelId = typeof settings?.modelId === "string" ? settings.modelId.trim() : "";
+  return modelId.length ? modelId : null;
+}
+
 function buildReady(): DroidSdkReady {
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const initResult = session.initResult as unknown;
-  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
-  const currentModelId = typeof record?.currentModelId === "string" ? record.currentModelId : null;
   return {
     sessionId: session.sessionId,
-    currentModelId,
+    currentModelId: readResolvedModelId(initResult),
     availableModels: normalizeAvailableModels(initResult),
   };
 }
