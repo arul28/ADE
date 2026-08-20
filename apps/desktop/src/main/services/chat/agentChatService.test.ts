@@ -5988,6 +5988,76 @@ describe("createAgentChatService", () => {
         })).rejects.toThrow("transcript history without fork mode");
       });
 
+      it("derives Droid autonomy from ADE's own permission chip", async () => {
+        // ADE always carries a generic permissionMode, and it maps onto a Droid
+        // mode — so ADE does state autonomy here, deliberately. This is the
+        // ADE-owned half of the rule: there IS a control for it, so ADE's value
+        // wins. The omission path exists for launches that carry no permission
+        // mode at all (programmatic/mobile), not for this one.
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "hello" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.autonomyLevel).toBe("low");
+        expect(settings.interactionMode).toBe("auto");
+        // Never null: an explicit null wedges the Droid RPC for 30 seconds.
+        expect(settings.autonomyLevel).not.toBeNull();
+        expect(settings.interactionMode).not.toBeNull();
+      });
+
+      it("states the Droid autonomy the user picked explicitly", async () => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+          droidPermissionMode: "auto-high",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "hello" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.autonomyLevel).toBe("high");
+        expect(settings.interactionMode).toBe("auto");
+        expect(settings).not.toHaveProperty("specModeModelId");
+      });
+
+      it("maps a Droid plan session onto spec mode with autonomy off", async () => {
+        // Plan must stay read-only. Spec dominates Droid's compound autonomyMode,
+        // and the spec-mode model fields have to ride along with it — they are
+        // gated on the stated interaction mode, so they cannot be emitted for a
+        // session that stated none.
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+          interactionMode: "plan",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "plan this" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.interactionMode).toBe("spec");
+        expect(settings.autonomyLevel).toBe("off");
+        expect(settings.specModeModelId).toBeTruthy();
+      });
+
       it("refuses a cross-machine Droid fork with the portability message", async () => {
         installCleanCrossMachineGitFixture();
         const { service } = createService();

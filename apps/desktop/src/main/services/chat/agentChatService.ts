@@ -35108,12 +35108,21 @@ export function createAgentChatService(args: {
     // when permissionMode is null, letting the user's settings.json decide.
     const stated: Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> | null =
       chosenMode !== null || planRequested || isOrchestrationLeadSession(managed.session)
-        ? {
-            autonomyLevel: resolveDroidSdkAutonomyLevel(chosenMode ?? "auto-low"),
-            interactionMode: chosenMode === "agi"
-              ? "agi"
-              : resolveDroidSdkInteractionMode(managed.session),
-          }
+        ? ((): Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> => {
+            const interactionMode = chosenMode === "agi"
+              ? "agi" as const
+              : resolveDroidSdkInteractionMode(managed.session);
+            return {
+              // Spec collapses Droid's compound autonomyMode to "spec" and reads
+              // back as level "off", so pairing it with anything else is a claim
+              // Droid discards. droidSettingsJson already sends "off" for plan on
+              // the terminal path; state the same thing here.
+              autonomyLevel: interactionMode === "spec"
+                ? "off"
+                : resolveDroidSdkAutonomyLevel(chosenMode ?? "auto-low"),
+              interactionMode,
+            };
+          })()
         : null;
     return {
       modelId,
