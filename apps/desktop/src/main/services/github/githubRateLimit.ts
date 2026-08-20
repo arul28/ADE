@@ -1,6 +1,28 @@
 import type { GitHubAuthFailure, GitHubRateLimitState } from "../../../shared/types";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
-import { isDefinitiveGitHubOAuthError } from "./githubAppUserAuth";
+
+/**
+ * OAuth error codes that mean "this credential will never work again".
+ *
+ * Everything outside this set is treated as transient, because retrying a
+ * transient failure costs a request while giving up on a live credential costs
+ * the user their connection.
+ *
+ * Lives here, with the rest of GitHub's failure vocabulary, rather than in the
+ * OAuth transport: the transport reports what GitHub said, and this module is
+ * where ADE decides what any of it means.
+ */
+const DEFINITIVE_OAUTH_ERRORS: ReadonlySet<string> = new Set([
+  "bad_refresh_token",
+  "incorrect_client_credentials",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+]);
+
+export function isDefinitiveGitHubOAuthError(oauthError: string | null | undefined): boolean {
+  return typeof oauthError === "string" && DEFINITIVE_OAUTH_ERRORS.has(oauthError.trim());
+}
 
 export class GitHubRateLimitError extends Error {
   constructor(

@@ -25,15 +25,30 @@ function publish(status: GitHubAppUserAuthStatus | null): void {
   for (const listener of listeners) listener(status);
 }
 
+export type RefreshGithubAppUserAuthOptions = {
+  /**
+   * Starts a new read even when one is already running.
+   *
+   * The shared read is deduped, and a caller that reads AFTER an action it just
+   * performed needs the read to have started after it. Joining a read that was
+   * already in flight answers with the state from before the action — which is
+   * how a panel that re-reads the account right after the installation check
+   * kept showing the credential the check had just replaced.
+   */
+  force?: boolean;
+};
+
 /** Re-reads the status from the host and tells every consumer. */
-export function refreshGithubAppUserAuth(): Promise<GitHubAppUserAuthStatus | null> {
-  if (inFlight) return inFlight;
+export function refreshGithubAppUserAuth(
+  options: RefreshGithubAppUserAuthOptions = {},
+): Promise<GitHubAppUserAuthStatus | null> {
+  if (inFlight && !options.force) return inFlight;
   const read = window.ade?.github?.getAppUserAuthStatus;
   if (!read) {
     publish(null);
     return Promise.resolve(null);
   }
-  inFlight = window.ade.github
+  const pending: Promise<GitHubAppUserAuthStatus | null> = window.ade.github
     .getAppUserAuthStatus!()
     .then((status) => status ?? null)
     .catch(() => null)
@@ -42,9 +57,12 @@ export function refreshGithubAppUserAuth(): Promise<GitHubAppUserAuthStatus | nu
       return status;
     })
     .finally(() => {
-      inFlight = null;
+      // Only this read may clear the slot: a forced read runs beside an earlier
+      // one, and whichever finishes first must not orphan the other.
+      if (inFlight === pending) inFlight = null;
     });
-  return inFlight;
+  inFlight = pending;
+  return pending;
 }
 
 /** Drops the shared status so one test cannot leak into the next. */
@@ -59,7 +77,9 @@ export type UseGithubAppUserAuthResult = {
   appAuth: GitHubAppUserAuthStatus | null;
   /** False until the first read lands, which is not the same as "no token". */
   loaded: boolean;
-  refresh: () => Promise<GitHubAppUserAuthStatus | null>;
+  refresh: (
+    options?: RefreshGithubAppUserAuthOptions,
+  ) => Promise<GitHubAppUserAuthStatus | null>;
   /** Publishes a status an action already returned, without a second read. */
   set: (status: GitHubAppUserAuthStatus | null) => void;
 };

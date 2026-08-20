@@ -60,6 +60,7 @@ function makeInstall(overrides: Partial<GitHubAppInstallationStatus> = {}): GitH
     webhookLastSeenAt: null,
     checkedAt: "2026-07-01T00:00:00.000Z",
     error: null,
+    appUserAuthFailure: null,
     ...overrides,
   };
 }

@@ -81,25 +81,6 @@ export function isGitHubOAuthError(error: unknown): error is GitHubOAuthError {
     && (error as { name?: unknown }).name === "GitHubOAuthError";
 }
 
-/**
- * OAuth error codes that mean "this credential will never work again".
- *
- * Everything outside this set is treated as transient, because retrying a
- * transient failure costs a request while giving up on a live credential costs
- * the user their connection.
- */
-const DEFINITIVE_OAUTH_ERRORS: ReadonlySet<string> = new Set([
-  "bad_refresh_token",
-  "incorrect_client_credentials",
-  "invalid_grant",
-  "unauthorized_client",
-  "unsupported_grant_type",
-]);
-
-export function isDefinitiveGitHubOAuthError(oauthError: string | null | undefined): boolean {
-  return typeof oauthError === "string" && DEFINITIVE_OAUTH_ERRORS.has(oauthError.trim());
-}
-
 function parseRetryAfterSeconds(response: Response): number | null {
   const raw = response.headers.get("retry-after")?.trim();
   if (!raw) return null;

@@ -74,6 +74,29 @@ export function readIsoAfter(iso: string | null | undefined, cutoffMs: number): 
   return Number.isFinite(time) && time > cutoffMs;
 }
 
+/**
+ * True when `iso` names an instant that is both after `nowMs` and no further
+ * ahead than `maxAheadMs`.
+ *
+ * Every deadline in this ledger is written by a peer process, and a peer with a
+ * wrong clock writes one that no amount of waiting reaches. A lease stamped a
+ * year ahead locks every process out of the refresh forever, and a backoff
+ * stamped a year ahead pauses renewals for good — both poison the shared file
+ * until a person deletes it by hand. A deadline further ahead than the longest
+ * one ADE ever writes cannot have been written by a healthy process, so it is
+ * read as expired and the next writer replaces it.
+ */
+export function readIsoActiveWithin(
+  iso: string | null | undefined,
+  nowMs: number,
+  maxAheadMs: number,
+): boolean {
+  if (!iso) return false;
+  const time = Date.parse(iso);
+  if (!Number.isFinite(time)) return false;
+  return time > nowMs && time <= nowMs + maxAheadMs;
+}
+
 function trimmedOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }

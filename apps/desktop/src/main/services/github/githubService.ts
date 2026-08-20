@@ -47,6 +47,7 @@ import {
   appCredentialFailureEntry,
   describeAppUserAuthUnavailable,
   resolveAppUserTokenForRelay,
+  resolveStoredAppUserTokenForRelay,
 } from "./githubAppUserAuthFailure";
 import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import { readCredentialWithState } from "./credentialReadState";
@@ -563,6 +564,7 @@ export function createGithubService({
   ghAuthTokenProvider,
   githubRelaySecretReader,
   getAccountAccessToken,
+  onAppUserAuthChanged,
 }: {
   logger: Logger;
   projectRoot: string;
@@ -571,6 +573,16 @@ export function createGithubService({
   ghAuthTokenProvider?: GitHubCliAuthProvider | null;
   githubRelaySecretReader?: GitHubRelaySecretReader | null;
   getAccountAccessToken?: (() => Promise<string | null>) | null;
+  /**
+   * Called when the stored GitHub App credential is replaced or removed.
+   *
+   * The relay ingress loop stops asking for a credential it just found broken,
+   * and that cooldown outlives the repair: after a successful device flow the
+   * user waits out the remainder of it before anything reconnects. The service
+   * cannot clear that itself — the ingress service must stay free of GitHub
+   * internals — so the owner that holds both wires this up.
+   */
+  onAppUserAuthChanged?: (() => void) | null;
 }) {
   const legacyGithubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
@@ -622,6 +634,17 @@ export function createGithubService({
     }
     invalidateCredentialInventory();
     invalidateStatusCache();
+  };
+
+  /** Tells the owner the App credential changed, without letting it fail a call. */
+  const notifyAppUserAuthChanged = (): void => {
+    try {
+      onAppUserAuthChanged?.();
+    } catch (error) {
+      logger.warn("github.app_user_auth_changed_notify_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   /**
@@ -864,13 +887,12 @@ export function createGithubService({
     const environment = readEnvironmentAuthToken();
     const appStatus = appUserAuth.getAuthStatus();
     const [appResult, gh] = await Promise.all([
-      appStatus.tokenStored
-        ? resolveAppUserTokenForRelay({
-          appUserAuth,
-          logger,
-          event: "github.app_user_token_unavailable",
-        })
-        : Promise.resolve({ token: null, failure: null }),
+      resolveStoredAppUserTokenForRelay({
+        status: appStatus,
+        appUserAuth,
+        logger,
+        event: "github.app_user_token_unavailable",
+      }),
       readGhAuthToken(),
     ]);
     const appToken = appResult.token;
@@ -2472,6 +2494,7 @@ export function createGithubService({
       if (result.status === "authorized") {
         const currentToken = appUserAuth.getStoredTokenForHealth();
         credentialsChanged({ tokensToClear: [previousToken, currentToken] });
+        notifyAppUserAuthChanged();
       }
       return result;
     },
@@ -2480,6 +2503,7 @@ export function createGithubService({
       const previousToken = appUserAuth.getStoredTokenForHealth();
       const status = appUserAuth.clearAuth();
       credentialsChanged({ tokensToClear: [previousToken] });
+      notifyAppUserAuthChanged();
       return status;
     },
 

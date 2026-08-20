@@ -58,6 +58,7 @@ import {
   appCredentialFailureEntry,
   describeAppUserAuthUnavailable,
   resolveAppUserTokenForRelay,
+  resolveStoredAppUserTokenForRelay,
   type AppUserAuthFailure,
 } from "../../desktop/src/main/services/github/githubAppUserAuthFailure";
 import {
@@ -824,8 +825,8 @@ export function createHeadlessGitHubService(
 
   const buildAppCredentialAsync = async (): Promise<AppCredentialLookup> => {
     const status = appUserAuth.getAuthStatus();
-    if (!status.tokenStored) return { token: null, failure: null, status };
-    const resolved = await resolveAppUserTokenForRelay({
+    const resolved = await resolveStoredAppUserTokenForRelay({
+      status,
       appUserAuth,
       logger,
       event: "github.app_user_token_unavailable",

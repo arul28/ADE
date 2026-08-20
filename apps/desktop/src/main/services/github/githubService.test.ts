@@ -181,6 +181,7 @@ function makeService(options: {
     | Promise<{ token: string | null; ghCliPath: string | null; ghAuthError: string | null }>;
   githubRelaySecretReader?: (ref: string) => string | null;
   getAccountAccessToken?: () => Promise<string | null>;
+  onAppUserAuthChanged?: () => void;
 } = {}) {
   return createGithubService({
     logger: makeLogger(),
@@ -190,6 +191,7 @@ function makeService(options: {
     ghAuthTokenProvider: options.ghAuthTokenProvider,
     githubRelaySecretReader: options.githubRelaySecretReader,
     getAccountAccessToken: options.getAccountAccessToken,
+    onAppUserAuthChanged: options.onAppUserAuthChanged,
   });
 }
 
@@ -1580,6 +1582,38 @@ describe("githubService.getStatus", () => {
     const retryAtMs = Date.parse(status.authFailure?.retryAt ?? "");
     expect(retryAtMs).toBeGreaterThan(Date.now());
     expect(retryAtMs).toBeLessThanOrEqual(Date.now() + 121_000);
+  });
+
+  // GitHub answers a secondary rate limit with a bare 403 and no body at all.
+  // The refresh path reads that as a pause; re-deriving the kind from the error
+  // it throws reads the same 403 as "permission denied" — an accusation against
+  // the account, with a Fix-GitHub-auth button attached to it.
+  it("keeps a bare-403 refresh a rate limit rather than a permission problem", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(403, {}));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status.authFailure?.kind).toBe("rate_limited");
+    expect(status.credentialStates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "app",
+        failure: expect.objectContaining({ kind: "rate_limited" }),
+      }),
+    ]));
+  });
+
+  it("reports a refresh that never reached GitHub as a network failure", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
+    mockFetch.mockRejectedValueOnce(new Error("fetch failed"));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status.authFailure?.kind).toBe("network");
   });
 
   it("reports a GitHub App refresh failure instead of treating authorization as missing", async () => {
@@ -3047,6 +3081,53 @@ describe("githubService.getAppInstallationStatus", () => {
 describe("githubService GitHub App user authorization", () => {
   beforeEach(() => {
     resetMocks();
+  });
+
+  // The relay ingress loop stops asking for a credential it found broken, and
+  // that cooldown outlives the repair. Without this signal the user finishes
+  // the device flow and then waits out the remainder of it before anything
+  // reconnects.
+  it("announces every change of the App credential to its owner", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const onAppUserAuthChanged = vi.fn();
+    const service = makeService({ credentialStore, onAppUserAuthChanged });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, {
+        device_code: "device-code",
+        user_code: "ADE-CODE",
+        verification_uri: "https://github.com/login/device",
+        expires_in: 900,
+        interval: 1,
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        access_token: "ghu_app_user_token",
+        token_type: "bearer",
+        expires_in: 28_800,
+        refresh_token: "ghr_refresh_token",
+        refresh_token_expires_in: 15_552_000,
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { login: "octocat" }));
+
+    const start = await service.startAppUserDeviceAuth();
+    expect(onAppUserAuthChanged).not.toHaveBeenCalled();
+
+    await service.pollAppUserDeviceAuth({ sessionId: start.sessionId });
+    expect(onAppUserAuthChanged).toHaveBeenCalledTimes(1);
+
+    service.clearAppUserAuth();
+    expect(onAppUserAuthChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a failing owner break the device flow", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const service = makeService({
+      credentialStore,
+      onAppUserAuthChanged: () => {
+        throw new Error("ingress service is gone");
+      },
+    });
+
+    expect(() => service.clearAppUserAuth()).not.toThrow();
   });
 
   it("stores the GitHub App user token returned by device flow polling", async () => {

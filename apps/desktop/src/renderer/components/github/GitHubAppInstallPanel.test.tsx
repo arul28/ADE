@@ -27,6 +27,7 @@ function installedStatus(): GitHubAppInstallationStatus {
     webhookLastSeenAt: null,
     checkedAt: new Date().toISOString(),
     error: null,
+    appUserAuthFailure: null,
   };
 }
 
@@ -60,6 +61,7 @@ describe("GitHubAppInstallPanel", () => {
       webhookLastSeenAt: null,
       checkedAt: new Date().toISOString(),
       error: "GitHub API rate limit reached",
+      appUserAuthFailure: null,
     };
     window.ade = {
       github: {

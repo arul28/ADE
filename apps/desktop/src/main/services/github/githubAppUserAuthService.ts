@@ -16,6 +16,7 @@ import {
 import {
   emptyLedger,
   parseStoredAppUserAuth,
+  readIsoActiveWithin,
   readIsoAfter,
   serializeStoredAppUserAuth,
   type StoredAppUserAuth,
@@ -152,7 +153,39 @@ function refreshBackoffMs(
     REFRESH_BACKOFF_MAX_MS,
   );
   const requested = failure.retryAfterSec != null ? failure.retryAfterSec * 1_000 : 0;
-  return Math.max(exponential, requested);
+  // Capped at the same bound the readers accept. A longer pause than this is
+  // indistinguishable from a poisoned deadline, and a deadline the readers
+  // discard is worse than a short one: it puts every process straight back into
+  // the refresh storm this ledger exists to stop.
+  return Math.min(Math.max(exponential, requested), REFRESH_BACKOFF_MAX_MS);
+}
+
+/** True when the backoff deadline is both in the future and plausible. */
+function backoffActive(notBeforeAt: string | null, nowMs: number): boolean {
+  return readIsoActiveWithin(notBeforeAt, nowMs, REFRESH_BACKOFF_MAX_MS);
+}
+
+/** True when the refresh lease is both in the future and plausible. */
+function leaseActive(leaseUntil: string | null, nowMs: number): boolean {
+  return readIsoActiveWithin(leaseUntil, nowMs, REFRESH_LEASE_MS);
+}
+
+/** A credential ADE can actually POST a refresh for. */
+type UsableRefreshRecord = GitHubAppUserTokenRecord & { refreshToken: string };
+
+/**
+ * True when the stored credential still carries a refresh token worth POSTing.
+ *
+ * A missing `refreshTokenExpiresAt` is unknown, not expired — attempt the
+ * refresh instead of writing off a possibly-valid credential.
+ */
+function hasUsableRefreshToken(
+  record: GitHubAppUserTokenRecord,
+  nowMs: number,
+): record is UsableRefreshRecord {
+  if (!record.refreshToken) return false;
+  return record.refreshTokenExpiresAt == null
+    || readIsoAfter(record.refreshTokenExpiresAt, nowMs);
 }
 
 export function createGitHubAppUserAuthService(args: {
@@ -297,18 +330,10 @@ export function createGitHubAppUserAuthService(args: {
     }
   };
 
-  const refreshTokenUnusable = (record: GitHubAppUserTokenRecord): boolean => {
-    // A missing refreshTokenExpiresAt is unknown, not expired — attempt the
-    // refresh instead of writing off a possibly-valid credential.
-    if (!record.refreshToken) return true;
-    return record.refreshTokenExpiresAt != null
-      && !readIsoAfter(record.refreshTokenExpiresAt, now());
-  };
-
   const credentialStateOf = (stored: StoredAppUserAuth): GitHubAppUserAuthCredentialState => {
     if (!stored.token?.accessToken) return "missing";
-    if (stored.refresh.dead || refreshTokenUnusable(stored.token)) return "needs_reauth";
-    if (readIsoAfter(stored.refresh.notBeforeAt, now())) return "blocked";
+    if (stored.refresh.dead || !hasUsableRefreshToken(stored.token, now())) return "needs_reauth";
+    if (backoffActive(stored.refresh.notBeforeAt, now())) return "blocked";
     return "authorized";
   };
 
@@ -396,8 +421,8 @@ export function createGitHubAppUserAuthService(args: {
     | { outcome: "fresh"; record: GitHubAppUserTokenRecord }
     | { outcome: "needs_reauth"; failure: StoredRefreshFailure | null }
     | { outcome: "blocked"; retryAt: string | null; failure: StoredRefreshFailure | null }
-    | { outcome: "held"; leaseUntil: string | null; failure: StoredRefreshFailure | null }
-    | { outcome: "acquired"; record: GitHubAppUserTokenRecord };
+    | { outcome: "held"; leaseUntil: string | null }
+    | { outcome: "acquired"; record: UsableRefreshRecord };
 
   /**
    * Judges every refresh gate and takes the lease, as ONE atomic step.
@@ -417,17 +442,19 @@ export function createGitHubAppUserAuthService(args: {
       if (isAccessTokenFresh(stored.token)) {
         return decline({ outcome: "fresh", record: stored.token });
       }
-      if (stored.refresh.dead || refreshTokenUnusable(stored.token)) {
+      if (stored.refresh.dead || !hasUsableRefreshToken(stored.token, now())) {
         return decline({ outcome: "needs_reauth", failure });
       }
-      if (readIsoAfter(stored.refresh.notBeforeAt, now())) {
+      if (backoffActive(stored.refresh.notBeforeAt, now())) {
         return decline({ outcome: "blocked", retryAt: stored.refresh.notBeforeAt, failure });
       }
       if (
-        readIsoAfter(stored.refresh.leaseUntil, now())
+        leaseActive(stored.refresh.leaseUntil, now())
         && stored.refresh.leaseHolder !== leaseHolderId
       ) {
-        return decline({ outcome: "held", leaseUntil: stored.refresh.leaseUntil, failure });
+        // No failure travels with this one: a peer holding the lease is ADE
+        // renewing the credential, and GitHub has said nothing about it.
+        return decline({ outcome: "held", leaseUntil: stored.refresh.leaseUntil });
       }
       const leaseUntil = new Date(now() + REFRESH_LEASE_MS).toISOString();
       return {
@@ -535,7 +562,7 @@ export function createGitHubAppUserAuthService(args: {
     if (!current.token?.accessToken) throw missingAuthError();
     if (isAccessTokenFresh(current.token)) return current.token;
     if (current.refresh.dead) throw needsReauthError(current.refresh.lastFailure);
-    if (readIsoAfter(current.refresh.notBeforeAt, now())) {
+    if (backoffActive(current.refresh.notBeforeAt, now())) {
       throw blockedError(current.refresh.notBeforeAt, current.refresh.lastFailure);
     }
     // Stale but healthy. The next call runs the gate again and renews it; this
@@ -543,15 +570,41 @@ export function createGitHubAppUserAuthService(args: {
     return current.token;
   };
 
-  const runRefreshPost = async (record: GitHubAppUserTokenRecord): Promise<GitHubAppUserTokenRecord> => {
+  /**
+   * Hands the on-disk lease back when this process still holds it.
+   *
+   * The lease also expires on its own after {@link REFRESH_LEASE_MS}, so this is
+   * about latency, not correctness: without it a refresh that dies before it can
+   * record an outcome — a credential-store write that throws, most of all —
+   * makes every other process wait out the full minute for nothing.
+   */
+  const releaseRefreshLease = (): void => {
+    updateStoredAuth<void>((stored) => {
+      if (!stored.token || stored.refresh.leaseHolder !== leaseHolderId) {
+        return { next: undefined, result: undefined };
+      }
+      return {
+        next: {
+          token: stored.token,
+          refresh: { ...stored.refresh, leaseUntil: null, leaseHolder: null },
+        },
+        result: undefined,
+      };
+    });
+  };
+
+  const runRefreshPost = async (record: UsableRefreshRecord): Promise<GitHubAppUserTokenRecord> => {
     const epochAtStart = authEpoch;
     // Held for the whole call: every write below is allowed only over the
     // credential this exact token belongs to.
     const postedRefreshToken = record.refreshToken;
+    // Both persist paths clear the lease as part of the record they write, so
+    // only an exit that reaches NEITHER of them leaves it held.
+    let ledgerWritten = false;
     try {
       const refreshed = await refreshGitHubAppUserToken({
         clientId: ADE_GITHUB_APP_CLIENT_ID,
-        refreshToken: postedRefreshToken!,
+        refreshToken: postedRefreshToken,
         fetchImpl: (input, init) => args.fetchImpl(String(input), init),
         userAgent: args.userAgent,
         fetchUserLogin: fetchAppUserLogin,
@@ -562,6 +615,7 @@ export function createGitHubAppUserAuthService(args: {
         return serveCurrentStoredAuth();
       }
       const persisted = persistRefreshSuccess(refreshed, postedRefreshToken);
+      ledgerWritten = true;
       if (!persisted.written) {
         args.logger.info("github.app_user_token_refresh_superseded", {
           userLogin: refreshed.userLogin,
@@ -580,6 +634,7 @@ export function createGitHubAppUserAuthService(args: {
       const failure = classifyRefreshFailure(error);
       const stamped = stampFailure(failure);
       const persisted = persistRefreshFailure(stamped, failure.dead, postedRefreshToken);
+      ledgerWritten = true;
       args.logger.warn("github.app_user_token_refresh_failed", {
         error: failure.message,
         kind: failure.kind,
@@ -598,6 +653,16 @@ export function createGitHubAppUserAuthService(args: {
       throw failure.dead
         ? needsReauthError(stamped)
         : blockedError(persisted.notBeforeAt, stamped);
+    } finally {
+      if (!ledgerWritten) {
+        try {
+          releaseRefreshLease();
+        } catch {
+          // The store that just refused the outcome will refuse this too. The
+          // lease expires on its own, and reporting a second store failure over
+          // the first one helps nobody.
+        }
+      }
     }
   };
 
@@ -606,9 +671,8 @@ export function createGitHubAppUserAuthService(args: {
    * wait ran out.
    */
   const rememberPeerLease = (leaseUntil: string | null): void => {
-    const until = leaseUntil ? Date.parse(leaseUntil) : NaN;
-    if (!Number.isFinite(until) || until <= now()) return;
-    coordinatorFor(storeIdentity).peerLeaseUntilMs = until;
+    if (!leaseActive(leaseUntil, now())) return;
+    coordinatorFor(storeIdentity).peerLeaseUntilMs = Date.parse(leaseUntil!);
   };
 
   /**
@@ -629,7 +693,9 @@ export function createGitHubAppUserAuthService(args: {
       // token by revoking the credential outright.
       if (attempt === LEASE_POLL_MAX_ATTEMPTS) {
         rememberPeerLease(lease.leaseUntil);
-        throw blockedError(lease.leaseUntil, lease.failure);
+        // No failure: ADE is renewing, and every surface that reads this must
+        // say so rather than blame GitHub for a wait ADE itself is causing.
+        throw blockedError(lease.leaseUntil, null);
       }
       await sleep(LEASE_POLL_INTERVAL_MS);
     }
@@ -647,17 +713,16 @@ export function createGitHubAppUserAuthService(args: {
       return stored.token.accessToken;
     }
     if (stored.refresh.dead) throw needsReauthError(stored.refresh.lastFailure);
-    if (readIsoAfter(stored.refresh.notBeforeAt, now())) {
+    if (backoffActive(stored.refresh.notBeforeAt, now())) {
       throw blockedError(stored.refresh.notBeforeAt, stored.refresh.lastFailure);
     }
     // A peer still held the lease when an earlier wait ran out. Polling for
     // three more seconds cannot learn anything before that deadline passes, and
-    // every project scope in this process would pay the wait separately.
-    if (coordinator.peerLeaseUntilMs > now()) {
-      throw blockedError(
-        new Date(coordinator.peerLeaseUntilMs).toISOString(),
-        stored.refresh.lastFailure,
-      );
+    // every project scope in this process would pay the wait separately. This
+    // is ADE waiting on ADE, so it carries no failure.
+    if (coordinator.peerLeaseUntilMs > now()
+      && coordinator.peerLeaseUntilMs <= now() + REFRESH_LEASE_MS) {
+      throw blockedError(new Date(coordinator.peerLeaseUntilMs).toISOString(), null);
     }
     coordinator.peerLeaseUntilMs = 0;
     if (!coordinator.inFlight) {

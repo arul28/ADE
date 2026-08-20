@@ -6,7 +6,6 @@ import {
   type CtoAttentionState,
   type CtoOnboardingState,
   type CtoSnapshot,
-  type GitHubStatus,
   type PersonalChatStreamEventsResult,
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
@@ -14,6 +13,7 @@ import {
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
+import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
@@ -553,35 +553,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       call("ai.watchCursorCloudMirror", args, undefined, false),
   };
 
-  const github: Record<string, unknown> = {
-    getStatus: (opts?: unknown) => call("github.getStatus", opts, githubDisconnectedStatus()),
-    getRemoteStatus: (opts?: unknown) => call("github.getRemoteStatus", opts, { repo: null, hasOrigin: false }),
-    setToken: async () => githubDisconnectedStatus(),
-    clearToken: async () => githubDisconnectedStatus(),
-    getAppUserAuthStatus: async () => ({ ...GITHUB_APP_USER_AUTH_UNSUPPORTED }),
-    startAppUserDeviceAuth: async () => ({ ok: false, error: "unsupported" }),
-    pollAppUserDeviceAuth: async () => ({ status: "expired" }),
-    clearAppUserAuth: async () => ({ ...GITHUB_APP_USER_AUTH_UNSUPPORTED }),
-    // Routed to the host: the paired machine spends the quota, so its reserve
-    // is the one these pollers must respect.
-    getRequestBudget: (opts?: unknown) => call("github.getRequestBudget", opts, {
-      pausedUntil: null,
-      failureKind: null,
-      retryAt: null,
-    }),
-    detectRepo: async () => null,
-    listRepoAutolinks: async () => [],
-    getAppInstallationStatus: async () => ({ installed: false, state: "unknown" }),
-    createRepoAutolink: async () => null,
-    listRepoLabels: async () => [],
-    listRepoCollaborators: async () => [],
-    listMyRepos: async () => ({ repositories: [], nextCursor: null }),
-    // Publishing creates a repo + pushes, so keep it explicitly marked as a
-    // mutation and ineligible for adapter read caching.
-    publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }, false),
-    onStatusChanged: (listener: (status: unknown) => void) => events.on("githubStatusChanged", listener as never),
-  };
-
   const projectConfig: Record<string, unknown> = {
     get: async (pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("projectConfig.get", pin, infra);
@@ -631,7 +602,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     onboarding: onboarding as AdeNamespace<"onboarding">,
     modelPicker: modelPicker as AdeNamespace<"modelPicker">,
     ai: ai as AdeNamespace<"ai">,
-    github: github as AdeNamespace<"github">,
+    github: createGithubNamespace({
+      call,
+      onStatusChanged: (listener) => events.on("githubStatusChanged", listener as never),
+    }) as AdeNamespace<"github">,
     projectConfig: projectConfig as AdeNamespace<"projectConfig">,
     zoom: zoom as AdeNamespace<"zoom">,
     layout: localNamespaces.layout as AdeNamespace<"layout">,
@@ -931,45 +905,6 @@ function aiStatus(): Record<string, unknown> {
     opencodeProviders: [],
     opencodeProvidersStale: true,
     modelsDevLastFetchedAt: null,
-  };
-}
-
-/**
- * What the web client answers for the GitHub App account, and how a renderer
- * knows it is a stub.
- *
- * Deliberately NOT the real `GitHubAppUserAuthStatus` shape: this build has no
- * machine to hold the credential. `appUserAuthSupported: false` says so out
- * loud, so a renderer can skip the App surfaces instead of flashing a false
- * "not authorized" banner on every hosted-web project. `credentialState` is
- * carried anyway, so anything that reads it gets the honest answer.
- */
-const GITHUB_APP_USER_AUTH_UNSUPPORTED = {
-  appUserAuthSupported: false,
-  authenticated: false,
-  user: null,
-  credentialState: "missing",
-  refreshBlockedUntil: null,
-  lastRefreshError: null,
-} as const;
-
-function githubDisconnectedStatus(): GitHubStatus {
-  return {
-    tokenStored: false,
-    patTokenStored: false,
-    tokenDecryptionFailed: false,
-    storageScope: "app",
-    authSource: "none",
-    repo: null,
-    hasOrigin: false,
-    userLogin: null,
-    scopes: [],
-    ghCliPath: null,
-    ghAuthError: null,
-    checkedAt: new Date().toISOString(),
-    repoAccessOk: null,
-    repoAccessError: null,
-    connected: false,
   };
 }
 

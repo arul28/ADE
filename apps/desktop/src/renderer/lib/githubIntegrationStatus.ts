@@ -4,7 +4,10 @@ import type {
   GitHubSetTokenResult,
   GitHubStatus,
 } from "../../shared/types";
-import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
+import {
+  GITHUB_APP_USER_AUTH_RENEWING_COPY,
+  GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
+} from "../../shared/types";
 import {
   GITHUB_STATUS_PAGE_URL,
   githubServiceAffectedLabel,
@@ -174,17 +177,6 @@ export type GithubRepoConnectionState =
   | "unknown"; // status not loaded / indeterminate
 
 /**
- * The account axis, judged by the credential that actually keeps the account
- * connected: the refresh token.
- *
- * The GitHub App access token lives 8 hours and is renewed from the refresh
- * token on every use, so `expiresAt` in the past is ordinary operation. Reading
- * it as "authorization expired" sent working accounts into a re-authorize flow
- * that hits the same OAuth endpoint the renewals were already failing on — the
- * one thing guaranteed to keep the account locked out. Never judge by
- * `expiresAt`; the service reports the honest state in `credentialState`.
- */
-/**
  * Whether the host behind this renderer really implements the GitHub App
  * account API.
  *
@@ -200,14 +192,26 @@ export type GithubRepoConnectionState =
 export function isGithubAppUserAuthSupported(
   appAuth: GitHubAppUserAuthStatus | null | undefined,
 ): boolean {
-  const raw = appAuth as Record<string, unknown> | null | undefined;
   // Nothing fetched yet says nothing about the host. Callers gate on their own
   // "loaded" signal before they act on this.
-  if (!raw) return true;
-  if (raw.appUserAuthSupported === false) return false;
-  return typeof raw.configured === "boolean";
+  if (!appAuth) return true;
+  if (appAuth.appUserAuthSupported === false) return false;
+  // `configured` is required of a real status and absent from every stub, so a
+  // runtime check of its type is the older hosts' declaration.
+  return typeof appAuth.configured === "boolean";
 }
 
+/**
+ * The account axis, judged by the credential that actually keeps the account
+ * connected: the refresh token.
+ *
+ * The GitHub App access token lives 8 hours and is renewed from the refresh
+ * token on every use, so `expiresAt` in the past is ordinary operation. Reading
+ * it as "authorization expired" sent working accounts into a re-authorize flow
+ * that hits the same OAuth endpoint the renewals were already failing on — the
+ * one thing guaranteed to keep the account locked out. Never judge by
+ * `expiresAt`; the service reports the honest state in `credentialState`.
+ */
 export function deriveGithubAccountAuthState(
   appAuth: GitHubAppUserAuthStatus | null,
 ): GithubAccountAuthState {
@@ -265,8 +269,14 @@ export function isGithubRepoAccessPending(
 }
 
 /**
- * Every phrasing ADE or its relay emits for "there is no usable GitHub App
- * token", enumerated rather than guessed.
+ * COMPATIBILITY SHIM. Every phrasing ADE or its relay emits for "there is no
+ * usable GitHub App token", enumerated rather than guessed.
+ *
+ * The typed `appUserAuthFailure` on the installation status is the real signal,
+ * and it is read first. This list still catches the two cases it cannot: a host
+ * older than that field, and a raw 401 body from the relay itself. Do not add
+ * new ADE phrasings here — a new phrase from a current host arrives with the
+ * typed field beside it.
  *
  * A loose substring here is worse than a missing one: "not authorized" also
  * appears in messages about the REPOSITORY, and matching those reported a real
@@ -297,7 +307,7 @@ function isGithubAuthTokenRequiredError(error: string | null | undefined): boole
 
 export function deriveGithubRepoConnectionState(
   status: GitHubAppInstallationStatus | null,
-  account?: GithubAccountAuthState,
+  account: GithubAccountAuthState,
 ): GithubRepoConnectionState {
   if (!status) return "unknown";
   if (status.repo === null) return "no_repo";
@@ -307,6 +317,8 @@ export function deriveGithubRepoConnectionState(
     // report the honest "webhook_off" rather than a false-healthy "connected".
     return status.relayConfigured && status.webhookState !== "deleted" ? "connected" : "webhook_off";
   }
+  // The host said outright that this check ran without an account credential.
+  if (status.appUserAuthFailure) return "waiting_on_account";
   if (isGithubAuthTokenRequiredError(status.error)) return "waiting_on_account";
   // An unauthorized account cannot check an installation, so every "not
   // installed" reading below it is unproven. Say what ADE is actually waiting
@@ -317,7 +329,7 @@ export function deriveGithubRepoConnectionState(
   // to the ADE account token), and the panel has honest copy for each.
   const failureIsExplained = isGithubRateLimitMessage(status.error)
     || isGithubServiceUnavailable({ message: status.error });
-  if (account != null && account !== "valid" && !failureIsExplained) return "waiting_on_account";
+  if (account !== "valid" && !failureIsExplained) return "waiting_on_account";
   if (status.state === "not_installed") return "not_installed";
   if (isGithubRepoAccessPending(status)) return "access_pending";
   return "unknown";
@@ -426,11 +438,23 @@ export function describeGithubAccountAxis(
     };
   }
   if (account === "blocked") {
-    const until = formatGithubShortTime(appAuth?.refreshBlockedUntil ?? null);
+    // Blocked with nothing recorded against the credential is ADE's own
+    // renewal, not a GitHub refusal: one process on this machine holds the
+    // refresh and the rest wait a moment. Calling that "paused" told the user
+    // GitHub had stopped something, which is both wrong and unactionable.
+    if (!appAuth?.lastRefreshError) {
+      return {
+        tone: "pending",
+        label: "Renewing…",
+        subtext: GITHUB_APP_USER_AUTH_RENEWING_COPY,
+        cta: null,
+        note: null,
+      };
+    }
     return {
       tone: "neutral",
-      label: until ? `Paused until ${until}` : "Paused",
-      subtext: githubRefreshPauseCopy(appAuth?.lastRefreshError?.kind ?? null),
+      label: githubPausedLabel(appAuth.refreshBlockedUntil),
+      subtext: githubRefreshPauseCopy(appAuth.lastRefreshError.kind),
       cta: null,
       note: "Re-authorizing is unavailable while GitHub has these requests paused.",
     };
@@ -477,12 +501,21 @@ export function describeGithubAppCredentialBadge(
   account: GithubAccountAuthState,
   blockedUntil: string | null,
 ): { label: string; tone: GithubAccountAxisTone } | null {
-  if (account === "blocked") {
-    const until = formatGithubShortTime(blockedUntil);
-    return { label: until ? `Paused until ${until}` : "Paused", tone: "neutral" };
-  }
+  if (account === "blocked") return { label: githubPausedLabel(blockedUntil), tone: "neutral" };
   if (account === "needs_reauth") return { label: "Re-authorize", tone: "warn" };
   return null;
+}
+
+/**
+ * The one label for a paused renewal, with the deadline when there is one.
+ *
+ * Two surfaces render it — the axis pill and the ladder badge — and they have
+ * to read identically: a user who sees "Paused" in one card and "Paused until
+ * 3:40 PM" in the other reads them as two different problems.
+ */
+export function githubPausedLabel(blockedUntil: string | null): string {
+  const until = formatGithubShortTime(blockedUntil);
+  return until ? `Paused until ${until}` : "Paused";
 }
 
 /** Short wall-clock time for a deadline ADE is waiting on ("3:40 PM"). */

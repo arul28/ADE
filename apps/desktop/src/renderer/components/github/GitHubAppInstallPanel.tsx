@@ -98,6 +98,8 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         webhookLastSeenAt: null,
         checkedAt: new Date().toISOString(),
         error: error instanceof Error ? error.message : String(error),
+        // The call itself failed, so nothing was learned about the account.
+        appUserAuthFailure: null,
       });
     } finally {
       const isCurrentRequest = () => mountedRef.current && statusRequestSeqRef.current === requestSeq;
@@ -105,7 +107,10 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       // expired stored token can be cleared during the status check, and the
       // panel must reflect that immediately.
       if (isCurrentRequest()) {
-        await refreshAppAuth();
+        // Forced: this read has to have started after the status call, or it
+        // joins one from before it and reports the credential that check
+        // replaced.
+        await refreshAppAuth({ force: true });
         if (isCurrentRequest()) {
           if (opts.retryAfterAuthorization) {
             setDeviceMessage(
@@ -496,7 +501,8 @@ function renderPill({ tone, color, label }: PillSpec): ReactNode {
   );
 }
 
-const PILL_TONE_COLORS: Record<GithubAccountAxisTone, string> = {
+/** One color per tone, shared with the Settings ladder so the two agree. */
+export const PILL_TONE_COLORS: Record<GithubAccountAxisTone, string> = {
   ok: COLORS.success,
   warn: COLORS.warning,
   pending: COLORS.textMuted,

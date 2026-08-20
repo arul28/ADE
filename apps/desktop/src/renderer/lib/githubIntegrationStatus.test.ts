@@ -4,7 +4,10 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubStatus,
 } from "../../shared/types";
-import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../shared/types";
+import {
+  GITHUB_APP_USER_AUTH_RENEWING_COPY,
+  GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
+} from "../../shared/types";
 import {
   deriveGithubAccountAuthState,
   deriveGithubRealtimeBlock,
@@ -55,6 +58,7 @@ function makeStatus(overrides: Partial<GitHubAppInstallationStatus> = {}): GitHu
     webhookLastSeenAt: null,
     checkedAt: "2026-07-02T18:39:42.000Z",
     error: "Not Found",
+    appUserAuthFailure: null,
     ...overrides,
   };
 }
@@ -174,8 +178,27 @@ describe("describeGithubAccountAxis", () => {
     const axis = describeGithubAccountAxis("blocked", makeAppAuth({
       credentialState: "blocked",
       refreshBlockedUntil: null,
+      lastRefreshError: { kind: "outage", message: "503", status: 503, at: new Date().toISOString() },
     }));
     expect(axis.label).toBe("Paused");
+  });
+
+  // A peer process on this machine holds the refresh lease: the credential is
+  // blocked with nothing recorded against it. "Paused" told the user GitHub had
+  // stopped something, over a wait that ends in about a second and that nobody
+  // can act on.
+  it("says ADE is renewing when nothing was recorded against the credential", () => {
+    const axis = describeGithubAccountAxis("blocked", makeAppAuth({
+      credentialState: "blocked",
+      refreshBlockedUntil: new Date(Date.now() + 30_000).toISOString(),
+      lastRefreshError: null,
+    }));
+
+    expect(axis.label).toBe("Renewing…");
+    expect(axis.subtext).toBe(GITHUB_APP_USER_AUTH_RENEWING_COPY);
+    expect(axis.subtext).not.toMatch(/github/i);
+    expect(axis.cta).toBeNull();
+    expect(axis.note).toBeNull();
   });
 
   it("asks for re-authorization only in the state that needs one", () => {
@@ -252,24 +275,24 @@ describe("deriveGithubRepoConnectionState", () => {
     });
 
   it("is connected only when installed, relay is configured, and the webhook isn't deleted", () => {
-    expect(deriveGithubRepoConnectionState(installed())).toBe("connected");
+    expect(deriveGithubRepoConnectionState(installed(), "valid")).toBe("connected");
     // webhookState "unknown" is not "deleted", so it still counts as connected.
-    expect(deriveGithubRepoConnectionState(installed({ webhookState: "unknown" }))).toBe("connected");
+    expect(deriveGithubRepoConnectionState(installed({ webhookState: "unknown" }), "valid")).toBe("connected");
   });
 
   it("reports webhook_off when installed but the webhook was deleted", () => {
-    expect(deriveGithubRepoConnectionState(installed({ webhookState: "deleted" }))).toBe("webhook_off");
+    expect(deriveGithubRepoConnectionState(installed({ webhookState: "deleted" }), "valid")).toBe("webhook_off");
   });
 
   it("reports webhook_off when installed but the relay isn't configured", () => {
-    expect(deriveGithubRepoConnectionState(installed({ relayConfigured: false }))).toBe("webhook_off");
+    expect(deriveGithubRepoConnectionState(installed({ relayConfigured: false }), "valid")).toBe("webhook_off");
   });
 
   it("still surfaces the pre-install states", () => {
-    expect(deriveGithubRepoConnectionState(null)).toBe("unknown");
-    expect(deriveGithubRepoConnectionState(makeStatus({ repo: null }))).toBe("no_repo");
+    expect(deriveGithubRepoConnectionState(null, "valid")).toBe("unknown");
+    expect(deriveGithubRepoConnectionState(makeStatus({ repo: null }), "valid")).toBe("no_repo");
     expect(
-      deriveGithubRepoConnectionState(makeStatus({ installed: false, state: "not_installed", error: null })),
+      deriveGithubRepoConnectionState(makeStatus({ installed: false, state: "not_installed", error: null }), "valid"),
     ).toBe("not_installed");
   });
 
@@ -285,9 +308,29 @@ describe("deriveGithubRepoConnectionState", () => {
     expect(deriveGithubRepoConnectionState(notInstalled, "valid")).toBe("not_installed");
   });
 
+  // The typed field is the host saying outright that this check ran without an
+  // account credential. It holds whatever the wording is, including a message
+  // no string list has ever been taught.
+  it("reads the typed account failure rather than the error wording", () => {
+    const status = makeStatus({
+      installed: false,
+      state: "error",
+      error: "Something nobody has enumerated yet.",
+      appUserAuthFailure: {
+        message: "Something nobody has enumerated yet.",
+        credentialState: "blocked",
+        retryAt: null,
+        failureKind: null,
+      },
+    });
+
+    expect(deriveGithubRepoConnectionState(status, "valid")).toBe("waiting_on_account");
+  });
+
   it("treats the relay's auth-required answer as waiting even without an account state", () => {
     expect(deriveGithubRepoConnectionState(
       makeStatus({ installed: false, state: "error", error: "GitHub auth token is required" }),
+      "valid",
     )).toBe("waiting_on_account");
   });
 

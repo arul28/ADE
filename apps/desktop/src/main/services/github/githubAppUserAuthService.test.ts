@@ -3,6 +3,8 @@ import {
   createGitHubAppUserAuthService,
   resetGitHubAppUserAuthCoordinatorsForTests,
 } from "./githubAppUserAuthService";
+import type { GitHubAppUserTokenRecord } from "./githubAppUserAuth";
+import { makeStoredAppUserToken } from "./githubAppUserAuth.testFixtures";
 
 const TOKEN_KEY = "github.appUserToken.v1";
 
@@ -44,18 +46,26 @@ function storedRecord(values: StoredValues): Record<string, unknown> | null {
   return raw ? JSON.parse(raw) as Record<string, unknown> : null;
 }
 
-function writeRecord(values: StoredValues, patch: Record<string, unknown> = {}): void {
-  values[TOKEN_KEY] = JSON.stringify({
+function writeRecord(
+  values: StoredValues,
+  patch: Partial<GitHubAppUserTokenRecord> = {},
+): void {
+  // The shared fixture already holds the two facts every test here needs: an
+  // access token past its life next to a live refresh token. Only the token
+  // strings are spelled out, because the assertions name them.
+  values[TOKEN_KEY] = makeStoredAppUserToken({
     accessToken: "ghu_old",
-    tokenType: "bearer",
-    scope: null,
-    // Already past its life, so every call has to refresh.
-    expiresAt: new Date(Date.now() - 60_000).toISOString(),
     refreshToken: "ghr_live",
-    refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 3_600_000).toISOString(),
-    userLogin: "octocat",
-    updatedAt: new Date().toISOString(),
     ...patch,
+  });
+}
+
+/** Writes the record with a refresh ledger already in it. */
+function writeRecordWithLedger(values: StoredValues, ledger: Record<string, unknown>): void {
+  writeRecord(values);
+  values[TOKEN_KEY] = JSON.stringify({
+    ...JSON.parse(values[TOKEN_KEY]!) as Record<string, unknown>,
+    refresh: ledger,
   });
 }
 
@@ -422,6 +432,143 @@ describe("app user token refresh", () => {
     expect(service.getStoredTokenForHealth()).toBeNull();
     expect(service.getAuthStatus().tokenStored).toBe(false);
     expect(service.getAuthStatus().credentialState).toBe("missing");
+  });
+});
+
+// Every deadline in the ledger is written by a peer process, and a peer whose
+// clock is wrong writes one no amount of waiting reaches. Honouring it locks
+// every process on the machine out of the refresh until someone deletes the
+// credential file by hand.
+describe("poisoned deadlines in the shared ledger", () => {
+  it("ignores a refresh lease stamped an hour ahead of the longest real one", async () => {
+    const values: StoredValues = {};
+    writeRecordWithLedger(values, {
+      leaseUntil: new Date(clockNowMs + 3_600_000).toISOString(),
+      leaseHolder: "peer-with-a-wrong-clock",
+    });
+    const endpoint = createRotatingRefreshEndpoint();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => endpoint.respond(
+      typeof init?.body === "string" ? init.body : null,
+    ));
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+    expect(tokenPostCount(fetchImpl)).toBe(1);
+  });
+
+  it("ignores a refresh backoff stamped a year ahead", async () => {
+    const values: StoredValues = {};
+    writeRecordWithLedger(values, {
+      notBeforeAt: new Date(clockNowMs + 365 * 24 * 3_600_000).toISOString(),
+      consecutiveFailures: 1,
+      lastFailure: {
+        kind: "rate_limited",
+        message: "GitHub paused this.",
+        status: 429,
+        at: new Date(clockNowMs).toISOString(),
+      },
+    });
+    const endpoint = createRotatingRefreshEndpoint();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => endpoint.respond(
+      typeof init?.body === "string" ? init.body : null,
+    ));
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    expect(service.getAuthStatus().credentialState).toBe("authorized");
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+  });
+
+  it("still honours a deadline inside the bounds ADE writes", async () => {
+    const values: StoredValues = {};
+    writeRecordWithLedger(values, {
+      notBeforeAt: new Date(clockNowMs + 120_000).toISOString(),
+      consecutiveFailures: 1,
+      lastFailure: {
+        kind: "rate_limited",
+        message: "GitHub paused this.",
+        status: 429,
+        at: new Date(clockNowMs).toISOString(),
+      },
+    });
+    const fetchImpl = vi.fn(async () => jsonResponse({}));
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    expect(service.getAuthStatus().credentialState).toBe("blocked");
+    await expect(service.getValidTokenForRelay()).rejects.toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("refresh lease release", () => {
+  // The lease is written before the POST and cleared by whichever outcome gets
+  // recorded. A credential store that throws while recording one records
+  // nothing — and used to leave the lease behind, which stalls every other
+  // process for the full minute for no reason at all.
+  it("hands the lease back when the store refuses to record the outcome", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const base = createFakeStore(values);
+    let updates = 0;
+    const store = {
+      ...base,
+      updateKeySync: (
+        key: string,
+        mutator: (current: string | null) => string | null | undefined,
+      ): void => {
+        updates += 1;
+        // Update 1 takes the lease. Updates 2 and 3 are the two attempts to
+        // record an outcome — the refreshed credential, then the failure that
+        // first attempt turned into — and the store refuses both.
+        if (updates === 2 || updates === 3) throw new Error("credential store write failed");
+        base.updateKeySync(key, mutator);
+      },
+    };
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      access_token: "ghu_fresh",
+      token_type: "bearer",
+      expires_in: 28_800,
+      refresh_token: "ghr_rotated",
+      refresh_token_expires_in: 15_811_200,
+    }));
+    const service = createGitHubAppUserAuthService({
+      credentialStore: store,
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).rejects.toThrow("credential store write failed");
+
+    const ledger = storedRecord(values)?.refresh as Record<string, unknown> | undefined;
+    expect(ledger?.leaseUntil).toBeNull();
+    expect(ledger?.leaseHolder).toBeNull();
   });
 });
 

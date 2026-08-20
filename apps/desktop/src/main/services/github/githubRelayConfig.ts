@@ -1,9 +1,10 @@
 import { createHmac } from "node:crypto";
 import type {
   GitHubAppInstallationStatus,
-  GitHubAppUserAuthCredentialState,
+  GitHubAppUserAuthUnavailable,
   GitHubRepoRef,
 } from "../../../shared/types";
+import { GITHUB_APP_USER_AUTH_RENEWING_COPY } from "../../../shared/types";
 
 export const ADE_GITHUB_APP_DISPLAY_NAME = "ADE";
 export const ADE_GITHUB_APP_SLUG = "ade-for-github";
@@ -151,6 +152,7 @@ function baseStatus(repo: GitHubRepoRef | null, patch: Partial<GitHubAppInstalla
     webhookLastSeenAt: null,
     checkedAt: new Date().toISOString(),
     error: null,
+    appUserAuthFailure: null,
     ...patch,
   };
 }
@@ -203,21 +205,12 @@ function normalizeRelayStatusPayload(
   });
 }
 
-/**
- * Why ADE has no GitHub App user token for this check.
- *
- * Carried through so the repo axis can name the account problem instead of
- * reporting the relay's 401 — which reads as "this repository is broken" when
- * the truth is "ADE's own authorization is not usable right now".
- */
-export type GitHubAppUserAuthUnavailable = {
-  message: string;
-  credentialState: GitHubAppUserAuthCredentialState | null;
-  retryAt: string | null;
-};
-
 function appUserAuthUnavailableCopy(failure: GitHubAppUserAuthUnavailable): string {
   if (failure.credentialState === "blocked") {
+    // Blocked with nothing refused is ADE waiting on its own refresh lease: one
+    // process renews the credential and the others wait a moment for it. Saying
+    // GitHub paused anything there is an accusation ADE has no evidence for.
+    if (!failure.failureKind) return GITHUB_APP_USER_AUTH_RENEWING_COPY;
     // The deadline itself travels as `retryAt` on the auth status, where a
     // surface can format it as a time a person reads. A raw timestamp in a
     // sentence is a log line, not a message.
@@ -275,6 +268,7 @@ export async function fetchGitHubAppInstallationStatus(args: {
         error: appUserAuthFailure
           ? appUserAuthUnavailableCopy(appUserAuthFailure)
           : hostedAuth.error,
+        appUserAuthFailure,
       });
     }
     const authToken = useLegacyProjectRoute
@@ -315,13 +309,17 @@ export async function fetchGitHubAppInstallationStatus(args: {
       // A 401 with no usable App user token is the account problem the relay
       // sees from the outside. Report the account problem, not the relay's
       // wording for it.
-      const message = response.status === 401 && appUserAuthFailure
-        ? appUserAuthUnavailableCopy(appUserAuthFailure)
+      const accountProblem = response.status === 401 ? appUserAuthFailure : null;
+      const message = accountProblem
+        ? appUserAuthUnavailableCopy(accountProblem)
         : relayMessage;
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
         error: message,
+        // Only on the 401: any other status was answered with a credential the
+        // relay accepted, so it says something about the repo, not the account.
+        appUserAuthFailure: accountProblem,
       });
     }
     return normalizeRelayStatusPayload(args.repo, payload, config.configured);

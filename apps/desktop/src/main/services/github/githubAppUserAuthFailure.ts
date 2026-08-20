@@ -1,16 +1,13 @@
 import type {
   GitHubAppUserAuthCredentialState,
+  GitHubAppUserAuthStatus,
+  GitHubAppUserAuthUnavailable,
   GitHubAuthFailure,
   GitHubRateLimitState,
 } from "../../../shared/types";
-import {
-  isDefinitiveGitHubOAuthError,
-  isGitHubOAuthError,
-  type GitHubOAuthError,
-} from "./githubAppUserAuth";
+import { isGitHubOAuthError, type GitHubOAuthError } from "./githubAppUserAuth";
 import type { RefreshFailureKind, StoredRefreshFailure } from "./githubAppUserAuthLedger";
-import { classifyGitHubAuthFailure } from "./githubRateLimit";
-import type { GitHubAppUserAuthUnavailable } from "./githubRelayConfig";
+import { classifyGitHubAuthFailure, isDefinitiveGitHubOAuthError } from "./githubRateLimit";
 
 /**
  * Why ADE cannot hand out a GitHub App user token, and what every caller does
@@ -120,11 +117,45 @@ export function describeGitHubAppUserAuthFailure(error: unknown): {
   };
 }
 
+/** What the two relay-token helpers below write their one log line through. */
+type AppUserAuthLogger = {
+  info(message: string, meta?: Record<string, unknown>): void;
+  warn(message: string, meta?: Record<string, unknown>): void;
+};
+
 export type AppUserAuthFailure = {
   authFailure: GitHubAuthFailure;
   rateLimit: GitHubRateLimitState | null;
   described: ReturnType<typeof describeGitHubAppUserAuthFailure>;
 };
+
+/**
+ * The credential-failure kind a classified refresh failure already names, or
+ * null when the refresh path did not classify it.
+ *
+ * The refresh path saw the OAuth response itself, so its verdict is the precise
+ * one. Re-deriving the kind from the message and status of the error it threw
+ * throws that away: the service reports a paused renewal with the status of the
+ * failure BELOW it, and GitHub answers a secondary rate limit with a bare 403 —
+ * which the generic classifier reads as "permission denied", an accusation
+ * against the account that nothing supports.
+ */
+function authFailureKindForRefreshKind(
+  kind: RefreshFailureKind | null,
+): GitHubAuthFailure["kind"] | null {
+  switch (kind) {
+    case "rate_limited":
+      return "rate_limited";
+    case "outage":
+      return "service_unavailable";
+    case "network":
+      return "network";
+    case "dead_token":
+      return "invalid_token";
+    default:
+      return null;
+  }
+}
 
 /**
  * Turns a failed App user token lookup into the credential-failure shape the
@@ -148,6 +179,20 @@ export function classifyAppUserAuthFailure(error: unknown): AppUserAuthFailure {
       authFailure: { kind: "invalid_token", message: described.message, retryAt: null },
     };
   }
+  const namedKind = authFailureKindForRefreshKind(described.failureKind);
+  if (namedKind) {
+    return {
+      described,
+      rateLimit: classified.rateLimit,
+      authFailure: {
+        kind: namedKind,
+        message: described.message,
+        // A dead credential has no deadline to wait for; every other named kind
+        // carries the instant ADE will try again.
+        retryAt: namedKind === "invalid_token" ? null : described.retryAt,
+      },
+    };
+  }
   return { ...classified, described };
 }
 
@@ -166,6 +211,9 @@ export function describeAppUserAuthUnavailable(
     message: failure.described.message,
     credentialState: failure.described.credentialState,
     retryAt: failure.authFailure.retryAt,
+    // Null when GitHub never refused anything — the wait belongs to ADE's own
+    // refresh lease, and the copy has to say that instead of blaming GitHub.
+    failureKind: failure.described.failureKind,
   };
 }
 
@@ -196,7 +244,7 @@ export function appCredentialFailureEntry(
  */
 export async function resolveAppUserTokenForRelay(args: {
   appUserAuth: { getValidTokenForRelay(): Promise<string> };
-  logger: { warn(message: string, meta?: Record<string, unknown>): void };
+  logger: AppUserAuthLogger;
   /** The log event name, which differs by call site. */
   event: string;
 }): Promise<{ token: string | null; failure: AppUserAuthFailure | null }> {
@@ -204,14 +252,38 @@ export async function resolveAppUserTokenForRelay(args: {
     return { token: await args.appUserAuth.getValidTokenForRelay(), failure: null };
   } catch (error: unknown) {
     const failure = classifyAppUserAuthFailure(error);
-    args.logger.warn(args.event, {
+    const meta = {
       error: failure.described.message,
       kind: failure.authFailure.kind,
       credentialState: failure.described.credentialState,
       status: failure.described.status,
       oauthError: failure.described.oauthError,
       retryAt: failure.authFailure.retryAt,
-    });
+    };
+    // A machine that never authorized the App has nothing wrong with it. Warning
+    // on every credential read there fills the log of an ordinary install with a
+    // problem nobody has.
+    if (failure.described.credentialState === "missing") args.logger.info(args.event, meta);
+    else args.logger.warn(args.event, meta);
     return { token: null, failure };
   }
+}
+
+/**
+ * The same lookup, for the callers that must not ask at all when no credential
+ * is stored.
+ *
+ * Building a credential inventory is the hot path — every status read, PR call
+ * and relay poll builds one — and asking for a token that was never stored
+ * costs a store read and a classified failure per call. The guard is spelled
+ * here so both twins gate the same way.
+ */
+export async function resolveStoredAppUserTokenForRelay(args: {
+  status: Pick<GitHubAppUserAuthStatus, "tokenStored">;
+  appUserAuth: { getValidTokenForRelay(): Promise<string> };
+  logger: AppUserAuthLogger;
+  event: string;
+}): Promise<{ token: string | null; failure: AppUserAuthFailure | null }> {
+  if (!args.status.tokenStored) return { token: null, failure: null };
+  return await resolveAppUserTokenForRelay(args);
 }

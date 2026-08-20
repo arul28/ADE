@@ -17,7 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
-import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
+import { GitHubAppInstallPanel, PILL_TONE_COLORS } from "../github/GitHubAppInstallPanel";
 import {
   describeGithubPatVerification,
   describeGithubAppCredentialBadge,
@@ -111,9 +111,7 @@ function credentialStateBadge(
   // about the other rows, so the row decides here rather than at the call site.
   if (appAccount && state.source === "app") {
     const badge = describeGithubAppCredentialBadge(appAccount.state, appAccount.blockedUntil);
-    if (badge) {
-      return { label: badge.label, color: badge.tone === "warn" ? COLORS.warning : COLORS.textMuted };
-    }
+    if (badge) return { label: badge.label, color: PILL_TONE_COLORS[badge.tone] };
   }
   if (state.state === "cooldown") {
     // During a GitHub outage a cooldown says nothing about the credential —

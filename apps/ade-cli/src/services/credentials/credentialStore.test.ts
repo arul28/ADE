@@ -970,13 +970,22 @@ describe("ElectronSafeStorageCredentialStore", () => {
 
   it("never overwrites the shared file's credential with a stale safeStorage copy", () => {
     const fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
-    fileStore.setSync("github.appUserToken.v1", "fresh-from-brain");
+    const fresh = JSON.stringify({
+      accessToken: "fresh-from-brain",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+    fileStore.setSync("github.appUserToken.v1", fresh);
     const primary = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
     fs.writeFileSync(
       path.join(tempDir, "credentials.safe.enc"),
       Buffer.concat([
         Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n"),
-        safeStorage.encryptString(JSON.stringify({ "github.appUserToken.v1": "stale-from-june" })),
+        safeStorage.encryptString(JSON.stringify({
+          "github.appUserToken.v1": JSON.stringify({
+            accessToken: "stale-from-june",
+            updatedAt: "2026-06-01T00:00:00.000Z",
+          }),
+        })),
       ]),
     );
 
@@ -984,8 +993,60 @@ describe("ElectronSafeStorageCredentialStore", () => {
 
     expect(adoption.adopted).toEqual([]);
     expect(adoption.pruned).toContain("github.appUserToken.v1");
-    expect(fileStore.getSync("github.appUserToken.v1")).toBe("fresh-from-brain");
+    expect(fileStore.getSync("github.appUserToken.v1")).toBe(fresh);
     expect(primary.getSync("github.appUserToken.v1")).toBeNull();
+  });
+
+  it("dates a record that says obtainedAt rather than updatedAt", () => {
+    // The account session spells the same fact that way, and a record ADE
+    // cannot date is a record it will not replace.
+    const fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    fileStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify({
+      accessToken: "session-from-june",
+      obtainedAt: "2026-06-01T00:00:00.000Z",
+    }));
+    const primary = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    const stranded = JSON.stringify({
+      accessToken: "session-from-august",
+      obtainedAt: "2026-08-01T00:00:00.000Z",
+    });
+    fs.writeFileSync(
+      path.join(tempDir, "credentials.safe.enc"),
+      Buffer.concat([
+        Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n"),
+        safeStorage.encryptString(JSON.stringify({ [ACCOUNT_SESSION_CREDENTIAL_KEY]: stranded })),
+      ]),
+    );
+
+    const adoption = adoptFileBackedCredentials({ primary, fileStore, identity: tempDir });
+
+    expect(adoption.adopted).toContain(ACCOUNT_SESSION_CREDENTIAL_KEY);
+    expect(fileStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(stranded);
+  });
+
+  // Two secrets, neither of which says when it was written. Keeping the shared
+  // one is a guess, and deleting the other on that guess is unrecoverable — so
+  // the stranded copy stays where it is.
+  it("leaves an undatable stranded copy alone rather than destroying it", () => {
+    const fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    fileStore.setSync("github.appUserToken.v1", "shared-copy-with-no-date");
+    const primary = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    fs.writeFileSync(
+      path.join(tempDir, "credentials.safe.enc"),
+      Buffer.concat([
+        Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n"),
+        safeStorage.encryptString(JSON.stringify({
+          "github.appUserToken.v1": "stranded-copy-with-no-date",
+        })),
+      ]),
+    );
+
+    const adoption = adoptFileBackedCredentials({ primary, fileStore, identity: tempDir });
+
+    expect(adoption.adopted).toEqual([]);
+    expect(adoption.pruned).toEqual([]);
+    expect(fileStore.getSync("github.appUserToken.v1")).toBe("shared-copy-with-no-date");
+    expect(primary.getSync("github.appUserToken.v1")).toBe("stranded-copy-with-no-date");
   });
 
   it("adopts a stranded safeStorage copy that is newer than the shared one", () => {

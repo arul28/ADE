@@ -228,7 +228,7 @@ const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n")
  * They are duplicated here rather than imported to keep this module free of
  * service-layer dependencies; credentialStore.test.ts asserts they match.
  */
-const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
+export const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
   "account.session.v1",
   // The crash-safe rotation journal is only meaningful next to the session it
   // describes. Migrating it into the Electron-only file would hide an
@@ -268,20 +268,23 @@ const KEY_MATERIAL_SELF_HEAL_INTERVAL_MS = 30_000;
 /**
  * The key a credential path is compared and looked up by.
  *
- * Windows and macOS filesystems are case-insensitive, so two spellings of one
- * secrets directory must never read as two different stores: the GitHub App
- * refresh coordinates through this identity, and two identities for one file
- * means two processes each believing they hold the only refresh lease. Linux
- * stays case-sensitive, so the folding is never unconditional.
+ * Two spellings of one secrets directory must never read as two different
+ * stores: the GitHub App refresh coordinates through this identity, and two
+ * identities for one file means two processes each believing they hold the only
+ * refresh lease. So redundant separators and `.`/`..` segments are folded away
+ * first, then — on Windows, where both separators name the same directory — the
+ * separator itself. Case is folded on Windows and macOS, whose filesystems are
+ * case-insensitive; Linux stays case-sensitive, so that step is conditional.
  */
-function credentialPathKey(value: string): string {
-  return process.platform === "win32" || process.platform === "darwin"
-    ? value.toLowerCase()
-    : value;
+export function credentialPathKey(value: string): string {
+  const normalized = path.normalize(value);
+  if (process.platform === "win32") return normalized.replace(/\//g, "\\").toLowerCase();
+  return process.platform === "darwin" ? normalized.toLowerCase() : normalized;
 }
 
 
-function normalizeKey(key: string): string {
+/** The one spelling of a credential key every store agrees on. */
+export function normalizeCredentialKey(key: string): string {
   const normalized = key.trim();
   if (!normalized.length) throw new Error("Credential key is required.");
   if (normalized.includes("\0")) throw new Error("Credential key cannot contain null bytes.");
@@ -816,7 +819,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   async getWithReadState(
     key: string,
   ): Promise<{ value: string | null; state: CredentialStoreReadState }> {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const { values, state } = await this.readAllAsync();
     return { value: values[normalized] ?? null, state };
   }
@@ -830,7 +833,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   getSync(key: string): string | null {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     // Locked because the read may re-seal an `os`-bound store to the machine
     // key (and merge a recovered quarantine back in), and those writes have to
     // exclude concurrent writers.
@@ -849,7 +852,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   setSync(key: string, value: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) {
       this.deleteSync(normalized);
@@ -863,7 +866,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   deleteSync(key: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       if (!(normalized in values)) return;
@@ -908,7 +911,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     key: string,
     mutator: (current: string | null) => string | null | undefined,
   ): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     this.updateSync((values) => {
       const next = mutator(values[normalized] ?? null);
       if (next === undefined) return false;
@@ -1419,7 +1422,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   getSync(key: string): string | null {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     return this.readAll()[normalized] ?? null;
   }
 
@@ -1432,7 +1435,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   setSync(key: string, value: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) {
       this.deleteSync(normalized);
@@ -1452,7 +1455,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   deleteSync(key: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     this.withLock(() => {
       const values = this.readAll({ safeLockHeld: true });
       if (!(normalized in values)) return;
@@ -1657,183 +1660,15 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
 }
 
 /**
- * One store that keeps file-backed keys in the shared machine file and
- * everything else in `primary`.
- *
- * The desktop app's own store is Electron-only, and the migration that keeps
- * file-backed keys OUT of it only runs once. That left the reader with nowhere
- * to look: `account.session.v1` and the GitHub App token stayed in
- * `credentials.json.enc` while every desktop read went to `credentials.safe.enc`
- * and answered "not connected". Routing per key is what makes "the brain and the
- * app share this credential" true for readers, not just for writers.
+ * The stores that stand in front of the real ones, and the migration that moves
+ * file-backed credentials out of the Electron-only store, re-exported from
+ * their own modules so every consumer keeps one import to reach for.
  */
-export function createRoutedCredentialStore(args: {
-  primary: SyncCredentialStore;
-  fileStore: SyncCredentialStore;
-}): SyncCredentialStore {
-  const storeFor = (key: string): SyncCredentialStore =>
-    isFileBackedCredentialKey(normalizeKey(key)) ? args.fileStore : args.primary;
-  // `getLastReadState()` describes the store's MOST RECENT read, and a caller
-  // asks it immediately after the read it means. Answering from the wrong file
-  // is how a readable credential gets reported as "can't read your sign-in".
-  let lastReadStore: SyncCredentialStore = args.primary;
-  const readStoreFor = (key: string): SyncCredentialStore => {
-    lastReadStore = storeFor(key);
-    return lastReadStore;
-  };
-  return {
-    get: async (key) => readStoreFor(key).get(key),
-    // Forwarded per call rather than through `lastReadStore`: this accessor
-    // exists precisely so an async caller learns the state of ITS read, and
-    // routing it through shared mutable state would hand back whichever file
-    // some interleaved read touched last.
-    getWithReadState: async (key) => {
-      const store = storeFor(key);
-      if (store.getWithReadState) return await store.getWithReadState(key);
-      const value = await readStoreFor(key).get(key);
-      return { value, state: store.getLastReadState?.() ?? "missing" };
-    },
-    set: async (key, value) => storeFor(key).set(key, value),
-    delete: async (key) => storeFor(key).delete(key),
-    getSync: (key) => readStoreFor(key).getSync(key),
-    setSync: (key, value) => storeFor(key).setSync(key, value),
-    deleteSync: (key) => storeFor(key).deleteSync(key),
-    // A whole-map updater cannot be split across two files, so it keeps the
-    // meaning it had before routing existed: it updates the primary store.
-    updateSync: args.primary.updateSync?.bind(args.primary),
-    updateKeySync: (key, mutator) => {
-      const store = storeFor(key);
-      if (store.updateKeySync) {
-        store.updateKeySync(key, mutator);
-        return;
-      }
-      const next = mutator(store.getSync(key));
-      if (next === undefined) return;
-      if (next === null) store.deleteSync(key);
-      else store.setSync(key, next);
-    },
-    credentialStoreIdentity: () => args.fileStore.credentialStoreIdentity?.()
-      ?? args.primary.credentialStoreIdentity?.()
-      ?? "ade.routed-credential-store",
-    onDidChange: (listener) => {
-      const unsubscribes = [
-        args.primary.onDidChange?.(listener),
-        args.fileStore.onDidChange?.(listener),
-      ];
-      return () => {
-        for (const unsubscribe of unsubscribes) unsubscribe?.();
-      };
-    },
-    getLastReadState: () => lastReadStore.getLastReadState?.() ?? "missing",
-    getLastReadFailureReason: () => lastReadStore.getLastReadFailureReason?.() ?? null,
-  };
-}
-
-const adoptedSecretsDirs = new Set<string>();
-
-/**
- * When one stored credential was last written, in epoch milliseconds, or `NaN`
- * when the record does not say.
- *
- * Deliberately generic JSON rather than a typed credential: this module stays
- * free of service-layer imports, and every record that can be stranded in the
- * Electron-only store carries an ISO `updatedAt`.
- */
-function credentialUpdatedAtMs(raw: string | null | undefined): number {
-  if (!raw?.trim()) return Number.NaN;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return Number.NaN;
-    const updatedAt = (parsed as Record<string, unknown>).updatedAt;
-    return typeof updatedAt === "string" ? Date.parse(updatedAt) : Number.NaN;
-  } catch {
-    return Number.NaN;
-  }
-}
-
-/**
- * True when the stranded desktop copy is provably newer than the shared one.
- *
- * A copy that does not say when it was written loses to one that does, and two
- * silent copies leave the shared file alone — the shared file is where the
- * brain writes, so it is the safer default.
- */
-function strandedCopyIsFresher(stranded: string, shared: string): boolean {
-  const strandedAt = credentialUpdatedAtMs(stranded);
-  if (!Number.isFinite(strandedAt)) return false;
-  const sharedAt = credentialUpdatedAtMs(shared);
-  return !Number.isFinite(sharedAt) || strandedAt > sharedAt;
-}
-
-/**
- * Moves file-backed credentials a previous build left in the Electron-only
- * store back into the shared machine file.
- *
- * Runs once per secrets directory per process, and only a pass that completes
- * counts: a pass that could not read the Electron store is retried by the next
- * store built in this process, rather than leaving the credential stranded for
- * the life of the app.
- *
- * When both stores hold the key, the fresher record wins by its `updatedAt`.
- * The shared file is usually the fresher one, because the brain writes there —
- * but a desktop build that wrote the GitHub App token into the Electron-only
- * store left the ONLY current copy there, and keeping the older shared copy
- * would hand GitHub a refresh token it has already rotated away. A value is
- * only removed from the Electron-only store once the shared file holds one.
- */
-export function adoptFileBackedCredentials(args: {
-  primary: SyncCredentialStore;
-  fileStore: SyncCredentialStore;
-  identity: string;
-}): { adopted: string[]; pruned: string[] } {
-  const adopted: string[] = [];
-  const pruned: string[] = [];
-  const identity = credentialPathKey(args.identity);
-  if (adoptedSecretsDirs.has(identity)) return { adopted, pruned };
-  let completed = true;
-  for (const key of FILE_BACKED_CREDENTIAL_KEYS) {
-    let stranded: string | null = null;
-    try {
-      stranded = args.primary.getSync(key);
-    } catch {
-      // An unreadable Electron store has nothing to adopt for this key, and
-      // saying so is the job of `getLastReadState`, not of this migration. The
-      // pass stays incomplete so a later one can try again.
-      completed = false;
-      continue;
-    }
-    if (!stranded?.trim()) continue;
-    const strandedValue = stranded;
-    try {
-      let wrote = false;
-      if (args.fileStore.updateKeySync) {
-        // Atomic: a brain write racing this adoption must be compared against
-        // what it actually wrote, and check-then-set leaves a window where the
-        // comparison is made against a value that is already gone.
-        args.fileStore.updateKeySync(key, (current) => {
-          if (current?.trim() && !strandedCopyIsFresher(strandedValue, current)) return undefined;
-          wrote = true;
-          return strandedValue;
-        });
-      } else {
-        const current = args.fileStore.getSync(key);
-        if (!current?.trim() || strandedCopyIsFresher(strandedValue, current)) {
-          args.fileStore.setSync(key, strandedValue);
-          wrote = true;
-        }
-      }
-      if (wrote) adopted.push(key);
-      args.primary.deleteSync(key);
-      pruned.push(key);
-    } catch {
-      // Best effort: leaving the duplicate behind is survivable, losing the
-      // credential is not.
-      completed = false;
-    }
-  }
-  if (completed) adoptedSecretsDirs.add(identity);
-  return { adopted, pruned };
-}
+export {
+  createRoutedCredentialStore,
+  createUnavailableCredentialStore,
+} from "./credentialStoreRouting";
+export { adoptFileBackedCredentials } from "./credentialStoreAdoption";
 
 type KeytarModule = {
   getPassword(service: string, account: string): Promise<string | null>;
@@ -1869,11 +1704,11 @@ export class KeytarCredentialStore implements CredentialStore {
   }
 
   async get(key: string): Promise<string | null> {
-    return this.keytar.getPassword(this.service, normalizeKey(key));
+    return this.keytar.getPassword(this.service, normalizeCredentialKey(key));
   }
 
   async set(key: string, value: string): Promise<void> {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) {
       await this.delete(normalized);
@@ -1883,7 +1718,7 @@ export class KeytarCredentialStore implements CredentialStore {
   }
 
   async delete(key: string): Promise<void> {
-    await this.keytar.deletePassword(this.service, normalizeKey(key));
+    await this.keytar.deletePassword(this.service, normalizeCredentialKey(key));
   }
 }
 

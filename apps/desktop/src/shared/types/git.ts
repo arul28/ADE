@@ -485,6 +485,17 @@ export type GitHubAppInstallationStatus = {
   webhookLastSeenAt: string | null;
   checkedAt: string;
   error: string | null;
+  /**
+   * Set when this check could not run because ADE had no usable GitHub App user
+   * token, and null otherwise.
+   *
+   * The renderer used to learn this by matching `error` against a list of
+   * phrases ADE and its relay emit. That list is a compatibility shim for older
+   * hosts now: a reading taken without an account credential proves nothing
+   * about the installation, and the repo axis must say so from a typed field
+   * rather than from wording that can be reworded.
+   */
+  appUserAuthFailure: GitHubAppUserAuthUnavailable | null;
 };
 
 export type GitHubAppUserAuthCredentialState = "missing" | "authorized" | "blocked" | "needs_reauth";
@@ -494,6 +505,35 @@ export type GitHubAppUserAuthRefreshError = {
   message: string;
   status: number | null;
   at: string;
+};
+
+/**
+ * What every surface says while ADE itself is renewing the App authorization.
+ *
+ * One process on the machine runs the renewal and the rest wait a moment for
+ * it. Nothing is wrong, nothing was refused, and there is nothing to do — so
+ * the sentence names ADE, not GitHub, and asks for nothing.
+ */
+export const GITHUB_APP_USER_AUTH_RENEWING_COPY =
+  "ADE is renewing this authorization — this takes a moment.";
+
+/**
+ * Why ADE has no GitHub App user token for a check that needed one.
+ *
+ * Carried through so the repo axis can name the account problem instead of
+ * reporting the relay's 401 — which reads as "this repository is broken" when
+ * the truth is "ADE's own authorization is not usable right now".
+ */
+export type GitHubAppUserAuthUnavailable = {
+  message: string;
+  credentialState: GitHubAppUserAuthCredentialState | null;
+  retryAt: string | null;
+  /**
+   * What GitHub refused, when it refused anything. Null means nothing was
+   * refused: the credential is blocked because ADE itself is mid-renewal, and
+   * the copy for that must not blame GitHub.
+   */
+  failureKind: GitHubAppUserAuthRefreshError["kind"] | null;
 };
 
 export type GitHubAppUserAuthStatus = {
@@ -513,6 +553,14 @@ export type GitHubAppUserAuthStatus = {
   lastRefreshError: GitHubAppUserAuthRefreshError | null;
   checkedAt: string;
   error: string | null;
+  /**
+   * Declared by a host that cannot hold this credential at all, and by nothing
+   * else. Only the standalone web-client adapter sets it: that build has no
+   * machine behind it, so its answer is a stub rather than a report of "not
+   * authorized", and a renderer that cannot tell the two apart flashes a false
+   * banner on every hosted-web project.
+   */
+  appUserAuthSupported?: false;
 };
 
 export type GitHubAppDeviceAuthStartResult = {

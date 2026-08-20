@@ -252,6 +252,7 @@ import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli
 import {
   adoptFileBackedCredentials,
   createRoutedCredentialStore,
+  createUnavailableCredentialStore,
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
   isElectronSafeStorageCredentialFile,
@@ -660,30 +661,12 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
     isElectronSafeStorageCredentialFile(safeCredentialsPath)
     || isElectronSafeStorageCredentialFile(legacyCredentialsPath)
   ) {
-    const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
     // The shared file needs no keychain, so the credentials the brain co-owns
     // stay reachable even while the Electron-only ones are locked away.
     return createRoutedCredentialStore({
-      primary: {
-        get: async () => {
-          throw new Error(message);
-        },
-        set: async () => {
-          throw new Error(message);
-        },
-        delete: async () => {
-          throw new Error(message);
-        },
-        getSync: () => {
-          throw new Error(message);
-        },
-        setSync: () => {
-          throw new Error(message);
-        },
-        deleteSync: () => {
-          throw new Error(message);
-        },
-      },
+      primary: createUnavailableCredentialStore(
+        "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
+      ),
       fileStore: legacyStore,
     });
   }
@@ -3330,6 +3313,13 @@ app.whenReady().then(async () => {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
       githubRelaySecretReader: (ref) => githubRelaySecretService?.getSecret(ref) ?? null,
       getAccountAccessToken,
+      // A repaired or removed App credential ends the relay's auth-pending
+      // cooldown at once. Wired here rather than inside either service: the
+      // ingress loop must stay free of GitHub internals, and only this owner
+      // holds both of them.
+      onAppUserAuthChanged: () => {
+        void automationIngressServiceRef?.pollNow().catch(() => undefined);
+      },
     });
 
     const projectScaffoldService = createProjectScaffoldService({
