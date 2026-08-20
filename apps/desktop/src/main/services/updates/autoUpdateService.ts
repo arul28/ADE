@@ -1050,8 +1050,19 @@ export function createAutoUpdateService({
     await checkPromise;
   }
 
-  function checkForUpdates(): void {
-    void runUpdateCheck();
+  /**
+   * `userInitiated` is what separates the Settings button from the startup and
+   * periodic timers. The automatic checks stay out of the way of an update that
+   * is already downloaded and waiting for a restart, but a person pressing
+   * "Check for updates" is asking a question, and answering it with an early
+   * return is indistinguishable from the button being broken — the version on
+   * screen just stays at whatever the last real check found.
+   *
+   * The `ready` branch of the check still returns before downloading, so this
+   * refreshes the newest known version without disturbing the staged download.
+   */
+  function checkForUpdates(options: { userInitiated?: boolean } = {}): void {
+    void runUpdateCheck({ allowReady: options.userInitiated === true });
   }
 
   async function refreshReadyUpdateBeforeInstall(): Promise<boolean> {
