@@ -10,7 +10,7 @@ import type {
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
-import { droidDisabledToolIdsForCategories, droidMcpToolsToDisable } from "./droidSdkProtocol";
+import { droidDisabledToolIdsForCategories, droidInteractionModeValue, droidMcpToolsToDisable } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
@@ -57,33 +57,12 @@ function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): Dro
   return value?.trim() ? value as DroidSdkTypes.ReasoningEffort : undefined;
 }
 
-/**
- * Undefined in, undefined out. An omitted interactionMode means "ADE has no
- * opinion, let ~/.factory/settings.json decide" — materialising a default here
- * would restate it at the highest precedence and undo the omission upstream.
- */
-function toDroidInteractionMode(
-  sdk: DroidSdkModule,
-  mode: DroidSdkSessionSettings["interactionMode"],
-): DroidSdkTypes.DroidInteractionMode | undefined {
-  switch (mode) {
-    case "spec":
-      return sdk.DroidInteractionMode.Spec;
-    case "agi":
-      return sdk.DroidInteractionMode.AGI;
-    case "auto":
-      return sdk.DroidInteractionMode.Auto;
-    default:
-      return undefined;
-  }
-}
-
 function sessionOptions(
   sdk: DroidSdkModule,
   init: DroidSdkWorkerInit,
   settings: DroidSdkSessionSettings,
 ): DroidSdkTypes.CreateSessionOptions {
-  const interactionMode = toDroidInteractionMode(sdk, settings.interactionMode);
+  const interactionMode = droidInteractionModeValue(sdk.DroidInteractionMode, settings.interactionMode);
   return {
     cwd: init.laneRoot,
     execPath: init.droidPath,
@@ -352,7 +331,7 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
   // exitSpecMode, so the only way back out is to state a mode, and a plan
   // session that later turns plan off states nothing. Say it once, for a spec
   // ADE itself entered, then go back to saying nothing.
-  const updateInteractionMode = toDroidInteractionMode(sdk, settings.interactionMode)
+  const updateInteractionMode = droidInteractionModeValue(sdk.DroidInteractionMode, settings.interactionMode)
     ?? (enteredSpecMode ? sdk.DroidInteractionMode.Auto : undefined);
   if (updateInteractionMode) enteredSpecMode = false;
   await session.updateSettings({

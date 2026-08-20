@@ -49,6 +49,29 @@ export type DroidSdkSessionSettings = {
  * `apply-patch-cli`, `create-cli`, …), so ADE selects by the category Droid
  * itself reports rather than pinning a brittle id list.
  */
+/**
+ * Undefined in, undefined out. An omitted interactionMode means "ADE has no
+ * opinion, let ~/.factory/settings.json decide" — materialising a default here
+ * would restate it at the highest precedence and undo the omission upstream.
+ *
+ * Takes the enum table rather than the SDK module so it stays a pure mapping.
+ */
+export function droidInteractionModeValue<T>(
+  table: { Auto: T; Spec: T; AGI: T },
+  mode: DroidSdkInteractionMode | undefined,
+): T | undefined {
+  switch (mode) {
+    case "spec":
+      return table.Spec;
+    case "agi":
+      return table.AGI;
+    case "auto":
+      return table.Auto;
+    default:
+      return undefined;
+  }
+}
+
 export function droidDisabledToolIdsForCategories(
   tools: ReadonlyArray<{ id?: unknown; category?: unknown }>,
   categories: readonly DroidToolCategory[],
