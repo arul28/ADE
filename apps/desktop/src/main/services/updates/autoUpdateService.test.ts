@@ -420,6 +420,51 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("still checks when an update is already staged, but only when the user asked", async () => {
+    // The Settings button was a silent no-op in exactly this state: an update
+    // downloaded and waiting for a restart. The automatic timers must keep
+    // standing down so they cannot disturb the staged download.
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.60",
+      globalStatePath: makeStatePath(),
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-08-19T21:00:00.000Z",
+      updater,
+    });
+
+    updater.emit("update-available", { version: "1.2.61" });
+    updater.emit("update-downloaded", { version: "1.2.61" });
+    expect(service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.61" });
+
+    updater.checkForUpdates.mockClear();
+    service.checkForUpdates();
+    // Flush the microtask queue rather than waitFor: a `not.toHaveBeenCalled`
+    // inside waitFor passes on its first tick and would assert nothing.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+
+    updater.checkForUpdates.mockImplementation(async () => ({
+      updateInfo: { version: "1.2.63" },
+    }));
+    service.checkForUpdates({ userInitiated: true });
+
+    await vi.waitFor(() => {
+      expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+      // The newest version is reported, and the staged 1.2.61 is left alone.
+      expect(service.getSnapshot()).toMatchObject({
+        status: "ready",
+        version: "1.2.61",
+        latestKnownVersion: "1.2.63",
+      });
+    });
+
+    service.dispose();
+  });
+
   it("tracks download progress and persists the target version before quit-and-install", async () => {
     const globalStatePath = makeStatePath();
     const updater = new FakeAutoUpdater();
