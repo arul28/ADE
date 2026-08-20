@@ -43,20 +43,6 @@ import {
 
 export type OpenCodeAgentProfile = "ade-plan" | "ade-edit" | "ade-full-auto" | "ade-helper";
 
-const ADE_PLAN_TOOL_SELECTION: Record<string, boolean> = {
-  // ADE planning uses coordinator tools such as spawn_worker. The native
-  // `task` subagent tool is intentionally allowed so OpenCode child sessions
-  // surface in the desktop / TUI subagents panes.
-  codesearch: false,
-  code_search: false,
-  filesearch: false,
-  file_search: false,
-  websearch: false,
-  web_search: false,
-  skill: false,
-  skills: false,
-};
-
 export type OpenCodeSessionHandle = {
   client: OpencodeClient;
   v2Client: OpenCodeV2Client;
@@ -196,22 +182,26 @@ export function resolveOpenCodeModelSelection(descriptor: ModelDescriptor): {
   };
 }
 
+type OpenCodePermissionAction = "allow" | "ask" | "deny";
+
 function buildPermissionConfig(
   permissionMode: PermissionMode,
-): {
-  edit: "allow" | "ask" | "deny";
-  bash: "allow" | "ask" | "deny";
-  webfetch: "allow" | "ask" | "deny";
-  doom_loop: "allow" | "ask" | "deny";
-  external_directory: "allow" | "ask" | "deny";
-  question: "allow" | "ask" | "deny";
-} {
+): Record<string, OpenCodePermissionAction | Record<string, OpenCodePermissionAction>> {
   if (permissionMode === "full-auto") {
     return {
       edit: "allow",
       bash: "allow",
       webfetch: "allow",
       doom_loop: "allow",
+      // Every key OpenCode does not gate resolves to "allow" from its base "*"
+      // rule, but `read` is not one of them: the base ruleset asks before
+      // reading *.env / *.env.*, so full access still prompted. Full access
+      // means no prompts.
+      read: "allow",
+      task: "allow",
+      // external_directory stays "ask". That boundary is ADE's lane worktree,
+      // not a permission tier the user picked — the same reason the system
+      // prompt confines edits to the lane.
       external_directory: "ask",
       question: "allow",
     };
@@ -223,8 +213,18 @@ function buildPermissionConfig(
       bash: "ask",
       webfetch: "allow",
       doom_loop: "ask",
+      // Plan denies `edit`, so it must deny `task` too. A spawned subagent runs
+      // under its own ruleset — OpenCode's `general` is merge(base, todowrite
+      // deny), i.e. edit ALLOWED — so leaving `task` open let plan mode write
+      // files indirectly through a child session. Plan has to mean plan.
+      task: "deny",
       external_directory: "deny",
       question: "allow",
+      // Replaces the deprecated agent-level `tools` map. OpenCode desugars that
+      // map into exactly these permission entries, and an explicit `permission`
+      // block wins over it, so stating them directly is the supported spelling.
+      websearch: "deny",
+      skill: "deny",
     };
   }
 
@@ -367,12 +367,18 @@ function buildProviderConfig(
         models[modelId] = { name: modelId };
       }
     }
-    const rawEndpoint = trimToUndefined(settings?.endpoint) ?? getLocalProviderDefaultEndpoint(family);
+    const endpoint = trimToUndefined(settings?.endpoint);
+    // Say nothing about a provider the user never set up. This config is merged
+    // last and per key, so an ADE-invented baseURL would overwrite the endpoint
+    // in the user's own opencode.json — repointing a configured remote host back
+    // at localhost. Only an endpoint the user actually typed, or models ADE
+    // discovered, justify naming the provider at all.
+    if (!endpoint && !Object.keys(models).length) return;
     provider[family] = {
-      npm: "@ai-sdk/openai-compatible",
-      options: {
-        baseURL: ensureOpenCodeBaseURL(rawEndpoint),
-      },
+      // lmstudio ships in OpenCode's provider catalog with its own npm package
+      // and baseURL; ollama does not, so only ollama needs one stated here.
+      ...(family === "ollama" ? { npm: "@ai-sdk/openai-compatible" } : {}),
+      ...(endpoint ? { options: { baseURL: ensureOpenCodeBaseURL(endpoint) } } : {}),
       ...(Object.keys(models).length > 0 ? { models } : {}),
     };
   };
@@ -483,26 +489,37 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     question: "deny",
   } as const;
 
+  // OPENCODE_CONFIG_CONTENT is merged last, so anything named here outranks the
+  // user's opencode.json and only managed/MDM config beats it. `share` and
+  // `snapshot` are therefore omitted: neither has ADE UI, and forcing
+  // snapshot:false silently disabled OpenCode's own /undo and /revert, whose
+  // documented default is true. `autoupdate` moved to OPENCODE_DISABLE_AUTOUPDATE
+  // in the server env — ADE does pin the binary, but that does not need the
+  // highest-precedence config slot.
   return {
-    share: "disabled",
-    autoupdate: false,
-    snapshot: false,
     ...(provider ? { provider } : {}),
     ...(args.mcp ? { mcp: args.mcp } : {}),
     agent: {
+      // hidden: these are ADE's own modes, not agents the user should see in
+      // their Tab-cycle or @-autocomplete. Without a `mode` they would default
+      // to "all" and show up in the picker.
       "ade-plan": {
         permission: buildPermissionConfig("plan"),
-        tools: ADE_PLAN_TOOL_SELECTION,
+        hidden: true,
       },
       "ade-edit": {
         permission: buildPermissionConfig("edit"),
+        hidden: true,
       },
       "ade-full-auto": {
         permission: buildPermissionConfig("full-auto"),
+        hidden: true,
       },
       "ade-helper": {
         permission: helperPermission,
-        maxSteps: 1,
+        // `steps`; `maxSteps` is the deprecated spelling.
+        steps: 1,
+        hidden: true,
       },
     },
   };

@@ -149,8 +149,17 @@ describe("openCodeRuntime", () => {
       config: expect.objectContaining({
         agent: expect.objectContaining({
           "ade-plan": expect.objectContaining({
-            tools: expect.objectContaining({ code_search: false, web_search: false }),
-            permission: expect.objectContaining({ question: "allow" }),
+            // The deprecated `tools` map is gone; OpenCode desugars it into
+            // these same permission keys and an explicit permission block wins.
+            permission: expect.objectContaining({
+              question: "allow",
+              websearch: "deny",
+              skill: "deny",
+              // Plan denies edit, so it must deny task: a spawned subagent runs
+              // under its own ruleset with edit allowed, which let plan mode
+              // write files through a child session.
+              task: "deny",
+            }),
           }),
           "ade-helper": expect.objectContaining({
             permission: expect.objectContaining({ question: "deny" }),
@@ -358,5 +367,46 @@ describe("refreshOpenCodeSessionToolSelection", () => {
       await expect(refreshOpenCodeSessionToolSelection(handle as never, options)).resolves.toBeNull();
       expect(handle.toolSelection).toBeNull();
     }
+  });
+});
+
+describe("buildOpenCodeConfig user-owned keys", () => {
+  const config = (): Record<string, any> =>
+    buildOpenCodeConfig({ projectConfig: { ai: {} } as any }) as Record<string, any>;
+
+  it("does not force share or snapshot over the user's opencode.json", () => {
+    // OPENCODE_CONFIG_CONTENT merges last, so naming these would beat the user's
+    // own file. snapshot's documented default is true, and forcing false
+    // silently disables OpenCode's /undo and /revert.
+    expect(config()).not.toHaveProperty("share");
+    expect(config()).not.toHaveProperty("snapshot");
+    expect(config()).not.toHaveProperty("autoupdate");
+  });
+
+  it("denies task in plan mode so a subagent cannot write for it", () => {
+    // The regression: plan denied `edit` but left `task` open, and a spawned
+    // subagent runs under its own ruleset where edit is allowed.
+    const plan = config().agent["ade-plan"].permission;
+    expect(plan.edit).toBe("deny");
+    expect(plan.task).toBe("deny");
+  });
+
+  it("lets full access read without prompting", () => {
+    // OpenCode's base ruleset asks before reading *.env, so full access
+    // prompted until read was stated.
+    expect(config().agent["ade-full-auto"].permission.read).toBe("allow");
+  });
+
+  it("keeps ADE's own modes out of the user's agent picker", () => {
+    for (const name of ["ade-plan", "ade-edit", "ade-full-auto", "ade-helper"]) {
+      expect(config().agent[name].hidden).toBe(true);
+    }
+  });
+
+  it("omits local providers the user never configured", () => {
+    // An ADE-invented baseURL merges over the endpoint in the user's own
+    // opencode.json, repointing a configured remote host back at localhost.
+    expect(config().provider ?? {}).not.toHaveProperty("ollama");
+    expect(config().provider ?? {}).not.toHaveProperty("lmstudio");
   });
 });

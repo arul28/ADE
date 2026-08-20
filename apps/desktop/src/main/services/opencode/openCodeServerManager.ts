@@ -798,6 +798,10 @@ function mergeOpenCodeConfig(
 
 function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  // ADE resolves and pins the OpenCode binary, so its updater must stay off.
+  // OpenCode exposes a dedicated env var for exactly this, which keeps the
+  // highest-precedence config slot free of a key the user might own.
+  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
   const inheritedContent = env.OPENCODE_CONFIG_CONTENT?.trim();
   if (inheritedContent) {
     try {
