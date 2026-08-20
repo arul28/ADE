@@ -366,7 +366,11 @@ export function discoverClaudeOutputStyles(cwd: string): AgentChatClaudeOutputSt
   const cwdClaudeRoot = path.resolve(cwd, ".claude");
   for (const root of roots) {
     const resolvedRoot = path.resolve(root);
-    const source = resolvedRoot === cwdClaudeRoot ? "project" : resolvedRoot === homeClaudeRoot ? "user" : "project";
+    // Keyed, like the precedence walk: raw comparison mislabels a case-variant
+    // root as "project" on the platforms where the two are the same directory.
+    const source = pathsEqual(resolvedRoot, cwdClaudeRoot)
+      ? "project"
+      : pathsEqual(resolvedRoot, homeClaudeRoot) ? "user" : "project";
     for (const style of discoverOutputStyleFiles(path.join(root, "output-styles"), source)) add(style);
   }
 

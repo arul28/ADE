@@ -24,6 +24,8 @@ type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;
 let sdkModule: DroidSdkModule | null = null;
 let initState: DroidSdkWorkerInit | null = null;
 let session: DroidSession | null = null;
+// Set when ADE itself put this session into Spec mode; see applySettings.
+let enteredSpecMode = false;
 const activeAborts = new Set<AbortController>();
 let waiterSeq = 0;
 const permissionWaiters = new Map<string, (decision: DroidSdkPermissionDecision) => void>();
@@ -341,10 +343,18 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
       specModeModelId: settings.specModeModelId?.trim() || settings.modelId,
       specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort ?? settings.reasoningEffort),
     });
+    enteredSpecMode = true;
     if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
     return;
   }
-  const updateInteractionMode = toDroidInteractionMode(sdk, settings.interactionMode);
+  // Omitting the mode leaves Droid's own setting alone, which is the point —
+  // except when ADE is the one that put this session into Spec. The SDK has no
+  // exitSpecMode, so the only way back out is to state a mode, and a plan
+  // session that later turns plan off states nothing. Say it once, for a spec
+  // ADE itself entered, then go back to saying nothing.
+  const updateInteractionMode = toDroidInteractionMode(sdk, settings.interactionMode)
+    ?? (enteredSpecMode ? sdk.DroidInteractionMode.Auto : undefined);
+  if (updateInteractionMode) enteredSpecMode = false;
   await session.updateSettings({
     modelId: settings.modelId,
     ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
@@ -356,6 +366,7 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
 
 async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   initState = init;
+  enteredSpecMode = false;
   const sdk = await getSdk();
   const resumeId = init.resumeSessionId?.trim();
   if (resumeId) {
@@ -469,6 +480,7 @@ async function dispose(): Promise<void> {
   await cancelRun().catch(() => undefined);
   await session?.close().catch(() => undefined);
   session = null;
+  enteredSpecMode = false;
   initState = null;
 }
 
