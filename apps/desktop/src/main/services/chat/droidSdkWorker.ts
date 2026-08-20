@@ -244,22 +244,6 @@ function normalizeAvailableModels(initResult: unknown): DroidSdkReady["available
  * `initResult.currentModelId` does not exist — @factory/droid-sdk reports the
  * resolved settings under `initResult.settings`.
  */
-/**
- * The interaction mode Droid reports for the session it just handed back.
- *
- * On resume this is the only way to learn that a PREVIOUS worker left the
- * session in Spec: that state lives in Droid, not in ADE, and the SDK has no
- * exitSpecMode. Reading it back beats assuming, which would have meant stating
- * a mode ADE does not own on every resume.
- */
-function readResolvedInteractionMode(initResult: unknown): string | null {
-  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
-  const settings = record?.settings && typeof record.settings === "object"
-    ? record.settings as Record<string, unknown>
-    : null;
-  return typeof settings?.interactionMode === "string" ? settings.interactionMode : null;
-}
-
 function readResolvedModelId(initResult: unknown): string | null {
   const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
   const settings = record?.settings && typeof record.settings === "object"
@@ -383,9 +367,11 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         askUserHandler: requestAskUser,
         ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkTypes.ResumeSessionOptions["mcpServers"] } : {}),
       });
-      // Seed from what Droid reports before applying, so a session a previous
-      // worker left in Spec still has a way out even when ADE now states nothing.
-      enteredSpecMode = readResolvedInteractionMode(session.initResult) === "spec";
+      // Deliberately NOT seeded from the mode Droid reports here. That reading
+      // cannot tell a Spec this ADE entered from one the user configured in
+      // ~/.factory/settings.json, and exiting the latter would be exactly the
+      // override this branch removes. applySettings below sets the flag when ADE
+      // itself restates Spec, which covers every resume ADE drives.
       await applySettings(init.settings);
     } catch (error) {
       post({

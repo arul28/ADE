@@ -403,16 +403,27 @@ describe("buildOpenCodeConfig user-owned keys", () => {
     }
   });
 
-  it("gives discovered ollama models an endpoint to run against", () => {
-    // Naming the models without an address leaves them unrunnable, and ollama is
-    // not in OpenCode's catalog so nothing else can supply one — an isolated
-    // lead inherits no user config at all.
+  it("gives an isolated lead's discovered ollama models an endpoint to run against", () => {
+    // A lead inherits no user config, so nothing else can supply the address and
+    // there is no user endpoint to clobber.
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as any,
+      isolatedConfig: true,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.models).toHaveProperty("llama3");
+    expect(cfg.provider.ollama.options.baseURL).toBe("http://localhost:11434/v1");
+  });
+
+  it("does not invent an ollama endpoint for an ordinary session", () => {
+    // OPENCODE_CONFIG_CONTENT merges last, so an ADE default would replace a
+    // remote host in the user's own opencode.json — which ADE cannot read.
     const cfg = buildOpenCodeConfig({
       projectConfig: { ai: {} } as any,
       discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
     } as any) as Record<string, any>;
     expect(cfg.provider.ollama.models).toHaveProperty("llama3");
-    expect(cfg.provider.ollama.options.baseURL).toBeTruthy();
+    expect(cfg.provider.ollama.options?.baseURL).toBeUndefined();
   });
 
   it("keeps a user-configured ollama endpoint over ADE's default", () => {
@@ -420,7 +431,7 @@ describe("buildOpenCodeConfig user-owned keys", () => {
       projectConfig: { ai: { localProviders: { ollama: { endpoint: "http://remote-box:11434" } } } } as any,
       discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
     } as any) as Record<string, any>;
-    expect(cfg.provider.ollama.options.baseURL).toContain("remote-box");
+    expect(cfg.provider.ollama.options.baseURL).toBe("http://remote-box:11434/v1");
   });
 
   it("omits local providers the user never configured", () => {

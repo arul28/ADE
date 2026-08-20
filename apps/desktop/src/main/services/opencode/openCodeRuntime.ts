@@ -120,6 +120,8 @@ type BuildOpenCodeConfigArgs = {
   /** Dynamically discovered models from local provider endpoints (e.g. LM Studio /v1/models). */
   discoveredLocalModels?: DiscoveredLocalModelEntry[];
   mcp?: OpenCodeConfig["mcp"];
+  /** Lead servers inherit no user config, so ADE must supply what they need. */
+  isolatedConfig?: boolean;
 };
 
 type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
@@ -317,6 +319,7 @@ const KNOWN_OPENCODE_CATALOG_PROVIDER_IDS: ReadonlySet<string> = new Set([
 function buildProviderConfig(
   projectConfig: ProjectConfigFile | EffectiveProjectConfig,
   discoveredLocalModels?: DiscoveredLocalModelEntry[],
+  isolatedConfig?: boolean,
 ): OpenCodeConfig["provider"] | undefined {
   const ai = projectConfig.ai ?? {};
   const apiKeys = ai.apiKeys ?? {};
@@ -396,12 +399,15 @@ function buildProviderConfig(
     // discovered, justify naming the provider at all.
     if (!endpoint && !discoveredModelCount) return;
     // ollama is not in OpenCode's provider catalog, so nothing else can supply
-    // its package or address. If ADE discovered models it reached them at some
-    // endpoint, and naming the models without one leaves them unrunnable —
-    // especially for an isolated lead, which inherits no user config at all.
-    // A user-typed endpoint always wins; this only fills the gap.
+    // its address, and naming models without one leaves them unrunnable. But
+    // OPENCODE_CONFIG_CONTENT merges last, so an ADE default would replace a
+    // remote endpoint in the user's own opencode.json — which ADE cannot read.
+    // Only an isolated lead is safe to fill in: it inherits no user config, so
+    // there is nothing to clobber and nothing else to supply the address.
     const resolvedEndpoint = endpoint
-      ?? (family === "ollama" && discoveredModelCount ? getLocalProviderDefaultEndpoint(family) : undefined);
+      ?? (isolatedConfig && family === "ollama" && discoveredModelCount
+        ? getLocalProviderDefaultEndpoint(family)
+        : undefined);
     provider[family] = {
       // lmstudio ships in OpenCode's provider catalog with its own npm package
       // and baseURL; ollama does not, so only ollama needs one stated here.
@@ -507,7 +513,7 @@ function mergeCustomModelSlugs(
 }
 
 export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConfig {
-  const provider = buildProviderConfig(args.projectConfig, args.discoveredLocalModels);
+  const provider = buildProviderConfig(args.projectConfig, args.discoveredLocalModels, args.isolatedConfig);
   const helperPermission = {
     edit: "deny",
     bash: "deny",
