@@ -7741,7 +7741,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("passes the selected Codex reasoning effort into app-server config", async () => {
+    it("passes the selected Codex reasoning effort per thread, not on the process", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
 
@@ -7762,11 +7762,13 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
       });
 
-      expect(spawn).toHaveBeenCalledWith(
-        "codex",
-        ["app-server", "-c", "model_reasoning_effort=\"low\""],
-        expect.any(Object),
-      );
+      // Reasoning effort is a per-chat choice, so it must ride the thread and
+      // never the process: `-c` is the highest config layer (above the user's
+      // ~/.codex/config.toml and their per-project .codex/config.toml) and a
+      // spawn arg would apply to every thread on this app-server.
+      expect(spawn).toHaveBeenCalledWith("codex", ["app-server"], expect.any(Object));
+      const spawnArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[] | undefined;
+      expect(spawnArgs?.join(" ")).not.toContain("model_reasoning_effort");
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       const startParams = startPayload?.params as {

@@ -28289,13 +28289,18 @@ export function createAgentChatService(args: {
     const appServerArgs = ["app-server"];
     if (sessionSupportsReasoning(managed.session)) {
       const descriptor = resolveSessionModelDescriptor(managed.session);
-      const reasoningEffort = resolveCodexReasoningEffortForRuntime(
+      // Resolve for display only. Reasoning effort is a per-chat choice, so it
+      // travels with the thread (codexThreadConfigArgs), never on the process.
+      // A `-c model_reasoning_effort=...` spawn flag applied to every thread on
+      // this app-server, not just this chat, and `-c` is the highest config
+      // layer — above the user's ~/.codex/config.toml AND their per-project
+      // .codex/config.toml. It also defeated the per-thread overlay, which
+      // already omits the key correctly when nothing is chosen.
+      managed.session.reasoningEffort = resolveCodexReasoningEffortForRuntime(
         managed.session.reasoningEffort,
         null,
         descriptor,
       );
-      managed.session.reasoningEffort = reasoningEffort;
-      appServerArgs.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
     }
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
