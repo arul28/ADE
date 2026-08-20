@@ -16,6 +16,7 @@ where the machinery lives.
 | `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. |
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
 | `apps/desktop/src/main/services/ai/providerOptions.ts` | Normalises provider-native options (Claude permission mode, Codex approval + sandbox, OpenCode permission). |
+| `apps/desktop/src/main/services/shared/providerConfigHomes.ts` | Where each provider CLI keeps its user-level config (`claudeConfigHome`, `codexConfigHome`, `factoryConfigHome`), and the canonical statement of the config-ownership rule below. Every adapter that reads or writes a provider config path goes through it. |
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode. |
@@ -24,7 +25,7 @@ where the machinery lives.
 | `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side half of the UI channel, deliberately free of Pi imports. Funnels Pi's three unrelated callback APIs — `AuthInteraction`, custom-tool `execute`, and an extension's `ExtensionUIContext` — into one never-rejecting `request()` that resolves to `null` when a card is dismissed, a turn aborts, or the worker is disposed. Also builds ADE's `ask_user` tool, the per-tool-call approval gate, and the extension UI context. |
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation: CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` string when the SDK cannot be used (missing package, or a Node older than `PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent — the CLI can be present while the SDK path is blocked. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in. Enumerates the providers that can actually be signed into (`listPiLoginProviders`), runs one `startPiLogin` per provider on a dedicated inventory-only worker, relays Pi's prompts/notices through `addPiAuthStatusListener`, and answers them with `submitPiLoginPrompt`. Bounded at 10 minutes; `cancelPiLogin` stops a flow and releases its worker. Never reads, stores, or logs a credential. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom (`~/.factory/config.json`) models are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom models from `<factoryConfigHome>/config.json` (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set) are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
 
 ## Supported providers
 
@@ -268,6 +269,159 @@ project on the machine and a root-wide token would make one lane's starting Pi
 chat block every other lane's. Pi ignores the file; all of its own scans filter
 on `.jsonl`.
 
+## Provider config ownership
+
+ADE hands its settings to every provider SDK at the **highest precedence tier
+that SDK offers** — above the user's own `settings.json` / `config.toml` /
+`opencode.json`, and in some cases above their per-project config too. So the
+rule for every adapter is:
+
+> Name a config key only when ADE genuinely owns it — there is ADE UI for it and
+> ADE's value is the truth. Otherwise leave the key absent and let the
+> provider's own precedence resolve it.
+
+Absence is the only way to say nothing. A substituted default is a real value
+that wins, and a value ADE never surfaced is one the user cannot notice or undo.
+The rule and the probe results behind it live in
+`apps/desktop/src/main/services/shared/providerConfigHomes.ts`; each adapter
+states only its own non-derivable fact and points there. **Provider #6 starts
+here.**
+
+What "absent" means differs per provider, and each row was verified against a
+live runtime rather than read off a schema:
+
+| Provider | Where ADE's settings land | Omitting a key | Explicit `null` / `false` |
+|---|---|---|---|
+| Claude | Agent SDK `settings` — flag tier, above every `settings.json` the SDK reads | the user's settings chain applies | `"Default"` is a real output style, not "no style" |
+| Codex | `thread/start` + `turn/start` JSON-RPC args | `config.toml`'s `service_tier` applies | `null` reports `"default"` — a real downgrade |
+| Droid | `createSession` / `updateSettings` SDK options | `~/.factory/settings.json` applies, resolved **per key** | `null` wedges the Droid RPC for 30 s — never send it |
+| Cursor | `local.sandboxOptions` on the SDK agent options | `~/.cursor/sandbox.json` decides | `false` returns `insecure_none` without ever reading that file |
+| OpenCode | `OPENCODE_CONFIG_CONTENT` | the user's `opencode.json` applies | n/a — this env var deep-merges **last**, so any key ADE names wins |
+
+### Provider config homes
+
+`providerConfigHomes.ts` also resolves where each CLI keeps its user-level
+config, because every one has an env override the provider's own binary honours
+and **the overrides do not share a shape**:
+
+| Helper | Env override | Shape | Default |
+|---|---|---|---|
+| `claudeConfigHome()` | `CLAUDE_CONFIG_DIR` | names the config **directory** | `~/.claude` |
+| `codexConfigHome()` | `CODEX_HOME` | names the config **directory** | `~/.codex` |
+| `factoryConfigHome()` | `FACTORY_HOME_OVERRIDE` | replaces the **HOME** that `.factory` is appended to | `~/.factory` |
+
+Hardcoding `~/.codex` or `~/.factory` makes ADE read a different directory than
+the process it spawns, so ADE and the CLI disagree about the user's
+configuration inside a single session. Every path into a provider config home
+goes through these helpers: chat adapters, the Droid custom-model merge in
+`droidModelsDiscovery.ts`, PTY session recovery in `ptyService.ts`, and
+external-session discovery (`providerSessionHandles.ts`, `discoverDroid.ts`).
+`homeDir` is passed explicitly by callers that already resolved a home of their
+own; everything else resolves `homedir()` inside the helper.
+
+### What each adapter states
+
+**Claude.** ADE sends `enabledPlugins` (the CLI merges it per plugin key rather
+than replacing the map) and `fastMode` (the composer's Fast chip owns it).
+`outputStyle` is sent only when a settings file actually names one, and
+`workflowSizeGuideline: "medium"` only when no settings file states one — ADE's
+preferred default, supplied rather than imposed.
+`readClaudeOutputStyleSelection` and `readClaudeWorkflowSizeGuideline`
+(`claudeOutputStyles.ts`) resolve a key across the same files, in the same
+order, that the SDK itself resolves with `settingSources: ["user", "project",
+"local"]` — lane `settings.local.json`, lane `settings.json`, each ancestor
+root, then the user root — and return `null` when no file declares it.
+Two traps this closes: substituting `"Default"` suppresses a globally
+configured style, and materialising a fallback onto the session record makes it
+read back as a real choice on the next launch, pinning it forever. The session's
+own cached value is therefore consulted *after* the settings files, not before.
+
+The precedence walk honours `CLAUDE_CONFIG_DIR` as well, and so does the plugin
+registry (`<claudeConfigHome>/plugins/installed_plugins.json`). A lane normally
+sits under `$HOME`, so the ancestor walk would reach the real `~/.claude` and
+rank it as a *project* tier above the user tier; when `CLAUDE_CONFIG_DIR` has
+moved the user tier elsewhere, that stale directory would outrank the one the
+CLI actually reads, so the real `~/.claude` is skipped from the ancestor walk in
+that case. Root de-duplication and the project/user source labelling both
+compare through `pathKey` / `pathsEqual` rather than raw strings, because
+Windows reaches the same directory through more than one spelling and a
+duplicate root would shadow the tier below it.
+
+**Codex.** Service tier is stated only when the Fast chip is on
+(`serviceTier: "fast"`); otherwise the key is omitted so `config.toml`'s
+`service_tier` resolves. Fast-off cannot mean "force default" either: `fastMode`
+is persisted only when true and rehydrated as `persisted?.fastMode === true`, so
+`false` is indistinguishable from never-set. The app-server re-resolves per
+request, so a turn sent after the toggle goes off inherits the config again.
+
+Reasoning effort travels **per thread** (`codexThreadConfigArgs`), never as a
+`-c model_reasoning_effort=…` flag on the `codex app-server` process. That flag
+outranks the user's `config.toml` and applies to every thread on that
+app-server, not just the chat that set it.
+
+**Droid.** `resolveSessionDroidPermissionModeOrNull` returns the mode the user
+actually chose, or `null`. Droid has no "use my config" mode — `cliLaunch`
+rejects `config-toml` for it — so `null` is the only way ADE can say nothing,
+and `autonomyLevel` / `interactionMode` are then both omitted from the SDK
+options, each resolving independently from `~/.factory/settings.json`. This
+matters because Droid's own documented default is `autonomyLevel: "off"`
+(read-only): a substituted `auto-low` fallback would hand out write access the
+CLI would not. `normalizeSessionNativePermissionControls` deletes the field
+rather than materialising a fallback, for the same reason as Claude's output
+style.
+
+When ADE does state a mode, Spec pairs with `autonomyLevel: "off"` — Droid
+collapses its compound autonomy mode to `spec` and reads it back as level `off`,
+so anything else is a claim Droid discards — which matches what
+`droidSettingsJson` already sends on the terminal path.
+
+Spec is the one place ADE has to speak up to stay quiet. The SDK exposes no
+`exitSpecMode`, so the only way out is to state a mode, and a plan session that
+later turns plan off states nothing. The worker therefore tracks whether ADE
+itself entered Spec (`enteredSpecMode` in `droidSdkWorker.ts`) and states `Auto`
+exactly once to leave, then goes back to saying nothing. The flag is reset on
+init and on dispose.
+
+`buildReady` reads the resolved model from `initResult.settings.modelId`.
+`initResult.currentModelId` does not exist in `@factory/droid-sdk`; reading it
+always yielded `null`.
+
+**Cursor.** The sandbox is a three-state directive, not a boolean:
+`CursorSdkSandboxDirective = "enable" | "disable" | "inherit"`
+(`cursorSdkPolicy.ts`). `inherit` omits `local.sandboxOptions` entirely so
+`~/.cursor/sandbox.json` decides. `disable` sends `{ enabled: false }`, which
+returns `insecure_none` without reading that file at all — which is exactly what
+ADE's full-access mode means, and what the retry after a `ConfigurationError`
+needs when the environment cannot sandbox and the alternative is a hard failure.
+`enable` asks for a sandbox, and a user policy still wins over ADE's: the SDK
+falls back to its own `workspace_readwrite` default only when the user has
+written no policy at all. The directive, not a boolean, is what the local
+permission fingerprint and the worker's ready payload carry, so a change between
+the three states restarts the agent options.
+
+**OpenCode.** `OPENCODE_CONFIG_CONTENT` deep-merges last, so anything
+`buildOpenCodeConfig` names outranks the user's `opencode.json` and only
+managed/MDM config beats it. `share` and `snapshot` are therefore omitted —
+neither has ADE UI, and forcing `snapshot: false` silently disabled OpenCode's
+own `/undo` and `/revert`, whose documented default is `true`. `autoupdate`
+moved out of config into `OPENCODE_DISABLE_AUTOUPDATE=1` on the server env: ADE
+does pin the binary, but that does not need the highest-precedence config slot.
+Both env builders set it — `buildIsolatedOpenCodeEnv` rebuilds the env from
+scratch and drops every inherited `OPENCODE_*` var, so an orchestration lead's
+isolated server would otherwise self-update the binary ADE pinned.
+
+Local provider blocks (`ollama`, `lmstudio`) are emitted only when the user
+configured an endpoint or ADE discovered models for that family. An
+ADE-invented `baseURL` merges over the endpoint in the user's own
+`opencode.json`, repointing a configured remote host back at localhost.
+`lmstudio` ships in OpenCode's provider catalog with its own npm package and
+baseURL, so only `ollama` needs `npm` stated.
+
+ADE's four agent profiles are `hidden: true`. They are ADE's permission modes,
+not agents the user should meet in Tab-cycle or `@`-autocomplete; without a
+`mode` they default to `"all"` and show up in the picker. `ade-helper` uses
+`steps: 1` (`maxSteps` is the deprecated spelling).
+
 ## Permission modes
 
 Permission controls are provider-native. The session carries an abstract
@@ -401,9 +555,11 @@ selected model, independent of provider. `AgentChatSession` carries
 `codexFastMode` is still accepted at boundaries for old rows and remote
 clients.
 
-Codex forwards Fast as `serviceTier: "fast" | null` on every
-`turn/start` and `thread/start` JSON-RPC call (an explicit `null` clears
-any app-server default). Claude Fable and Opus descriptors advertise
+Codex forwards Fast as `serviceTier: "fast"` on every `turn/start` and
+`thread/start` JSON-RPC call, and **omits the key entirely** when Fast is off so
+the user's `config.toml` `service_tier` resolves — an explicit `null` reports
+`"default"`, which is a real downgrade ADE has no UI for. See
+[Provider config ownership](#provider-config-ownership). Claude Fable and Opus descriptors advertise
 `serviceTiers: ["fast"]`; Claude chat sends the effective flag through
 the Agent SDK `settings.fastMode` layer, and Claude CLI launches/resumes
 pass `--settings '{"fastMode":true|false}'` so ADE can explicitly
@@ -458,6 +614,28 @@ picker state matches the documented default; the explicit Codex
 | `plan` | Read-only. |
 | `edit` | Read/write allowed; bash gated. |
 | `full-auto` | Proceed without asking. |
+
+Each mode is an `agent` entry in the config ADE ships through
+`OPENCODE_CONFIG_CONTENT`, carrying an explicit `permission` block.
+`OpenCodePermissionKey` in `openCodeRuntime.ts` names the keys ADE sets; the
+OpenCode SDK's own type declares only five of them and absorbs the rest through
+an index signature, so a misspelled key compiles and silently fails to apply
+(`websearch` vs `web_search` is a pair this codebase has already been bitten by).
+
+- **`plan` denies `task`, not just `edit`.** A spawned subagent runs under its
+  own ruleset — OpenCode's `general` agent is `merge(base, todowrite: deny)`,
+  i.e. edit *allowed* — so leaving `task` open let a plan-mode session write
+  files through a child session. Plan has to mean plan. Plan also denies
+  `websearch` and `skill`; that is the supported spelling of what the deprecated
+  agent-level `tools` map used to express, since OpenCode desugars that map into
+  exactly these permission entries and an explicit `permission` block wins over
+  it.
+- **`full-auto` states `read: "allow"` and `task: "allow"`.** Most ungated keys
+  resolve to `allow` from OpenCode's base `*` rule, but `read` does not: the base
+  ruleset asks before reading `*.env` / `*.env.*`, so full access still prompted.
+- **`external_directory` stays `ask` even in `full-auto`.** That boundary is
+  ADE's lane worktree, not a permission tier the user picked — the same reason
+  the system prompt confines edits to the lane.
 
 ### Pi
 
@@ -520,6 +698,11 @@ surfaces.
 `resolveCursorSdkPolicy` (`services/chat/cursorSdkPolicy.ts`) turns the ADE
 permission mode into a `CursorSdkPermissionPolicy`: chat mode, approval policy,
 sandbox mode, hard guards, orchestration-lead flag, and a `fullAuto` marker.
+`buildCursorSdkLocalRunOptions` then reduces that policy to the SDK's local run
+options, where the sandbox is a three-state `CursorSdkSandboxDirective`
+(`enable` / `disable` / `inherit`) rather than a boolean — see
+[Provider config ownership](#provider-config-ownership) for why absent and
+`false` are not the same thing to `@cursor/sdk`.
 `fullAuto` is only the name of ADE's full-auto permission mode — it partitions
 the worker pool and labels logs. It is deliberately not wired to the Cursor
 SDK's `local.force` send option, which expires the currently active persisted
@@ -560,7 +743,7 @@ translates the abstract value into the correct provider-native fields:
 - `claude`: `claudePermissionMode = "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions"`. The `auto` mode hands permission decisions to the SDK's automatic gate and surfaces in the desktop and `ade code` permission pickers alongside the existing modes.
 - `codex`: `codexApprovalPolicy` + `codexSandbox` pair.
 - `opencode`: `opencodePermissionMode = "plan" | "edit" | "full-auto"`.
-- `droid`: `droidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high"`.
+- `droid`: `droidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi"`, or **absent** when the user has picked nothing. Absent is meaningful: it lets `~/.factory/settings.json` resolve autonomy, so nothing materialises a fallback onto the session. See [Provider config ownership](#provider-config-ownership).
 - `pi`: no provider-specific permission field — the abstract `permissionMode`
   *is* Pi's native field. It is read directly by
   `piSdkToolPolicyForPermissionMode` (chat) or `piToolsForPermissionMode`

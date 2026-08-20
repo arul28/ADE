@@ -1719,7 +1719,11 @@ export function isNewChatSetupPane(pane: RightPaneContent): boolean {
 
 function formatOutputStyles(styles: Awaited<ReturnType<typeof listClaudeOutputStyles>>, activeStyle?: string | null): string {
   if (!styles.length) return "No Claude output styles were found.";
-  const activeKey = activeStyle?.trim().toLowerCase() ?? "";
+  // A session carries no output style until a settings file names one — ADE no
+  // longer substitutes a value into the SDK options. For the *listing* only, an
+  // unset selection still reads as Claude's own "Default", which is what the
+  // desktop's `/output-style` handler shows. Display, never written back.
+  const activeKey = (activeStyle?.trim() || "Default").toLowerCase();
   return [
     "Claude output styles:",
     "",

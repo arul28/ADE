@@ -280,11 +280,15 @@ and in tests.
   already-imported detection, active-session hints, CLI import into tracked
   PTYs, chat import delegation, cwd checks, and provider-specific resume/fork
   commands. The per-provider discovery modules scan Claude JSONL transcripts
-  under `~/.claude/projects`, Codex threads from the `~/.codex/state_5.sqlite`
+  under `<claudeConfigHome>/projects`, Codex threads from the `<codexConfigHome>/state_5.sqlite`
   thread store (falling back to the `sessions/` rollout tree only when that
   database is unusable), Cursor artifacts under `~/.cursor/chats` and
-  `~/.cursor/projects`, Droid sessions under `~/.factory/sessions`, and
-  OpenCode through `opencode session list`.
+  `~/.cursor/projects`, Droid sessions under `<factoryConfigHome>/sessions`, and
+  OpenCode through `opencode session list`. The Claude/Codex/Droid roots come
+  from `services/shared/providerConfigHomes.ts` so `CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`, and `FACTORY_HOME_OVERRIDE` are honoured — and honoured with
+  their differing shapes; see
+  [Provider config homes](../chat/agent-routing.md#provider-config-homes).
   `claudeSessionTransplant.ts` performs the non-destructive Claude JSONL copy
   used when forking or importing a Claude session into a different lane cwd;
   `claudeLiveSessions.ts` reads Claude's own `sessions/<pid>.json` registry to
