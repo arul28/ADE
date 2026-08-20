@@ -420,6 +420,84 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("still checks when an update is already staged, but only when the user asked", async () => {
+    // The Settings button was a silent no-op in exactly this state: an update
+    // downloaded and waiting for a restart. The automatic timers must keep
+    // standing down so they cannot disturb the staged download.
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.60",
+      globalStatePath: makeStatePath(),
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-08-19T21:00:00.000Z",
+      updater,
+    });
+
+    updater.emit("update-available", { version: "1.2.61" });
+    updater.emit("update-downloaded", { version: "1.2.61" });
+    expect(service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.61" });
+
+    updater.checkForUpdates.mockClear();
+    service.checkForUpdates();
+    // Flush the microtask queue rather than waitFor: a `not.toHaveBeenCalled`
+    // inside waitFor passes on its first tick and would assert nothing.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+
+    // electron-updater emits these BEFORE checkForUpdates() resolves. A mock
+    // that only resolves cannot see the bug this test exists for: the
+    // update-available handler is what supersedes the staged update, deletes
+    // the finished download, and frees the resolve path to start a new one.
+    const downloadUpdate = vi.fn(async () => null);
+    (updater as unknown as { downloadUpdate: unknown }).downloadUpdate = downloadUpdate;
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", { version: "1.2.63" });
+      return { updateInfo: { version: "1.2.63" } };
+    });
+    service.checkForUpdates({ userInitiated: true });
+
+    await vi.waitFor(() => {
+      expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+      // The newest version is reported, and the staged 1.2.61 is left alone.
+      expect(service.getSnapshot()).toMatchObject({
+        status: "ready",
+        version: "1.2.61",
+        latestKnownVersion: "1.2.63",
+      });
+    });
+    // Asking what the newest version is must not throw away the update the
+    // user already downloaded and is one restart away from installing.
+    expect(downloadUpdate).not.toHaveBeenCalled();
+
+    // Let the first check's promise chain settle: while `checkPromise` is
+    // still set, a second call is swallowed by the in-flight guard and would
+    // assert nothing.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // ...and neither must a check that fails. A feed error here means "nothing
+    // new to tell you", not "discard the finished download".
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("error", new Error("net::ERR_INTERNET_DISCONNECTED"));
+      throw new Error("net::ERR_INTERNET_DISCONNECTED");
+    });
+    service.checkForUpdates({ userInitiated: true });
+
+    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(2));
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.61",
+      latestKnownVersion: "1.2.63",
+    });
+    expect(downloadUpdate).not.toHaveBeenCalled();
+
+    service.dispose();
+  });
+
   it("tracks download progress and persists the target version before quit-and-install", async () => {
     const globalStatePath = makeStatePath();
     const updater = new FakeAutoUpdater();

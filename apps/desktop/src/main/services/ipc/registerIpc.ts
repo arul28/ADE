@@ -11483,7 +11483,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, () => {
-    getCtx().autoUpdateService?.checkForUpdates();
+    // Only reachable from the Settings button, so it always counts as
+    // user-initiated: it must run even when an update is already staged.
+    getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
   });
 
   ipcMain.handle(IPC.updateGetState, () => {
