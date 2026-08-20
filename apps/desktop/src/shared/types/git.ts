@@ -512,8 +512,9 @@ export type GitHubAppUserAuthRefreshError = {
 };
 
 /**
- * What every surface says while ADE itself is renewing the App authorization.
- *
+ * The shared default sentence for ADE renewing the App authorization itself.
+ * Surfaces may word their own variant (the PR snapshot error does); what they
+ * must share is the stance:
  * One process on the machine runs the renewal and the rest wait a moment for
  * it. Nothing is wrong, nothing was refused, and there is nothing to do — so
  * the sentence names ADE, not GitHub, and asks for nothing.

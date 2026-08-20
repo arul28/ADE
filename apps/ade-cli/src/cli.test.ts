@@ -1365,15 +1365,20 @@ describe("ADE CLI", () => {
       error: null,
     })).toContain("ade --role cto github app-auth login");
 
-    // A host that cannot hold the credential reports a stub, not "not
-    // authorized" — telling its user to log in would be a false instruction.
+    // An older host sends no credentialState at all. The shared derivation
+    // judges by the refresh token, so a lapsed 8-hour access token next to a
+    // live refresh token still reads as authorized — never as "log in again".
     expect(formatGithubAppUserAuth({
-      configured: false,
-      tokenStored: false,
-      userLogin: null,
-      credentialState: "missing",
-      appUserAuthSupported: false,
-    })).toContain("cannot hold a GitHub App authorization");
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: "2026-08-20T04:00:00.000Z",
+      refreshTokenExpiresAt: "2099-01-01T00:00:00.000Z",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    })).toContain("ADE renews this credential on its own");
   });
 
   it("skips the brain-starting probe inside supervisor and handover probe children", () => {

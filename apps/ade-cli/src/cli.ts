@@ -72,6 +72,8 @@ import {
   sessionCanonicalUiState,
   sessionStatusDisplay,
 } from "../../desktop/src/renderer/lib/terminalAttention";
+import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/githubIntegrationStatus";
+import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
 import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
@@ -20980,32 +20982,28 @@ export function formatBrainStatus(value: unknown): string {
  */
 export function formatGithubAppUserAuth(value: unknown): string {
   if (!isRecord(value)) return "The GitHub App authorization status is not available.";
-  // Only the standalone web client declares this: it has no machine behind it,
-  // so "not authorized" would be a false report rather than an answer.
-  if (value.appUserAuthSupported === false) {
-    return "This host cannot hold a GitHub App authorization. Run `ade github app-auth status` on the machine that runs ADE.";
-  }
   const credentialState = asString(value.credentialState);
   const userLogin = asString(value.userLogin);
   const refreshBlockedUntil = asString(value.refreshBlockedUntil);
   const lastRefreshError = isRecord(value.lastRefreshError) ? value.lastRefreshError : null;
+  // One module answers "how is this credential judged" for every surface. It
+  // also carries the legacy fallback: an older host sends no credentialState,
+  // and the refresh token — never the 8-hour access token — decides the truth.
+  const accountState = deriveGithubAccountAuthState(value as unknown as GitHubAppUserAuthStatus);
   const headline = ((): string => {
     if (value.configured !== true) {
       return "The ADE GitHub App is not configured on this machine.";
     }
-    if (credentialState === "authorized") {
+    if (accountState === "valid") {
       return `Authorized${userLogin ? ` as ${userLogin}` : ""}. ADE renews this credential on its own.`;
     }
-    if (credentialState === "blocked") {
+    if (accountState === "blocked") {
       return "Authorized, but renewal is paused after a transient failure. ADE retries on its own — do not re-authorize.";
     }
-    if (credentialState === "needs_reauth") {
+    if (accountState === "needs_reauth") {
       return "Re-authorization is needed. Run `ade --role cto github app-auth login`.";
     }
-    if (credentialState === "missing") {
-      return "Not authorized. Run `ade --role cto github app-auth login`.";
-    }
-    return "The GitHub App authorization state is unknown.";
+    return "Not authorized. Run `ade --role cto github app-auth login`.";
   })();
   const rows: Array<[string, unknown]> = [
     ["state", credentialState],
@@ -22121,13 +22119,12 @@ async function runGithubAppLogin(
       );
       const poll = await runGithubAction("pollAppUserDeviceAuth", { sessionId });
       const status = asString(poll.status);
-      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
       // The typed printer reads an auth status. When the host returned none,
       // `authStatus` is the poll envelope instead, and printing that as an auth
       // status would report "not configured" for a machine that is configured.
-      const authFormatter: FormatterId | undefined = isRecord(poll.authStatus)
-        ? "github-app-auth"
-        : undefined;
+      const polledAuthStatus = isRecord(poll.authStatus) ? poll.authStatus : null;
+      const authStatus = polledAuthStatus ?? poll;
+      const authFormatter: FormatterId | undefined = polledAuthStatus ? "github-app-auth" : undefined;
       if (status === "authorized") {
         process.stderr.write("GitHub App authorized.\n");
         return { output: formatOutput(authStatus, options, authFormatter), exitCode: 0 };
