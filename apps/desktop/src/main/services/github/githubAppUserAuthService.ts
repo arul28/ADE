@@ -7,12 +7,10 @@ import type {
 } from "../../../shared/types";
 import {
   ADE_GITHUB_APP_CLIENT_ID,
-  type GitHubAppDeviceCode,
   type GitHubAppUserTokenRecord,
-  pollGitHubAppDeviceFlow,
   refreshGitHubAppUserToken,
-  startGitHubAppDeviceFlow,
 } from "./githubAppUserAuth";
+import { createGitHubAppUserDeviceFlow } from "./githubAppUserAuthDeviceFlow";
 import {
   emptyLedger,
   parseStoredAppUserAuth,
@@ -25,7 +23,6 @@ import {
 import {
   GitHubAppUserAuthError,
   classifyRefreshFailure,
-  describeGitHubAppUserAuthFailure,
   type RefreshFailure,
 } from "./githubAppUserAuthFailure";
 import {
@@ -37,7 +34,6 @@ import { asString } from "../shared/utils";
 
 export const GITHUB_APP_USER_TOKEN_KEY = "github.appUserToken.v1";
 const GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
-const MAX_PENDING_DEVICE_AUTH_SESSIONS = 5;
 /** How long one process may hold the right to run the refresh POST. */
 const REFRESH_LEASE_MS = 60_000;
 const REFRESH_BACKOFF_BASE_MS = 60_000;
@@ -45,15 +41,6 @@ const REFRESH_BACKOFF_MAX_MS = 60 * 60_000;
 const LEASE_POLL_INTERVAL_MS = 250;
 /** Bounds the wait for a peer's refresh at roughly three seconds. */
 const LEASE_POLL_MAX_ATTEMPTS = 12;
-/**
- * What a person is told when GitHub throttles the sign-in endpoint itself.
- *
- * Re-authorizing is what a user reaches for when the credential broke, and it
- * goes to the same host that is throttling ADE. Say that, rather than handing
- * back a status code.
- */
-const GITHUB_SIGN_IN_RATE_LIMITED_COPY =
-  "GitHub is rate-limiting ADE's sign-in requests right now. Try again in a few minutes.";
 
 export type GitHubAppUserAuthCredentialStore = {
   getSync(key: string): string | null | undefined;
@@ -73,11 +60,6 @@ export type GitHubAppUserAuthCredentialStore = {
   ): void;
   /** A stable name for the underlying storage, shared by every store over it. */
   credentialStoreIdentity?(): string;
-};
-
-type GitHubAppDeviceAuthSession = GitHubAppDeviceCode & {
-  sessionId: string;
-  intervalSec: number;
 };
 
 type GitHubAppUserAuthLogger = {
@@ -210,7 +192,6 @@ export function createGitHubAppUserAuthService(args: {
   getValidTokenForRelay(): Promise<string>;
   auditLog: GitHubRelayAuthAuditLog;
 } {
-  const appDeviceAuthSessions = new Map<string, GitHubAppDeviceAuthSession>();
   const now = args.now ?? (() => Date.now());
   const sleep = args.sleep ?? ((ms: number) => new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -228,18 +209,6 @@ export function createGitHubAppUserAuthService(args: {
   const storeIdentity = resolveStoreIdentity(args.credentialStore, args.storeIdentity);
 
   const auditLog = createGitHubRelayAuthAuditLog(args.logger.info.bind(args.logger));
-
-  const pruneExpiredDeviceAuthSessions = (requestedSessionId?: string): boolean => {
-    const nowMs = now();
-    let requestedExpired = false;
-    for (const [sessionId, session] of appDeviceAuthSessions.entries()) {
-      if (Date.parse(session.expiresAt) <= nowMs) {
-        appDeviceAuthSessions.delete(sessionId);
-        if (sessionId === requestedSessionId) requestedExpired = true;
-      }
-    }
-    return requestedExpired;
-  };
 
   const readStoredAuth = (): StoredAppUserAuth => {
     if (!args.credentialStore) return appUserTokenMemory ?? { token: null, refresh: emptyLedger() };
@@ -330,10 +299,68 @@ export function createGitHubAppUserAuthService(args: {
     }
   };
 
+  /**
+   * What the stored credential is, judged once and read by every gate.
+   *
+   * Declared here because four callers used to run their own copy of this
+   * ladder in three different orders, and the orders disagreed: one of them
+   * handed out a lapsed access token whose refresh token had already expired,
+   * which every other gate called `needs_reauth`.
+   *
+   * The order is the contract:
+   *  1. `missing`     — nothing stored at all.
+   *  2. `fresh`       — the access token is still good, so nothing below may
+   *     refuse the call. A renewal pause must never withhold a working token,
+   *     and an App configured for non-expiring user tokens has no refresh token
+   *     to judge in the first place. `renewable` says whether that token has a
+   *     future once it lapses, which is what the STATUS axis reports on.
+   *  3. `needs_reauth`— lapsed, and the refresh token is gone, expired, or
+   *     rejected. Nobody can renew this credential, so no gate may hand it out:
+   *     serving it produced a GitHub 401 the user had no way to act on.
+   *  4. `blocked`     — lapsed, and a refresh deadline has not passed yet.
+   *  5. `refreshable` — lapsed, healthy, and ADE may POST a refresh for it.
+   */
+  type StoredAuthVerdict =
+    | { outcome: "missing" }
+    | {
+      outcome: "fresh";
+      record: GitHubAppUserTokenRecord;
+      /** False when this token cannot be renewed once it lapses. */
+      renewable: boolean;
+    }
+    | { outcome: "needs_reauth"; failure: StoredRefreshFailure | null }
+    | { outcome: "blocked"; retryAt: string | null; failure: StoredRefreshFailure | null }
+    | { outcome: "refreshable"; record: UsableRefreshRecord };
+
+  const judgeStoredAuth = (stored: StoredAppUserAuth, nowMs: number): StoredAuthVerdict => {
+    const failure = stored.refresh.lastFailure;
+    const token = stored.token;
+    if (!token?.accessToken) return { outcome: "missing" };
+    const renewable = !stored.refresh.dead && hasUsableRefreshToken(token, nowMs);
+    if (isAccessTokenFresh(token, nowMs)) return { outcome: "fresh", record: token, renewable };
+    if (!renewable) return { outcome: "needs_reauth", failure };
+    if (backoffActive(stored.refresh.notBeforeAt, nowMs)) {
+      return { outcome: "blocked", retryAt: stored.refresh.notBeforeAt, failure };
+    }
+    // Narrowed by `renewable`, which is exactly `hasUsableRefreshToken` plus the
+    // dead flag, but TypeScript cannot carry a guard through a boolean.
+    return { outcome: "refreshable", record: token as UsableRefreshRecord };
+  };
+
   const credentialStateOf = (stored: StoredAppUserAuth): GitHubAppUserAuthCredentialState => {
-    if (!stored.token?.accessToken) return "missing";
-    if (stored.refresh.dead || !hasUsableRefreshToken(stored.token, now())) return "needs_reauth";
-    if (backoffActive(stored.refresh.notBeforeAt, now())) return "blocked";
+    const verdict = judgeStoredAuth(stored, now());
+    if (verdict.outcome === "missing") return "missing";
+    // A working token that is GOING TO LAPSE with no renewal left is something
+    // the user must replace, and this axis is where ADE asks them to — hours
+    // before it lapses, rather than at the moment it stops working. A token
+    // with no expiry at all (an App configured for non-expiring user tokens)
+    // never lapses, so the missing refresh token is not a problem to report.
+    if (verdict.outcome === "fresh") {
+      const lapses = Boolean(verdict.record.expiresAt);
+      return !lapses || verdict.renewable ? "authorized" : "needs_reauth";
+    }
+    if (verdict.outcome === "needs_reauth") return "needs_reauth";
+    if (verdict.outcome === "blocked") return "blocked";
     return "authorized";
   };
 
@@ -405,22 +432,20 @@ export function createGitHubAppUserAuthService(args: {
     failure,
   );
 
-  const isAccessTokenFresh = (record: GitHubAppUserTokenRecord): boolean => {
-    const refreshCutoff = now() + GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS;
+  const isAccessTokenFresh = (record: GitHubAppUserTokenRecord, nowMs: number): boolean => {
+    const refreshCutoff = nowMs + GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS;
     return !record.expiresAt || readIsoAfter(record.expiresAt, refreshCutoff);
   };
 
   /**
-   * What one atomic look at the refresh ledger decided.
+   * What one atomic look at the refresh ledger decided: the shared verdict, plus
+   * the two outcomes only the lease itself can reach.
    *
-   * Declared once, because the helper that produces it, the loop that drives it
-   * and the errors it turns into all have to agree on the same set of outcomes.
+   * `refreshable` never escapes {@link acquireRefreshLease} — it is exactly the
+   * case the lease then takes or finds already held.
    */
   type RefreshLeaseAttempt =
-    | { outcome: "missing" }
-    | { outcome: "fresh"; record: GitHubAppUserTokenRecord }
-    | { outcome: "needs_reauth"; failure: StoredRefreshFailure | null }
-    | { outcome: "blocked"; retryAt: string | null; failure: StoredRefreshFailure | null }
+    | Exclude<StoredAuthVerdict, { outcome: "refreshable" }>
     | { outcome: "held"; leaseUntil: string | null }
     | { outcome: "acquired"; record: UsableRefreshRecord };
 
@@ -436,33 +461,25 @@ export function createGitHubAppUserAuthService(args: {
    */
   const acquireRefreshLease = (): RefreshLeaseAttempt =>
     updateStoredAuth<RefreshLeaseAttempt>((stored) => {
+      const nowMs = now();
       const decline = (result: RefreshLeaseAttempt) => ({ next: undefined, result });
-      const failure = stored.refresh.lastFailure;
-      if (!stored.token?.accessToken) return decline({ outcome: "missing" });
-      if (isAccessTokenFresh(stored.token)) {
-        return decline({ outcome: "fresh", record: stored.token });
-      }
-      if (stored.refresh.dead || !hasUsableRefreshToken(stored.token, now())) {
-        return decline({ outcome: "needs_reauth", failure });
-      }
-      if (backoffActive(stored.refresh.notBeforeAt, now())) {
-        return decline({ outcome: "blocked", retryAt: stored.refresh.notBeforeAt, failure });
-      }
+      const verdict = judgeStoredAuth(stored, nowMs);
+      if (verdict.outcome !== "refreshable") return decline(verdict);
       if (
-        leaseActive(stored.refresh.leaseUntil, now())
+        leaseActive(stored.refresh.leaseUntil, nowMs)
         && stored.refresh.leaseHolder !== leaseHolderId
       ) {
         // No failure travels with this one: a peer holding the lease is ADE
         // renewing the credential, and GitHub has said nothing about it.
         return decline({ outcome: "held", leaseUntil: stored.refresh.leaseUntil });
       }
-      const leaseUntil = new Date(now() + REFRESH_LEASE_MS).toISOString();
+      const leaseUntil = new Date(nowMs + REFRESH_LEASE_MS).toISOString();
       return {
         next: {
-          token: stored.token,
+          token: verdict.record,
           refresh: { ...stored.refresh, leaseUntil, leaseHolder: leaseHolderId },
         },
-        result: { outcome: "acquired", record: stored.token },
+        result: { outcome: "acquired", record: verdict.record },
       };
     });
 
@@ -558,16 +575,16 @@ export function createGitHubAppUserAuthService(args: {
    * the write was declined because the refresh token had already been rotated.
    */
   const serveCurrentStoredAuth = (): GitHubAppUserTokenRecord => {
-    const current = readStoredAuth();
-    if (!current.token?.accessToken) throw missingAuthError();
-    if (isAccessTokenFresh(current.token)) return current.token;
-    if (current.refresh.dead) throw needsReauthError(current.refresh.lastFailure);
-    if (backoffActive(current.refresh.notBeforeAt, now())) {
-      throw blockedError(current.refresh.notBeforeAt, current.refresh.lastFailure);
+    const verdict = judgeStoredAuth(readStoredAuth(), now());
+    if (verdict.outcome === "missing") throw missingAuthError();
+    if (verdict.outcome === "needs_reauth") throw needsReauthError(verdict.failure);
+    if (verdict.outcome === "blocked") {
+      throw blockedError(verdict.retryAt, verdict.failure);
     }
-    // Stale but healthy. The next call runs the gate again and renews it; this
-    // call must not report a failure that belongs to a replaced credential.
-    return current.token;
+    // Fresh, or stale but healthy. The next call runs the gate again and renews
+    // it; this call must not report a failure that belongs to a replaced
+    // credential.
+    return verdict.record;
   };
 
   /**
@@ -703,19 +720,17 @@ export function createGitHubAppUserAuthService(args: {
   };
 
   const getValidAppUserTokenForRelay = async (): Promise<string> => {
-    const stored = readStoredAuth();
     const coordinator = coordinatorFor(storeIdentity);
-    if (!stored.token?.accessToken) throw missingAuthError();
-    if (isAccessTokenFresh(stored.token)) {
+    const verdict = judgeStoredAuth(readStoredAuth(), now());
+    if (verdict.outcome === "missing") throw missingAuthError();
+    if (verdict.outcome === "needs_reauth") throw needsReauthError(verdict.failure);
+    if (verdict.outcome === "fresh") {
       // A fresh token proves the peer's refresh landed, so the remembered
       // deadline has done its job.
       coordinator.peerLeaseUntilMs = 0;
-      return stored.token.accessToken;
+      return verdict.record.accessToken;
     }
-    if (stored.refresh.dead) throw needsReauthError(stored.refresh.lastFailure);
-    if (backoffActive(stored.refresh.notBeforeAt, now())) {
-      throw blockedError(stored.refresh.notBeforeAt, stored.refresh.lastFailure);
-    }
+    if (verdict.outcome === "blocked") throw blockedError(verdict.retryAt, verdict.failure);
     // A peer still held the lease when an earlier wait ran out. Polling for
     // three more seconds cannot learn anything before that deadline passes, and
     // every project scope in this process would pay the wait separately. This
@@ -739,133 +754,30 @@ export function createGitHubAppUserAuthService(args: {
     }
   };
 
-  const startDeviceAuth = async (): Promise<GitHubAppDeviceAuthStartResult> => {
-    pruneExpiredDeviceAuthSessions();
-    // Cap pending sessions so a runaway caller cannot grow the map or spam
-    // GitHub's device endpoint via ADE; evict oldest first.
-    while (appDeviceAuthSessions.size >= MAX_PENDING_DEVICE_AUTH_SESSIONS) {
-      const oldest = appDeviceAuthSessions.keys().next().value;
-      if (!oldest) break;
-      appDeviceAuthSessions.delete(oldest);
-    }
-    let device: GitHubAppDeviceCode;
-    try {
-      device = await startGitHubAppDeviceFlow({
-        clientId: ADE_GITHUB_APP_CLIENT_ID,
-        fetchImpl: (input, init) => args.fetchImpl(String(input), init),
-        userAgent: args.userAgent,
-      });
-    } catch (error) {
-      const described = describeGitHubAppUserAuthFailure(error);
-      args.logger.warn("github.app_user_device_start_failed", {
-        error: described.message,
-        status: described.status,
-        oauthError: described.oauthError,
-      });
-      if (described.status === 429) throw new Error(GITHUB_SIGN_IN_RATE_LIMITED_COPY);
-      throw error;
-    }
-    const sessionId = randomUUID();
-    appDeviceAuthSessions.set(sessionId, { ...device, sessionId });
-    return {
-      sessionId,
-      userCode: device.userCode,
-      verificationUri: device.verificationUri,
-      verificationUriComplete: device.verificationUriComplete,
-      expiresAt: device.expiresAt,
-      intervalSec: device.intervalSec,
-    };
-  };
-
-  const pollDeviceAuth = async (pollArgs: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult> => {
-    const requestedSessionExpired = pruneExpiredDeviceAuthSessions(pollArgs.sessionId);
-    const session = appDeviceAuthSessions.get(pollArgs.sessionId);
-    if (!session) {
-      if (requestedSessionExpired) {
-        return {
-          status: "expired",
-          intervalSec: null,
-          message: "GitHub device authorization expired.",
-          authStatus: appUserAuthStatus(),
-        };
-      }
-      return {
-        status: "error",
-        intervalSec: null,
-        message: "GitHub device authorization session was not found.",
-        authStatus: appUserAuthStatus(),
-      };
-    }
-    let result: Awaited<ReturnType<typeof pollGitHubAppDeviceFlow>>;
-    try {
-      result = await pollGitHubAppDeviceFlow({
-        clientId: ADE_GITHUB_APP_CLIENT_ID,
-        deviceCode: session.deviceCode,
-        intervalSec: session.intervalSec,
-        fetchImpl: (input, init) => args.fetchImpl(String(input), init),
-        userAgent: args.userAgent,
-        fetchUserLogin: fetchAppUserLogin,
-      });
-    } catch (error) {
-      // A transport failure is a poll RESULT, not a thrown IPC error: the caller
-      // is a polling UI, and it can only pace itself if it is told what
-      // happened. A 429 here is GitHub throttling ADE, not a denied user.
-      const described = describeGitHubAppUserAuthFailure(error);
-      const message = described.status === 429
-        ? GITHUB_SIGN_IN_RATE_LIMITED_COPY
-        : described.message;
-      args.logger.warn("github.app_user_device_poll_failed", {
-        error: described.message,
-        status: described.status,
-        oauthError: described.oauthError,
-      });
-      return {
-        status: "error",
-        intervalSec: null,
-        message,
-        authStatus: appUserAuthStatus({ error: message }),
-      };
-    }
-    if (result.status === "pending" || result.status === "slow_down") {
-      session.intervalSec = result.intervalSec;
-      appDeviceAuthSessions.set(session.sessionId, session);
-      return {
-        status: result.status,
-        intervalSec: result.intervalSec,
-        message: result.message,
-        authStatus: appUserAuthStatus(),
-      };
-    }
-    appDeviceAuthSessions.delete(pollArgs.sessionId);
-    if (result.status === "authorized") {
+  const deviceFlow = createGitHubAppUserDeviceFlow({
+    fetchImpl: args.fetchImpl,
+    userAgent: args.userAgent,
+    logger: args.logger,
+    fetchAppUserLogin,
+    persistAppUserTokenRecord,
+    bumpAuthEpoch: () => {
       authEpoch += 1;
-      persistAppUserTokenRecord(result.token);
-      return {
-        status: "authorized",
-        intervalSec: null,
-        message: null,
-        authStatus: appUserAuthStatus(),
-      };
-    }
-    return {
-      status: result.status,
-      intervalSec: null,
-      message: result.message,
-      authStatus: appUserAuthStatus({ error: result.message }),
-    };
-  };
+    },
+    appUserAuthStatus,
+    now,
+  });
 
   const clearAuth = (): GitHubAppUserAuthStatus => {
     authEpoch += 1;
     persistAppUserTokenRecord(null);
-    appDeviceAuthSessions.clear();
+    deviceFlow.clearSessions();
     return appUserAuthStatus();
   };
 
   return {
     getAuthStatus: appUserAuthStatus,
-    startDeviceAuth,
-    pollDeviceAuth,
+    startDeviceAuth: deviceFlow.startDeviceAuth,
+    pollDeviceAuth: deviceFlow.pollDeviceAuth,
     clearAuth,
     getStoredTokenForHealth: () => readAppUserTokenRecord()?.accessToken ?? null,
     getValidTokenForRelay: getValidAppUserTokenForRelay,

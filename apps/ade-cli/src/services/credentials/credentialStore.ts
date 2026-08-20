@@ -1659,17 +1659,6 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 }
 
-/**
- * The stores that stand in front of the real ones, and the migration that moves
- * file-backed credentials out of the Electron-only store, re-exported from
- * their own modules so every consumer keeps one import to reach for.
- */
-export {
-  createRoutedCredentialStore,
-  createUnavailableCredentialStore,
-} from "./credentialStoreRouting";
-export { adoptFileBackedCredentials } from "./credentialStoreAdoption";
-
 type KeytarModule = {
   getPassword(service: string, account: string): Promise<string | null>;
   setPassword(service: string, account: string, password: string): Promise<void>;

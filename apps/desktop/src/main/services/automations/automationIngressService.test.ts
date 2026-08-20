@@ -422,14 +422,22 @@ describe("automationIngressService", () => {
     await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
     expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
 
-    // Explicit pollNow (e.g. right after authorizing) bypasses the cooldown
-    // and the transition log fires only once.
+    // Explicit pollNow (e.g. right after authorizing) bypasses the cooldown.
+    // The repair did not take, and that is a new fact: the transition log says
+    // so again rather than staying latched on the failure it replaced.
     await service.pollNow();
     expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(2);
     const authPendingLogs = (logger.info.mock.calls as unknown[][])
       .filter((call) => call[0] === "automations.github_relay_auth_pending");
-    expect(authPendingLogs).toHaveLength(1);
+    expect(authPendingLogs).toHaveLength(2);
     expect(logger.warn).not.toHaveBeenCalled();
+
+    // The timer-driven poll inside the fresh cooldown window stays quiet, so
+    // the log follows repairs rather than ticks.
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(2);
+    expect((logger.info.mock.calls as unknown[][])
+      .filter((call) => call[0] === "automations.github_relay_auth_pending")).toHaveLength(2);
   });
 
   it("cools down a broken GitHub App credential even while signed in", async () => {

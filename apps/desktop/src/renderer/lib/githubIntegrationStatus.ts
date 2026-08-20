@@ -442,6 +442,12 @@ export function describeGithubAccountAxis(
     // renewal, not a GitHub refusal: one process on this machine holds the
     // refresh and the rest wait a moment. Calling that "paused" told the user
     // GitHub had stopped something, which is both wrong and unactionable.
+    //
+    // Defensive today: the stored ledger always carries `lastFailure` when it
+    // sets a backoff, so a status read reports `lastRefreshError` beside every
+    // `blocked` it reports. This branch guards the peer-lease shape — blocked
+    // with no failure — for the day it does reach a status read, because that
+    // shape already travels on the error path.
     if (!appAuth?.lastRefreshError) {
       return {
         tone: "pending",
@@ -760,6 +766,20 @@ export function describeGithubAuthFailure(
   // failure: whatever GitHub returned, the cause is GitHub.
   const outage = describeGithubOutage(status);
   if (outage) return outage;
+  // ADE renewing its own credential, forwarded by `classifyAppUserAuthFailure`.
+  // Matched on the exact shared constant rather than on the prose: a substring
+  // test over failure messages is how a repository problem once got reported as
+  // an account problem. Nothing is wrong, so this offers no reconnect CTA.
+  if (status.authFailure?.message === GITHUB_APP_USER_AUTH_RENEWING_COPY) {
+    return {
+      subState: "renewing",
+      statusLabel: "Renewing",
+      title: "Renewing GitHub authorization",
+      detail: "ADE is renewing this authorization — this takes a moment.",
+      settingsDetail: "ADE is renewing this authorization — this takes a moment. Nothing here needs changing.",
+      action: "Open GitHub settings",
+    };
+  }
   if (status.authFailure?.kind === "rate_limited") {
     const retryAt = formatGithubRetryAt(status.authFailure.retryAt);
     return {

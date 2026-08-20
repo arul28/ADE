@@ -25,6 +25,7 @@ import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  createExpiringPromiseCache,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -41,12 +42,10 @@ import {
 } from "../../../shared/githubApiPath";
 import { createGithubConditionalRequestCache } from "../../../shared/githubConditionalRequestCache";
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
-import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
+import { fetchAppInstallationStatusForRepo, type GitHubRelaySecretReader } from "./githubRelayConfig";
 import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
 import {
   appCredentialFailureEntry,
-  describeAppUserAuthUnavailable,
-  resolveAppUserTokenForRelay,
   resolveStoredAppUserTokenForRelay,
 } from "./githubAppUserAuthFailure";
 import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
@@ -604,14 +603,12 @@ export function createGithubService({
   const sharedGhAuth = processGithubAuthState(ghAuthProvider);
   let statusInFlight: Promise<GitHubStatus> | null = null;
   let cachedStatusCredentialInventoryKey: string | null = null;
-  let credentialInventoryCache: {
-    expiresAt: number;
-    revision: number;
-    promise: Promise<GitHubCredentialInventory>;
-  } | null = null;
+  const credentialInventoryCache = createExpiringPromiseCache<GitHubCredentialInventory>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  });
 
   const invalidateCredentialInventory = (): void => {
-    credentialInventoryCache = null;
+    credentialInventoryCache.clear();
     sharedGhAuth.credentialInventoryRevision += 1;
   };
 
@@ -951,29 +948,14 @@ export function createGithubService({
     };
   };
 
-  const readCredentialInventory = async (): Promise<GitHubCredentialInventory> => {
-    const now = Date.now();
-    const revision = sharedGhAuth.credentialInventoryRevision;
-    if (
-      credentialInventoryCache
-      && credentialInventoryCache.expiresAt > now
-      && credentialInventoryCache.revision === revision
-    ) {
-      return await credentialInventoryCache.promise;
-    }
-    const promise = buildCredentialInventory();
-    credentialInventoryCache = {
-      expiresAt: now + GITHUB_CREDENTIAL_CACHE_TTL_MS,
-      revision,
-      promise,
-    };
-    try {
-      return await promise;
-    } catch (error) {
-      if (credentialInventoryCache?.promise === promise) credentialInventoryCache = null;
-      throw error;
-    }
-  };
+  // The revision guard rides alongside the TTL: signing out of the `gh` CLI
+  // bumps it, and that must demote the write credential now rather than in
+  // thirty seconds.
+  const readCredentialInventory = async (): Promise<GitHubCredentialInventory> =>
+    await credentialInventoryCache.read(
+      buildCredentialInventory,
+      sharedGhAuth.credentialInventoryRevision,
+    );
 
   const readAuthToken = async (
     capability: GithubOperationCredentialCapability = "read",
@@ -2093,25 +2075,13 @@ export function createGithubService({
     const owner = args.owner?.trim();
     const name = args.name?.trim();
     const repo = owner && name ? { owner, name } : await detectRepo();
-    // The reason this token is unavailable decides what the repo axis may say.
-    // Swallowing it is how "ADE's authorization is paused" reached the user as
-    // the relay's own "GitHub auth token is required" 401.
-    const appUserToken = await resolveAppUserTokenForRelay({
+    return await fetchAppInstallationStatusForRepo({
+      repo,
       appUserAuth,
       logger,
-      event: "github.app_installation_status_auth_unavailable",
-    });
-    const accountAccessToken = getAccountAccessToken
-      ? await getAccountAccessToken().catch(() => null)
-      : null;
-    return fetchGitHubAppInstallationStatus({
-      repo,
       secretReader: githubRelaySecretReader,
       forceRefresh: args.forceRefresh === true,
-      githubAppUserToken: appUserToken.token,
-      appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
-      accountAccessToken,
-      auditLog: appUserAuth.auditLog,
+      getAccountAccessToken,
     });
   };
 

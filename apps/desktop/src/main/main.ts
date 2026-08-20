@@ -250,14 +250,16 @@ import {
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
-  adoptFileBackedCredentials,
-  createRoutedCredentialStore,
-  createUnavailableCredentialStore,
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
   isElectronSafeStorageCredentialFile,
   type SyncCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStore";
+import { adoptFileBackedCredentials } from "../../../ade-cli/src/services/credentials/credentialStoreAdoption";
+import {
+  createRoutedCredentialStore,
+  createUnavailableCredentialStore,
+} from "../../../ade-cli/src/services/credentials/credentialStoreRouting";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";

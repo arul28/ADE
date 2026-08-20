@@ -50,14 +50,12 @@ import type {
   GitHubPullRequestReview,
 } from "../../desktop/src/main/services/github/githubService";
 import {
-  fetchGitHubAppInstallationStatus,
+  fetchAppInstallationStatusForRepo,
   type GitHubRelaySecretReader,
 } from "../../desktop/src/main/services/github/githubRelayConfig";
 import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
 import {
   appCredentialFailureEntry,
-  describeAppUserAuthUnavailable,
-  resolveAppUserTokenForRelay,
   resolveStoredAppUserTokenForRelay,
   type AppUserAuthFailure,
 } from "../../desktop/src/main/services/github/githubAppUserAuthFailure";
@@ -83,6 +81,7 @@ import { createAutomationSecretService as createAutomationSecretServiceImpl } fr
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  createExpiringPromiseCache,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -760,10 +759,9 @@ export function createHeadlessGitHubService(
     failure: AppUserAuthFailure | null;
     status: GitHubAppUserAuthStatus;
   };
-  let appCredentialCache: {
-    expiresAt: number;
-    promise: Promise<AppCredentialLookup>;
-  } | null = null;
+  const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  });
 
   const invalidateStatusCache = (): void => {
     cachedStatus = null;
@@ -772,7 +770,7 @@ export function createHeadlessGitHubService(
     statusLookupGeneration += 1;
     // A re-authorization or a sign-out just replaced the App credential this
     // cache holds, so it cannot outlive the status it fed.
-    appCredentialCache = null;
+    appCredentialCache.clear();
   };
 
   const noteCredentialStoreReadState = (unreadable: boolean): boolean => {
@@ -845,23 +843,8 @@ export function createHeadlessGitHubService(
    * cached: the `gh` CLI and PAT reads keep answering live, so signing out of
    * `gh` still demotes the write credential immediately.
    */
-  const readAppCredentialAsync = async (): Promise<AppCredentialLookup> => {
-    const now = Date.now();
-    if (appCredentialCache && appCredentialCache.expiresAt > now) {
-      return await appCredentialCache.promise;
-    }
-    const promise = buildAppCredentialAsync();
-    appCredentialCache = {
-      expiresAt: now + GITHUB_CREDENTIAL_CACHE_TTL_MS,
-      promise,
-    };
-    try {
-      return await promise;
-    } catch (error) {
-      if (appCredentialCache?.promise === promise) appCredentialCache = null;
-      throw error;
-    }
-  };
+  const readAppCredentialAsync = async (): Promise<AppCredentialLookup> =>
+    await appCredentialCache.read(buildAppCredentialAsync);
 
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
     const patToken = await readStoredPatTokenAsync();
@@ -2083,24 +2066,13 @@ export function createHeadlessGitHubService(
       const owner = args.owner?.trim();
       const name = args.name?.trim();
       const repo = owner && name ? { owner, name } : await detectGitHubRepoAsync(projectRoot);
-      // Same reason as the desktop service: the reason the token is missing is
-      // what the repo axis is allowed to say, so it cannot be swallowed.
-      const appUserToken = await resolveAppUserTokenForRelay({
+      return await fetchAppInstallationStatusForRepo({
+        repo,
         appUserAuth,
         logger,
-        event: "github.app_installation_status_auth_unavailable",
-      });
-      const accountAccessToken = options.getAccountAccessToken
-        ? await options.getAccountAccessToken().catch(() => null)
-        : null;
-      return fetchGitHubAppInstallationStatus({
-        repo,
         secretReader: options.githubRelaySecretReader,
         forceRefresh: args.forceRefresh === true,
-        githubAppUserToken: appUserToken.token,
-        appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
-        accountAccessToken,
-        auditLog: appUserAuth.auditLog,
+        getAccountAccessToken: options.getAccountAccessToken,
       });
     },
     getAppUserAuthStatus(): GitHubAppUserAuthStatus {

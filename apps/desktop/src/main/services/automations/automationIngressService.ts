@@ -1205,8 +1205,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
 
     async pollNow() {
       // Explicit polls (e.g. right after the user authorizes the GitHub App)
-      // bypass the auth-pending cooldown.
+      // bypass the auth-pending cooldown. The "logged once" latch is released
+      // with it: a repair that did not take is a new fact, and the log line
+      // saying so must not be suppressed by the failure it replaced.
       hostedAuthPendingUntilMs = 0;
+      hostedAuthPendingLogged = false;
       clearRelayPollRetryTimer();
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;

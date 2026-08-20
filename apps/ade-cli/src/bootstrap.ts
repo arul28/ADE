@@ -174,6 +174,7 @@ import {
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { watchCredentialsForRelayRepair } from "./services/credentials/credentialChangeRelayRepair";
 import {
   getSignedInAccountAccessToken,
   type AccountAuthService,
@@ -1397,6 +1398,16 @@ export async function createAdeRuntime(args: {
     // own relay worker (no GitHub data cost); the service floors at 30s.
     pollIntervalMs: 30_000,
   });
+  // A repaired or removed GitHub App credential ends the relay's auth-pending
+  // cooldown at once, the way the desktop app's `onAppUserAuthChanged` does.
+  // The brain has no such callback — the credential is written by whichever
+  // process ran the device flow — so it watches the shared machine file
+  // instead. Best-effort: a store with no watcher leaves the behaviour as it
+  // was, and the cooldown expires on its own after five minutes.
+  const stopCredentialWatch = watchCredentialsForRelayRepair({
+    logger,
+    pollNow: () => automationIngressService.pollNow(),
+  });
   const linearIngressService = automationService
     ? createLinearIngressService({
         db,
@@ -2047,6 +2058,7 @@ export async function createAdeRuntime(args: {
       // lease subscription, or a disposed scope could later stop the shared
       // tunnel on a lease transition it no longer has any business observing.
       swallow(() => relayTunnelGate.dispose());
+      swallow(() => stopCredentialWatch());
       swallow(() => automationIngressService?.dispose());
       swallow(() => linearIngressService?.stop());
       swallow(() => cursorCloudIngressService.stop());

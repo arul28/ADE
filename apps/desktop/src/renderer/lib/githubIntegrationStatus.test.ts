@@ -480,6 +480,25 @@ describe("describeGithubCliBanner", () => {
     expect(copy?.detail).toContain("Open Settings for the exact error");
     expect(copy?.settingsDetail).toBe("GitHub returned an unexpected enterprise policy response.");
   });
+
+  it("reads ADE's own renewal as a wait rather than a failed check", () => {
+    // One process on this machine holds the refresh lease and the rest wait a
+    // moment. The credential inventory used to report that wait as "GitHub
+    // authentication check failed", which reads as a broken account and offered
+    // a reconnect that cannot help.
+    const copy = describeGithubAuthFailure(makeCliStatus({
+      authFailure: {
+        kind: "unknown",
+        message: GITHUB_APP_USER_AUTH_RENEWING_COPY,
+        retryAt: "2026-07-27T18:40:35.000Z",
+      },
+    }));
+
+    expect(copy?.subState).toBe("renewing");
+    expect(copy?.title).toBe("Renewing GitHub authorization");
+    expect(copy?.detail).toBe("ADE is renewing this authorization — this takes a moment.");
+    expect(copy?.action).not.toMatch(/reconnect/i);
+  });
 });
 
 describe("githubStatusHasUsablePat", () => {

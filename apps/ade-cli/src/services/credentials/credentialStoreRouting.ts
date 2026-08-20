@@ -47,7 +47,7 @@ export function createRoutedCredentialStore(args: {
     getWithReadState: async (key) => {
       const store = storeFor(key);
       if (store.getWithReadState) return await store.getWithReadState(key);
-      const value = await readStoreFor(key).get(key);
+      const value = await store.get(key);
       return { value, state: store.getLastReadState?.() ?? "missing" };
     },
     set: async (key, value) => storeFor(key).set(key, value),
@@ -55,9 +55,13 @@ export function createRoutedCredentialStore(args: {
     getSync: (key) => readStoreFor(key).getSync(key),
     setSync: (key, value) => storeFor(key).setSync(key, value),
     deleteSync: (key) => storeFor(key).deleteSync(key),
-    // A whole-map updater cannot be split across two files, so it keeps the
-    // meaning it had before routing existed: it updates the primary store.
-    updateSync: args.primary.updateSync?.bind(args.primary),
+    // No `updateSync`. It takes the WHOLE credential map and rewrites it, and a
+    // routed store has two maps in two files — so any single-file answer is
+    // wrong: binding the primary's silently drops every file-backed key from
+    // the view the updater is handed, and the routed keys it writes back land
+    // in the file nobody reads them from. Callers that reach for it already
+    // document a non-atomic get/set fallback, and that fallback routes per key,
+    // which is the behaviour they actually want here.
     updateKeySync: (key, mutator) => {
       const store = storeFor(key);
       if (store.updateKeySync) {

@@ -5,6 +5,10 @@ import type {
   GitHubRepoRef,
 } from "../../../shared/types";
 import { GITHUB_APP_USER_AUTH_RENEWING_COPY } from "../../../shared/types";
+import {
+  describeAppUserAuthUnavailable,
+  resolveAppUserTokenForRelay,
+} from "./githubAppUserAuthFailure";
 
 export const ADE_GITHUB_APP_DISPLAY_NAME = "ADE";
 export const ADE_GITHUB_APP_SLUG = "ade-for-github";
@@ -330,4 +334,52 @@ export async function fetchGitHubAppInstallationStatus(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/**
+ * The whole installation check for one repository: ask for the App user token,
+ * keep the reason when there is none, and fetch the status with both.
+ *
+ * The desktop GitHub service and its headless CLI twin ran identical copies of
+ * this sequence, and the reason it must not be split back apart is the middle
+ * step: the failure the token lookup produced is what the repo axis is ALLOWED
+ * to say. A copy that drops it reports the relay's own 401 — "GitHub auth token
+ * is required" — which blames the repository for a problem with ADE's
+ * authorization. Only the repo, and how each caller reaches its own config,
+ * differ between the two.
+ */
+export async function fetchAppInstallationStatusForRepo(args: {
+  repo: GitHubRepoRef | null;
+  appUserAuth: {
+    getValidTokenForRelay(): Promise<string>;
+    auditLog: GitHubRelayAuthAuditLog;
+  };
+  logger: {
+    info(message: string, meta?: Record<string, unknown>): void;
+    warn(message: string, meta?: Record<string, unknown>): void;
+  };
+  secretReader?: GitHubRelaySecretReader | null;
+  forceRefresh?: boolean;
+  /** Resolved lazily: a signed-in machine can carry the check without the App. */
+  getAccountAccessToken?: (() => Promise<string | null>) | null;
+  fetchImpl?: typeof fetch;
+}): Promise<GitHubAppInstallationStatus> {
+  const appUserToken = await resolveAppUserTokenForRelay({
+    appUserAuth: args.appUserAuth,
+    logger: args.logger,
+    event: "github.app_installation_status_auth_unavailable",
+  });
+  const accountAccessToken = args.getAccountAccessToken
+    ? await args.getAccountAccessToken().catch(() => null)
+    : null;
+  return await fetchGitHubAppInstallationStatus({
+    repo: args.repo,
+    secretReader: args.secretReader,
+    fetchImpl: args.fetchImpl,
+    forceRefresh: args.forceRefresh === true,
+    githubAppUserToken: appUserToken.token,
+    appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
+    accountAccessToken,
+    auditLog: args.appUserAuth.auditLog,
+  });
 }

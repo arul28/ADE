@@ -433,6 +433,44 @@ describe("app user token refresh", () => {
     expect(service.getAuthStatus().tokenStored).toBe(false);
     expect(service.getAuthStatus().credentialState).toBe("missing");
   });
+
+  it("refuses a lapsed access token whose refresh token has expired", async () => {
+    // The refresh POST succeeds, but a peer replaced the credential while it
+    // was in flight, so the write is declined and the store's own record is
+    // served instead. That record cannot be renewed by anyone, so the only
+    // honest answer is "re-authorize": handing back its lapsed access token
+    // produced a GitHub 401 the user had no way to act on.
+    const values: StoredValues = {};
+    writeRecord(values);
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (String(input) !== TOKEN_URL) return jsonResponse({});
+      values[TOKEN_KEY] = makeStoredAppUserToken({
+        accessToken: "ghu_replaced_and_lapsed",
+        refreshToken: "ghr_replaced",
+        expiresAt: new Date(clockNowMs - 60_000).toISOString(),
+        refreshTokenExpiresAt: new Date(clockNowMs - 3_600_000).toISOString(),
+      });
+      return jsonResponse({
+        access_token: "ghu_fresh",
+        token_type: "bearer",
+        expires_in: 28_800,
+        refresh_token: "ghr_rotated",
+        refresh_token_expires_in: 15_811_200,
+      });
+    });
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).rejects.toThrow(/Re-authorize ADE with GitHub/);
+    expect(service.getAuthStatus().credentialState).toBe("needs_reauth");
+  });
 });
 
 // Every deadline in the ledger is written by a peer process, and a peer whose
@@ -651,6 +689,61 @@ describe("app user auth status", () => {
     expect(status.credentialState).toBe("authorized");
     expect(status.refreshBlockedUntil).toBeNull();
     expect(status.lastRefreshError).toBeNull();
+  });
+
+  it("keeps serving a still-fresh token that has no renewal left", async () => {
+    // An App configured for non-expiring user tokens stores no refresh token at
+    // all, and a refresh token can expire while the access token it last minted
+    // is still good. The token WORKS, so every gate hands it out; the status
+    // axis is where ADE asks for a replacement, hours before it lapses.
+    const values: StoredValues = {};
+    writeRecord(values, {
+      accessToken: "ghu_fresh_but_final",
+      expiresAt: new Date(clockNowMs + 3_600_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+    });
+    const fetchImpl = vi.fn(async () => jsonResponse({}));
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh_but_final");
+    expect(tokenPostCount(fetchImpl)).toBe(0);
+    expect(service.getAuthStatus().credentialState).toBe("needs_reauth");
+  });
+
+  it("treats a non-expiring token with no refresh token as authorized", async () => {
+    // An App configured for NON-EXPIRING user tokens stores neither an expiry
+    // nor a refresh token. That credential never lapses, so the status axis
+    // must not ask the user to replace it.
+    const values: StoredValues = {};
+    writeRecord(values, {
+      accessToken: "ghu_never_expires",
+      expiresAt: null,
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+    });
+    const fetchImpl = vi.fn(async () => jsonResponse({}));
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_never_expires");
+    expect(tokenPostCount(fetchImpl)).toBe(0);
+    expect(service.getAuthStatus().credentialState).toBe("authorized");
   });
 
   it("reports an expired refresh token as needing re-authorization", async () => {

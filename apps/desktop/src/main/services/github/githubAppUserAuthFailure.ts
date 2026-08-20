@@ -5,6 +5,7 @@ import type {
   GitHubAuthFailure,
   GitHubRateLimitState,
 } from "../../../shared/types";
+import { GITHUB_APP_USER_AUTH_RENEWING_COPY } from "../../../shared/types";
 import { isGitHubOAuthError, type GitHubOAuthError } from "./githubAppUserAuth";
 import type { RefreshFailureKind, StoredRefreshFailure } from "./githubAppUserAuthLedger";
 import { classifyGitHubAuthFailure, isDefinitiveGitHubOAuthError } from "./githubRateLimit";
@@ -177,6 +178,22 @@ export function classifyAppUserAuthFailure(error: unknown): AppUserAuthFailure {
       described,
       rateLimit: classified.rateLimit,
       authFailure: { kind: "invalid_token", message: described.message, retryAt: null },
+    };
+  }
+  if (described.credentialState === "blocked" && described.failureKind === null) {
+    // Blocked with nothing refused is ADE waiting on its own refresh lease: one
+    // process on this machine renews the credential and the rest wait a moment.
+    // The repo axis already says so; the credential inventory said "GitHub
+    // authentication check failed" for the same wait, which reads as a broken
+    // account. Carry the same sentence onto both axes.
+    return {
+      described,
+      rateLimit: classified.rateLimit,
+      authFailure: {
+        kind: "unknown",
+        message: GITHUB_APP_USER_AUTH_RENEWING_COPY,
+        retryAt: described.retryAt,
+      },
     };
   }
   const namedKind = authFailureKindForRefreshKind(described.failureKind);
