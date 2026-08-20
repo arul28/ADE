@@ -72,6 +72,8 @@ import {
   sessionCanonicalUiState,
   sessionStatusDisplay,
 } from "../../desktop/src/renderer/lib/terminalAttention";
+import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/githubIntegrationStatus";
+import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
 import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
@@ -324,6 +326,7 @@ type FormatterId =
   | "history-show"
   | "actions-list"
   | "action-result"
+  | "github-app-auth"
   | "automation-run-detail"
   | "automation-ingress"
   | "automation-linear-ingress"
@@ -1366,7 +1369,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   store. The token itself is never printed.
 
     $ ade --role cto github app-auth login     Start device flow and wait for approval
-    $ ade github app-auth status --text        Show whether a token is stored (login, expiry)
+    $ ade github app-auth status --text        Show the credential state, login, and expiry
     $ ade --role cto github app-auth clear      Remove the stored authorization
     $ ade github actions --text                 List raw github service actions
     $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
@@ -1381,6 +1384,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
       GitHub CLI, then a stored PAT. Writes skip the read-only GitHub App.
       Authentication failures and rate limits can fall through to the next
       healthy credential while the failed source is in cooldown.
+    - Read "state" from app-auth status, not "access token expires". An access
+      token lives 8 hours and renews on use, so a lapsed expiry with state
+      "authorized" is healthy. State "blocked" means ADE paused its own retries
+      until "retry after" — wait, do not re-authorize. Only "needs_reauth" and
+      "missing" call for login.
 
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
@@ -12852,6 +12860,7 @@ function buildGithubPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "github app-auth status",
+        formatter: "github-app-auth",
         steps: [actionStep("result", "github", "getAppUserAuthStatus")],
       };
     }
@@ -12866,6 +12875,7 @@ function buildGithubPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "github app-auth clear",
+        formatter: "github-app-auth",
         steps: [actionStep("result", "github", "clearAppUserAuth")],
       };
     }
@@ -20958,6 +20968,68 @@ export function formatBrainStatus(value: unknown): string {
   ]);
 }
 
+/**
+ * `ade github app-auth status | clear | login` in --text mode.
+ *
+ * An agent reads this to answer one question: re-authorize now, or wait? Only
+ * `credentialState` answers it. A stored token whose 8-hour access token has
+ * lapsed is still `authorized` — it renews on use — so `expiresAt` alone reads
+ * as broken when nothing is. `blocked` means ADE has paused its own retries
+ * until `refreshBlockedUntil` and re-authorizing cannot help; `needs_reauth` is
+ * the only state that asks for a login. The generic record renderer prints
+ * `lastRefreshError` as JSON truncated at 96 columns, which cuts the reason in
+ * half, so the reason gets its own block here.
+ */
+export function formatGithubAppUserAuth(value: unknown): string {
+  if (!isRecord(value)) return "The GitHub App authorization status is not available.";
+  const credentialState = asString(value.credentialState);
+  const userLogin = asString(value.userLogin);
+  const refreshBlockedUntil = asString(value.refreshBlockedUntil);
+  const lastRefreshError = isRecord(value.lastRefreshError) ? value.lastRefreshError : null;
+  // One module answers "how is this credential judged" for every surface. It
+  // also carries the legacy fallback: an older host sends no credentialState,
+  // and the refresh token — never the 8-hour access token — decides the truth.
+  const accountState = deriveGithubAccountAuthState(value as unknown as GitHubAppUserAuthStatus);
+  const headline = ((): string => {
+    if (value.configured !== true) {
+      return "The ADE GitHub App is not configured on this machine.";
+    }
+    if (accountState === "valid") {
+      return `Authorized${userLogin ? ` as ${userLogin}` : ""}. ADE renews this credential on its own.`;
+    }
+    if (accountState === "blocked") {
+      return "Authorized, but renewal is paused after a transient failure. ADE retries on its own — do not re-authorize.";
+    }
+    if (accountState === "needs_reauth") {
+      return "Re-authorization is needed. Run `ade --role cto github app-auth login`.";
+    }
+    return "Not authorized. Run `ade --role cto github app-auth login`.";
+  })();
+  const rows: Array<[string, unknown]> = [
+    ["state", credentialState],
+    ["account", userLogin],
+    ["token", value.tokenStored === true ? "stored" : "not stored"],
+    ["access token expires", value.expiresAt],
+    ["refresh token expires", value.refreshTokenExpiresAt],
+    ["retry after", refreshBlockedUntil],
+    ["checked", value.checkedAt],
+    ["error", value.error],
+  ];
+  const sections = [headline, "", renderKeyValues("GitHub App authorization", rows)];
+  if (lastRefreshError) {
+    const kind = asString(lastRefreshError.kind) ?? "unknown";
+    const status = typeof lastRefreshError.status === "number" ? ` (HTTP ${lastRefreshError.status})` : "";
+    const at = asString(lastRefreshError.at);
+    sections.push(
+      "",
+      "Last renewal failure",
+      `  ${kind}${status}${at ? ` at ${at}` : ""}`,
+      `  ${asString(lastRefreshError.message) ?? "No detail was reported."}`,
+    );
+  }
+  return sections.join("\n");
+}
+
 function formatTextOutput(
   value: unknown,
   formatter: FormatterId | undefined,
@@ -21280,6 +21352,8 @@ function formatTextOutput(
       return formatStorageMaintenance(value);
     case "update-status":
       return formatUpdateStatus(value);
+    case "github-app-auth":
+      return formatGithubAppUserAuth(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -22032,6 +22106,7 @@ async function runGithubAppLogin(
           output: formatOutput(
             { ...status, status: "expired", error: "timed_out" },
             options,
+            "github-app-auth",
           ),
           exitCode: 1,
         };
@@ -22044,10 +22119,15 @@ async function runGithubAppLogin(
       );
       const poll = await runGithubAction("pollAppUserDeviceAuth", { sessionId });
       const status = asString(poll.status);
-      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
+      // The typed printer reads an auth status. When the host returned none,
+      // `authStatus` is the poll envelope instead, and printing that as an auth
+      // status would report "not configured" for a machine that is configured.
+      const polledAuthStatus = isRecord(poll.authStatus) ? poll.authStatus : null;
+      const authStatus = polledAuthStatus ?? poll;
+      const authFormatter: FormatterId | undefined = polledAuthStatus ? "github-app-auth" : undefined;
       if (status === "authorized") {
         process.stderr.write("GitHub App authorized.\n");
-        return { output: formatOutput(authStatus, options), exitCode: 0 };
+        return { output: formatOutput(authStatus, options, authFormatter), exitCode: 0 };
       }
       if (status === "pending" || status === "slow_down") {
         if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
@@ -22060,7 +22140,7 @@ async function runGithubAppLogin(
         asString(poll.message) ??
         `GitHub device authorization ${status ?? "failed"}.`;
       process.stderr.write(`${message}\n`);
-      return { output: formatOutput(authStatus, options), exitCode: 1 };
+      return { output: formatOutput(authStatus, options, authFormatter), exitCode: 1 };
     }
   } finally {
     await connection.close();

@@ -415,7 +415,16 @@ Renderer — settings:
   environment → App → GitHub CLI → PAT read order plus the write-capable
   subset. Healthy connections do not expose quota bookkeeping. When ADE is
   compensating for a problem, Settings names the paused source and temporary
-  replacement, plus the retry time when GitHub supplied one. An exhausted shared
+  replacement, plus the retry time when GitHub supplied one. The App row in that
+  connection ladder is a special case: the App credential's own state outranks
+  the generic ladder states, because it is the only place that can tell a paused
+  renewal from a dead authorization, and only the dead one may ask the user to
+  re-authorize. The row reads the shared account status through
+  `useGithubAppUserAuth` and badges itself through
+  `describeGithubAppCredentialBadge`. Its retry time also comes from there: the
+  App's pause lives in the credential's refresh ledger rather than in the
+  request budget, so the ladder's own `retryAt` is usually absent and the
+  sentence would otherwise end open. An exhausted shared
   account bucket renders the reset time and explains that background refresh is
   paused automatically; it never asks the user to re-authenticate. When no
   fallback remains, a missing, invalid, or genuinely under-scoped credential
@@ -451,30 +460,78 @@ Renderer — settings:
   shared `renderer/lib/githubIntegrationStatus.ts` helper so their status pills
   reflect actual state instead of the old always-green permission chips:
   - **Account · ADE for GitHub** — the account-scoped App user token. Hosts the
-    "Authorize ADE" device-flow UI: `startAppUserDeviceAuth` surfaces the user
-    code as a copyable chip plus a waiting state and the verification URL,
+    "Authorize ADE" device-flow UI: `startAppUserDeviceAuth` shows the user
+    code as a copyable chip plus a waiting state and the verification URL, and
     `pollAppUserDeviceAuth` drives the poll loop and auto-renews an expired code
-    up to 3 times, a pre-auth status pill reflects `getAppUserAuthStatus` (stored
-    token, signed-in login, expiry). `deriveGithubAccountAuthState` classifies the
-    token as `valid` / `expired` / `missing` (expiry is computed client-side with
-    a refresh-skew mirror because the service does not surface it).
+    up to 3 times. `deriveGithubAccountAuthState` reads the service's
+    `credentialState` and classifies the account as `valid` / `blocked` /
+    `needs_reauth` / `missing`. **Never judge the account by `expiresAt`.** The
+    App access token lives 8 hours and is renewed from the refresh token on
+    every use, so a lapsed `expiresAt` is ordinary operation; reading it as
+    "authorization expired" sent working accounts back through a device flow
+    against the same OAuth endpoint the renewals were already failing on, which
+    is the one thing guaranteed to keep the account locked out. The whole row is
+    built by `describeGithubAccountAxis`, and its rule is that every state ADE
+    recovers from on its own returns `cta: null`:
+    - `valid` renders "Authorized" plus *"<login> · renews automatically"*. It
+      is deliberately silent about the 8-hour token, because showing that expiry
+      taught users to read a normal renewal cycle as a countdown to breakage.
+    - `blocked` with no recorded failure is ADE's own lease — one process on the
+      machine is renewing and the rest wait a moment — so it reads "Renewing…".
+      `blocked` with a recorded failure reads "Paused" (or "Paused until 3:40
+      PM" when the ledger carries a deadline), with copy from
+      `githubRefreshPauseCopy` naming what GitHub did, and a note that
+      re-authorizing is unavailable while GitHub has those requests paused.
+      Neither offers a button.
+    - `needs_reauth` is the **only** state that offers "Re-authorize", and
+      `missing` the only one that offers "Authorize ADE".
   - **This repo · `owner/name`** — whether the App is installed on the active
-    repo. `deriveGithubRepoConnectionState` maps the installation status to
-    `connected` / `not_installed` / `access_pending` / `no_repo` / `unknown`.
-    After device authorization succeeds, the panel force-refreshes the hosted
-    relay status with a short retry window and treats GitHub repo-access 404s as a
-    temporary "Checking access" (`access_pending`) state so App installation
-    propagation does not look like failed authorization. A GitHub server error
-    renders as "Waiting on GitHub" rather than "Couldn't verify": the install
-    state is unknown, not broken.
+    repo. `deriveGithubRepoConnectionState` takes the account state as well as
+    the installation status and maps them to `connected` / `not_installed` /
+    `access_pending` / `waiting_on_account` / `no_repo` / `unknown`.
+    `waiting_on_account` is the axis refusing to report a reading it could not
+    take: an install check that ran without a working account credential proves
+    nothing about the installation, so saying "not installed" reports an
+    uninstall that never happened. It is chosen from the typed
+    `appUserAuthFailure` on the installation status first, then from the
+    message-matching compatibility shim for older hosts, and finally from any
+    non-`valid` account state. A rate limit or a GitHub 5xx is exempt, because
+    those are corroborated reasons that hold whichever credential the check ran
+    with. In `waiting_on_account` the panel offers only **Recheck** — Install and
+    Manage would both be guesses. After device authorization succeeds, the panel
+    force-refreshes the hosted relay status with a short retry window and treats
+    GitHub repo-access 404s as a temporary "Checking access" (`access_pending`)
+    state so App installation propagation does not look like failed
+    authorization. A GitHub server error renders as "Waiting on GitHub" rather
+    than "Couldn't verify": the install state is unknown, not broken.
 
-  `clearAppUserAuth` revokes the local token. Offers a Refresh. Rendered in
-  Settings and, in a compact `onboarding` variant, during setup. The device-flow,
-  token store, and single-flight refresh are backed by `githubAppUserAuthService`
-  in the main process (see the automations feature doc's Source file map). The
-  matching per-repo "GitHub App not connected" banner — distinct from the gh-CLI
-  banner — is rendered by the app-shell `IntegrationBannerHost` from the same
-  `githubIntegrationStatus.ts` derivation (see
+  A quiet **Disconnect** control sits next to the account row whenever there is
+  something to disconnect. It is two clicks — the confirm step explains that
+  real-time pull request updates stop until the user authorizes again — and it
+  calls `clearAppUserAuth`. It is hidden on hosts that do not implement the call
+  and on the standalone web client, which implements it but has no credential to
+  clear; both are judged by `isGithubAppUserAuthSupported` so a new stub cannot
+  pass half the check. Offers a Refresh. Rendered in Settings and, in a compact
+  `onboarding` variant, during setup.
+
+  Both this panel and the Settings connection ladder above it read one shared
+  account status through `renderer/lib/useGithubAppUserAuth.ts` — a module-level
+  value with a listener set, not context, because the two consumers are not
+  siblings under a common provider and the panel is also mounted alone during
+  onboarding. There is exactly one such credential per machine, and with a fetch
+  and a piece of state per component, disconnecting in the panel left the ladder
+  badge one card away still reporting the authorization that had just been
+  removed. `refreshGithubAppUserAuth({ force: true })` starts a read even when
+  one is in flight, which a caller reading *after* an action it just performed
+  needs: joining the running read answers with the state from before the action.
+
+  The device-flow, token store, refresh lease, and backoff ledger are backed by
+  `githubAppUserAuthService` in the main process (see the automations feature
+  doc's [Source file map](../automations/README.md#github-relay-and-app) and
+  [How ADE stops a GitHub App refresh storm](../automations/README.md#how-ade-stops-a-github-app-refresh-storm)).
+  The matching per-repo "GitHub App not connected" banner — distinct from the
+  gh-CLI banner — is rendered by the app-shell `IntegrationBannerHost` from the
+  same `githubIntegrationStatus.ts` derivation (see
   [ARCHITECTURE §7.6](../../ARCHITECTURE.md)), so the panel and the banner never
   disagree.
 - `apps/desktop/src/renderer/lib/githubIntegrationStatus.ts`
@@ -483,10 +540,33 @@ Renderer — settings:
   top-blocker picker (account problems outrank repo problems),
   `githubStatusHasWriteCredential` for capability-gating mutations, and the
   shared banner/Settings copy for the account, repo, and gh-CLI/token
-  sub-states. Imported by `GitHubAppInstallPanel`, `IntegrationBannerHost`, and
-  write surfaces such as `FeedbackReporterModal`; App-only read connectivity
-  therefore keeps PR data live while still prompting for GitHub CLI or a PAT
-  before a mutation. `describeGithubOutage(status)` is the one presentation
+  sub-states. Imported by `GitHubAppInstallPanel`, `GitHubSection`,
+  `IntegrationBannerHost`, and write surfaces such as `FeedbackReporterModal`;
+  App-only read connectivity therefore keeps PR data live while still prompting
+  for GitHub CLI or a PAT before a mutation. This module only translates the
+  service's `credentialState` into copy — it does not re-derive the account's
+  health from token expiry. `deriveGithubRealtimeBlock` returns `null` for a
+  `blocked` account: ADE retries on its own, so a banner there would be one
+  nobody can act on. `describeGithubAccountAxis` and
+  `describeGithubAppCredentialBadge` render the same fact in the panel and in
+  the Settings ladder, and share `githubPausedLabel` so the two read
+  identically — a user who sees "Paused" in one card and "Paused until 3:40 PM"
+  in the other reads them as two different problems.
+  `isGithubAppUserAuthSupported` separates "this host has no GitHub App
+  credential" from "this machine is not authorized": the standalone web-client
+  adapter declares itself with `appUserAuthSupported: false`, and older hosts
+  are still recognised by `configured`, which no stub has ever carried. Reading
+  a stub as a real answer flashed a false "not authorized" banner on every
+  hosted-web project. `deviceAuthMessageCopy` / `deviceAuthErrorCopy` replace
+  GitHub's raw transport error (*"GitHub OAuth request failed (429)"*) with what
+  it means, because that string reads as ADE breaking rather than GitHub
+  throttling. `GITHUB_ACCOUNT_AUTH_ERROR_MATCHES` is a **compatibility shim**
+  and marked as one: the typed `appUserAuthFailure` is the real signal, and this
+  enumerated list only catches a host older than that field or a raw 401 body
+  from the relay. Do not add new ADE phrasings to it — a loose substring here is
+  worse than a missing one, because "not authorized" also appears in messages
+  about the repository, and matching those reported a real install problem as an
+  account problem the user could not act on. `describeGithubOutage(status)` is the one presentation
   entry point for a corroborated GitHub outage — it answers "is there an
   outage", "what do we say", and "where does the button go" together, and every
   GitHub-blaming surface gates on it. When it returns null ADE says nothing
@@ -1498,13 +1578,25 @@ would then declare a live session dead.
 
 ## GitHub connection status has the same third state
 
-The account session is not the only thing the credential store can hide. The
-same file backs `github.token.v1` and `github.appUserToken.v1`, and it fails the
-same way: an undecryptable store returns an **empty view** rather than an error,
-so a GitHub status built from it is indistinguishable from a fresh install. That
-is the whole hazard — "not connected" invites a reconnect, and a reconnect
-overwrites credentials that were only unreadable, turning a recoverable read
-failure into real credential loss.
+The account session is not the only thing the credential store can hide.
+`github.token.v1` and `github.appUserToken.v1` fail the same way: an
+undecryptable store returns an **empty view** rather than an error, so a GitHub
+status built from it is indistinguishable from a fresh install. That is the
+whole hazard — "not connected" invites a reconnect, and a reconnect overwrites
+credentials that were only unreadable, turning a recoverable read failure into
+real credential loss.
+
+The two keys do not live in the same file. `github.appUserToken.v1` is
+file-backed and shared with the brain and the CLI, while `github.token.v1` stays
+in the desktop's Electron-only store, and the routed credential store sends each
+read to its own file. So a readability verdict has to belong to the key it was
+asked about: the router tracks which store served the most recent read, and
+`getWithReadState` answers per call rather than through that shared state.
+Answering from the wrong file is how a perfectly readable credential gets
+reported as "can't read your sign-in". It also means a locked OS keychain no
+longer hides the shared credentials — those need no keychain, so they stay
+reachable while only the Electron-only half refuses. See
+[ARCHITECTURE §8.1](../../ARCHITECTURE.md#81-electron-safestorage-for-secrets).
 
 `GitHubStatus` therefore separates three answers, not two:
 

@@ -9250,6 +9250,12 @@ export function createPrService({
         : " Try again after GitHub resets the API limit.";
       return `GitHub API rate limit reached.${retry}`;
     }
+    // ADE is renewing its own GitHub App authorization. Nothing about the
+    // credential is in question, so this must not fall through to the
+    // "auth is invalid — update it in Settings" default.
+    if (githubStatus.authFailure?.kind === "renewing") {
+      return "ADE is renewing its GitHub authorization — pull requests will sync again in a moment.";
+    }
     // GitHub itself failed, so nothing about the credential is in question.
     // Without this arm a 503 falls through to the "auth is invalid — update it
     // in Settings" default, which is the exact accusation the outage work

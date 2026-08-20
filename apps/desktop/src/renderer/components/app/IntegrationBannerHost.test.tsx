@@ -4,12 +4,12 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   GitHubAppInstallationStatus,
-  GitHubAppUserAuthStatus,
   GitHubStatus,
   SyncRouteHealth,
 } from "../../../shared/types";
 import { IntegrationBannerHost, type IntegrationBannerHostProps } from "./IntegrationBannerHost";
 import { deriveGitHubServiceHealth } from "../../../shared/githubServiceHealth";
+import { makeAppAuth } from "../../lib/githubIntegrationStatus.testFixtures";
 
 // Built through the real parser rather than hand-written, so the fixture stays
 // honest against deriveGitHubServiceHealth's own rules.
@@ -60,19 +60,7 @@ function makeInstall(overrides: Partial<GitHubAppInstallationStatus> = {}): GitH
     webhookLastSeenAt: null,
     checkedAt: "2026-07-01T00:00:00.000Z",
     error: null,
-    ...overrides,
-  };
-}
-
-function makeAuth(overrides: Partial<GitHubAppUserAuthStatus> = {}): GitHubAppUserAuthStatus {
-  return {
-    configured: true,
-    tokenStored: true,
-    userLogin: "octocat",
-    expiresAt: null,
-    refreshTokenExpiresAt: null,
-    checkedAt: "2026-07-01T00:00:00.000Z",
-    error: null,
+    appUserAuthFailure: null,
     ...overrides,
   };
 }
@@ -155,7 +143,7 @@ describe("IntegrationBannerHost", () => {
   it("caps at two banners and collapses the rest behind an expandable row", async () => {
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth()),
       onStatusChanged: vi.fn(() => () => {}),
     });
 
@@ -231,6 +219,47 @@ describe("IntegrationBannerHost", () => {
     });
 
     expect(screen.getByText("GitHub write access isn't connected")).toBeTruthy();
+  });
+
+  /**
+   * `loadAppStatus` sets `appStatusLoaded` even when the auth read throws or the
+   * host does not implement the call, so "loaded" alone does not mean an auth
+   * DTO arrived. A null one is a failed read, not a report of "not authorized" —
+   * and acting on it painted a banner the user could do nothing about.
+   */
+  it("stays quiet when the account read fails but the install check succeeds", async () => {
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => {
+        throw new Error("the host refused the account read");
+      }),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(<IntegrationBannerHost {...baseProps()} />);
+    });
+    await act(async () => {});
+
+    expect(screen.queryByText("GitHub App not authorized")).toBeNull();
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
+  });
+
+  // The same install DTO WITH an account read that landed still raises it, so
+  // the check above is about the missing read and not about the install state.
+  it("still raises the account banner when the read lands and says missing", async () => {
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false, credentialState: "missing" })),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(<IntegrationBannerHost {...baseProps()} />);
+    });
+    await act(async () => {});
+
+    expect(screen.getByText("GitHub App not authorized")).toBeTruthy();
   });
 });
 
@@ -363,7 +392,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
   it("replaces every GitHub credential complaint with one neutral outage notice", async () => {
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth({ tokenStored: false })),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false })),
       onStatusChanged: vi.fn(() => () => {}),
     });
 
@@ -399,7 +428,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     // an outage must not hide the one thing the user can actually fix.
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth({ tokenStored: false })),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false })),
       onStatusChanged: vi.fn(() => () => {}),
     });
 
@@ -459,7 +488,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
   it("keeps the outage notice visible when higher-severity banners compete", async () => {
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth()),
       onStatusChanged: vi.fn(() => () => {}),
     });
 

@@ -17,13 +17,18 @@ import {
 } from "@phosphor-icons/react";
 import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
-import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
+import { GitHubAppInstallPanel, PILL_TONE_COLORS } from "../github/GitHubAppInstallPanel";
 import {
   describeGithubPatVerification,
+  describeGithubAppCredentialBadge,
   describeGithubAuthFailure,
+  deriveGithubAccountAuthState,
+  formatGithubShortTime,
   githubCredentialPresentation,
   describeGithubOutage,
+  type GithubAccountAuthState,
 } from "../../lib/githubIntegrationStatus";
+import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 
@@ -85,12 +90,6 @@ function authSourceLabel(status: GitHubStatus | null): string {
   return credentialSourceLabel(status?.authSource);
 }
 
-function shortRetryTime(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) return null;
-  return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
 
 /**
  * One badge per credential row. Label and color are derived together because
@@ -100,16 +99,26 @@ function shortRetryTime(value: string | null | undefined): string | null {
 function credentialStateBadge(
   state: GitHubCredentialState,
   outage: boolean,
+  /** The account axis, which knows why the App credential is idle. */
+  appAccount: { state: GithubAccountAuthState; blockedUntil: string | null } | null,
 ): { label: string; color: string } {
   if (state.activeFor.length === 2) return { label: "Reads & writes", color: COLORS.success };
   if (state.activeFor[0] === "read") return { label: "Reads", color: COLORS.success };
   if (state.activeFor[0] === "write") return { label: "Writes", color: COLORS.success };
+  // The App's own credential state outranks the generic ladder states: it is
+  // the only place that can tell a paused renewal from a dead authorization,
+  // and only the dead one may ask the user to re-authorize. It says nothing
+  // about the other rows, so the row decides here rather than at the call site.
+  if (appAccount && state.source === "app") {
+    const badge = describeGithubAppCredentialBadge(appAccount.state, appAccount.blockedUntil);
+    if (badge) return { label: badge.label, color: PILL_TONE_COLORS[badge.tone] };
+  }
   if (state.state === "cooldown") {
     // During a GitHub outage a cooldown says nothing about the credential —
     // it only records that GitHub failed to answer. "Reconnect needed" here
     // would be an outright false accusation.
     if (outage) return { label: "Waiting on GitHub", color: COLORS.textMuted };
-    const retryAt = shortRetryTime(state.failure?.retryAt);
+    const retryAt = formatGithubShortTime(state.failure?.retryAt);
     if (state.failure?.kind === "rate_limited") {
       return { label: retryAt ? `Paused until ${retryAt}` : "Paused", color: COLORS.warning };
     }
@@ -132,6 +141,10 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const [tokenFocused, setTokenFocused] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
   const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
+  // The App row in the ladder below reports why the App credential is idle, and
+  // only this status can tell a paused renewal from a dead authorization. Shared
+  // with the install panel on this same page, which is where it is disconnected.
+  const { appAuth } = useGithubAppUserAuth();
 
   useEffect(() => {
     let cancelled = false;
@@ -218,7 +231,17 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const activeReadCredential = credentialStates.find((credential) => credential.activeFor.includes("read")) ?? null;
   const effectiveWriteAuthSource = githubStatus?.writeAuthSource
     ?? (githubStatus?.authSource && githubStatus.authSource !== "app" ? githubStatus.authSource : "none");
-  const backgroundPausedUntil = shortRetryTime(githubStatus?.backgroundRefreshPausedUntil);
+  const backgroundPausedUntil = formatGithubShortTime(githubStatus?.backgroundRefreshPausedUntil);
+  const appAccount = appAuth
+    ? { state: deriveGithubAccountAuthState(appAuth), blockedUntil: appAuth.refreshBlockedUntil ?? null }
+    : null;
+  // The ladder's own retryAt is often absent for the App, because the pause
+  // lives in the credential's refresh ledger rather than in the request budget.
+  // Show that deadline instead of leaving the sentence open-ended.
+  const credentialFallbackRetryAt = formatGithubShortTime(
+    credentialFallback?.retryAt
+      ?? (credentialFallback?.fromSource === "app" ? appAccount?.blockedUntil : null),
+  );
   const hasInspectableScopes = credentialPresentation.hasInspectableScopes;
   const accessState = getGitHubTokenAccessState(githubStatus?.scopes ?? []);
   const repoProbeFailed = tokenAuthenticated && githubStatus?.repoAccessOk === false;
@@ -476,7 +499,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             }}>
               <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
               <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
-              {credentialFallback.retryAt ? ` after ${shortRetryTime(credentialFallback.retryAt)}` : ""}.
+              {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
             </div>
           ) : null}
 
@@ -495,7 +518,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CONNECTION ORDER</div>
               <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
                 {credentialStates.map((credential, index) => {
-                  const badge = credentialStateBadge(credential, outage != null);
+                  const badge = credentialStateBadge(credential, outage != null, appAccount);
                   return (
                     <div
                       key={credential.source}

@@ -255,6 +255,11 @@ import {
   isElectronSafeStorageCredentialFile,
   type SyncCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStore";
+import { adoptFileBackedCredentials } from "../../../ade-cli/src/services/credentials/credentialStoreAdoption";
+import {
+  createRoutedCredentialStore,
+  createUnavailableCredentialStore,
+} from "../../../ade-cli/src/services/credentials/credentialStoreRouting";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
@@ -639,11 +644,17 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
   try {
     if (safeStorage.isEncryptionAvailable()) {
-      return new ElectronSafeStorageCredentialStore({
+      const primary = new ElectronSafeStorageCredentialStore({
         secretsDir,
         safeStorage,
         legacyStore,
       });
+      // Credentials the ADE brain and the CLI co-own live in the shared machine
+      // file, so the desktop app must READ them there too — the Electron-only
+      // store cannot see them, and a build that wrote one into it signs the
+      // brain out.
+      adoptFileBackedCredentials({ primary, fileStore: legacyStore, identity: secretsDir });
+      return createRoutedCredentialStore({ primary, fileStore: legacyStore });
     }
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.
@@ -652,27 +663,14 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
     isElectronSafeStorageCredentialFile(safeCredentialsPath)
     || isElectronSafeStorageCredentialFile(legacyCredentialsPath)
   ) {
-    const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
-    return {
-      get: async () => {
-        throw new Error(message);
-      },
-      set: async () => {
-        throw new Error(message);
-      },
-      delete: async () => {
-        throw new Error(message);
-      },
-      getSync: () => {
-        throw new Error(message);
-      },
-      setSync: () => {
-        throw new Error(message);
-      },
-      deleteSync: () => {
-        throw new Error(message);
-      },
-    };
+    // The shared file needs no keychain, so the credentials the brain co-owns
+    // stay reachable even while the Electron-only ones are locked away.
+    return createRoutedCredentialStore({
+      primary: createUnavailableCredentialStore(
+        "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
+      ),
+      fileStore: legacyStore,
+    });
   }
   return legacyStore;
 }
@@ -3317,6 +3315,13 @@ app.whenReady().then(async () => {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
       githubRelaySecretReader: (ref) => githubRelaySecretService?.getSecret(ref) ?? null,
       getAccountAccessToken,
+      // A repaired or removed App credential ends the relay's auth-pending
+      // cooldown at once. Wired here rather than inside either service: the
+      // ingress loop must stay free of GitHub internals, and only this owner
+      // holds both of them.
+      onAppUserAuthChanged: () => {
+        void automationIngressServiceRef?.pollNow().catch(() => undefined);
+      },
     });
 
     const projectScaffoldService = createProjectScaffoldService({

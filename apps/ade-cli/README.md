@@ -645,7 +645,7 @@ ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthrop
 ade cursor cloud agents list --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
 ade --role cto github app-auth login              # device-flow authorize the machine ADE GitHub App (headless/brain)
-ade github app-auth status --text                 # show whether a GitHub App user token is stored (login, expiry)
+ade github app-auth status --text                 # show the GitHub App credential state, login, expiry, and any renewal failure
 ade --role cto github app-auth clear              # remove the stored GitHub App authorization
 ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text # show active read/write sources and cooldowns
 ade open ade://lane/<lane-uuid>
@@ -662,6 +662,13 @@ ade linear install
 ade skill list --text
 ade skill show ade-browser --text
 ```
+
+`github app-auth status` answers "re-authorize, or wait?" from `credentialState`
+alone — never from `expiresAt`. An access token lives 8 hours and renews on use,
+so a lapsed `expiresAt` with `credentialState: "authorized"` is healthy.
+`"blocked"` means ADE paused its own refresh retries until `refreshBlockedUntil`
+after a transient failure (`lastRefreshError` carries the reason): wait, do not
+re-authorize. Only `"needs_reauth"` and `"missing"` call for `app-auth login`.
 
 GitHub reads try credentials in environment → ADE GitHub App → GitHub CLI →
 stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`

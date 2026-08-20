@@ -110,8 +110,9 @@ function ladderBaseMs(kind: GitHubAuthFailureKind | null): number {
     case "permission_denied":
       return GITHUB_POLL_BACKOFF_CONFIRMED_BROKEN_BASE_MS;
     default:
-      // `network` and `unknown`: ADE does not know that a fast retry is
-      // pointless, so it stays on the short base.
+      // `network`, `unknown` and `renewing`: ADE does not know that a fast retry
+      // is pointless — and a renewal it is running itself finishes in seconds —
+      // so it stays on the short base.
       return GITHUB_POLL_BACKOFF_BASE_MS;
   }
 }

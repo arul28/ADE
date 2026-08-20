@@ -414,6 +414,18 @@ Browser `window.ade` adapter:
   events, and provides the cursor stream consumed by the shared Chats page.
   `lanes.ts` carries `getBranchDrift` / `resolveBranchDrift` passthroughs onto
   the matching `lanes.*` remote commands.
+- `apps/desktop/src/renderer/webclient/adapter/githubStub.ts` - the whole
+  `window.ade.github` namespace for the web client, split out of `misc.ts` so a
+  renderer can import the stub's own declaration rather than pattern-match its
+  shape. Reads a paired machine can serve are routed to it; everything needing a
+  machine of its own answers with a stub that says so. The GitHub App account
+  credential is the important one: a hosted-web build has no machine to hold it,
+  so `getAppUserAuthStatus` answers `GITHUB_APP_USER_AUTH_UNSUPPORTED`, which
+  carries `appUserAuthSupported: false` **and** an honest `credentialState`.
+  Renderers gate on that flag through `isGithubAppUserAuthSupported` rather than
+  inferring a stub from missing fields. Treating the stub as a real answer
+  flashed a false "not authorized" banner on every hosted-web project and
+  offered a Disconnect button that silently did nothing.
 - `apps/desktop/src/renderer/webclient/adapter/federated.ts` - the hosted
   workspace router for `window.ade`. It persists the welcome/Chats/project
   surface (`activeSurface: "hub"` is the historical name of the machine-less

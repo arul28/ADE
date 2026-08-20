@@ -174,6 +174,7 @@ import {
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { watchCredentialsForRelayRepair } from "./services/credentials/credentialChangeRelayRepair";
 import {
   getSignedInAccountAccessToken,
   type AccountAuthService,
@@ -846,6 +847,9 @@ export async function createAdeRuntime(args: {
   processRegistry.start();
   let runtimeCreated = false;
   let staleSessionReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  // Declared out here so the failure path below can release it: the watcher is
+  // installed long before `runtime` exists, and only `runtime.dispose` stops it.
+  let stopCredentialWatch: (() => void) | null = null;
   try {
     const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
@@ -1590,6 +1594,20 @@ export async function createAdeRuntime(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   });
+  // A repaired or removed GitHub App credential ends the relay's auth-pending
+  // cooldown at once, the way the desktop app's `onAppUserAuthChanged` does.
+  // The brain has no such callback — the credential is written by whichever
+  // process ran the device flow — so it watches the shared machine file
+  // instead. Best-effort: a store with no watcher leaves the behaviour as it
+  // was, and the cooldown expires on its own after five minutes.
+  //
+  // Installed AFTER `start()`, which marks the service started synchronously: a
+  // credential change during startup would otherwise poll the relay through a
+  // service that has not started, and the poll `start()` runs supersedes it.
+  stopCredentialWatch = watchCredentialsForRelayRepair({
+    logger,
+    pollNow: () => automationIngressService.pollNow(),
+  });
 
   // Brain → Cloudflare push relay publisher. Owns push registration (from the
   // paired phone via `push.*` sync commands) and fans agent/PR state transitions
@@ -2047,6 +2065,7 @@ export async function createAdeRuntime(args: {
       // lease subscription, or a disposed scope could later stop the shared
       // tunnel on a lease transition it no longer has any business observing.
       swallow(() => relayTunnelGate.dispose());
+      swallow(() => stopCredentialWatch?.());
       swallow(() => automationIngressService?.dispose());
       swallow(() => linearIngressService?.stop());
       swallow(() => cursorCloudIngressService.stop());
@@ -2100,6 +2119,14 @@ export async function createAdeRuntime(args: {
     if (!runtimeCreated) {
       if (staleSessionReconcileTimer) {
         clearTimeout(staleSessionReconcileTimer);
+      }
+      try {
+        // Only `runtime.dispose` stops this watcher, and there is no runtime.
+        // Left running it polls the credential file for the life of the
+        // process and pins the ingress service through its `pollNow` closure.
+        stopCredentialWatch?.();
+      } catch {
+        // Preserve the original startup failure.
       }
       try {
         processRegistry.stop();

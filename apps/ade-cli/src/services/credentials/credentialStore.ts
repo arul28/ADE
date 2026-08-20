@@ -119,6 +119,31 @@ export type SyncCredentialStore = CredentialStore & {
   deleteSync(key: string): void;
   /** Atomically update the complete synchronous store when supported. */
   updateSync?(updater: (values: Record<string, string>) => boolean | void): void;
+  /**
+   * Atomically update ONE key when supported.
+   *
+   * Distinct from `updateSync` because a store that routes keys to different
+   * files cannot answer a whole-map updater, while it can always say which file
+   * one key lives in. Return `undefined` to write nothing, `null` to delete.
+   */
+  updateKeySync?(
+    key: string,
+    mutator: (current: string | null) => string | null | undefined,
+  ): void;
+  /**
+   * A stable name for the storage behind this store, equal for every store
+   * object over the same file. Callers that coordinate across instances (the
+   * GitHub App token refresh) key their process-wide state on it.
+   */
+  credentialStoreIdentity?(): string;
+  /**
+   * An asynchronous read paired with the state THAT read produced. Preferred
+   * over `get()` + `getLastReadState()`, which answers about the store's most
+   * recent read — not necessarily this one.
+   */
+  getWithReadState?(
+    key: string,
+  ): Promise<{ value: string | null; state: CredentialStoreReadState }>;
   /** Best-effort cross-process notification that persisted credentials changed. */
   onDidChange?(listener: () => void): () => void;
   /** Result of the most recent synchronous credential-file read. */
@@ -199,10 +224,11 @@ const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n")
  * app is signed in. Keep the literals in sync with:
  *   - ACCOUNT_SESSION_CREDENTIAL_KEY (services/account/accountAuthService.ts)
  *   - BOOTSTRAP_TOKEN_KEY (services/sync/brainProjectActionsSyncHandler.ts)
+ *   - GITHUB_APP_USER_TOKEN_KEY (desktop services/github/githubAppUserAuthService.ts)
  * They are duplicated here rather than imported to keep this module free of
  * service-layer dependencies; credentialStore.test.ts asserts they match.
  */
-const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
+export const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
   "account.session.v1",
   // The crash-safe rotation journal is only meaningful next to the session it
   // describes. Migrating it into the Electron-only file would hide an
@@ -210,6 +236,12 @@ const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
   // the process pair the journal exists to coordinate.
   "account.session.rotation.v1",
   "sync.bootstrapToken.v1",
+  // The GitHub App user token carries a rotating refresh token and, next to it,
+  // the refresh ledger every ADE process coordinates through. Two copies of that
+  // record means two processes refreshing the same rotating token, which GitHub
+  // answers by revoking the credential — so it has to live in the one file the
+  // app, the brain and the CLI all read.
+  "github.appUserToken.v1",
 ];
 
 export function isFileBackedCredentialKey(key: string): boolean {
@@ -233,7 +265,26 @@ const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
 const KEY_MATERIAL_SELF_HEAL_INTERVAL_MS = 30_000;
 
 
-function normalizeKey(key: string): string {
+/**
+ * The key a credential path is compared and looked up by.
+ *
+ * Two spellings of one secrets directory must never read as two different
+ * stores: the GitHub App refresh coordinates through this identity, and two
+ * identities for one file means two processes each believing they hold the only
+ * refresh lease. So redundant separators and `.`/`..` segments are folded away
+ * first, then — on Windows, where both separators name the same directory — the
+ * separator itself. Case is folded on Windows and macOS, whose filesystems are
+ * case-insensitive; Linux stays case-sensitive, so that step is conditional.
+ */
+export function credentialPathKey(value: string): string {
+  const normalized = path.normalize(value);
+  if (process.platform === "win32") return normalized.replace(/\//g, "\\").toLowerCase();
+  return process.platform === "darwin" ? normalized.toLowerCase() : normalized;
+}
+
+
+/** The one spelling of a credential key every store agrees on. */
+export function normalizeCredentialKey(key: string): string {
   const normalized = key.trim();
   if (!normalized.length) throw new Error("Credential key is required.");
   if (normalized.includes("\0")) throw new Error("Credential key cannot contain null bytes.");
@@ -768,7 +819,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   async getWithReadState(
     key: string,
   ): Promise<{ value: string | null; state: CredentialStoreReadState }> {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const { values, state } = await this.readAllAsync();
     return { value: values[normalized] ?? null, state };
   }
@@ -782,7 +833,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   getSync(key: string): string | null {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     // Locked because the read may re-seal an `os`-bound store to the machine
     // key (and merge a recovered quarantine back in), and those writes have to
     // exclude concurrent writers.
@@ -801,7 +852,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   setSync(key: string, value: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) {
       this.deleteSync(normalized);
@@ -815,7 +866,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   deleteSync(key: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       if (!(normalized in values)) return;
@@ -854,6 +905,34 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         this.writeAll(values);
       }
     });
+  }
+
+  updateKeySync(
+    key: string,
+    mutator: (current: string | null) => string | null | undefined,
+  ): void {
+    const normalized = normalizeCredentialKey(key);
+    this.updateSync((values) => {
+      const next = mutator(values[normalized] ?? null);
+      if (next === undefined) return false;
+      if (next === null) {
+        if (!(normalized in values)) return false;
+        delete values[normalized];
+        return true;
+      }
+      const trimmed = next.trim();
+      if (!trimmed.length) {
+        if (!(normalized in values)) return false;
+        delete values[normalized];
+        return true;
+      }
+      values[normalized] = trimmed;
+      return true;
+    });
+  }
+
+  credentialStoreIdentity(): string {
+    return credentialPathKey(this.credentialsPath);
   }
 
   /**
@@ -1343,7 +1422,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   getSync(key: string): string | null {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     return this.readAll()[normalized] ?? null;
   }
 
@@ -1356,7 +1435,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   setSync(key: string, value: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) {
       this.deleteSync(normalized);
@@ -1376,7 +1455,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   }
 
   deleteSync(key: string): void {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     this.withLock(() => {
       const values = this.readAll({ safeLockHeld: true });
       if (!(normalized in values)) return;
@@ -1614,11 +1693,11 @@ export class KeytarCredentialStore implements CredentialStore {
   }
 
   async get(key: string): Promise<string | null> {
-    return this.keytar.getPassword(this.service, normalizeKey(key));
+    return this.keytar.getPassword(this.service, normalizeCredentialKey(key));
   }
 
   async set(key: string, value: string): Promise<void> {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) {
       await this.delete(normalized);
@@ -1628,7 +1707,7 @@ export class KeytarCredentialStore implements CredentialStore {
   }
 
   async delete(key: string): Promise<void> {
-    await this.keytar.deletePassword(this.service, normalizeKey(key));
+    await this.keytar.deletePassword(this.service, normalizeCredentialKey(key));
   }
 }
 

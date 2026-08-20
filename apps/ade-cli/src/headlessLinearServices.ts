@@ -50,10 +50,15 @@ import type {
   GitHubPullRequestReview,
 } from "../../desktop/src/main/services/github/githubService";
 import {
-  fetchGitHubAppInstallationStatus,
+  fetchAppInstallationStatusForRepo,
   type GitHubRelaySecretReader,
 } from "../../desktop/src/main/services/github/githubRelayConfig";
 import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
+import {
+  appCredentialFailureEntry,
+  resolveStoredAppUserTokenForRelay,
+  type AppUserAuthFailure,
+} from "../../desktop/src/main/services/github/githubAppUserAuthFailure";
 import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
@@ -74,7 +79,9 @@ import { createFileService as createFileServiceImpl } from "../../desktop/src/ma
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
 import {
+  GITHUB_CREDENTIAL_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -747,11 +754,35 @@ export function createHeadlessGitHubService(
     promise: Promise<HeadlessGitHubStatus>;
   } | null = null;
 
+  type AppCredentialLookup = {
+    token: string | null;
+    failure: AppUserAuthFailure | null;
+    status: GitHubAppUserAuthStatus;
+  };
+  /**
+   * The App credential is resolved at most once per TTL window, matching the
+   * desktop service's inventory cache.
+   *
+   * Every status read, PR call and relay poll builds an inventory, and building
+   * one asks for a GitHub App token — which on a stale access token is a refresh
+   * POST. The headless twin had no such window, which is why the brain, not the
+   * desktop app, drove most of the refresh traffic. Only the App lookup is
+   * cached: the `gh` CLI and PAT reads keep answering live, so signing out of
+   * `gh` still demotes the write credential immediately.
+   */
+  const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+    build: buildAppCredentialAsync,
+  });
+
   const invalidateStatusCache = (): void => {
     cachedStatus = null;
     cachedAt = 0;
     cachedStatusBinding = null;
     statusLookupGeneration += 1;
+    // A re-authorization or a sign-out just replaced the App credential this
+    // cache holds, so it cannot outlive the status it fed.
+    appCredentialCache.clear();
   };
 
   const noteCredentialStoreReadState = (unreadable: boolean): boolean => {
@@ -802,6 +833,22 @@ export function createHeadlessGitHubService(
     return read.value;
   };
 
+  // A hoisted declaration, so the cache that names it can be declared next to
+  // the invalidator that owns it rather than after every function it calls.
+  async function buildAppCredentialAsync(): Promise<AppCredentialLookup> {
+    const status = appUserAuth.getAuthStatus();
+    const resolved = await resolveStoredAppUserTokenForRelay({
+      status,
+      appUserAuth,
+      logger,
+      event: "github.app_user_token_unavailable",
+    });
+    return { ...resolved, status };
+  }
+
+  const readAppCredentialAsync = async (): Promise<AppCredentialLookup> =>
+    await appCredentialCache.read();
+
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
     const patToken = await readStoredPatTokenAsync();
     const patTokenStored = Boolean(patToken);
@@ -811,24 +858,11 @@ export function createHeadlessGitHubService(
     // below would otherwise hand this inventory somebody else's outcome.
     const storeUnreadableForThisRead = credentialStoreUnreadable;
     const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
-    const appStatus = appUserAuth.getAuthStatus();
     const [appResult, gh] = await Promise.all([
-      appStatus.tokenStored
-        ? appUserAuth.getValidTokenForRelay()
-            .then((token) => ({ token, failure: null }))
-            .catch((error: unknown) => {
-              const message = error instanceof Error ? error.message : String(error);
-              const failure = classifyGitHubAuthFailure({ message });
-              logger.warn("github.app_user_token_refresh_failed", {
-                error: message,
-                kind: failure.authFailure.kind,
-                retryAt: failure.authFailure.retryAt,
-              });
-              return { token: null, failure };
-            })
-        : Promise.resolve({ token: null, failure: null }),
+      readAppCredentialAsync(),
       Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync()),
     ]);
+    const appStatus = appResult.status;
     const appToken = appResult.token;
     const candidates: HeadlessGitHubTokenCandidate[] = [];
     if (environmentToken) {
@@ -875,9 +909,7 @@ export function createHeadlessGitHubService(
     return {
       candidates,
       availableSources: new Set(candidates.map((candidate) => candidate.source)),
-      failures: appResult.failure
-        ? [{ source: "app", ...appResult.failure }]
-        : [],
+      failures: appCredentialFailureEntry(appResult.failure),
       appTokenStored: appToken != null || appStatus.tokenStored,
       patTokenStored,
       ghCliPath: gh.ghCliPath,
@@ -2037,17 +2069,13 @@ export function createHeadlessGitHubService(
       const owner = args.owner?.trim();
       const name = args.name?.trim();
       const repo = owner && name ? { owner, name } : await detectGitHubRepoAsync(projectRoot);
-      const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
-      const accountAccessToken = options.getAccountAccessToken
-        ? await options.getAccountAccessToken().catch(() => null)
-        : null;
-      return fetchGitHubAppInstallationStatus({
+      return await fetchAppInstallationStatusForRepo({
         repo,
+        appUserAuth,
+        logger,
         secretReader: options.githubRelaySecretReader,
-        forceRefresh: args.forceRefresh === true,
-        githubAppUserToken,
-        accountAccessToken,
-        auditLog: appUserAuth.auditLog,
+        forceRefresh: args.forceRefresh,
+        getAccountAccessToken: options.getAccountAccessToken,
       });
     },
     getAppUserAuthStatus(): GitHubAppUserAuthStatus {

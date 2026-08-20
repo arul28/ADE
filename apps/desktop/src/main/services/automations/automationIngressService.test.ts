@@ -422,14 +422,74 @@ describe("automationIngressService", () => {
     await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
     expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
 
-    // Explicit pollNow (e.g. right after authorizing) bypasses the cooldown
-    // and the transition log fires only once.
+    // Explicit pollNow (e.g. right after authorizing) bypasses the cooldown.
+    // The repair did not take, and that is a new fact: the transition log says
+    // so again rather than staying latched on the failure it replaced.
     await service.pollNow();
     expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(2);
     const authPendingLogs = (logger.info.mock.calls as unknown[][])
       .filter((call) => call[0] === "automations.github_relay_auth_pending");
-    expect(authPendingLogs).toHaveLength(1);
+    expect(authPendingLogs).toHaveLength(2);
     expect(logger.warn).not.toHaveBeenCalled();
+
+    // The timer-driven poll inside the fresh cooldown window stays quiet, so
+    // the log follows repairs rather than ticks.
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(2);
+    expect((logger.info.mock.calls as unknown[][])
+      .filter((call) => call[0] === "automations.github_relay_auth_pending")).toHaveLength(2);
+  });
+
+  it("cools down a broken GitHub App credential even while signed in", async () => {
+    vi.useFakeTimers();
+    const logger = makeLogger();
+    const webSockets = makeWebSocketHarness();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify({ ok: true, events: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    const getAppUserTokenForRelay = vi.fn(async () => {
+      throw new Error("GitHub paused ADE's authorization renewal until 2026-08-20T13:00:00.000Z.");
+    });
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: null,
+      prService: { ingestGithubWebhook: vi.fn() } as never,
+      secretService: {
+        getSecret: () => null,
+      } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay,
+      },
+      getAccountAccessToken: async () => "clerk-account-token",
+      listRules: () => [],
+      ingressCursorStore: {
+        get: () => null,
+        set: () => {},
+      },
+      pollIntervalMs: GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
+      webSocketFactory: webSockets.factory,
+    });
+
+    await service.start();
+
+    // The account token still carries the poll, so the relay is not disabled...
+    expect(fetchSpy).toHaveBeenCalled();
+    // ...but the broken GitHub credential is recorded, which is what starts the
+    // cooldown the signed-in path never had.
+    expect(logger.info).toHaveBeenCalledWith("automations.github_relay_auth_pending", expect.objectContaining({
+      error: expect.stringContaining("paused ADE's authorization renewal"),
+    }));
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
+
+    // The cooldown has to gate the LOOKUP as well. Every later poll runs on the
+    // account token alone until the window expires, so one broken credential
+    // costs one request rather than one every thirty seconds.
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
   });
 
   it("can read GitHub relay config from runtime environment variables", async () => {

@@ -11,12 +11,18 @@ import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, pr
 import {
   deriveGithubAccountAuthState,
   deriveGithubRepoConnectionState,
-  githubAccountIssueCopy,
+  describeGithubAccountAxis,
+  deviceAuthErrorCopy,
+  deviceAuthMessageCopy,
   githubRepoIssueCopy,
   isGithubRateLimitMessage,
+  isGithubAppUserAuthSupported,
   isGithubRealtimeHealthy,
   isGithubRepoAccessPending,
+  type GithubAccountAuthState,
+  type GithubAccountAxisTone,
 } from "../../lib/githubIntegrationStatus";
+import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 
 const ADE_GITHUB_APP_NAME = "ADE";
@@ -32,12 +38,21 @@ type GitHubAppInstallPanelProps = {
 export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstallPanelProps) {
   const compact = variant === "onboarding";
   const [status, setStatus] = useState<GitHubAppInstallationStatus | null>(null);
-  const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(null);
+  // Shared with the Settings connection ladder, so disconnecting here updates
+  // the badge there instead of leaving it reporting a removed authorization.
+  const {
+    appAuth,
+    loaded: appAuthLoaded,
+    refresh: refreshAppAuth,
+    set: setAppAuth,
+  } = useGithubAppUserAuth();
   const [deviceSession, setDeviceSession] = useState<GitHubAppDeviceAuthStartResult | null>(null);
   const [deviceMessage, setDeviceMessage] = useState<string | null>(null);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [disconnectArmed, setDisconnectArmed] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const autoRenewCountRef = useRef(0);
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
   const appAuthRef = useRef<GitHubAppUserAuthStatus | null>(null);
@@ -88,6 +103,8 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         webhookLastSeenAt: null,
         checkedAt: new Date().toISOString(),
         error: error instanceof Error ? error.message : String(error),
+        // The call itself failed, so nothing was learned about the account.
+        appUserAuthFailure: null,
       });
     } finally {
       const isCurrentRequest = () => mountedRef.current && statusRequestSeqRef.current === requestSeq;
@@ -95,9 +112,11 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       // expired stored token can be cleared during the status check, and the
       // panel must reflect that immediately.
       if (isCurrentRequest()) {
-        const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
+        // Forced: this read has to have started after the status call, or it
+        // joins one from before it and reports the credential that check
+        // replaced.
+        await refreshAppAuth({ force: true });
         if (isCurrentRequest()) {
-          setAppAuth(authStatus ?? null);
           if (opts.retryAfterAuthorization) {
             setDeviceMessage(
               latestStatus && isGithubRepoAccessPending(latestStatus)
@@ -109,7 +128,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         }
       }
     }
-  }, []);
+  }, [refreshAppAuth]);
 
   const startAppAuthorization = useCallback(async () => {
     autoRenewCountRef.current = 0;
@@ -122,11 +141,27 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       setDeviceSession(session);
       openExternalUrl(session.verificationUriComplete ?? session.verificationUri);
     } catch (error) {
-      setDeviceMessage(error instanceof Error ? error.message : String(error));
+      setDeviceMessage(deviceAuthErrorCopy(error));
     } finally {
       setAuthLoading(false);
     }
   }, []);
+
+  const disconnectAppAuthorization = useCallback(async () => {
+    if (!window.ade?.github?.clearAppUserAuth) return;
+    setDisconnecting(true);
+    try {
+      const next = await window.ade.github.clearAppUserAuth();
+      setAppAuth(next ?? null);
+      setDeviceSession(null);
+      setDeviceMessage("ADE's GitHub authorization was removed on this machine.");
+    } catch (error) {
+      setDeviceMessage(deviceAuthErrorCopy(error));
+    } finally {
+      setDisconnecting(false);
+      setDisconnectArmed(false);
+    }
+  }, [setAppAuth]);
 
   const copyDeviceCode = useCallback(async () => {
     if (!deviceSession) return;
@@ -156,14 +191,14 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         result = {
           status: "error",
           intervalSec: null,
-          message: error instanceof Error ? error.message : String(error),
+          message: deviceAuthErrorCopy(error),
           authStatus: appAuthRef.current,
         };
       }
       if (cancelled || !result) return;
       setAppAuth(result.authStatus);
       if (result.status === "pending" || result.status === "slow_down") {
-        setDeviceMessage(result.message);
+        setDeviceMessage(deviceAuthMessageCopy(result.message));
         setDeviceSession({ ...deviceSession, intervalSec: result.intervalSec ?? deviceSession.intervalSec });
         return;
       }
@@ -182,12 +217,12 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         } catch (error) {
           if (cancelled) return;
           setDeviceSession(null);
-          setDeviceMessage(error instanceof Error ? error.message : String(error));
+          setDeviceMessage(deviceAuthErrorCopy(error));
         }
         return;
       }
       setDeviceSession(null);
-      setDeviceMessage(result.message);
+      setDeviceMessage(deviceAuthMessageCopy(result.message));
       if (result.status === "authorized") {
         autoRenewCountRef.current = 0;
         setDeviceMessage("GitHub authorization is complete. Checking repository access...");
@@ -203,7 +238,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [deviceSession, loadStatus]);
+  }, [deviceSession, loadStatus, setAppAuth]);
 
   useEffect(() => {
     setDeviceCodeCopied(false);
@@ -227,30 +262,80 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   // Two independent axes, derived by the shared helper so Settings and the
   // banner can never disagree.
   const accountState = deriveGithubAccountAuthState(appAuth);
-  const repoState = deriveGithubRepoConnectionState(status);
-  const appAuthorized = accountState !== "missing";
+  const repoState = deriveGithubRepoConnectionState(status, accountState);
+  const appAuthorized = accountState === "valid";
   const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
   const healthy = isGithubRealtimeHealthy(accountState, repoState);
-  // `appAuth === null` = not fetched yet (distinct from a fetched "no token").
-  const accountChecking = appAuth === null && loading;
+  // The account axis is "checking" until the account read lands, and nothing
+  // else decides that. `loading` belongs to the REPO status beside it, and
+  // gating on it reported an unread account as `missing` — an offer to
+  // authorize a machine that may already be authorized — whenever the repo
+  // status settled first.
+  const accountChecking = !appAuthLoaded;
 
   const secondaryBtnStyle = outlineButton(compact ? compactSecondaryButtonStyle : undefined);
   const primaryBtnStyle = primaryButton(compact ? compactPrimaryButtonStyle : undefined);
 
   const authBusy = authLoading || Boolean(deviceSession);
-  const accountCta = (
+  const account = describeGithubAccountAxis(accountChecking ? "checking" : accountState, appAuth);
+  // No button in the states ADE recovers from on its own. Offering one while
+  // GitHub has the account paused is what sent users back through the device
+  // flow against the very endpoint that was refusing them.
+  const accountCta = account.cta ? (
     <button
       type="button"
-      style={accountState === "missing" ? primaryBtnStyle : secondaryBtnStyle}
+      style={account.cta === "authorize" ? primaryBtnStyle : secondaryBtnStyle}
       onClick={() => void startAppAuthorization()}
       disabled={authBusy}
     >
       <ArrowSquareOut size={12} weight="bold" />
-      {authBusy ? "Authorizing" : accountState === "missing" ? "Authorize ADE" : "Re-authorize"}
+      {authBusy ? "Authorizing" : account.cta === "authorize" ? "Authorize ADE" : "Re-authorize"}
     </button>
-  );
+  ) : null;
 
-  const account = accountView(accountState, appAuth, accountChecking);
+  // Unobtrusive by design: a plain muted control, and only where there is
+  // something to disconnect. Two clicks, because clearing the credential stops
+  // real-time updates until the user goes through the device flow again.
+  const showDisconnect = accountState !== "missing"
+    && !accountChecking
+    && !deviceSession
+    // Hosts without the clear action (older brains) must not show a control
+    // that silently does nothing — and neither must the web client, whose stub
+    // implements the call but has no credential to clear. Both are judged by
+    // one mechanism, so a new stub cannot pass half of the check.
+    && typeof window.ade?.github?.clearAppUserAuth === "function"
+    && isGithubAppUserAuthSupported(appAuth);
+  const disconnectControl = showDisconnect ? (
+    disconnectArmed ? (
+      <>
+        <button
+          type="button"
+          // Arming unmounts the button that was focused, which drops keyboard
+          // focus to the document body mid-way through a destructive action.
+          // Focus lands on Cancel, never on Confirm: the key that armed this is
+          // still down, and a repeat of it must not clear the credential.
+          autoFocus
+          style={quietButtonStyle}
+          onClick={() => setDisconnectArmed(false)}
+          disabled={disconnecting}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          style={secondaryBtnStyle}
+          onClick={() => void disconnectAppAuthorization()}
+          disabled={disconnecting}
+        >
+          {disconnecting ? "Disconnecting" : "Confirm disconnect"}
+        </button>
+      </>
+    ) : (
+      <button type="button" style={quietButtonStyle} onClick={() => setDisconnectArmed(true)}>
+        Disconnect
+      </button>
+    )
+  ) : null;
 
   const recheckButton = (primaryStyle: boolean) => (
     <button
@@ -275,7 +360,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     </button>
   );
 
-  const repo = repoView(repoState, repoLabel, loading, status?.error ?? null);
+  const repo = repoView(repoState, repoLabel, loading, status?.error ?? null, accountState);
   const repoActions: ReactNode[] = (() => {
     switch (repoState) {
       case "connected":
@@ -286,6 +371,10 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         return [installButton, manageButton, recheckButton(false)];
       case "access_pending":
         return [recheckButton(true)];
+      // Install and Manage would both be guesses while the account axis is
+      // unresolved: ADE has not been able to check the installation at all.
+      case "waiting_on_account":
+        return [recheckButton(false)];
       case "no_repo":
         return [recheckButton(false)];
       default:
@@ -293,7 +382,10 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     }
   })();
 
-  const showWebhookEvents = repoState === "connected" && (status?.webhookEvents.length ?? 0) > 0;
+  // `webhookEvents` is required and always normalized, so the `?.` guards only
+  // a host or adapter that answers with some other shape, where reading
+  // `.length` would throw.
+  const showWebhookEvents = repoState === "connected" && (status?.webhookEvents?.length ?? 0) > 0;
 
   return (
     <div
@@ -321,12 +413,23 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         <section style={axisBlockStyle}>
           <div style={axisTopRowStyle}>
             <span style={axisHeadingStyle}>Account · ADE for GitHub</span>
-            {renderPill(account.pill)}
+            {renderPill(accountPill(account.tone, account.label))}
           </div>
           <div style={axisBodyRowStyle}>
             <p style={axisSubtextStyle}>{account.subtext}</p>
-            {!accountChecking ? <div style={axisActionsStyle}>{accountCta}</div> : null}
+            {!accountChecking && (accountCta || disconnectControl) ? (
+              <div style={axisActionsStyle}>
+                {disconnectControl}
+                {accountCta}
+              </div>
+            ) : null}
           </div>
+          {account.note ? <p style={authMessageStyle}>{account.note}</p> : null}
+          {disconnectArmed ? (
+            <p style={authMessageStyle}>
+              Disconnecting removes ADE's GitHub authorization on this machine. Real-time pull request updates stop until you authorize again.
+            </p>
+          ) : null}
 
           {deviceSession ? (
             <div style={deviceAuthBlockStyle}>
@@ -415,35 +518,16 @@ function renderPill({ tone, color, label }: PillSpec): ReactNode {
   );
 }
 
-function accountView(
-  state: ReturnType<typeof deriveGithubAccountAuthState>,
-  appAuth: GitHubAppUserAuthStatus | null,
-  checking: boolean,
-): { pill: PillSpec; subtext: string } {
-  if (checking) {
-    return {
-      pill: { tone: "pending", color: COLORS.textMuted, label: "Checking…" },
-      subtext: "Checking your GitHub authorization…",
-    };
-  }
-  if (state === "valid") {
-    const who = appAuth?.userLogin ?? "GitHub account";
-    const expiry = formatExpiry(appAuth?.expiresAt ?? null);
-    return {
-      pill: { tone: "ok", color: COLORS.success, label: "Authorized" },
-      subtext: expiry ? `${who} · token valid to ${expiry}` : `${who} · token valid`,
-    };
-  }
-  if (state === "expired") {
-    return {
-      pill: { tone: "warn", color: COLORS.warning, label: "Authorization expired" },
-      subtext: githubAccountIssueCopy("expired").detail,
-    };
-  }
-  return {
-    pill: { tone: "neutral", color: COLORS.textMuted, label: "Not authorized" },
-    subtext: githubAccountIssueCopy("missing").detail,
-  };
+/** One color per tone, shared with the Settings ladder so the two agree. */
+export const PILL_TONE_COLORS: Record<GithubAccountAxisTone, string> = {
+  ok: COLORS.success,
+  warn: COLORS.warning,
+  pending: COLORS.textMuted,
+  neutral: COLORS.textMuted,
+};
+
+function accountPill(tone: GithubAccountAxisTone, label: string): PillSpec {
+  return { tone, color: PILL_TONE_COLORS[tone], label };
 }
 
 function repoView(
@@ -451,8 +535,14 @@ function repoView(
   repoLabel: string | null,
   loading: boolean,
   error: string | null,
+  account: GithubAccountAuthState,
 ): { pill: PillSpec; subtext: string } {
   switch (state) {
+    case "waiting_on_account":
+      return {
+        pill: { tone: "neutral", color: COLORS.textMuted, label: "Waiting on authorization" },
+        subtext: githubRepoIssueCopy("waiting_on_account", repoLabel, account).detail,
+      };
     case "connected":
       return {
         pill: { tone: "ok", color: COLORS.success, label: "Connected" },
@@ -506,13 +596,6 @@ function repoView(
           : "ADE couldn't confirm the app status for this repo. Recheck in a moment.",
       };
   }
-}
-
-function formatExpiry(iso: string | null): string | null {
-  if (!iso) return null;
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return null;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 const onboardingRootStyle: CSSProperties = {
@@ -625,6 +708,19 @@ const axisActionsStyle: CSSProperties = {
   gap: 8,
   flexShrink: 0,
   justifyContent: "flex-end",
+};
+
+// Deliberately quieter than the outline buttons beside it: disconnecting is a
+// rare, destructive action and must not compete with the primary control.
+const quietButtonStyle: CSSProperties = {
+  height: 28,
+  padding: "0 8px",
+  border: "none",
+  background: "transparent",
+  color: COLORS.textMuted,
+  fontFamily: SANS_FONT,
+  fontSize: 11,
+  cursor: "pointer",
 };
 
 const neutralDotStyle: CSSProperties = {

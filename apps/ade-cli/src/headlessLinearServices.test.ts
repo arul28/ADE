@@ -35,6 +35,7 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
 }));
 
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { makeStoredAppUserToken } from "../../desktop/src/main/services/github/githubAppUserAuth.testFixtures";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
 import { resetGitHubServiceHealthCache } from "../../desktop/src/main/services/github/githubStatusPage";
@@ -1644,21 +1645,20 @@ describe("headlessLinearServices", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-", {
       emptyGhConfig: true,
     });
-    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
+    // GitHub's real answer for a rejected refresh token: HTTP 200 with an error
+    // body. Only a definitive code like this one may write the credential off.
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      error: "bad_verification_code",
+      error: "bad_refresh_token",
       error_description: "Bad credentials",
     }), {
-      status: 400,
+      status: 200,
       headers: { "content-type": "application/json" },
     })) as unknown as typeof fetch;
     const githubService = createHeadlessGitHubService(
@@ -1693,22 +1693,19 @@ describe("headlessLinearServices", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-fallback-", {
       emptyGhConfig: true,
     });
-    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        error: "bad_verification_code",
+        error: "bad_refresh_token",
         error_description: "Bad credentials",
       }), {
-        status: 400,
+        status: 200,
         headers: { "content-type": "application/json" },
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ login: "bob" }), {
@@ -1770,6 +1767,68 @@ describe("headlessLinearServices", () => {
       await expect(githubService.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
       await expect(githubService.getGitTransportTokenOrThrowAsync())
         .resolves.toBe("github_pat_read_only_contents");
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("resolves the GitHub App credential once per window instead of per request", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-app-window-", {
+      emptyGhConfig: true,
+    });
+    // An access token past its life, so every resolution that is not cached
+    // costs a refresh POST — the traffic that rate-limited GitHub for the user.
+    new EncryptedFileCredentialStore().setSync(
+      "github.appUserToken.v1",
+      makeStoredAppUserToken(),
+    );
+    const requestedUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      if (String(input) === "https://github.com/login/oauth/access_token") {
+        // The refresh must SUCCEED, or the failure writes a backoff that blocks
+        // every later resolution on its own — and the assertion below would
+        // hold with the cache deleted. The rotated access token is stale on
+        // arrival for the same reason: a long-lived one would make the next
+        // resolution skip the POST because the token is fresh, not because the
+        // cache answered. With this response, only the cache can hold the count
+        // down (2 with it, 3 without).
+        return new Response(
+          JSON.stringify({
+            access_token: "ghu_fresh",
+            token_type: "bearer",
+            expires_in: 1,
+            refresh_token: "ghr_rotated",
+            refresh_token_expires_in: 15_811_200,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ login: "octocat" }), {
+        status: 200,
+        headers: { "content-type": "application/json", "x-oauth-scopes": "" },
+      });
+    }) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({ token: null, ghCliPath: null, ghAuthError: null }),
+      },
+    );
+
+    try {
+      await githubService.getStatus();
+      await githubService.getAppInstallationStatus({ owner: "acme", name: "repo" });
+      await githubService.getStatus();
+
+      const refreshPosts = requestedUrls
+        .filter((url) => url === "https://github.com/login/oauth/access_token");
+      // Two, not three: both status reads share ONE resolution through the
+      // window, and the installation check resolves the App credential on its
+      // own path, which this cache does not cover. Without the cache the two
+      // status reads refresh separately and this is three.
+      expect(refreshPosts).toHaveLength(2);
     } finally {
       environment.restore();
     }

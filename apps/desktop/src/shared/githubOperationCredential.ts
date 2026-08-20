@@ -9,6 +9,22 @@ import type {
 } from "./types/git";
 import { getGitHubTokenAccessState } from "./githubScopes";
 
+/**
+ * How long a resolved GitHub credential is reused before it is read again.
+ *
+ * Shared by the desktop service and its headless twin, at the granularity each
+ * one caches: the desktop service reuses the WHOLE credential inventory, while
+ * the headless twin caches only the App-token lookup so the `gh` CLI and PAT
+ * reads keep answering live. Both hold their entry in an
+ * `createExpiringPromiseCache` from `./expiringPromiseCache`.
+ *
+ * The window exists because resolving the App credential on an expired access
+ * token is a refresh POST, and every status read, PR call and relay poll asks
+ * for one. The headless side had no window at all, which made the brain the
+ * loudest refresher on the machine.
+ */
+export const GITHUB_CREDENTIAL_CACHE_TTL_MS = 30_000;
+
 export type GithubOperationCredentialSource = GitHubCredentialSource;
 export type GithubOperationCredentialCapability = GitHubCredentialCapability;
 
