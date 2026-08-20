@@ -229,7 +229,7 @@ function localPermissionFingerprint(policy: CursorSdkPermissionPolicy): string {
     tools: local.tools ?? null,
     disallowedTools: local.disallowedTools ?? null,
     autoReview: local.autoReview,
-    sandboxEnabled: local.sandboxEnabled,
+    sandboxDirective: local.sandboxDirective,
   });
 }
 
@@ -245,7 +245,13 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     local: {
       cwd: init.laneRoot,
       settingSources: cursorSdkSettingSources(init.policy),
-      sandboxOptions: { enabled: local.sandboxEnabled },
+      // `false` and absent are not the same thing here. An explicit `false`
+      // returns `insecure_none` without ever reading the user's
+      // ~/.cursor/sandbox.json, so it is a deliberate statement rather than a
+      // neutral default. See CursorSdkSandboxDirective for the three cases.
+      ...(local.sandboxDirective === "inherit"
+        ? {}
+        : { sandboxOptions: { enabled: local.sandboxDirective === "enable" } }),
       autoReview: local.autoReview,
       enableAgentRetries: true,
     },
@@ -273,7 +279,7 @@ async function applyLocalAgentOptions(): Promise<AgentOptionsWithAdeMode> {
     lastLocalPermissionFingerprint = fingerprint;
     return options;
   } catch (error) {
-    if (!options.local?.sandboxOptions?.enabled || !isCursorSdkSandboxUnsupportedError(error)) {
+    if (!isCursorSdkSandboxUnsupportedError(error) || !sandboxSupported) {
       throw error;
     }
     sandboxSupported = false;

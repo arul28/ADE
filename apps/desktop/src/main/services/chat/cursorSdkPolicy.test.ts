@@ -434,3 +434,35 @@ describe("Cursor SDK policy", () => {
     expect(evaluateCursorSdkHook({ request: shell, policy, laneRoot })).toBe("allow");
   });
 });
+
+describe("cursor sandbox directive", () => {
+  const directiveFor = (mode: string, sandboxSupported = true): string =>
+    buildCursorSdkLocalRunOptions(
+      resolveCursorSdkPolicy({ cursorModeId: mode }),
+      { sandboxSupported },
+    ).sandboxDirective;
+
+  it("asks for a sandbox in the read-only modes", () => {
+    expect(directiveFor("ask")).toBe("enable");
+    expect(directiveFor("plan")).toBe("enable");
+  });
+
+  it("says nothing in agent mode so the user's sandbox.json decides", () => {
+    // An explicit false would return insecure_none without ever reading the
+    // user's policy file. ADE has no sandbox UI for this mode, so it must not
+    // state an opinion either way.
+    expect(directiveFor("agent")).toBe("inherit");
+  });
+
+  it("disables the sandbox outright for full access", () => {
+    // Full access means no sandbox, including for a user who wrote a policy.
+    expect(directiveFor("full-auto")).toBe("disable");
+  });
+
+  it("disables the sandbox when the environment cannot provide one", () => {
+    // The retry after a ConfigurationError: the alternative is a hard failure,
+    // so this is the one case where "false" is the honest answer.
+    expect(directiveFor("ask", false)).toBe("disable");
+    expect(directiveFor("agent", false)).toBe("disable");
+  });
+});
