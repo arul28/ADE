@@ -7,7 +7,6 @@ import {
   EncryptedFileCredentialStore,
 } from "./credentialStore";
 import { createRoutedCredentialStore } from "./credentialStoreRouting";
-import { adoptFileBackedCredentials } from "./credentialStoreAdoption";
 
 let tempDir = "";
 
@@ -31,42 +30,38 @@ const safeStorage = {
 };
 
 describe("createRoutedCredentialStore", () => {
-  it("routes file-backed keys to the shared file and adopts ones stranded in safeStorage", () => {
-    const fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
-    const primary = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
-    // What an older build left behind: the App token sealed in the file only the
-    // desktop app can open.
-    fs.writeFileSync(
-      path.join(tempDir, "credentials.safe.enc"),
-      Buffer.concat([
-        Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n"),
-        safeStorage.encryptString(JSON.stringify({
-          "github.appUserToken.v1": "stranded-app-token",
-          "linear.token.v1": "lin_secret",
-        })),
-      ]),
-    );
+  let fileStore: EncryptedFileCredentialStore;
+  let primary: ElectronSafeStorageCredentialStore;
+  let routed: ReturnType<typeof createRoutedCredentialStore>;
 
-    const adoption = adoptFileBackedCredentials({ primary, fileStore, identity: tempDir });
-    const routed = createRoutedCredentialStore({ primary, fileStore });
+  beforeEach(() => {
+    fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    primary = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    fileStore.setSync("github.appUserToken.v1", "stored-app-token");
+    primary.setSync("linear.token.v1", "lin_secret");
+    routed = createRoutedCredentialStore({ primary, fileStore });
+  });
 
-    expect(adoption.adopted).toContain("github.appUserToken.v1");
-    expect(fileStore.getSync("github.appUserToken.v1")).toBe("stranded-app-token");
-    expect(primary.getSync("github.appUserToken.v1")).toBeNull();
-    expect(routed.getSync("github.appUserToken.v1")).toBe("stranded-app-token");
-    // Everything else keeps going to the Electron-only store.
+  it("reads each key from the file that key belongs in", () => {
+    // The desktop app's own store is Electron-only, and the file-backed keys it
+    // shares with the brain live outside it. Routing per key is what makes "the
+    // brain and the app share this credential" true for readers.
+    expect(routed.getSync("github.appUserToken.v1")).toBe("stored-app-token");
     expect(routed.getSync("linear.token.v1")).toBe("lin_secret");
     expect(fileStore.getSync("linear.token.v1")).toBeNull();
+    expect(primary.getSync("github.appUserToken.v1")).toBeNull();
+  });
 
-    // The read state answers about the file the read actually went to, so an
-    // unreadable sibling cannot make a good credential look unreadable.
+  it("answers getLastReadState about the file the read actually went to", () => {
+    // An unreadable sibling must not make a good credential look unreadable.
     routed.getSync("linear.token.v1");
     expect(routed.getLastReadState?.()).toBe("available");
+  });
 
-    // A write through the routed store reaches the brain, and so does the
-    // atomic single-key update the refresh ledger runs on.
+  it("writes a file-backed key through to the shared file, including updateKeySync", () => {
     routed.setSync("github.appUserToken.v1", "renewed-app-token");
     routed.updateKeySync?.("github.appUserToken.v1", (current) => `${current}+ledger`);
+
     expect(new EncryptedFileCredentialStore({ secretsDir: tempDir })
       .getSync("github.appUserToken.v1")).toBe("renewed-app-token+ledger");
   });
@@ -76,11 +71,6 @@ describe("createRoutedCredentialStore", () => {
     // maps in two files, so binding either one hands the updater a view that is
     // missing the other file's keys and writes its results where nobody reads
     // them. Callers already carry a per-key fallback for a store without it.
-    const routed = createRoutedCredentialStore({
-      primary: new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage }),
-      fileStore: new EncryptedFileCredentialStore({ secretsDir: tempDir }),
-    });
-
     expect(routed.updateSync).toBeUndefined();
   });
 });

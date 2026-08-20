@@ -250,21 +250,38 @@ export function createRotationJournal(args: RotationJournalArgs): RotationJourna
     userId: string | null;
   }): RotationJournalBeginResult => {
     try {
+      // `updateKeySync` first: the routed desktop store cannot answer a
+      // whole-map updater, but it can always say which file one key lives in.
+      const updateKeySync = args.credentialStore.updateKeySync;
       const updateSync = args.credentialStore.updateSync;
-      if (!updateSync) {
+      if (!updateKeySync && !updateSync) {
         return finalizeBegin(decide(read(), entry), entry);
       }
 
       let decision: BeginDecision | undefined;
-      updateSync.call(args.credentialStore, (values) => {
-        const existing = parseRotationJournal(values[ACCOUNT_SESSION_ROTATION_JOURNAL_KEY]);
-        decision = decide(existing, entry);
-        if (decision.kind === "peer_in_flight" || decision.kind === "already_ours") {
-          return false;
-        }
-        values[ACCOUNT_SESSION_ROTATION_JOURNAL_KEY] = serialize(entry);
-        return true;
-      });
+      if (updateKeySync) {
+        updateKeySync.call(
+          args.credentialStore,
+          ACCOUNT_SESSION_ROTATION_JOURNAL_KEY,
+          (current) => {
+            decision = decide(parseRotationJournal(current), entry);
+            if (decision.kind === "peer_in_flight" || decision.kind === "already_ours") {
+              return undefined;
+            }
+            return serialize(entry);
+          },
+        );
+      } else if (updateSync) {
+        updateSync.call(args.credentialStore, (values) => {
+          const existing = parseRotationJournal(values[ACCOUNT_SESSION_ROTATION_JOURNAL_KEY]);
+          decision = decide(existing, entry);
+          if (decision.kind === "peer_in_flight" || decision.kind === "already_ours") {
+            return false;
+          }
+          values[ACCOUNT_SESSION_ROTATION_JOURNAL_KEY] = serialize(entry);
+          return true;
+        });
+      }
       if (!decision) {
         // The store declined to run the updater. Proceed without a journal
         // rather than blocking the exchange.

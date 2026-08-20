@@ -314,12 +314,16 @@ export type GitHubAuthFailure = {
   // credential problem, and clients must not offer reconnect/re-auth for it —
   // reconnecting during a GitHub outage cannot help and risks the user
   // replacing a perfectly good token.
+  // `renewing` means ADE itself is renewing the credential: one process on the
+  // machine holds the refresh lease and the rest wait a moment. It is not an
+  // error, nothing is refused, and there is no user action to offer.
   kind:
     | "rate_limited"
     | "invalid_token"
     | "permission_denied"
     | "service_unavailable"
     | "network"
+    | "renewing"
     | "unknown";
   message: string;
   retryAt: string | null;

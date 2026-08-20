@@ -79,9 +79,9 @@ import { createFileService as createFileServiceImpl } from "../../desktop/src/ma
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
-  createExpiringPromiseCache,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -759,10 +759,6 @@ export function createHeadlessGitHubService(
     failure: AppUserAuthFailure | null;
     status: GitHubAppUserAuthStatus;
   };
-  const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
-    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
-  });
-
   const invalidateStatusCache = (): void => {
     cachedStatus = null;
     cachedAt = 0;
@@ -843,8 +839,13 @@ export function createHeadlessGitHubService(
    * cached: the `gh` CLI and PAT reads keep answering live, so signing out of
    * `gh` still demotes the write credential immediately.
    */
+  const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+    build: buildAppCredentialAsync,
+  });
+
   const readAppCredentialAsync = async (): Promise<AppCredentialLookup> =>
-    await appCredentialCache.read(buildAppCredentialAsync);
+    await appCredentialCache.read();
 
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
     const patToken = await readStoredPatTokenAsync();
@@ -2071,7 +2072,7 @@ export function createHeadlessGitHubService(
         appUserAuth,
         logger,
         secretReader: options.githubRelaySecretReader,
-        forceRefresh: args.forceRefresh === true,
+        forceRefresh: args.forceRefresh,
         getAccountAccessToken: options.getAccountAccessToken,
       });
     },

@@ -15,7 +15,8 @@ import { getGitHubTokenAccessState } from "./githubScopes";
  * Shared by the desktop service and its headless twin, at the granularity each
  * one caches: the desktop service reuses the WHOLE credential inventory, while
  * the headless twin caches only the App-token lookup so the `gh` CLI and PAT
- * reads keep answering live.
+ * reads keep answering live. Both hold their entry in an
+ * `createExpiringPromiseCache` from `./expiringPromiseCache`.
  *
  * The window exists because resolving the App credential on an expired access
  * token is a refresh POST, and every status read, PR call and relay poll asks
@@ -23,50 +24,6 @@ import { getGitHubTokenAccessState } from "./githubScopes";
  * loudest refresher on the machine.
  */
 export const GITHUB_CREDENTIAL_CACHE_TTL_MS = 30_000;
-
-/**
- * One in-flight result, reused until it expires — the shape both credential
- * caches above are.
- *
- * The PROMISE is cached, not the value: concurrent callers must join the read
- * that is already running rather than start a second one, which is the whole
- * point on a path where a miss costs a refresh POST. A rejected read is evicted
- * so the next caller retries instead of inheriting the failure for the rest of
- * the window.
- *
- * `revision` is opaque and optional. The desktop inventory passes a counter the
- * `gh` CLI bumps, so signing out of `gh` invalidates the window immediately;
- * the headless App lookup passes nothing and relies on the TTL alone.
- */
-export function createExpiringPromiseCache<T>(args: {
-  ttlMs: number;
-  now?: () => number;
-}): {
-  read(build: () => Promise<T>, revision?: unknown): Promise<T>;
-  clear(): void;
-} {
-  const now = args.now ?? (() => Date.now());
-  let entry: { expiresAt: number; revision: unknown; promise: Promise<T> } | null = null;
-  return {
-    async read(build, revision) {
-      const nowMs = now();
-      if (entry && entry.expiresAt > nowMs && entry.revision === revision) {
-        return await entry.promise;
-      }
-      const created = { expiresAt: nowMs + args.ttlMs, revision, promise: build() };
-      entry = created;
-      try {
-        return await created.promise;
-      } catch (error) {
-        if (entry === created) entry = null;
-        throw error;
-      }
-    },
-    clear() {
-      entry = null;
-    },
-  };
-}
 
 export type GithubOperationCredentialSource = GitHubCredentialSource;
 export type GithubOperationCredentialCapability = GitHubCredentialCapability;

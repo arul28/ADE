@@ -488,7 +488,7 @@ describe("describeGithubCliBanner", () => {
     // a reconnect that cannot help.
     const copy = describeGithubAuthFailure(makeCliStatus({
       authFailure: {
-        kind: "unknown",
+        kind: "renewing",
         message: GITHUB_APP_USER_AUTH_RENEWING_COPY,
         retryAt: "2026-07-27T18:40:35.000Z",
       },
@@ -498,6 +498,22 @@ describe("describeGithubCliBanner", () => {
     expect(copy?.title).toBe("Renewing GitHub authorization");
     expect(copy?.detail).toBe("ADE is renewing this authorization — this takes a moment.");
     expect(copy?.action).not.toMatch(/reconnect/i);
+  });
+
+  it("still reads an older host's renewal, which carries the copy under kind unknown", () => {
+    // A desktop app talking to a brain built before `renewing` existed receives
+    // the same wait as `unknown` plus the shared sentence. Reading that as a
+    // failed check is the exact regression this pair of branches prevents.
+    const copy = describeGithubAuthFailure(makeCliStatus({
+      authFailure: {
+        kind: "unknown",
+        message: GITHUB_APP_USER_AUTH_RENEWING_COPY,
+        retryAt: "2026-07-27T18:40:35.000Z",
+      },
+    }));
+
+    expect(copy?.subState).toBe("renewing");
+    expect(copy?.title).toBe("Renewing GitHub authorization");
   });
 });
 

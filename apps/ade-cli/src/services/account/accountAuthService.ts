@@ -1141,11 +1141,20 @@ export function createAccountAuthService(args: {
   };
 
   const invalidateStoredSessionIfCurrent = (raw: string): void => {
+    const updateKeySync = args.credentialStore.updateKeySync;
     const updateSync = args.credentialStore.updateSync;
-    if (updateSync) {
-      // Atomic compare-and-delete: remove only the development session we
-      // observed, so a production credential a peer wrote after our read is
-      // never clobbered.
+    // Atomic compare-and-delete: remove only the development session we
+    // observed, so a production credential a peer wrote after our read is
+    // never clobbered. `updateKeySync` first — the routed desktop store can
+    // answer for one key but not for the whole credential map.
+    const erasedAtomically = Boolean(updateKeySync ?? updateSync);
+    if (updateKeySync) {
+      updateKeySync.call(
+        args.credentialStore,
+        ACCOUNT_SESSION_CREDENTIAL_KEY,
+        (current) => (current === raw ? null : undefined),
+      );
+    } else if (updateSync) {
       updateSync.call(args.credentialStore, (values) => {
         if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
         delete values[ACCOUNT_SESSION_CREDENTIAL_KEY];
@@ -1162,7 +1171,7 @@ export function createAccountAuthService(args: {
       action: "delete",
       reason: "development_material_rejected",
       level: "warn",
-      outcome: args.credentialStore.updateSync ? "erased" : "rejected_locally",
+      outcome: erasedAtomically ? "erased" : "rejected_locally",
     });
     warnDevelopmentClerkIgnored();
   };
@@ -1279,11 +1288,24 @@ export function createAccountAuthService(args: {
       needsReauth: true,
       ...(oauthErrorCode ? { rejectedReason: oauthErrorCode } : {}),
     };
+    const updateKeySync = args.credentialStore.updateKeySync;
     const updateSync = args.credentialStore.updateSync;
     let marked = false;
-    if (updateSync) {
-      // Compare-and-swap on the exact bytes we were rejected for: a replacement
-      // a peer persisted after our read must never be condemned.
+    // Compare-and-swap on the exact bytes we were rejected for: a replacement
+    // a peer persisted after our read must never be condemned. `updateKeySync`
+    // first, so the routed desktop store writes the marker instead of falling
+    // through to the local-only rejection.
+    if (updateKeySync) {
+      updateKeySync.call(
+        args.credentialStore,
+        ACCOUNT_SESSION_CREDENTIAL_KEY,
+        (current) => {
+          if (current !== raw) return undefined;
+          marked = true;
+          return JSON.stringify(rejected);
+        },
+      );
+    } else if (updateSync) {
       updateSync.call(args.credentialStore, (values) => {
         if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
         values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(rejected);
@@ -1373,8 +1395,9 @@ export function createAccountAuthService(args: {
     /** Generation this exchange journaled, so only our own entry is cleared. */
     journaledTokenGeneration?: string | null,
   ): boolean => {
+    const updateKeySync = args.credentialStore.updateKeySync;
     const updateSync = args.credentialStore.updateSync;
-    if (!updateSync) {
+    if (!updateKeySync && !updateSync) {
       if (args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY) !== expectedRaw) {
         // A peer persisted first, but our exchange is still over — the
         // generation we journaled is spent either way. Scoped, so a peer's
@@ -1393,12 +1416,24 @@ export function createAccountAuthService(args: {
     }
 
     let persisted = false;
-    updateSync.call(args.credentialStore, (values) => {
-      if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== expectedRaw) return false;
-      values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
-      persisted = true;
-      return true;
-    });
+    if (updateKeySync) {
+      updateKeySync.call(
+        args.credentialStore,
+        ACCOUNT_SESSION_CREDENTIAL_KEY,
+        (current) => {
+          if (current !== expectedRaw) return undefined;
+          persisted = true;
+          return JSON.stringify(refreshed);
+        },
+      );
+    } else if (updateSync) {
+      updateSync.call(args.credentialStore, (values) => {
+        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== expectedRaw) return false;
+        values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
+        persisted = true;
+        return true;
+      });
+    }
     if (persisted) {
       lastObservedSignedIn = true;
       locallyRejectedSessionRaw = null;

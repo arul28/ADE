@@ -11,7 +11,9 @@ import {
  * Split out of credentialStore.ts because it is a migration, not a store: it
  * runs once per secrets directory, it compares two copies of one record, and it
  * is the only code here that has to decide which of two secrets is the real one.
- * Re-exported from credentialStore.ts, so no consumer has to know it moved.
+ * Consumers import it from this module directly: re-exporting it through
+ * credentialStore.ts made the two modules import each other, so the re-export
+ * was removed.
  */
 
 const adoptedSecretsDirs = new Set<string>();

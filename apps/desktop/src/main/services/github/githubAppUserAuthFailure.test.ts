@@ -20,7 +20,7 @@ describe("classifyAppUserAuthFailure", () => {
     ));
 
     expect(failure.authFailure).toEqual({
-      kind: "unknown",
+      kind: "renewing",
       message: GITHUB_APP_USER_AUTH_RENEWING_COPY,
       retryAt: RETRY_AT,
     });

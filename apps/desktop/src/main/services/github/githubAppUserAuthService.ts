@@ -170,6 +170,95 @@ function hasUsableRefreshToken(
     || readIsoAfter(record.refreshTokenExpiresAt, nowMs);
 }
 
+/** True while the access token is good for longer than the refresh skew. */
+function isAccessTokenFresh(record: GitHubAppUserTokenRecord, nowMs: number): boolean {
+  const refreshCutoff = nowMs + GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS;
+  return !record.expiresAt || readIsoAfter(record.expiresAt, refreshCutoff);
+}
+
+/**
+ * What the stored credential is, judged once and read by every gate.
+ *
+ * Declared here because four callers used to run their own copy of this
+ * ladder in three different orders, and the orders disagreed: one of them
+ * handed out a lapsed access token whose refresh token had already expired,
+ * which every other gate called `needs_reauth`.
+ *
+ * The order is the contract:
+ *  1. `missing`     — nothing stored at all.
+ *  2. `fresh`       — the access token is still good, so nothing below may
+ *     refuse the call. A renewal pause must never withhold a working token,
+ *     and an App configured for non-expiring user tokens has no refresh token
+ *     to judge in the first place. `renewableRecord` says whether that token
+ *     has a future once it lapses, which is what the STATUS axis reports on.
+ *  3. `needs_reauth`— lapsed, and the refresh token is gone, expired, or
+ *     rejected. Nobody can renew this credential, so no gate may hand it out:
+ *     serving it produced a GitHub 401 the user had no way to act on.
+ *  4. `blocked`     — lapsed, and a refresh deadline has not passed yet.
+ *  5. `refreshable` — lapsed, healthy, and ADE may POST a refresh for it.
+ */
+export type StoredAuthVerdict =
+  | { outcome: "missing" }
+  | {
+    outcome: "fresh";
+    record: GitHubAppUserTokenRecord;
+    /** Null when this token cannot be renewed once it lapses. */
+    renewableRecord: UsableRefreshRecord | null;
+  }
+  | { outcome: "needs_reauth"; failure: StoredRefreshFailure | null }
+  | { outcome: "blocked"; retryAt: string | null; failure: StoredRefreshFailure | null }
+  | { outcome: "refreshable"; record: UsableRefreshRecord };
+
+export function judgeStoredAuth(stored: StoredAppUserAuth, nowMs: number): StoredAuthVerdict {
+  const failure = stored.refresh.lastFailure;
+  const token = stored.token;
+  if (!token?.accessToken) return { outcome: "missing" };
+  // The type predicate sits at the end of the `&&` chain, so the true branch
+  // hands back the narrowed record and no cast is needed below.
+  const renewableRecord: UsableRefreshRecord | null =
+    !stored.refresh.dead && hasUsableRefreshToken(token, nowMs) ? token : null;
+  if (isAccessTokenFresh(token, nowMs)) {
+    return { outcome: "fresh", record: token, renewableRecord };
+  }
+  if (!renewableRecord) return { outcome: "needs_reauth", failure };
+  if (backoffActive(stored.refresh.notBeforeAt, nowMs)) {
+    return { outcome: "blocked", retryAt: stored.refresh.notBeforeAt, failure };
+  }
+  return { outcome: "refreshable", record: renewableRecord };
+}
+
+function credentialStateOf(
+  stored: StoredAppUserAuth,
+  nowMs: number,
+): GitHubAppUserAuthCredentialState {
+  const verdict = judgeStoredAuth(stored, nowMs);
+  if (verdict.outcome === "missing") return "missing";
+  // A working token that is GOING TO LAPSE with no renewal left is something
+  // the user must replace, and this axis is where ADE asks them to — hours
+  // before it lapses, rather than at the moment it stops working. A token
+  // with no expiry at all (an App configured for non-expiring user tokens)
+  // never lapses, so the missing refresh token is not a problem to report.
+  if (verdict.outcome === "fresh") {
+    const lapses = Boolean(verdict.record.expiresAt);
+    return !lapses || verdict.renewableRecord ? "authorized" : "needs_reauth";
+  }
+  if (verdict.outcome === "needs_reauth") return "needs_reauth";
+  if (verdict.outcome === "blocked") return "blocked";
+  return "authorized";
+}
+
+/**
+ * What one atomic look at the refresh ledger decided: the shared verdict, plus
+ * the two outcomes only the lease itself can reach.
+ *
+ * `refreshable` never escapes the lease acquisition — it is exactly the case
+ * the lease then takes or finds already held.
+ */
+type RefreshLeaseAttempt =
+  | Exclude<StoredAuthVerdict, { outcome: "refreshable" }>
+  | { outcome: "held"; leaseUntil: string | null }
+  | { outcome: "acquired"; record: UsableRefreshRecord };
+
 export function createGitHubAppUserAuthService(args: {
   credentialStore?: GitHubAppUserAuthCredentialStore | null;
   logger: GitHubAppUserAuthLogger;
@@ -299,74 +388,9 @@ export function createGitHubAppUserAuthService(args: {
     }
   };
 
-  /**
-   * What the stored credential is, judged once and read by every gate.
-   *
-   * Declared here because four callers used to run their own copy of this
-   * ladder in three different orders, and the orders disagreed: one of them
-   * handed out a lapsed access token whose refresh token had already expired,
-   * which every other gate called `needs_reauth`.
-   *
-   * The order is the contract:
-   *  1. `missing`     — nothing stored at all.
-   *  2. `fresh`       — the access token is still good, so nothing below may
-   *     refuse the call. A renewal pause must never withhold a working token,
-   *     and an App configured for non-expiring user tokens has no refresh token
-   *     to judge in the first place. `renewable` says whether that token has a
-   *     future once it lapses, which is what the STATUS axis reports on.
-   *  3. `needs_reauth`— lapsed, and the refresh token is gone, expired, or
-   *     rejected. Nobody can renew this credential, so no gate may hand it out:
-   *     serving it produced a GitHub 401 the user had no way to act on.
-   *  4. `blocked`     — lapsed, and a refresh deadline has not passed yet.
-   *  5. `refreshable` — lapsed, healthy, and ADE may POST a refresh for it.
-   */
-  type StoredAuthVerdict =
-    | { outcome: "missing" }
-    | {
-      outcome: "fresh";
-      record: GitHubAppUserTokenRecord;
-      /** False when this token cannot be renewed once it lapses. */
-      renewable: boolean;
-    }
-    | { outcome: "needs_reauth"; failure: StoredRefreshFailure | null }
-    | { outcome: "blocked"; retryAt: string | null; failure: StoredRefreshFailure | null }
-    | { outcome: "refreshable"; record: UsableRefreshRecord };
-
-  const judgeStoredAuth = (stored: StoredAppUserAuth, nowMs: number): StoredAuthVerdict => {
-    const failure = stored.refresh.lastFailure;
-    const token = stored.token;
-    if (!token?.accessToken) return { outcome: "missing" };
-    const renewable = !stored.refresh.dead && hasUsableRefreshToken(token, nowMs);
-    if (isAccessTokenFresh(token, nowMs)) return { outcome: "fresh", record: token, renewable };
-    if (!renewable) return { outcome: "needs_reauth", failure };
-    if (backoffActive(stored.refresh.notBeforeAt, nowMs)) {
-      return { outcome: "blocked", retryAt: stored.refresh.notBeforeAt, failure };
-    }
-    // Narrowed by `renewable`, which is exactly `hasUsableRefreshToken` plus the
-    // dead flag, but TypeScript cannot carry a guard through a boolean.
-    return { outcome: "refreshable", record: token as UsableRefreshRecord };
-  };
-
-  const credentialStateOf = (stored: StoredAppUserAuth): GitHubAppUserAuthCredentialState => {
-    const verdict = judgeStoredAuth(stored, now());
-    if (verdict.outcome === "missing") return "missing";
-    // A working token that is GOING TO LAPSE with no renewal left is something
-    // the user must replace, and this axis is where ADE asks them to — hours
-    // before it lapses, rather than at the moment it stops working. A token
-    // with no expiry at all (an App configured for non-expiring user tokens)
-    // never lapses, so the missing refresh token is not a problem to report.
-    if (verdict.outcome === "fresh") {
-      const lapses = Boolean(verdict.record.expiresAt);
-      return !lapses || verdict.renewable ? "authorized" : "needs_reauth";
-    }
-    if (verdict.outcome === "needs_reauth") return "needs_reauth";
-    if (verdict.outcome === "blocked") return "blocked";
-    return "authorized";
-  };
-
   const appUserAuthStatus = (patch: Partial<GitHubAppUserAuthStatus> = {}): GitHubAppUserAuthStatus => {
     const stored = readStoredAuth();
-    const credentialState = credentialStateOf(stored);
+    const credentialState = credentialStateOf(stored, now());
     const failure = stored.refresh.lastFailure;
     return {
       configured: true,
@@ -432,22 +456,24 @@ export function createGitHubAppUserAuthService(args: {
     failure,
   );
 
-  const isAccessTokenFresh = (record: GitHubAppUserTokenRecord, nowMs: number): boolean => {
-    const refreshCutoff = nowMs + GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS;
-    return !record.expiresAt || readIsoAfter(record.expiresAt, refreshCutoff);
-  };
-
   /**
-   * What one atomic look at the refresh ledger decided: the shared verdict, plus
-   * the two outcomes only the lease itself can reach.
+   * Throws the error that states why an unusable verdict cannot be served.
    *
-   * `refreshable` never escapes {@link acquireRefreshLease} — it is exactly the
-   * case the lease then takes or finds already held.
+   * Three call sites translate the same three outcomes into the same three
+   * errors, and they must keep agreeing: a gate that reports `blocked` where
+   * another reports `needs_reauth` asks the user to re-authorize a credential
+   * ADE is about to renew by itself.
    */
-  type RefreshLeaseAttempt =
-    | Exclude<StoredAuthVerdict, { outcome: "refreshable" }>
-    | { outcome: "held"; leaseUntil: string | null }
-    | { outcome: "acquired"; record: UsableRefreshRecord };
+  function rejectVerdict(
+    verdict: Extract<
+      StoredAuthVerdict,
+      { outcome: "missing" | "needs_reauth" | "blocked" }
+    >,
+  ): never {
+    if (verdict.outcome === "missing") throw missingAuthError();
+    if (verdict.outcome === "needs_reauth") throw needsReauthError(verdict.failure);
+    throw blockedError(verdict.retryAt, verdict.failure);
+  }
 
   /**
    * Judges every refresh gate and takes the lease, as ONE atomic step.
@@ -576,10 +602,8 @@ export function createGitHubAppUserAuthService(args: {
    */
   const serveCurrentStoredAuth = (): GitHubAppUserTokenRecord => {
     const verdict = judgeStoredAuth(readStoredAuth(), now());
-    if (verdict.outcome === "missing") throw missingAuthError();
-    if (verdict.outcome === "needs_reauth") throw needsReauthError(verdict.failure);
-    if (verdict.outcome === "blocked") {
-      throw blockedError(verdict.retryAt, verdict.failure);
+    if (verdict.outcome !== "fresh" && verdict.outcome !== "refreshable") {
+      rejectVerdict(verdict);
     }
     // Fresh, or stale but healthy. The next call runs the gate again and renews
     // it; this call must not report a failure that belongs to a replaced
@@ -688,8 +712,8 @@ export function createGitHubAppUserAuthService(args: {
    * wait ran out.
    */
   const rememberPeerLease = (leaseUntil: string | null): void => {
-    if (!leaseActive(leaseUntil, now())) return;
-    coordinatorFor(storeIdentity).peerLeaseUntilMs = Date.parse(leaseUntil!);
+    if (!leaseUntil || !leaseActive(leaseUntil, now())) return;
+    coordinatorFor(storeIdentity).peerLeaseUntilMs = Date.parse(leaseUntil);
   };
 
   /**
@@ -700,11 +724,9 @@ export function createGitHubAppUserAuthService(args: {
   const refreshUnderLease = async (): Promise<GitHubAppUserTokenRecord> => {
     for (let attempt = 0; attempt <= LEASE_POLL_MAX_ATTEMPTS; attempt += 1) {
       const lease = acquireRefreshLease();
-      if (lease.outcome === "missing") throw missingAuthError();
       if (lease.outcome === "fresh") return lease.record;
-      if (lease.outcome === "needs_reauth") throw needsReauthError(lease.failure);
-      if (lease.outcome === "blocked") throw blockedError(lease.retryAt, lease.failure);
       if (lease.outcome === "acquired") return await runRefreshPost(lease.record);
+      if (lease.outcome !== "held") rejectVerdict(lease);
       // A peer is mid-refresh. Never POST the same refresh token behind it: the
       // peer may already have rotated it, and GitHub answers a reused refresh
       // token by revoking the credential outright.
@@ -722,21 +744,20 @@ export function createGitHubAppUserAuthService(args: {
   const getValidAppUserTokenForRelay = async (): Promise<string> => {
     const coordinator = coordinatorFor(storeIdentity);
     const verdict = judgeStoredAuth(readStoredAuth(), now());
-    if (verdict.outcome === "missing") throw missingAuthError();
-    if (verdict.outcome === "needs_reauth") throw needsReauthError(verdict.failure);
     if (verdict.outcome === "fresh") {
       // A fresh token proves the peer's refresh landed, so the remembered
       // deadline has done its job.
       coordinator.peerLeaseUntilMs = 0;
       return verdict.record.accessToken;
     }
-    if (verdict.outcome === "blocked") throw blockedError(verdict.retryAt, verdict.failure);
+    if (verdict.outcome !== "refreshable") rejectVerdict(verdict);
     // A peer still held the lease when an earlier wait ran out. Polling for
     // three more seconds cannot learn anything before that deadline passes, and
     // every project scope in this process would pay the wait separately. This
     // is ADE waiting on ADE, so it carries no failure.
-    if (coordinator.peerLeaseUntilMs > now()
-      && coordinator.peerLeaseUntilMs <= now() + REFRESH_LEASE_MS) {
+    const nowMs = now();
+    if (coordinator.peerLeaseUntilMs > nowMs
+      && coordinator.peerLeaseUntilMs <= nowMs + REFRESH_LEASE_MS) {
       throw blockedError(new Date(coordinator.peerLeaseUntilMs).toISOString(), null);
     }
     coordinator.peerLeaseUntilMs = 0;

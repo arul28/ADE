@@ -23,9 +23,9 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { createExpiringPromiseCache } from "../../../shared/expiringPromiseCache";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
-  createExpiringPromiseCache,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -603,10 +603,6 @@ export function createGithubService({
   const sharedGhAuth = processGithubAuthState(ghAuthProvider);
   let statusInFlight: Promise<GitHubStatus> | null = null;
   let cachedStatusCredentialInventoryKey: string | null = null;
-  const credentialInventoryCache = createExpiringPromiseCache<GitHubCredentialInventory>({
-    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
-  });
-
   const invalidateCredentialInventory = (): void => {
     credentialInventoryCache.clear();
     sharedGhAuth.credentialInventoryRevision += 1;
@@ -951,11 +947,13 @@ export function createGithubService({
   // The revision guard rides alongside the TTL: signing out of the `gh` CLI
   // bumps it, and that must demote the write credential now rather than in
   // thirty seconds.
+  const credentialInventoryCache = createExpiringPromiseCache<GitHubCredentialInventory>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+    build: buildCredentialInventory,
+  });
+
   const readCredentialInventory = async (): Promise<GitHubCredentialInventory> =>
-    await credentialInventoryCache.read(
-      buildCredentialInventory,
-      sharedGhAuth.credentialInventoryRevision,
-    );
+    await credentialInventoryCache.read(sharedGhAuth.credentialInventoryRevision);
 
   const readAuthToken = async (
     capability: GithubOperationCredentialCapability = "read",
@@ -2080,7 +2078,7 @@ export function createGithubService({
       appUserAuth,
       logger,
       secretReader: githubRelaySecretReader,
-      forceRefresh: args.forceRefresh === true,
+      forceRefresh: args.forceRefresh,
       getAccountAccessToken,
     });
   };

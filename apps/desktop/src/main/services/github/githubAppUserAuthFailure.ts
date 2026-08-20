@@ -190,7 +190,7 @@ export function classifyAppUserAuthFailure(error: unknown): AppUserAuthFailure {
       described,
       rateLimit: classified.rateLimit,
       authFailure: {
-        kind: "unknown",
+        kind: "renewing",
         message: GITHUB_APP_USER_AUTH_RENEWING_COPY,
         retryAt: described.retryAt,
       },

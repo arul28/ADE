@@ -475,12 +475,15 @@ export function githubBackgroundRequestPauseUntilMs(
  * *shorter* wait. Change one, change both.
  */
 const REQUEST_BUDGET_FAILURE_SEVERITY: Record<GitHubAuthFailure["kind"], number> = {
-  rate_limited: 5,
-  service_unavailable: 4,
-  invalid_token: 3,
-  permission_denied: 2,
-  network: 1,
-  unknown: 0,
+  rate_limited: 6,
+  service_unavailable: 5,
+  invalid_token: 4,
+  permission_denied: 3,
+  network: 2,
+  unknown: 1,
+  // Last: ADE renewing its own credential is the one "failure" here that GitHub
+  // never refused, and it clears in seconds. Any real refusal outranks it.
+  renewing: 0,
 };
 
 /**

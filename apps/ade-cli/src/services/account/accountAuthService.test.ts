@@ -3061,3 +3061,127 @@ describe("AccountAuthService refresh and sign-out", () => {
     });
   });
 });
+
+/**
+ * The shape the routed desktop store has: it can update ONE key atomically, but
+ * it cannot answer a whole-map updater, because its keys live in two files.
+ */
+function createRoutedShapeStore(): SyncCredentialStore {
+  const backing = new MemoryCredentialStore();
+  return {
+    get: (key) => backing.get(key),
+    set: (key, value) => backing.set(key, value),
+    delete: (key) => backing.delete(key),
+    getSync: (key) => backing.getSync(key),
+    setSync: (key, value) => backing.setSync(key, value),
+    deleteSync: (key) => backing.deleteSync(key),
+    getLastReadState: () => backing.getLastReadState(),
+    updateKeySync: (key, mutator) => {
+      const next = mutator(backing.getSync(key));
+      if (next === undefined) return;
+      if (next === null) backing.deleteSync(key);
+      else backing.setSync(key, next);
+    },
+  };
+}
+
+describe("AccountAuthService over a store with only updateKeySync", () => {
+  it("persists a refreshed session through the per-key compare-and-swap", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = createRoutedShapeStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    const refreshedAccessToken = jwt({
+      sub: "user_old",
+      exp: Math.floor((nowMs + 3_600_000) / 1000),
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async (input: string) => {
+        if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
+        return jsonResponse({
+          access_token: refreshedAccessToken,
+          refresh_token: "refresh-rotated",
+          expires_in: 3_600,
+        });
+      }),
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      accessToken: refreshedAccessToken,
+      refreshToken: "refresh-rotated",
+    });
+    // The rotation journal takes the same per-key path, so it is spent, not
+    // stranded for the next refresh to wait on.
+    expect(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY)).toBeNull();
+  });
+
+  it("writes the needs-re-auth marker instead of rejecting the grant locally", async () => {
+    // Without the per-key path this store fell through to "rejected locally":
+    // the marker never reached disk, so every other process kept serving a
+    // grant the provider had condemned.
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = createRoutedShapeStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async () => jsonResponse({
+        error: "invalid_grant",
+        error_description: "refresh token is invalid",
+      }, 400)),
+      refreshRotationWaitMs: 0,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).rejects.toThrow(/invalid/i);
+    expect(JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!)).toMatchObject({
+      needsReauth: true,
+      rejectedReason: "invalid_grant",
+      rejectedAt: "2026-07-14T12:00:00.000Z",
+    });
+  });
+
+  it("journals the rotation before the exchange the way an atomic store does", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = createRoutedShapeStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    const journalDuringExchange: Array<string | null> = [];
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl: vi.fn(async (input: string) => {
+        if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
+        journalDuringExchange.push(store.getSync(ACCOUNT_SESSION_ROTATION_JOURNAL_KEY));
+        return jsonResponse({
+          access_token: jwt({ sub: "user_old", exp: Math.floor((nowMs + 3_600_000) / 1000) }),
+          refresh_token: "refresh-rotated",
+          expires_in: 3_600,
+        });
+      }),
+      now: () => nowMs,
+      pid: 909,
+      sessionMutationSource: "brain",
+    });
+    activeServices.push(service);
+
+    await service.getAccessToken();
+    expect(JSON.parse(journalDuringExchange[0]!)).toMatchObject({
+      version: 1,
+      oldRefreshTokenHash: accountTokenGeneration("refresh-old"),
+      pid: 909,
+      source: "brain",
+      userId: "user_old",
+    });
+  });
+});

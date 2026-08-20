@@ -767,10 +767,16 @@ export function describeGithubAuthFailure(
   const outage = describeGithubOutage(status);
   if (outage) return outage;
   // ADE renewing its own credential, forwarded by `classifyAppUserAuthFailure`.
-  // Matched on the exact shared constant rather than on the prose: a substring
-  // test over failure messages is how a repository problem once got reported as
-  // an account problem. Nothing is wrong, so this offers no reconnect CTA.
-  if (status.authFailure?.message === GITHUB_APP_USER_AUTH_RENEWING_COPY) {
+  // Nothing is wrong, so this offers no reconnect CTA.
+  //
+  // The message check is the FALLBACK, kept for an older host that still sends
+  // the renewal as `kind: "unknown"` with this exact copy. It matches the shared
+  // constant rather than the prose: a substring test over failure messages is
+  // how a repository problem once got reported as an account problem.
+  if (
+    status.authFailure?.kind === "renewing"
+    || status.authFailure?.message === GITHUB_APP_USER_AUTH_RENEWING_COPY
+  ) {
     return {
       subState: "renewing",
       statusLabel: "Renewing",

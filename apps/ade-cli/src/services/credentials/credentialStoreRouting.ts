@@ -9,8 +9,9 @@ import {
  * store that answers every call with the reason it cannot work.
  *
  * Split out of credentialStore.ts because neither reads or writes a byte — they
- * decide which store a call belongs to — and both are re-exported from there,
- * so no consumer has to know they moved.
+ * decide which store a call belongs to. Consumers import them from this module
+ * directly: re-exporting them through credentialStore.ts made the two modules
+ * import each other, so the re-export was removed.
  */
 
 /**

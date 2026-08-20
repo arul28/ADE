@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createGitHubAppUserAuthService,
+  judgeStoredAuth,
   resetGitHubAppUserAuthCoordinatorsForTests,
 } from "./githubAppUserAuthService";
+import { emptyLedger, type StoredAppUserAuth } from "./githubAppUserAuthLedger";
 import type { GitHubAppUserTokenRecord } from "./githubAppUserAuth";
 import { makeStoredAppUserToken } from "./githubAppUserAuth.testFixtures";
 
@@ -692,10 +694,10 @@ describe("app user auth status", () => {
   });
 
   it("keeps serving a still-fresh token that has no renewal left", async () => {
-    // An App configured for non-expiring user tokens stores no refresh token at
-    // all, and a refresh token can expire while the access token it last minted
-    // is still good. The token WORKS, so every gate hands it out; the status
-    // axis is where ADE asks for a replacement, hours before it lapses.
+    // A refresh token can expire, or be revoked, while the access token it last
+    // minted is still good — and this one lapses in an hour. The token WORKS, so
+    // every gate hands it out; the status axis is where ADE asks for a
+    // replacement, hours before it lapses.
     const values: StoredValues = {};
     writeRecord(values, {
       accessToken: "ghu_fresh_but_final",
@@ -762,5 +764,114 @@ describe("app user auth status", () => {
     });
 
     expect(service.getAuthStatus().credentialState).toBe("needs_reauth");
+  });
+});
+
+describe("judgeStoredAuth", () => {
+  // The ladder four gates share. They used to run their own copies in three
+  // different orders, and the orders disagreed: one handed out a lapsed access
+  // token whose refresh token had already expired.
+  const NOW_MS = Date.parse("2026-08-20T12:00:00.000Z");
+  const iso = (offsetMs: number): string => new Date(NOW_MS + offsetMs).toISOString();
+
+  function stored(
+    token: Partial<GitHubAppUserTokenRecord> | null,
+    ledger: Partial<ReturnType<typeof emptyLedger>> = {},
+  ): StoredAppUserAuth {
+    return {
+      token: token
+        ? {
+          accessToken: "ghu_access",
+          tokenType: "bearer",
+          scope: null,
+          expiresAt: iso(3_600_000),
+          refreshToken: "ghr_live",
+          refreshTokenExpiresAt: iso(30 * 86_400_000),
+          userLogin: "alice",
+          updatedAt: iso(-60_000),
+          ...token,
+        }
+        : null,
+      refresh: { ...emptyLedger(), ...ledger },
+    };
+  }
+
+  it("reports missing when nothing is stored", () => {
+    expect(judgeStoredAuth(stored(null), NOW_MS)).toEqual({ outcome: "missing" });
+  });
+
+  it("serves a fresh token and says it can still be renewed", () => {
+    const verdict = judgeStoredAuth(stored({}), NOW_MS);
+
+    expect(verdict.outcome).toBe("fresh");
+    if (verdict.outcome !== "fresh") throw new Error("expected fresh");
+    expect(verdict.record.accessToken).toBe("ghu_access");
+    expect(verdict.renewableRecord?.refreshToken).toBe("ghr_live");
+  });
+
+  it("serves a fresh token with no renewal left, and says so", () => {
+    // The token WORKS, so no gate may withhold it — but the status axis has to
+    // ask for a replacement before it lapses.
+    const verdict = judgeStoredAuth(
+      stored({ refreshToken: null, refreshTokenExpiresAt: null }),
+      NOW_MS,
+    );
+
+    expect(verdict.outcome).toBe("fresh");
+    if (verdict.outcome !== "fresh") throw new Error("expected fresh");
+    expect(verdict.renewableRecord).toBeNull();
+  });
+
+  it("reports needs_reauth for a lapsed token whose refresh token expired", () => {
+    const failure = {
+      kind: "dead_token" as const,
+      message: "bad credentials",
+      status: 401,
+      oauthError: null,
+      retryAfterSec: null,
+      at: iso(-1_000),
+    };
+    const verdict = judgeStoredAuth(
+      stored(
+        { expiresAt: iso(-60_000), refreshTokenExpiresAt: iso(-1_000) },
+        { lastFailure: failure },
+      ),
+      NOW_MS,
+    );
+
+    expect(verdict).toEqual({ outcome: "needs_reauth", failure });
+  });
+
+  it("reports needs_reauth for a lapsed token the ledger already declared dead", () => {
+    const verdict = judgeStoredAuth(
+      stored({ expiresAt: iso(-60_000) }, { dead: true }),
+      NOW_MS,
+    );
+
+    expect(verdict.outcome).toBe("needs_reauth");
+  });
+
+  it("reports blocked while a refresh backoff deadline has not passed", () => {
+    const verdict = judgeStoredAuth(
+      stored({ expiresAt: iso(-60_000) }, { notBeforeAt: iso(30_000) }),
+      NOW_MS,
+    );
+
+    expect(verdict).toMatchObject({ outcome: "blocked", retryAt: iso(30_000) });
+  });
+
+  it("reports refreshable for a lapsed token with a healthy refresh token", () => {
+    const verdict = judgeStoredAuth(stored({ expiresAt: iso(-60_000) }), NOW_MS);
+
+    expect(verdict.outcome).toBe("refreshable");
+    if (verdict.outcome !== "refreshable") throw new Error("expected refreshable");
+    expect(verdict.record.refreshToken).toBe("ghr_live");
+  });
+
+  it("treats an access token inside the refresh skew as lapsed", () => {
+    // The skew exists so ADE renews BEFORE the token stops working, rather than
+    // handing out one that expires mid-request.
+    expect(judgeStoredAuth(stored({ expiresAt: iso(30_000) }), NOW_MS).outcome)
+      .toBe("refreshable");
   });
 });
