@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.63] - 2026-08-19
+## [1.2.63] - 2026-08-20
+
+### GitHub connection
+
+- The GitHub App user credential is renewed through one coordinator per credential store: a process-wide single-flight plus a cross-process lease and backoff ledger persisted inside the credential record. Parallel renewals could previously invalidate the rotating refresh token, after which every process retried the dead token without backoff until GitHub rate-limited the OAuth host (#1137).
+- `github.appUserToken.v1` is file-backed and shared by the desktop app, the machine brain, and the CLI; a routed desktop store with a one-time freshness-aware adoption replaces the split safeStorage copy.
+- The status model is honest: `credentialState` (missing / authorized / blocked / needs_reauth) is judged by the refresh token, never by the 8-hour access token; a paused renewal shows its retry time with no re-authorize CTA; ADE's own renewal reads as "renewing", not as a failed check; and the App panel gained a Disconnect control.
+- OAuth transport errors are typed: HTTP-200 error bodies (`bad_refresh_token`) are read, `retry-after` is honored, a credential is declared dead only on a 401 or a definitive OAuth error code, and the whole refresh exchange is bounded below the lease lifetime.
+- The brain watches the shared credential file and force-polls the relay after a re-authorization instead of waiting out its five-minute cooldown.
+- A refresh whose store write fails keeps the rotated token in process memory, retries the persist, and never re-POSTs the spent refresh token; the account-session rotation journal likewise survives failed exchanges.
+
+### Updates
+
+- "Check for updates" runs when an update is already staged (#1134), and a manual check no longer discards the update that was already downloaded (#1135).
+
+### Providers
+
+- ADE no longer overrides the user's own provider configuration (#1136).
 
 ### Getting help
 
