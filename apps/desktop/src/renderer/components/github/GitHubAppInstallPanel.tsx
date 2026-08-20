@@ -301,6 +301,11 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       <>
         <button
           type="button"
+          // Arming unmounts the button that was focused, which drops keyboard
+          // focus to the document body mid-way through a destructive action.
+          // Focus lands on Cancel, never on Confirm: the key that armed this is
+          // still down, and a repeat of it must not clear the credential.
+          autoFocus
           style={quietButtonStyle}
           onClick={() => setDisconnectArmed(false)}
           disabled={disconnecting}
@@ -368,7 +373,10 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     }
   })();
 
-  const showWebhookEvents = repoState === "connected" && (status?.webhookEvents.length ?? 0) > 0;
+  // `webhookEvents` is required and always normalized, so the `?.` guards only
+  // a host or adapter that answers with some other shape, where reading
+  // `.length` would throw.
+  const showWebhookEvents = repoState === "connected" && (status?.webhookEvents?.length ?? 0) > 0;
 
   return (
     <div

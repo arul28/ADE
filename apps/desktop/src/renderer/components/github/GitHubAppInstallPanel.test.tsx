@@ -122,4 +122,25 @@ describe("GitHubAppInstallPanel", () => {
     expect(clearAppUserAuth).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Not authorized")).toBeTruthy();
   });
+
+  // Arming unmounts the button the user just activated. Without moving focus,
+  // it lands on the document body and the user has to tab back into the card to
+  // finish or cancel a destructive action. Focus goes to Cancel, never to
+  // Confirm: the Enter that armed this may still be down, and a key repeat must
+  // not be able to clear the credential.
+  it("moves keyboard focus to Cancel when the disconnect arms", async () => {
+    window.ade = {
+      github: {
+        getAppInstallationStatus: vi.fn(async () => installedStatus()),
+        getAppUserAuthStatus: vi.fn(async () => makeAppAuth()),
+        clearAppUserAuth: vi.fn(async () => makeAppAuth({ tokenStored: false, credentialState: "missing" })),
+      },
+    } as unknown as typeof window.ade;
+
+    render(<GitHubAppInstallPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+  });
 });

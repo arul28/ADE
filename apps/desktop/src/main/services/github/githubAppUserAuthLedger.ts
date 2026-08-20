@@ -101,6 +101,38 @@ function trimmedOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/**
+ * Every failure kind this ledger knows, so a stored one can be checked rather
+ * than trusted. The file is written by peer processes and by older versions of
+ * ADE, and the value travels on to the renderer as
+ * `GitHubAppUserAuthStatus.lastRefreshError.kind`.
+ *
+ * `satisfies Record<RefreshFailureKind, true>` makes the compiler check this
+ * list against the union: a kind added to the union later fails the build here
+ * instead of silently arriving at the renderer as "unknown".
+ */
+const REFRESH_FAILURE_KINDS = {
+  rate_limited: true,
+  outage: true,
+  network: true,
+  dead_token: true,
+  unknown: true,
+} satisfies Record<RefreshFailureKind, true>;
+
+function isRefreshFailureKind(value: string): value is RefreshFailureKind {
+  return Object.hasOwn(REFRESH_FAILURE_KINDS, value);
+}
+
+/**
+ * An unrecognized kind is read as "unknown": the record still says a refresh
+ * failed, and dropping the whole failure would hide that.
+ */
+function readFailureKind(value: unknown): RefreshFailureKind | null {
+  const trimmed = trimmedOrNull(value);
+  if (!trimmed) return null;
+  return isRefreshFailureKind(trimmed) ? trimmed : "unknown";
+}
+
 export function parseLedger(value: unknown): RefreshLedger {
   const base = emptyLedger();
   if (!value || typeof value !== "object" || Array.isArray(value)) return base;
@@ -108,7 +140,7 @@ export function parseLedger(value: unknown): RefreshLedger {
   const failure = raw.lastFailure && typeof raw.lastFailure === "object" && !Array.isArray(raw.lastFailure)
     ? raw.lastFailure as Record<string, unknown>
     : null;
-  const kind = trimmedOrNull(failure?.kind);
+  const kind = readFailureKind(failure?.kind);
   return {
     notBeforeAt: trimmedOrNull(raw.notBeforeAt),
     consecutiveFailures: typeof raw.consecutiveFailures === "number" && Number.isFinite(raw.consecutiveFailures)
@@ -122,7 +154,7 @@ export function parseLedger(value: unknown): RefreshLedger {
       : 0,
     lastFailure: failure && kind
       ? {
-        kind: kind as RefreshFailureKind,
+        kind,
         message: trimmedOrNull(failure.message) ?? "GitHub refused to renew the ADE GitHub App authorization.",
         status: typeof failure.status === "number" && Number.isFinite(failure.status)
           ? Math.trunc(failure.status)

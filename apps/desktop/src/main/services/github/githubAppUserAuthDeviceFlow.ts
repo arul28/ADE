@@ -61,6 +61,10 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
 } {
   const sessions = new Map<string, GitHubAppDeviceAuthSession>();
   const now = deps.now ?? (() => Date.now());
+  // Bumped by clearSessions. A poll resolving after a sign-out must not put its
+  // session back in the map, and must not persist the credential the user just
+  // cleared.
+  let sessionGeneration = 0;
 
   const pruneExpiredSessions = (requestedSessionId?: string): boolean => {
     const nowMs = now();
@@ -134,6 +138,7 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
       };
     }
     let result: Awaited<ReturnType<typeof pollGitHubAppDeviceFlow>>;
+    const generationAtStart = sessionGeneration;
     try {
       result = await pollGitHubAppDeviceFlow({
         clientId: ADE_GITHUB_APP_CLIENT_ID,
@@ -161,6 +166,17 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
         intervalSec: null,
         message,
         authStatus: deps.appUserAuthStatus({ error: message }),
+      };
+    }
+    if (sessionGeneration !== generationAtStart) {
+      // Sign-out dropped every pending session while this poll was in flight.
+      // Re-inserting the session below would resurrect it, and an `authorized`
+      // result would write back the credential the user just cleared.
+      return {
+        status: "error",
+        intervalSec: null,
+        message: "GitHub device authorization session was not found.",
+        authStatus: deps.appUserAuthStatus(),
       };
     }
     if (result.status === "pending" || result.status === "slow_down") {
@@ -195,6 +211,9 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
   return {
     startDeviceAuth,
     pollDeviceAuth,
-    clearSessions: () => sessions.clear(),
+    clearSessions: () => {
+      sessionGeneration += 1;
+      sessions.clear();
+    },
   };
 }

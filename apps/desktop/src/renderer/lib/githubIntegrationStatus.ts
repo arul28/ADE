@@ -188,6 +188,13 @@ export type GithubRepoConnectionState =
  * The stub declares itself with `appUserAuthSupported: false`. Hosts older than
  * that field are still recognised the way they always were: by `configured`,
  * which the stub has never carried.
+ *
+ * A `null` status is NOT an answer this predicate can give: it means the read
+ * failed or the host does not implement the call, and a caller's "loaded" flag
+ * is set in both cases. It is not a report of "not authorized", and acting on
+ * it paints a banner nobody can clear. So this returns true for null by design,
+ * and every caller that acts on the result must pair it with its own
+ * `appAuth != null` check.
  */
 export function isGithubAppUserAuthSupported(
   appAuth: GitHubAppUserAuthStatus | null | undefined,

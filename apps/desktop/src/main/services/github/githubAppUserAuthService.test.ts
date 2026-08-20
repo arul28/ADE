@@ -3,6 +3,7 @@ import {
   createGitHubAppUserAuthService,
   judgeStoredAuth,
   resetGitHubAppUserAuthCoordinatorsForTests,
+  type GitHubAppUserAuthCredentialStore,
 } from "./githubAppUserAuthService";
 import { emptyLedger, type StoredAppUserAuth } from "./githubAppUserAuthLedger";
 import {
@@ -575,6 +576,36 @@ describe("poisoned deadlines in the shared ledger", () => {
 });
 
 describe("refresh lease release", () => {
+  /**
+   * A store that refuses the write recording a SUCCESSFUL refresh.
+   *
+   * Update 1 takes the lease, update 2 records the refreshed credential, and
+   * update 3 is the lease release the failure path falls back on.
+   */
+  function createStoreRefusingTheOutcomeWrite(values: StoredValues) {
+    const base = createFakeStore(values);
+    let updates = 0;
+    return {
+      ...base,
+      updateKeySync: (
+        key: string,
+        mutator: (current: string | null) => string | null | undefined,
+      ): void => {
+        updates += 1;
+        if (updates === 2) throw new Error("credential store write failed");
+        base.updateKeySync(key, mutator);
+      },
+    };
+  }
+
+  const freshTokenEndpoint = () => vi.fn(async () => jsonResponse({
+    access_token: "ghu_fresh",
+    token_type: "bearer",
+    expires_in: 28_800,
+    refresh_token: "ghr_rotated",
+    refresh_token_expires_in: 15_811_200,
+  }));
+
   // The lease is written before the POST and cleared by whichever outcome gets
   // recorded. A credential store that throws while recording one records
   // nothing — and used to leave the lease behind, which stalls every other
@@ -582,44 +613,163 @@ describe("refresh lease release", () => {
   it("hands the lease back when the store refuses to record the outcome", async () => {
     const values: StoredValues = {};
     writeRecord(values);
-    const base = createFakeStore(values);
-    let updates = 0;
-    const store = {
-      ...base,
-      updateKeySync: (
-        key: string,
-        mutator: (current: string | null) => string | null | undefined,
-      ): void => {
-        updates += 1;
-        // Update 1 takes the lease. Updates 2 and 3 are the two attempts to
-        // record an outcome — the refreshed credential, then the failure that
-        // first attempt turned into — and the store refuses both.
-        if (updates === 2 || updates === 3) throw new Error("credential store write failed");
-        base.updateKeySync(key, mutator);
-      },
-    };
-    const fetchImpl = vi.fn(async () => jsonResponse({
-      access_token: "ghu_fresh",
-      token_type: "bearer",
-      expires_in: 28_800,
-      refresh_token: "ghr_rotated",
-      refresh_token_expires_in: 15_811_200,
-    }));
     const service = createGitHubAppUserAuthService({
-      credentialStore: store,
+      credentialStore: createStoreRefusingTheOutcomeWrite(values),
       logger: createLogger(),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
+      fetchImpl: freshTokenEndpoint() as unknown as typeof fetch,
       userAgent: "ade-test",
       storeIdentity: nextIdentity(),
       now,
       sleep,
     });
 
-    await expect(service.getValidTokenForRelay()).rejects.toThrow("credential store write failed");
+    await service.getValidTokenForRelay();
 
     const ledger = storedRecord(values)?.refresh as Record<string, unknown> | undefined;
     expect(ledger?.leaseUntil).toBeNull();
     expect(ledger?.leaseHolder).toBeNull();
+  });
+
+  /**
+   * The POST spends the old refresh token at GitHub whether or not the store
+   * can hold the answer. Treating the failed write as a REFRESH failure stamped
+   * backoff onto the spent token and threw the fresh one away, so the next POST
+   * replayed a spent token — which is how GitHub decides to revoke the whole
+   * credential.
+   */
+  it("serves the credential GitHub issued when the store cannot record it", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const logger = createLogger();
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createStoreRefusingTheOutcomeWrite(values),
+      logger,
+      fetchImpl: freshTokenEndpoint() as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh");
+
+    // The write really did fail, so the spent token is still what is on disk.
+    const stored = storedRecord(values);
+    expect(stored?.accessToken).toBe("ghu_old");
+    // And nothing about it was condemned: no backoff, no dead flag, no failure.
+    const ledger = stored?.refresh as Record<string, unknown> | undefined;
+    expect(ledger?.notBeforeAt).toBeNull();
+    expect(ledger?.dead).not.toBe(true);
+    expect(ledger?.lastFailure).toBeNull();
+    expect(ledger?.consecutiveFailures).toBe(0);
+    // Reported once, at info: the store failure itself is already warned about
+    // by `github.app_user_token_write_failed` one level down.
+    expect(logger.info).toHaveBeenCalledWith(
+      "github.app_user_token_refresh_unpersisted",
+      expect.objectContaining({ error: "credential store write failed" }),
+    );
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "github.app_user_token_refresh_failed",
+      expect.anything(),
+    );
+  });
+});
+
+/**
+ * The credential-killing sequence this whole ledger exists to stop.
+ *
+ * GitHub spends the refresh token the moment it answers the POST. When the
+ * write that records the replacement fails, the machine file is left holding a
+ * token that is already dead — and the next call reads that file, POSTs the
+ * dead token, and GitHub answers `bad_refresh_token`. That answer is not a
+ * transient failure: it is the credential gone, and the user is asked to
+ * re-authorize a session nobody revoked.
+ */
+describe("refresh whose replacement never reached the store", () => {
+  /** Fails ONLY the write that records a successful refresh; recovers after. */
+  function createStoreFailingOneOutcomeWrite(values: StoredValues) {
+    const base = createFakeStore(values);
+    let updates = 0;
+    return {
+      ...base,
+      updateKeySync: (
+        key: string,
+        mutator: (current: string | null) => string | null | undefined,
+      ): void => {
+        updates += 1;
+        if (updates === 2) throw new Error("credential store write failed");
+        base.updateKeySync(key, mutator);
+      },
+    };
+  }
+
+  const buildService = (
+    store: GitHubAppUserAuthCredentialStore,
+    fetchImpl: unknown,
+    identity: string,
+  ) => createGitHubAppUserAuthService({
+    credentialStore: store,
+    logger: createLogger(),
+    fetchImpl: fetchImpl as typeof fetch,
+    userAgent: "ade-test",
+    storeIdentity: identity,
+    now,
+    sleep,
+  });
+
+  it("never POSTs the refresh token it already spent, and persists the one it holds", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const endpoint = createRotatingRefreshEndpoint();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => endpoint.respond(
+      typeof init?.body === "string" ? init.body : null,
+    ));
+    const service = buildService(
+      createStoreFailingOneOutcomeWrite(values),
+      fetchImpl,
+      nextIdentity(),
+    );
+
+    // Call 1 refreshes, and the store refuses to record the result.
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+    expect(storedRecord(values)?.accessToken).toBe("ghu_old");
+
+    // Call 2 reads that same spent token off disk. It must NOT be POSTed: this
+    // endpoint answers a reused token exactly as GitHub does, with
+    // `bad_refresh_token`, which is the credential dying.
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+
+    expect(endpoint.rotations).toBe(1);
+    expect(tokenPostCount(fetchImpl)).toBe(1);
+    // The store recovered, so the record this process was holding is on disk.
+    expect(storedRecord(values)).toMatchObject({
+      accessToken: "ghu_fresh_1",
+      refreshToken: "ghr_rotated_1",
+    });
+    expect(service.getAuthStatus().credentialState).toBe("authorized");
+  });
+
+  it("drops the held record when the user signs out between the two calls", async () => {
+    const values: StoredValues = {};
+    writeRecord(values);
+    const endpoint = createRotatingRefreshEndpoint();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => endpoint.respond(
+      typeof init?.body === "string" ? init.body : null,
+    ));
+    const service = buildService(
+      createStoreFailingOneOutcomeWrite(values),
+      fetchImpl,
+      nextIdentity(),
+    );
+
+    await expect(service.getValidTokenForRelay()).resolves.toBe("ghu_fresh_1");
+    service.clearAuth();
+
+    // A signed-out machine has no credential to serve, and the record this
+    // process was holding must not resurrect the one the user just cleared.
+    await expect(service.getValidTokenForRelay()).rejects.toThrow(/Authorize the ADE GitHub App/);
+    expect(storedRecord(values)).toBeNull();
+    expect(tokenPostCount(fetchImpl)).toBe(1);
   });
 });
 
@@ -983,6 +1133,66 @@ describe("device flow transport", () => {
     });
 
     expect(result.status).toBe("pending");
+  });
+
+  /**
+   * Sign-out drops every pending browser session. A poll already awaiting
+   * GitHub used to resolve afterwards and write its session back — and an
+   * `authorized` answer wrote back the very credential the user just cleared.
+   */
+  it("drops a poll that resolves after sign-out cleared the session", async () => {
+    const values: StoredValues = {};
+    let releasePoll = (): void => {};
+    const pollReached = new Promise<void>((resolve) => {
+      releasePoll = resolve;
+    });
+    let allowPoll = (): void => {};
+    const pollReleased = new Promise<void>((resolve) => {
+      allowPoll = resolve;
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === DEVICE_CODE_URL) {
+        return jsonResponse({
+          device_code: "device",
+          user_code: "ABCD-1234",
+          verification_uri: "https://github.com/login/device",
+          expires_in: 900,
+          interval: 5,
+        });
+      }
+      releasePoll();
+      await pollReleased;
+      return jsonResponse({
+        access_token: "ghu_authorized",
+        token_type: "bearer",
+        expires_in: 28_800,
+        refresh_token: "ghr_authorized",
+        refresh_token_expires_in: 15_811_200,
+      });
+    });
+    const service = createGitHubAppUserAuthService({
+      credentialStore: createFakeStore(values),
+      logger: createLogger(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "ade-test",
+      storeIdentity: nextIdentity(),
+      now,
+      sleep,
+    });
+
+    const started = await service.startDeviceAuth();
+    const polling = service.pollDeviceAuth({ sessionId: started.sessionId });
+    await pollReached;
+    service.clearAuth();
+    allowPoll();
+
+    const result = await polling;
+
+    expect(result.status).toBe("error");
+    expect(storedRecord(values)).toBeNull();
+    // And the cleared session is really gone, not put back by that poll.
+    const again = await service.pollDeviceAuth({ sessionId: started.sessionId });
+    expect(again.status).toBe("error");
   });
 });
 

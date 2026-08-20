@@ -1785,6 +1785,25 @@ describe("headlessLinearServices", () => {
     const requestedUrls: string[] = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       requestedUrls.push(String(input));
+      if (String(input) === "https://github.com/login/oauth/access_token") {
+        // The refresh must SUCCEED, or the failure writes a backoff that blocks
+        // every later resolution on its own — and the assertion below would
+        // hold with the cache deleted. The rotated access token is stale on
+        // arrival for the same reason: a long-lived one would make the next
+        // resolution skip the POST because the token is fresh, not because the
+        // cache answered. With this response, only the cache can hold the count
+        // down (2 with it, 3 without).
+        return new Response(
+          JSON.stringify({
+            access_token: "ghu_fresh",
+            token_type: "bearer",
+            expires_in: 1,
+            refresh_token: "ghr_rotated",
+            refresh_token_expires_in: 15_811_200,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
       return new Response(JSON.stringify({ login: "octocat" }), {
         status: 200,
         headers: { "content-type": "application/json", "x-oauth-scopes": "" },
@@ -1805,7 +1824,11 @@ describe("headlessLinearServices", () => {
 
       const refreshPosts = requestedUrls
         .filter((url) => url === "https://github.com/login/oauth/access_token");
-      expect(refreshPosts).toHaveLength(1);
+      // Two, not three: both status reads share ONE resolution through the
+      // window, and the installation check resolves the App credential on its
+      // own path, which this cache does not cover. Without the cache the two
+      // status reads refresh separately and this is three.
+      expect(refreshPosts).toHaveLength(2);
     } finally {
       environment.restore();
     }

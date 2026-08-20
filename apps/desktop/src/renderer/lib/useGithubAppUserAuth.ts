@@ -17,9 +17,21 @@ import type { GitHubAppUserAuthStatus } from "../../shared/types";
 let cachedStatus: GitHubAppUserAuthStatus | null = null;
 let hasLoaded = false;
 let inFlight: Promise<GitHubAppUserAuthStatus | null> | null = null;
+/**
+ * Only the newest-started read may publish.
+ *
+ * A forced read runs BESIDE the older one it exists to replace, and completion
+ * order is not guaranteed. Without this, the older read settles last and
+ * publishes the state from before the action — the exact staleness `force` was
+ * added to avoid.
+ */
+let readSeq = 0;
+let publishedSeq = 0;
 const listeners = new Set<(status: GitHubAppUserAuthStatus | null) => void>();
 
-function publish(status: GitHubAppUserAuthStatus | null): void {
+function publish(status: GitHubAppUserAuthStatus | null, seq: number): void {
+  if (seq < publishedSeq) return;
+  publishedSeq = seq;
   cachedStatus = status;
   hasLoaded = true;
   for (const listener of listeners) listener(status);
@@ -43,9 +55,10 @@ export function refreshGithubAppUserAuth(
   options: RefreshGithubAppUserAuthOptions = {},
 ): Promise<GitHubAppUserAuthStatus | null> {
   if (inFlight && !options.force) return inFlight;
+  const seq = ++readSeq;
   const read = window.ade?.github?.getAppUserAuthStatus;
   if (!read) {
-    publish(null);
+    publish(null, seq);
     return Promise.resolve(null);
   }
   const pending: Promise<GitHubAppUserAuthStatus | null> = window.ade.github
@@ -53,7 +66,7 @@ export function refreshGithubAppUserAuth(
     .then((status) => status ?? null)
     .catch(() => null)
     .then((status) => {
-      publish(status);
+      publish(status, seq);
       return status;
     })
     .finally(() => {
@@ -70,6 +83,8 @@ export function resetGithubAppUserAuthForTests(): void {
   cachedStatus = null;
   hasLoaded = false;
   inFlight = null;
+  readSeq = 0;
+  publishedSeq = 0;
   listeners.clear();
 }
 
@@ -102,7 +117,9 @@ export function useGithubAppUserAuth(): UseGithubAppUserAuthResult {
   }, []);
 
   const set = useCallback((status: GitHubAppUserAuthStatus | null) => {
-    publish(status);
+    // Claims a sequence of its own: an action's result is newer than every read
+    // that started before it, so a read still in flight must not overwrite it.
+    publish(status, ++readSeq);
   }, []);
 
   return { appAuth, loaded, refresh: refreshGithubAppUserAuth, set };

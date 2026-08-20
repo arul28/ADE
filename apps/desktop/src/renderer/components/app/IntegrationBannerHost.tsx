@@ -326,11 +326,13 @@ export function IntegrationBannerHost({
     // project. The auth stub says so itself (`isGithubAppUserAuthSupported`);
     // the install stub is still detected by the fields it omits.
     const rawInstall = appInstall as Record<string, unknown> | null;
+    // A real status from a host that implements the call. `null` is neither.
+    const authDtoIsReal = appAuth != null && isGithubAppUserAuthSupported(appAuth);
     const githubAppStatusSupported =
       !!rawInstall
       && typeof rawInstall.appName === "string"
       && typeof rawInstall.relayConfigured === "boolean"
-      && isGithubAppUserAuthSupported(appAuth);
+      && authDtoIsReal;
     if (!githubSuppressed && appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
       const account = deriveGithubAccountAuthState(appAuth);
       const repo = deriveGithubRepoConnectionState(appInstall, account);
