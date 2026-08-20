@@ -8,7 +8,7 @@ import {
 import { resolveAutoDiagnosticsStateFile } from "../../../../desktop/src/main/services/diagnostics/autoDiagnosticsStore";
 import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import {
-  buildCliDiagnosticReport,
+  buildCliDiagnosticReportAsync,
   sendDiagnosticReport,
   type ReportIssueResult,
 } from "../../commands/reportIssue";
@@ -101,7 +101,7 @@ export function createBrainAutoDiagnostics(
   const layout = resolveMachineAdeLayout(env);
   const stateFilePath = deps.stateFilePath ?? resolveAutoDiagnosticsStateFile(layout.adeDir, env);
   const reportsDir = deps.reportsDir ?? path.join(layout.adeDir, "diagnostic-reports");
-  const build = deps.build ?? buildCliDiagnosticReport;
+  const build = deps.build ?? buildCliDiagnosticReportAsync;
   const send = deps.send ?? sendDiagnosticReport;
   const writeReportFile = deps.writeReportFile ?? writeDiagnosticReportFile;
   let inFlight = false;

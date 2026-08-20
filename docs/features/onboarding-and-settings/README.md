@@ -394,7 +394,14 @@ Renderer — settings:
   send. `web: "hidden"` in the manifest, because the consent lives in
   `~/.ade/secrets/diagnostics-autosend.json` and a browser has no such file.
   Analytics consent and diagnostics consent are deliberately separate flags, so
-  turning one off never silently turns off the other. See
+  turning one off never silently turns off the other. The same card also carries
+  **Send a report to ADE** — the only report control that does not require
+  something to have already visibly broken, which is what makes this section's
+  own copy (*"the same report the Report issue button makes"*) true for a user
+  whose app merely feels wrong. It has its own daily cap (5 per install per 24h,
+  counted apart from the automatic 3), sends whether or not the toggle is on
+  because a deliberate click is not something ADE did by itself, and says so in
+  the card when the toggle is off. See
   [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT

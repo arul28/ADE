@@ -6,6 +6,7 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 
 const cleanupScript = path.resolve("scripts", "windows-uninstall-cleanup.ps1");
+const installedProductSmokeScript = path.resolve("scripts", "windows-installed-product-smoke.ps1");
 const cliWrapperScript = path.resolve("scripts", "ade-cli-windows-wrapper.cmd");
 const installSetupScript = path.resolve("scripts", "windows-install-setup.ps1");
 const standaloneInstallerScript = path.resolve("..", "ade-cli", "scripts", "install-runtime.ps1");
@@ -107,6 +108,71 @@ test("Windows standalone installer path normalizer is executable PowerShell", {
   ], {
     encoding: "utf8",
     env: { ...process.env, ADE_TEST_SCRIPT: standaloneInstallerScript },
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+});
+
+/**
+ * The two desktop-owned PowerShell scripts, parsed on a real host.
+ *
+ * Neither has a harness anywhere else: the uninstall cleanup only runs from an
+ * NSIS uninstaller and the installed-product smoke only runs on a packaging
+ * runner, so a syntax error in either surfaces during an uninstall or a release
+ * rather than in CI. Parsing is not execution, so this costs a process and
+ * proves the file is at least PowerShell.
+ */
+test("Windows desktop PowerShell scripts parse", {
+  skip: process.platform !== "win32",
+}, () => {
+  for (const script of [cleanupScript, installedProductSmokeScript]) {
+    const probe = [
+      "$tokens = $null",
+      "$errors = $null",
+      "$null = [Management.Automation.Language.Parser]::ParseFile($env:ADE_TEST_SCRIPT, [ref]$tokens, [ref]$errors)",
+      "if ($errors.Count -ne 0) { $errors | ForEach-Object { Write-Output $_.Message }; exit 2 }",
+    ].join("; ");
+    const result = spawnSync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      probe,
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, ADE_TEST_SCRIPT: script },
+    });
+    assert.equal(result.status, 0, `${script}\n${result.stdout}\n${result.stderr}`);
+  }
+});
+
+test("Windows installed-product smoke re-checks a failed kill with the test that selected it", {
+  skip: process.platform !== "win32",
+}, () => {
+  // `taskkill` exits nonzero both when the process is already gone and when it
+  // could not be stopped, so the smoke re-reads the PID. Windows hands a freed
+  // PID straight to the next process that asks, which makes "something answers
+  // to this number" worthless on its own: the re-read has to apply the SAME
+  // ownership test that chose the process, or a recycled PID fails a smoke that
+  // actually passed. Both helpers are therefore called twice - once to select,
+  // once to verify - and this counts the calls so a future edit cannot quietly
+  // drop the second one.
+  const probe = [
+    "$tokens = $null",
+    "$errors = $null",
+    "$ast = [Management.Automation.Language.Parser]::ParseFile($env:ADE_TEST_SCRIPT, [ref]$tokens, [ref]$errors)",
+    "if ($errors.Count -ne 0) { exit 2 }",
+    "$names = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })",
+    "if (@($names | Where-Object { $_ -eq 'Test-IsInstalledAppProcess' }).Count -lt 2) { exit 3 }",
+    "if (@($names | Where-Object { $_ -eq 'Test-IsChannelSupervisorProcess' }).Count -lt 2) { exit 4 }",
+    "if (@($names | Where-Object { $_ -eq 'Get-ProcessAfterKill' }).Count -lt 2) { exit 5 }",
+  ].join("; ");
+  const result = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    probe,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, ADE_TEST_SCRIPT: installedProductSmokeScript },
   });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 });

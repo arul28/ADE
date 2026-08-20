@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   DeploymentConfigError,
+  REQUIRED_SECRETS,
   parseJsonc,
   verifyDirectoryDeploymentConfig,
   wranglerSecretListInvocation,
@@ -17,20 +18,27 @@ const wranglerConfigPath = resolve(
   "wrangler.jsonc",
 );
 
+const completeVars = {
+  PUSH_RELAY_URL: "https://relay.test",
+  WEB_CLIENT_ORIGIN: "https://app.test",
+  ONLINE_WINDOW_MS: "90000",
+  DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "400",
+};
+
 const completeConfig = {
-  vars: { PUSH_RELAY_URL: "https://relay.test" },
-  env: { production: { vars: { PUSH_RELAY_URL: "https://relay.test" } } },
+  vars: completeVars,
+  env: { production: { vars: completeVars } },
 };
 
 function verify(args: {
   environments?: string[];
   secretsByEnvironment?: Record<string, string[]>;
   config?: unknown;
-}): void {
-  verifyDirectoryDeploymentConfig({
+}): { warnings: string[] } {
+  return verifyDirectoryDeploymentConfig({
     environments: args.environments,
     listSecretNames: (environment) =>
-      args.secretsByEnvironment?.[environment] ?? ["DIRECTORY_AUTH_SECRET"],
+      args.secretsByEnvironment?.[environment] ?? [...REQUIRED_SECRETS],
     readConfig: () => args.config ?? completeConfig,
   });
 }
@@ -55,7 +63,7 @@ describe("account directory deployment preflight", () => {
     expect(() =>
       verify({
         secretsByEnvironment: {
-          default: ["DIRECTORY_AUTH_SECRET"],
+          default: [...REQUIRED_SECRETS],
           production: ["CLERK_ISSUER"],
         },
       })
@@ -65,8 +73,26 @@ describe("account directory deployment preflight", () => {
   it("does not require the unused default environment for a production deploy", () => {
     expect(() => verify({
       environments: ["production"],
-      secretsByEnvironment: { default: [], production: ["DIRECTORY_AUTH_SECRET"] },
+      secretsByEnvironment: { default: [], production: [...REQUIRED_SECRETS] },
     })).not.toThrow();
+  });
+
+  it.each(["CLERK_JWKS_URL", "CLERK_ISSUER", "CLERK_OAUTH_CLIENT_ID"])(
+    "fails when %s is not bound",
+    (missing) => {
+      // `resolveCallerToken` throws "authentication unavailable" when any of the
+      // trio is blank: every authenticated route answers 503 and the whole
+      // /device/* sign-in flow breaks, while /health stays green.
+      const secrets = REQUIRED_SECRETS.filter((name) => name !== missing);
+      expect(() =>
+        verify({ secretsByEnvironment: { default: secrets, production: secrets } })
+      ).toThrow(new RegExp(`default environment: ${missing}`));
+    },
+  );
+
+  it("names every missing secret at once", () => {
+    expect(() => verify({ secretsByEnvironment: { default: ["DIRECTORY_AUTH_SECRET"] } }))
+      .toThrow(/CLERK_JWKS_URL, CLERK_ISSUER, CLERK_OAUTH_CLIENT_ID/);
   });
 
   it("rejects an unknown deployment environment", () => {
@@ -77,26 +103,62 @@ describe("account directory deployment preflight", () => {
   it.each([
     [
       "the default environment",
-      { vars: {}, env: { production: { vars: { PUSH_RELAY_URL: "https://relay.test" } } } },
+      { vars: {}, env: { production: { vars: completeVars } } },
       /default environment: PUSH_RELAY_URL/,
     ],
     [
       "the production environment",
-      { vars: { PUSH_RELAY_URL: "https://relay.test" }, env: {} },
+      { vars: completeVars, env: {} },
       /production environment: PUSH_RELAY_URL/,
     ],
     [
       "an empty value",
-      { vars: { PUSH_RELAY_URL: "   " }, env: { production: { vars: { PUSH_RELAY_URL: "https://relay.test" } } } },
+      { vars: { ...completeVars, PUSH_RELAY_URL: "   " }, env: { production: { vars: completeVars } } },
       /default environment: PUSH_RELAY_URL/,
     ],
   ])("fails when PUSH_RELAY_URL is missing from %s", (_label, config, expected) => {
     expect(() => verify({ config })).toThrow(expected as RegExp);
   });
 
-  it("accepts the committed wrangler.jsonc", () => {
+  it("fails when WEB_CLIENT_ORIGIN is missing", () => {
+    // No code default: without it the Worker emits no
+    // access-control-allow-origin, so the browser client is blocked outright.
+    const vars = { ...completeVars, WEB_CLIENT_ORIGIN: "" };
+    expect(() => verify({ config: { vars, env: { production: { vars } } } }))
+      .toThrow(/default environment: WEB_CLIENT_ORIGIN/);
+  });
+
+  it("warns instead of failing for vars that have code defaults", () => {
+    // DIAGNOSTICS_DAILY_GLOBAL_LIMIT falls back to 400 and ONLINE_WINDOW_MS to
+    // 90000, both equal to the committed values, so their absence changes no
+    // behavior — the diagnostics cost ceiling still applies. Blocking a deploy
+    // on them would be a false gate.
+    const vars = {
+      PUSH_RELAY_URL: "https://relay.test",
+      WEB_CLIENT_ORIGIN: "https://app.test",
+    };
+    const result = verify({ config: { vars, env: { production: { vars } } } });
+    expect(result.warnings).toEqual([
+      expect.stringContaining("ONLINE_WINDOW_MS is not set for the default environment"),
+      expect.stringContaining("DIAGNOSTICS_DAILY_GLOBAL_LIMIT is not set for the default environment"),
+      expect.stringContaining("ONLINE_WINDOW_MS is not set for the production environment"),
+      expect.stringContaining("DIAGNOSTICS_DAILY_GLOBAL_LIMIT is not set for the production environment"),
+    ]);
+  });
+
+  it("warns when a defaulted var is set to something the Worker cannot parse", () => {
+    // Number("unlimited") is NaN, so the Worker silently uses 400 while the
+    // config reads as configured.
+    const vars = { ...completeVars, DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "unlimited" };
+    const result = verify({ environments: ["production"], config: { vars, env: { production: { vars } } } });
+    expect(result.warnings).toEqual([
+      expect.stringContaining("DIAGNOSTICS_DAILY_GLOBAL_LIMIT for the production environment is not a non-negative number"),
+    ]);
+  });
+
+  it("accepts the committed wrangler.jsonc with no warnings", () => {
     const config = parseJsonc(readFileSync(wranglerConfigPath, "utf8"));
-    expect(() => verify({ config })).not.toThrow();
+    expect(verify({ config })).toEqual({ warnings: [] });
   });
 });
 

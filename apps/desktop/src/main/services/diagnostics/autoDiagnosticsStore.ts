@@ -36,6 +36,32 @@ export const AUTO_DIAGNOSTICS_WINDOW_MS = 24 * 60 * 60 * 1_000;
 export const MAX_AUTO_DIAGNOSTICS_PER_CODE = 1;
 /** At most this many automatic reports in total per window, per install. */
 export const MAX_AUTO_DIAGNOSTICS_PER_WINDOW = 3;
+/**
+ * At most this many MANUAL reports per window, per install.
+ *
+ * Deliberately the same number as `MAX_DIAGNOSTIC_UPLOADS_PER_DAY` in
+ * `apps/account-directory/src/diagnostics.ts`, the server's per-identity daily
+ * quota. That is the point: this guard exists so a person leaning on the button
+ * gets one honest sentence instead of a server refusal, and matching the
+ * server's number means it never refuses a report the user was still entitled
+ * to send. The server stays the authority — its quota counts stored objects,
+ * keyed on the caller address, and this cannot weaken it.
+ *
+ * More generous than the automatic budget (3 a day, one per failure class), and
+ * for a plain reason: an automatic send is one nobody chose, so its ceiling is a
+ * promise about what the computer does on its own. A manual send is a person
+ * asking for help about a report they can read first.
+ */
+export const MAX_MANUAL_DIAGNOSTICS_PER_WINDOW = 5;
+
+/**
+ * The ledger code every manual send is filed under.
+ *
+ * Manual sends have no failure class to dedupe on — the whole point is that
+ * nothing classified itself — so they share one code and are bounded only by
+ * the window total above.
+ */
+export const MANUAL_DIAGNOSTICS_FAILURE_CODE = "user_requested";
 
 /**
  * Shape the server accepts for `failureCode`. Checked here so a caller that
@@ -63,11 +89,27 @@ export function normalizeAutoDiagnosticsFailureCode(value: string | null | undef
 
 export type AutoDiagnosticsSource = "desktop" | "brain";
 
+/**
+ * Who decided to send: ADE, or the person using it.
+ *
+ * TWO BUDGETS, ONE FILE. They are counted apart on purpose and neither can
+ * borrow from the other: a user pressing "Send a report" must not use up the
+ * automatic reports that explain the crash they are reporting, and a machine in
+ * a crash loop that has burned its three automatic sends must not lock the user
+ * out of asking for help. Sharing the file is still right — the lock, the
+ * window and the retention cap are one mechanism — but the counters are not.
+ *
+ * Absent in entries written before manual sends existed, and those were all
+ * automatic, so the default is `auto`.
+ */
+export type AutoDiagnosticsKind = "auto" | "manual";
+
 /** One spent send. Codes and timestamps only — never a report or its text. */
 export type AutoDiagnosticsSend = {
   code: string;
   atMs: number;
   source: AutoDiagnosticsSource;
+  kind: AutoDiagnosticsKind;
   /** Local path of the saved `.md`, so the toast's "View" can reveal it. */
   reportPath: string | null;
   /** Short upload handle, present once the upload succeeded. */
@@ -116,6 +158,7 @@ function readSend(value: unknown): AutoDiagnosticsSend | null {
     code,
     atMs,
     source: record.source === "brain" ? "brain" : "desktop",
+    kind: record.kind === "manual" ? "manual" : "auto",
     reportPath: typeof record.reportPath === "string" && record.reportPath.trim()
       ? record.reportPath
       : null,
@@ -411,16 +454,20 @@ export function claimAutoDiagnosticsSend(args: {
       }
       const nowMs = now();
       const recent = withinWindow(state.sends, nowMs);
-      if (recent.filter((entry) => entry.code === code).length >= MAX_AUTO_DIAGNOSTICS_PER_CODE) {
+      // Only automatic entries count against the automatic budget; a user who
+      // pressed "Send a report" has not spent any of it.
+      const automatic = recent.filter((entry) => entry.kind === "auto");
+      if (automatic.filter((entry) => entry.code === code).length >= MAX_AUTO_DIAGNOSTICS_PER_CODE) {
         return { state: null, result: { allowed: false, reason: "code_limit" } };
       }
-      if (recent.length >= MAX_AUTO_DIAGNOSTICS_PER_WINDOW) {
+      if (automatic.length >= MAX_AUTO_DIAGNOSTICS_PER_WINDOW) {
         return { state: null, result: { allowed: false, reason: "daily_limit" } };
       }
       const entry: AutoDiagnosticsSend = {
         code,
         atMs: nowMs,
         source: args.source,
+        kind: "auto",
         reportPath: null,
         reference: null,
         pending: false,
@@ -437,7 +484,78 @@ export function claimAutoDiagnosticsSend(args: {
 }
 
 /**
+ * Reserves one MANUAL send, or explains why there is none to reserve.
+ *
+ * Same shape and the same fail-closed rules as the automatic claim, counting a
+ * separate budget (see `AutoDiagnosticsKind`). Two differences, both deliberate:
+ *
+ *   - No consent check. The setting governs reports ADE sends BY ITSELF; a
+ *     person pressing a button is not that, and refusing them would leave a
+ *     user who turned off background reporting with no way to ask for help.
+ *     The surface that offers the button says so plainly instead.
+ *   - No per-code limit. Manual sends have no failure class to dedupe on.
+ */
+export function claimManualDiagnosticsSend(args: {
+  filePath: string;
+  source: AutoDiagnosticsSource;
+  now?: () => number;
+}): AutoDiagnosticsClaim {
+  const now = args.now ?? Date.now;
+  return mutate<AutoDiagnosticsClaim>(
+    args.filePath,
+    now,
+    (state, readable) => {
+      if (!readable) {
+        return { state: null, result: { allowed: false, reason: "state_unavailable" } };
+      }
+      const nowMs = now();
+      const recent = withinWindow(state.sends, nowMs);
+      if (recent.filter((entry) => entry.kind === "manual").length >= MAX_MANUAL_DIAGNOSTICS_PER_WINDOW) {
+        return { state: null, result: { allowed: false, reason: "daily_limit" } };
+      }
+      // A reservation is identified by (code, atMs, kind) — that triple is what
+      // `completeAutoDiagnosticsSend` finds its entry by. Automatic sends are
+      // unique in it by construction, since at most one per code exists in a
+      // window. Manual ones are not: they ALL carry `user_requested`, so two
+      // claimed in the same millisecond would be indistinguishable, and the
+      // second completion would land on the first one's entry — overwriting its
+      // path and reference and leaving its own blank. Stepping past a collision
+      // costs nothing against a 24-hour window and keeps every reservation
+      // individually completable.
+      let atMs = nowMs;
+      while (recent.some((entry) =>
+        entry.kind === "manual"
+        && entry.code === MANUAL_DIAGNOSTICS_FAILURE_CODE
+        && entry.atMs === atMs)
+      ) {
+        atMs += 1;
+      }
+      const entry: AutoDiagnosticsSend = {
+        code: MANUAL_DIAGNOSTICS_FAILURE_CODE,
+        atMs,
+        source: args.source,
+        kind: "manual",
+        reportPath: null,
+        reference: null,
+        pending: false,
+      };
+      return {
+        state: { ...state, sends: [...recent, entry].slice(-MAX_RETAINED_SENDS) },
+        result: { allowed: true, atMs },
+      };
+    },
+    () => ({ allowed: false, reason: "state_unavailable" }),
+  );
+}
+
+/**
  * Records the result of a claimed send.
+ *
+ * The reservation is found by (code, atMs, kind) — the triple both claims mint
+ * uniquely, the automatic one because a code gets a single slot per window and
+ * the manual one because it steps past a timestamp already taken. Nothing here
+ * can restore that uniqueness after the fact, which is why it is established
+ * where the entry is written rather than guessed at here.
  *
  * `pending` is how a send reaches the user's screen at all. The brain has no
  * renderer and the desktop cannot tell whether one received its notice, so a
@@ -458,18 +576,22 @@ export function completeAutoDiagnosticsSend(args: {
   reportPath: string | null;
   reference: string | null;
   pending: boolean;
+  /** Which budget the reservation came out of. Defaults to the automatic one. */
+  kind?: AutoDiagnosticsKind;
   now?: () => number;
 }): void {
   const now = args.now ?? Date.now;
   const code = normalizeAutoDiagnosticsFailureCode(args.failureCode);
   if (!code) return;
+  const kind = args.kind ?? "auto";
   const reference = args.reference?.trim() || null;
   const pending = args.pending && reference != null;
   mutate<void>(
     args.filePath,
     now,
     (state) => {
-      const index = state.sends.findIndex((entry) => entry.code === code && entry.atMs === args.atMs);
+      const index = state.sends.findIndex((entry) =>
+        entry.code === code && entry.atMs === args.atMs && entry.kind === kind);
       if (index < 0) return { state: null, result: undefined };
       const sends = [...state.sends];
       sends[index] = {
@@ -555,16 +677,32 @@ export function ackAutoDiagnosticsNotices(
   );
 }
 
-/** Read-only view for tests and for the settings pane's spend line. */
+/**
+ * Read-only view for tests and for the settings pane's spend line.
+ *
+ * `sendsInWindow` counts AUTOMATIC sends only, because that is the number the
+ * pane's footnote is about ("at most three a day, one per problem"). Manual
+ * sends are reported separately for the same reason they are counted
+ * separately.
+ */
 export function readAutoDiagnosticsState(
   filePath: string,
   deps: { now?: () => number } = {},
-): { enabled: boolean; sendsInWindow: number; limit: number } {
+): {
+  enabled: boolean;
+  sendsInWindow: number;
+  limit: number;
+  manualSendsInWindow: number;
+  manualLimit: number;
+} {
   const now = deps.now ?? Date.now;
   const { state } = readState(filePath);
+  const recent = withinWindow(state.sends, now());
   return {
     enabled: state.enabled,
-    sendsInWindow: withinWindow(state.sends, now()).length,
+    sendsInWindow: recent.filter((entry) => entry.kind === "auto").length,
     limit: MAX_AUTO_DIAGNOSTICS_PER_WINDOW,
+    manualSendsInWindow: recent.filter((entry) => entry.kind === "manual").length,
+    manualLimit: MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
   };
 }

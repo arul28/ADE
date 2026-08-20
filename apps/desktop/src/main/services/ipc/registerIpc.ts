@@ -809,7 +809,6 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   collectDiagnosticReport,
   diagnosticReportRoots,
@@ -817,11 +816,15 @@ import {
   writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
 import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
-import { MAX_AUTO_DIAGNOSTICS_PER_WINDOW } from "../diagnostics/autoDiagnosticsStore";
+import {
+  MAX_AUTO_DIAGNOSTICS_PER_WINDOW,
+  MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
+} from "../diagnostics/autoDiagnosticsStore";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
 
@@ -4738,7 +4741,6 @@ export function registerIpc({
         reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
         installId: productAnalyticsService?.getDistinctId() ?? null,
         accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        projectLogsDir: projectRoot ? resolveAdeLayout(projectRoot).logsDir : null,
         getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
         diagnoseProject: projectRecoveryService
           ? (root: string) => projectRecoveryService.diagnose(root)
@@ -4824,9 +4826,34 @@ export function registerIpc({
     },
   );
 
+  /**
+   * "Send a report to ADE" from the Diagnostics sharing settings section.
+   *
+   * Takes no argument on purpose. Every other report carries a surface and a
+   * context from the screen that failed; this one is about nothing in
+   * particular, so main names the surface itself (`settings_manual`) and uses
+   * the project it already has open. A renderer choosing either would be a
+   * renderer choosing whose logs go in the report.
+   *
+   * `null` rather than a throw when the service is absent (a runtime mode
+   * without it): the caller renders "unavailable right now", which is true,
+   * instead of an exception it would have to translate.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsSendManual,
+    async (): Promise<DiagnosticsManualSendResult> =>
+      (await autoDiagnosticsService?.sendManual()) ?? { ok: false, reason: "failed" },
+  );
+
   const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>
     autoDiagnosticsService?.getStatus()
-    ?? { enabled: true, sendsInWindow: 0, limit: MAX_AUTO_DIAGNOSTICS_PER_WINDOW };
+    ?? {
+      enabled: true,
+      sendsInWindow: 0,
+      limit: MAX_AUTO_DIAGNOSTICS_PER_WINDOW,
+      manualSendsInWindow: 0,
+      manualLimit: MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
+    };
 
   ipcMain.handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
     diagnosticsSharingStatus());

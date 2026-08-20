@@ -11,7 +11,7 @@ import {
   type DiagnosticVolumeSpace,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticReport";
 import {
-  collectMachineDiagnosticSources,
+  collectMachineDiagnosticSourcesAsync,
   readLogTail,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticSources";
 import { readVolumeSpace } from "../storage/volume";
@@ -88,8 +88,6 @@ export type DiagnosticReportDeps = {
   installId: string | null;
   /** Raw account user id; hashed here and never stored or sent verbatim. */
   accountUserId?: string | null;
-  /** Project `.ade/logs` directory for the open project, when there is one. */
-  projectLogsDir?: string | null;
   getLocalRuntimeStatus?: () => Promise<unknown> | unknown;
   diagnoseProject?: (projectRoot: string) => Promise<unknown>;
   /** Deadline for each optional step above. Test seam; defaults to 8s. */
@@ -173,14 +171,6 @@ export async function collectDiagnosticReport(
   const env = deps.env ?? process.env;
   const at = deps.now?.() ?? new Date();
   const projectRoot = request.projectRoot?.trim() || null;
-  // Logs, volumes, notes and the redaction context are the same set the
-  // headless `ade report-issue` collects; the Electron-only extras below are
-  // the only thing this report adds.
-  const sources = collectMachineDiagnosticSources({
-    env,
-    projectRoot,
-    readVolume: volumeEntry,
-  });
 
   // Both optional steps ask the very subsystem the user is reporting as broken
   // -- the local runtime, and a recovery diagnosis that probes the brain's
@@ -188,7 +178,17 @@ export async function collectDiagnosticReport(
   // leave the "Report issue" button spinning, which is exactly the outcome
   // this collector promises can never happen. A synchronous throw out of
   // either one is caught here for the same reason.
-  const [osProductVersion, localRuntimeStatus, recoveryDiagnosis] = await Promise.all([
+  //
+  // The machine sources go in the same batch, and through the ASYNC collector:
+  // logs, volumes, notes and the redaction context are the same set the
+  // headless `ade report-issue` collects, but this is Electron's main process,
+  // so the platform commands behind them (a PowerShell `Export-ScheduledTask`,
+  // a `journalctl`) may not be spawned synchronously — they would freeze every
+  // window and every IPC call for as long as they take, on a report the user
+  // often did not ask for. The Electron-only extras below are the only thing
+  // this report adds.
+  const [sources, osProductVersion, localRuntimeStatus, recoveryDiagnosis] = await Promise.all([
+    collectMachineDiagnosticSourcesAsync({ env, projectRoot, readVolume: volumeEntry }),
     readMacProductVersion().catch(() => null),
     bestEffortStep(() => deps.getLocalRuntimeStatus?.() ?? null, deps.stepTimeoutMs),
     projectRoot && deps.diagnoseProject
@@ -196,12 +196,16 @@ export async function collectDiagnosticReport(
       : Promise.resolve(null),
   ]);
 
+  // Only what lives under Electron's userData is added here. The project's
+  // `main.jsonl` used to be appended at this point from an `app.getPath`-derived
+  // directory, which meant it was collected ONLY when a project was open — so a
+  // report from the machine-level error screens, the ones a person actually
+  // reaches when nothing will open, silently had no `main.jsonl` at all.
+  // `collectMachineDiagnosticSources` now owns it, for the open project or for
+  // the most recently opened one, and the CLI gets the same file.
   const logs: DiagnosticLogTail[] = [...sources.logs];
   logs.push(readLogTail("Desktop local runtime", path.join(deps.userDataPath, "local-runtime.jsonl")));
   logs.push(readLogTail("Desktop updates", path.join(deps.userDataPath, "ade-update.jsonl")));
-  if (deps.projectLogsDir) {
-    logs.push(readLogTail("Desktop main", path.join(deps.projectLogsDir, "main.jsonl")));
-  }
 
   // The typed store rather than the raw file the CLI falls back to: main owns
   // the writer, so it can read the record's real shape.
@@ -212,10 +216,15 @@ export async function collectDiagnosticReport(
       return null;
     }
   })();
-  const projectLastFailure = projectRoot
+  // Keyed off the root the shared collector actually used, not the request's:
+  // with no project open those differ, and reading the typed store for a root
+  // the logs above did not come from would attribute one project's last failure
+  // to another's evidence.
+  const collectedProjectRoot = sources.projectRoot;
+  const projectLastFailure = collectedProjectRoot
     ? (() => {
         try {
-          return readLastFailure({ kind: "project", projectRoot });
+          return readLastFailure({ kind: "project", projectRoot: collectedProjectRoot });
         } catch {
           return null;
         }
@@ -261,6 +270,7 @@ export async function collectDiagnosticReport(
     },
     storage: sources.storage,
     logs,
+    serviceDefinition: sources.serviceDefinition,
     notes: [...sources.notes, ...(request.extraNotes ?? [])],
     redaction,
   });

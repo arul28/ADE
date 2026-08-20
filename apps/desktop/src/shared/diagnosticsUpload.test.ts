@@ -154,6 +154,46 @@ describe("uploadDiagnosticReport", () => {
       .resolves.toEqual({ ok: false, reason: "network" });
   });
 
+  it("tells the two 429s apart, because they are two different sentences", async () => {
+    // The route answers a per-caller 429 and a fleet-wide 429 with distinct
+    // bodies on purpose. Reading them as one would tell a user "you've sent
+    // several today" when the truth is that ADE stopped taking reports from
+    // everyone — advice that cannot help them.
+    const perCaller = capture(new Response(JSON.stringify({ error: "rate limited" }), { status: 429 }));
+    await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl: perCaller.fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: "rate_limited" });
+
+    const fleet = capture(
+      new Response(JSON.stringify({ error: "daily diagnostics budget exhausted" }), { status: 429 }),
+    );
+    await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl: fleet.fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: "unavailable" });
+
+    // An EMPTY body falls back to the caller-scoped reading: the conservative
+    // one, since it only ever asks the user to wait.
+    const unreadable = capture(new Response(null, { status: 429 }));
+    await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl: unreadable.fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: "rate_limited" });
+  });
+
+  it("falls back to the caller's own limit when the 429 body throws instead of arriving", async () => {
+    // `new Response(null, …)` above is an empty body, not an unreadable one:
+    // its `text()` resolves to "" and never enters the catch. A stream that
+    // aborts mid-read does, and it has to reach the same conservative answer
+    // rather than an exception on a screen that is already showing a failure.
+    const rejectingBody = {
+      status: 429,
+      ok: false,
+      text: async () => {
+        throw new Error("aborted");
+      },
+    } as unknown as Response;
+    const { fetchImpl } = capture(rejectingBody);
+
+    await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl }))
+      .resolves.toEqual({ ok: false, reason: "rate_limited" });
+  });
+
   it("treats an unusable success body as a failure rather than inventing a reference", async () => {
     const { fetchImpl } = capture(new Response("not json", { status: 200 }));
     await expect(uploadDiagnosticReport({ report: REPORT, baseUrl: BASE_URL, fetchImpl }))

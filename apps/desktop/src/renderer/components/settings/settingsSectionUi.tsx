@@ -105,6 +105,7 @@ export function ConsentToggleSection<TStatus extends { enabled: boolean }>({
   write,
   readErrorMessage,
   writeErrorMessage,
+  children,
 }: {
   id: string;
   title: string;
@@ -121,6 +122,13 @@ export function ConsentToggleSection<TStatus extends { enabled: boolean }>({
   write: ((enabled: boolean) => Promise<TStatus>) | undefined;
   readErrorMessage: string;
   writeErrorMessage: string;
+  /**
+   * An action that belongs to this consent, rendered below the switch and its
+   * copy — the diagnostics section's "Send a report to ADE". Given the live
+   * status, because whether the toggle is on changes what the action has to
+   * say for itself.
+   */
+  children?: (status: TStatus | null) => React.ReactNode;
 }) {
   const toggleId = useId();
   const [status, setStatus] = useState<TStatus | null>(null);
@@ -202,6 +210,17 @@ export function ConsentToggleSection<TStatus extends { enabled: boolean }>({
             onChange={(enabled) => void setEnabled(enabled)}
           />
         </div>
+        {children ? (
+          <div
+            style={{
+              marginTop: 14,
+              paddingTop: 14,
+              borderTop: `1px solid ${COLORS.outlineBorder}`,
+            }}
+          >
+            {children(status)}
+          </div>
+        ) : null}
       </div>
     </SettingsSectionShell>
   );

@@ -6,6 +6,7 @@ import {
   ackAutoDiagnosticsNotices,
   AUTO_DIAGNOSTICS_WINDOW_MS,
   claimAutoDiagnosticsSend,
+  claimManualDiagnosticsSend,
   completeAutoDiagnosticsSend,
   isAutoDiagnosticsEnabled,
   listPendingAutoDiagnosticsNotices,
@@ -37,6 +38,8 @@ describe("auto diagnostics budget", () => {
       enabled: true,
       sendsInWindow: 0,
       limit: 3,
+      manualSendsInWindow: 0,
+      manualLimit: 5,
     });
   });
 
@@ -151,6 +154,8 @@ describe("auto diagnostics budget", () => {
       enabled: false,
       sendsInWindow: 1,
       limit: 3,
+      manualSendsInWindow: 0,
+      manualLimit: 5,
     });
   });
 
@@ -260,6 +265,137 @@ describe("auto diagnostics budget", () => {
     ]);
     ackAutoDiagnosticsNotices(filePath, ["efgh5678"], { now: () => T0 });
     expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([]);
+  });
+});
+
+describe("manual diagnostics budget", () => {
+  const claimManual = (filePath: string, atMs: number) =>
+    claimManualDiagnosticsSend({ filePath, source: "desktop", now: () => atMs });
+  const claimAuto = (filePath: string, failureCode: string, atMs: number) =>
+    claimAutoDiagnosticsSend({ filePath, failureCode, source: "desktop", now: () => atMs });
+
+  it("allows five sends a day and then refuses, in the user's own words", () => {
+    const filePath = stateFile();
+    for (let i = 0; i < 5; i += 1) {
+      expect(claimManual(filePath, T0 + i * 60_000).allowed).toBe(true);
+    }
+    expect(claimManual(filePath, T0 + 300_000)).toEqual({ allowed: false, reason: "daily_limit" });
+    // And it comes back when the window rolls, rather than being spent forever.
+    expect(claimManual(filePath, T0 + AUTO_DIAGNOSTICS_WINDOW_MS + 1).allowed).toBe(true);
+  });
+
+  it("does not spend the automatic budget, and is not spent by it", () => {
+    const filePath = stateFile();
+
+    // A user pressing the button five times must not silence the automatic
+    // reports that would explain the failure they are reporting.
+    for (let i = 0; i < 5; i += 1) claimManual(filePath, T0 + i * 60_000);
+    expect(claimAuto(filePath, "disk_full", T0 + 400_000).allowed).toBe(true);
+    expect(claimAuto(filePath, "db_integrity", T0 + 410_000).allowed).toBe(true);
+    expect(claimAuto(filePath, "renderer_crash", T0 + 420_000).allowed).toBe(true);
+    expect(claimAuto(filePath, "update_service", T0 + 430_000))
+      .toEqual({ allowed: false, reason: "daily_limit" });
+
+    // And the reverse: a machine that has burned its three automatic sends must
+    // not lock the user out of asking for help.
+    const other = stateFile();
+    claimAuto(other, "disk_full", T0);
+    claimAuto(other, "db_integrity", T0 + 1_000);
+    claimAuto(other, "renderer_crash", T0 + 2_000);
+    expect(claimAuto(other, "update_service", T0 + 3_000))
+      .toEqual({ allowed: false, reason: "daily_limit" });
+    expect(claimManual(other, T0 + 4_000).allowed).toBe(true);
+  });
+
+  it("counts the two budgets apart in the settings view", () => {
+    const filePath = stateFile();
+    claimAuto(filePath, "disk_full", T0);
+    claimManual(filePath, T0 + 1_000);
+    claimManual(filePath, T0 + 2_000);
+
+    expect(readAutoDiagnosticsState(filePath, { now: () => T0 + 3_000 })).toEqual({
+      enabled: true,
+      sendsInWindow: 1,
+      limit: 3,
+      manualSendsInWindow: 2,
+      manualLimit: 5,
+    });
+  });
+
+  it("sends even when automatic sharing is switched off", () => {
+    const filePath = stateFile();
+    setAutoDiagnosticsEnabled(filePath, false, { now: () => T0 });
+
+    // The toggle governs what ADE does BY ITSELF. A deliberate click is not
+    // that, and refusing it would leave this user unable to report anything.
+    expect(claimManual(filePath, T0 + 1_000).allowed).toBe(true);
+    expect(claimAuto(filePath, "disk_full", T0 + 2_000))
+      .toEqual({ allowed: false, reason: "disabled" });
+    // ...and asking never flips the setting back on.
+    expect(isAutoDiagnosticsEnabled(filePath)).toBe(false);
+  });
+
+  it("completes distinct manual reservations claimed in the same millisecond", () => {
+    const filePath = stateFile();
+
+    // Manual sends have no failure class, so they ALL carry `user_requested`
+    // and the timestamp is the only thing left to tell two of them apart. Two
+    // that shared one would be a single reservation as far as completion is
+    // concerned: the second annotation would land on the first one's entry,
+    // overwriting its path and reference and leaving its own blank.
+    const first = claimManual(filePath, T0);
+    const second = claimManual(filePath, T0);
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(true);
+    if (!first.allowed || !second.allowed) return;
+    expect(second.atMs).not.toBe(first.atMs);
+
+    const complete = (atMs: number, reportPath: string, reference: string) =>
+      completeAutoDiagnosticsSend({
+        filePath,
+        failureCode: "user_requested",
+        atMs,
+        reportPath,
+        reference,
+        // Manual sends are never pending in production — the person is looking
+        // at the answer. It is set here only because the pending list is the
+        // one readback for what a completion actually recorded.
+        pending: true,
+        kind: "manual",
+        now: () => T0,
+      });
+    complete(first.atMs, "/tmp/first.md", "aaaa1111");
+    complete(second.atMs, "/tmp/second.md", "bbbb2222");
+
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([
+      { failureCode: "user_requested", reportPath: "/tmp/first.md", reference: "aaaa1111" },
+      { failureCode: "user_requested", reportPath: "/tmp/second.md", reference: "bbbb2222" },
+    ]);
+  });
+
+  it("only annotates an entry of the kind that was claimed", () => {
+    const filePath = stateFile();
+    expect(claimManual(filePath, T0).allowed).toBe(true);
+    const complete = (kind: "auto" | "manual") =>
+      completeAutoDiagnosticsSend({
+        filePath,
+        failureCode: "user_requested",
+        atMs: T0,
+        reportPath: "/tmp/report.md",
+        reference: "abcd1234",
+        pending: true,
+        kind,
+        now: () => T0,
+      });
+
+    // The default kind is `auto`, so an automatic completion must not land on a
+    // manual reservation that happens to share its code and timestamp.
+    complete("auto");
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([]);
+    complete("manual");
+    expect(listPendingAutoDiagnosticsNotices(filePath)).toEqual([
+      { failureCode: "user_requested", reportPath: "/tmp/report.md", reference: "abcd1234" },
+    ]);
   });
 });
 

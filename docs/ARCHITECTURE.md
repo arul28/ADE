@@ -567,13 +567,14 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
     ├── personal-chats/
     │   ├── state/               # Hidden chat runtime DB, transcripts, attachments
     │   └── workspaces/          # Separate provider cwd + personal terminal scratch
-    ├── runtime/
-    │   ├── brain.jsonl          # Brain log stream (10 MiB rotation)
-    │   ├── heartbeat.json       # Brain liveness beat read by the external watchdog
-    │   ├── event-loop-wedge.json / last-wedge.json  # Wedge breadcrumb, promoted on next boot
-    │   ├── spawns/              # Detached-brain spawn records (0600)
-    │   └── updates/             # Staged `ade brain update` payloads
-    └── logs/                    # Main-process structured logs
+    └── runtime/
+        ├── brain.jsonl          # Brain log stream (10 MiB rotation)
+        ├── desktop-main.jsonl   # Desktop main-process machine log (10 MiB rotation)
+        ├── account-trust.jsonl  # Machine-scoped paired-credential mutations
+        ├── heartbeat.json       # Brain liveness beat read by the external watchdog
+        ├── event-loop-wedge.json / last-wedge.json  # Wedge breadcrumb, promoted on next boot
+        ├── spawns/              # Detached-brain spawn records (0600)
+        └── updates/             # Staged `ade brain update` payloads
 ```
 
 **Portability buckets** (intentionally distinct):
@@ -1828,7 +1829,8 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 
 ### 15.1 Logging
 
-- **Main-process logger** — `apps/desktop/src/main/services/logging/logger.ts` (`createFileLogger`). Writes structured JSONL to `~/.ade/logs/<project>/ade-main.log`. Categories: `ipc.*`, `project.startup_task_*`, `renderer.*`, per-service telemetry.
+- **Main-process project logger** — `apps/desktop/src/main/services/logging/logger.ts` (`createFileLogger`). Writes structured JSONL to `<projectRoot>/.ade/transcripts/logs/main.jsonl`, created when a project opens. Categories: `ipc.*`, `project.startup_task_*`, `renderer.*`, per-service telemetry.
+- **Main-process machine logger** — `apps/desktop/src/main/services/logging/machineLogger.ts` reuses `createFileLogger` to write `~/.ade/runtime/desktop-main.jsonl` with the same 10 MiB `.1` rotation, opened in `main.ts`'s first executable statement so events that precede (or never reach) a project are durable. Categories: `desktop.main_started`, `deeplink.*`, `app_navigation.*`, `app.hardware_acceleration`, `machine_trust_reset.*`, `ade_cli.auto_install*`. See [logging.md](./logging.md) for the machine-versus-project rule.
 - **Machine-brain logger** — the headless runtime reuses `createFileLogger` through `apps/ade-cli/src/services/runtime/brainLogger.ts`, writes `~/.ade/runtime/brain.jsonl` with 10 MiB `.1` rotation, and mirrors timestamped warnings/errors to stderr.
 - **Redaction** — all log writes pass through `redactSecrets()` / `sanitizeStructuredData()`.
 - **Retention** — local, indefinite until user clears.

@@ -267,6 +267,26 @@ export function buildWindowsQueryTaskArgs(
   return ["-NoProfile", "-NonInteractive", "-Command", query];
 }
 
+/**
+ * The task's whole XML definition, for a diagnostic report.
+ *
+ * `schtasks /Query /XML` writes UTF-16 to stdout, which a UTF-8 read turns into
+ * NUL-interleaved garbage. `Export-ScheduledTask` through `[Console]::Out`
+ * emits ordinary text, the same way every other task query in this file does.
+ */
+export function buildWindowsExportTaskArgs(
+  taskName = resolveWindowsTaskName(),
+): string[] {
+  const taskNameLiteral = powerShellSingleQuotedLiteral(taskName);
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `try { $xml = Export-ScheduledTask -TaskPath '\\' -TaskName ${taskNameLiteral} -ErrorAction Stop } catch { [Console]::Error.Write($_.Exception.Message); exit ${TASK_NOT_FOUND_EXIT_CODE} }`,
+    `if ($null -eq $xml) { exit ${TASK_NOT_FOUND_EXIT_CODE} }`,
+    "[Console]::Out.Write($xml)",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
 /** Delimits the Execute/Arguments fields emitted by the task action query. */
 export const WINDOWS_TASK_ACTION_FIELD_SEPARATOR = "\u001f";
 

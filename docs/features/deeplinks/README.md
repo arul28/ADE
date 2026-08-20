@@ -123,7 +123,11 @@ Desktop main process — protocol handler:
   caller-supplied dispatcher. `main.ts` wires the dispatcher to focus the
   most-suitable `BrowserWindow` and `webContents.send(IPC.appNavigate, …)`.
   `handleDeeplinkUrl` is also re-used by the iOS Send-to-Mac sync command
-  (`syncRemoteCommandService.ts`'s `deeplinks.open`).
+  (`syncRemoteCommandService.ts`'s `deeplinks.open`). Its `log` hook is wired
+  to the machine logger (`~/.ade/runtime/desktop-main.jsonl`), not a project
+  one — all of this happens before a project can be open — and the branch that
+  loses the single-instance lock and quits calls `flushLog` first, so
+  `deeplink.single_instance.lock_lost` survives the exit.
 - `apps/desktop/src/main/services/deeplinks/projectNavigationWindowSelection.ts`
   — pure selection helper for project-scoped navigation. It first prefers a
   window whose active project already matches the target root, then a window

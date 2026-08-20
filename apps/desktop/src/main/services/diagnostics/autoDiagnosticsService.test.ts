@@ -218,7 +218,13 @@ describe("createAutoDiagnosticsService", () => {
     const { service } = harness();
     expect(service.isEnabled()).toBe(true);
     expect(service.setEnabled(false)).toBe(false);
-    expect(service.getStatus()).toEqual({ enabled: false, sendsInWindow: 0, limit: 3 });
+    expect(service.getStatus()).toEqual({
+      enabled: false,
+      sendsInWindow: 0,
+      limit: 3,
+      manualSendsInWindow: 0,
+      manualLimit: 5,
+    });
   });
 
   it("drops a failure code the server would refuse without touching the budget", async () => {
@@ -256,5 +262,116 @@ describe("createAutoDiagnosticsService", () => {
     await expect(first).resolves.toBe("completed");
     expect(upload).toHaveBeenCalledTimes(1);
     expect(service.getStatus().sendsInWindow).toBe(1);
+  });
+});
+
+describe("createAutoDiagnosticsService.sendManual", () => {
+  it("sends the same report the failure screens send, tagged as not automatic", async () => {
+    const { service, upload, writeReportFile, onSent } = harness();
+
+    await expect(service.sendManual()).resolves.toEqual({
+      ok: true,
+      reference: "abcd1234",
+      reportPath: "/tmp/reports/report.md",
+    });
+
+    expect(writeReportFile).toHaveBeenCalledWith("/tmp/reports/report.md", "# report for user_requested");
+    // `auto: false` is what keeps these separable server-side from the reports
+    // nobody chose to file.
+    expect(upload.mock.calls[0]?.[0]).toMatchObject({
+      auto: false,
+      failureCode: "user_requested",
+      report: "# report for user_requested",
+      installId: "install-1",
+    });
+    // No toast: the person who pressed the button is already reading the answer.
+    expect(onSent).not.toHaveBeenCalled();
+    expect(service.listPendingNotices()).toEqual([]);
+  });
+
+  it("refuses past the fifth send of the day, in the user's own words", async () => {
+    const { service, upload } = harness();
+
+    for (let i = 0; i < 5; i += 1) {
+      await expect(service.sendManual()).resolves.toMatchObject({ ok: true });
+    }
+    await expect(service.sendManual()).resolves.toEqual({
+      ok: false,
+      reason: "local_limit",
+      limit: 5,
+    });
+    // Refused HERE, so the request never reaches the account directory and
+    // never spends one of the caller's server-side slots.
+    expect(upload).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps the manual budget and the automatic one out of each other's way", async () => {
+    const { service } = harness();
+
+    for (let i = 0; i < 5; i += 1) await service.sendManual();
+    expect((await service.sendManual()).ok).toBe(false);
+
+    // A user asking for help must not silence the reports that explain the
+    // failure they are asking about.
+    await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
+      .resolves.toBe("completed");
+    expect(service.getStatus()).toMatchObject({
+      sendsInWindow: 1,
+      limit: 3,
+      manualSendsInWindow: 5,
+      manualLimit: 5,
+    });
+  });
+
+  it("still sends when automatic sharing is off, and does not turn it back on", async () => {
+    const { service, filePath, upload } = harness();
+    setAutoDiagnosticsEnabled(filePath, false, { now: () => T0 });
+
+    // The toggle is about what ADE does BY ITSELF. Refusing a deliberate click
+    // would leave this user with no way to report anything at all.
+    await expect(service.sendManual()).resolves.toMatchObject({ ok: true });
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(service.isEnabled()).toBe(false);
+
+    // The automatic path stays refused, so consent is honoured where it applies.
+    await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
+      .resolves.toBe("skipped_disabled");
+  });
+
+  it("carries each refusal through as its own reason, never a status code", async () => {
+    for (
+      const [uploadReason, reason] of [
+        ["rate_limited", "rate_limited"],
+        ["unavailable", "unavailable"],
+        ["too_large", "too_large"],
+        ["network", "failed"],
+        ["rejected", "failed"],
+      ] as const
+    ) {
+      const { service } = harness({
+        upload: async () => ({ ok: false as const, reason: uploadReason }),
+      });
+      await expect(service.sendManual()).resolves.toEqual({
+        ok: false,
+        reason,
+        // The local copy still exists, so the surface can offer to show it.
+        reportPath: "/tmp/reports/report.md",
+      });
+    }
+  });
+
+  it("keeps the reservation when the report cannot even be built", async () => {
+    const { service, upload } = harness({
+      buildReport: async () => {
+        throw new Error("collector wedged");
+      },
+    });
+
+    await expect(service.sendManual()).resolves.toEqual({ ok: false, reason: "failed" });
+    expect(upload).not.toHaveBeenCalled();
+    // Spent on purpose: what the budget bounds is how often this computer
+    // tries, not how often it wins. A collector that wedges every time would
+    // otherwise be an unbounded retry loop behind a button.
+    expect(service.getStatus().manualSendsInWindow).toBe(1);
   });
 });

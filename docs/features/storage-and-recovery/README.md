@@ -17,6 +17,7 @@
 | `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
 | `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
 | `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
+| `apps/desktop/src/main/services/logging/machineLogger.ts` | The desktop main process's **machine-scoped** logger: same `createFileLogger` and rotation, writing `~/.ade/runtime/desktop-main.jsonl`. Opened in `main.ts`'s first executable statement, so the events that happen before (or without) a project — the launch marker, the `ade://` claim, the single-instance outcome, the CLI auto-install result — are durable rather than `console.log` into a stdout a Finder-launched app does not have. `logMachineEvent` writes the structured line and mirrors it to `console`; `flushMachineMainLog` drains it on the branch that quits immediately. See [logging.md](../../logging.md). |
 | `apps/ade-cli/src/commands/doctor.ts` | `ade doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account, Diagnostics sharing); exits non-zero on any `fail`. The **Diagnostics sharing** row reads the shared auto-send ledger through `readAutoDiagnosticsState` — never a second parser — and is always `ok`: consent is a preference, not a fault, so it reports `on · N of 3 automatic reports sent today` or `off · no automatic reports are sent` and never colours a healthy machine. `evaluateDoctorRows` is pure and dependency-injected — every row's inputs are read at the edge (`runDoctorCommand`) and handed in — so the verdict is testable without a machine and a second surface can reuse it. Today the CLI is its only caller: the desktop's **Connection doctor** card (`remoteTargets/ConnectionDoctorPanel.tsx` → `remoteRuntime.runDoctor`) is a different check about reaching a *remote* machine, not this one. |
 | `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer ADE runtime is already running — quit and reopen ADE instead."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
@@ -33,10 +34,10 @@
 | `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures, diagnosis, repair progress, next action, and technical details. `ProjectTabHost` in `App.tsx` renders it full-viewport whenever `projectTransitionError` carries a `code` and `rootPath`. |
 | `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` | Fallback dismissible banner for project open/switch failures that lack a code/rootPath (un-coded string errors); it renders nothing once a coded error hands the surface to `ProjectRecoveryScreen`. |
 | `apps/desktop/src/main/services/ipc/knownProjectRoots.ts` | Validation for renderer-supplied project roots on the recovery and diagnostics channels. A renderer may only name the open project, a local recent-projects entry, or a root main itself recently attempted to open; `AttemptedProjectRoots` is that last, bounded and expiring, single-writer registry, recorded only after the repo path resolves. Comparison goes through `pathsEqual` (case folding) and falls back to `path.resolve` when a root has no realpath, so a project on an unmounted volume is not refused. |
-| `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of **Report issue**: shared machine sources plus the desktop's own jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Saves the report `0600`, copies it, and opens a prefilled GitHub issue. |
+| `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of **Report issue**: shared machine sources plus what only Electron can reach — its `userData` jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Saves the report `0600`, copies it, and opens a prefilled GitHub issue. The typed last-failure store is keyed off the root the shared collector actually used, not the request's, so a report with no project open cannot attribute one project's failure to another's logs. |
 | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder, the redactor (`redactDiagnosticText`), and `buildDiagnosticIssueUrl`. No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
-| `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — the machine-level logs, layout, disk figures and redaction context both surfaces read, so a log added for one appears in both. |
-| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open] [--send]`, the headless equivalent. `--send` posts the same redacted report to ADE (Clerk token when the machine is signed in, anonymous otherwise) and prints a short reference id. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
+| `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — everything a headless box can read: both of the background service's output streams, the service definition (`readFileHead`), the project logs of the open **or most recently opened** project (`resolveMostRecentProjectRoot`), layout, disk figures and the redaction context. Both surfaces read it, so a source added for one appears in both. Command-backed sources (journald, `schtasks /XML`) go through the injectable `DiagnosticCommandRunner`, bounded and non-interactive. |
+| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open] [--send]`, the headless equivalent. `--send` needs no project and no arguments: it posts the same redacted report to ADE (Clerk token when the machine is signed in, anonymous otherwise), saves a copy under `~/.ade/diagnostic-reports/` *before* attempting the upload, and prints the reference id or the plain-words failure alongside that path. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
 | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` | The consent flag **and** the spend ledger for automatic uploads, in one file (`<adeHome>/secrets/diagnostics-autosend.json`) that both senders open — the desktop main process and the brain — because "three a day from this computer" is a property of the install, not of a process, and two private ledgers would quietly mean six. Deliberately dependency-free (`node:fs`, no Electron, no logger) for exactly that reason. Owns `AUTO_DIAGNOSTICS_WINDOW_MS` (24 h), `MAX_AUTO_DIAGNOSTICS_PER_CODE` (1), `MAX_AUTO_DIAGNOSTICS_PER_WINDOW` (3), `normalizeAutoDiagnosticsFailureCode` (coerced to the Worker's `FAILURE_CODE_PATTERN`, re-exported rather than rewritten), the mkdir lock — whose `isLockContention` names the Windows delete-pending `EPERM`/`EACCES`/`EBUSY` window as well as `EEXIST` — and the pending-notice queue the toast acknowledgement retires. Consent defaults **on**; an unreadable or locked ledger fails closed. |
 | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsSend.ts` | `runAutoDiagnosticsSend` — the policy every automatic send obeys, written once. The two senders differ in exactly three things (what they build, how they upload, which analytics surface they report as) and bring those as structural seams; consent, the pre-request reservation, the local copy, silence on failure, the pending flag, the log lines and the analytics dedupe key live here. Also owns the `AutoDiagnosticsOutcome` vocabulary (`completed`, `skipped_disabled`, `skipped_budget`, `skipped_ineligible`, `failed`) and `AUTO_DIAGNOSTICS_ANALYTICS_DEDUPE_MS` (1 h). |
 | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` | The desktop sender: what is specific to this process — how a report gets built (no `diagnoseProject`, since a diagnosis is itself a trigger), that it uploads anonymously, the `onSent` fast path for an open window, and the getter/setter the Settings toggle reads and writes. |
@@ -602,37 +603,105 @@ carries only a short stub: GitHub rejects issue URLs somewhere north of 8 KB, so
 characters) and falls back to a title-and-stub URL past it. The full report
 rides the clipboard.
 
+Those surfaces all share one property: something has already visibly broken. A
+user whose app merely *feels* wrong has nothing to press, so **General → Privacy
+→ Diagnostics sharing** also carries a **Send a report to ADE** button
+(`renderer/components/settings/DiagnosticsSharingSection.tsx` →
+`IPC.diagnosticsSendManual` → `autoDiagnosticsService.sendManual()`). It builds
+and uploads the same redacted report the error screens do, under surface
+`settings_manual` and `auto: false`, so a report somebody asked for stays
+separable server-side from one nobody chose to file. It does not open GitHub:
+the point is the send, and the result line offers **View report** for the saved
+copy.
+
+Two things it deliberately does not share with the automatic sender:
+
+- **Its own budget.** Manual sends are capped at
+  `MAX_MANUAL_DIAGNOSTICS_PER_WINDOW` (5 per 24h per install), counted apart
+  from the automatic 3 — matching the account directory's per-identity daily
+  quota so the client never refuses a report the server would still have
+  accepted. Neither budget can spend the other: pressing the button cannot
+  silence the automatic reports that explain a crash, and a crash loop that has
+  burned its three automatic sends cannot lock a user out of asking for help.
+- **Consent.** The toggle governs what ADE sends *by itself*; a deliberate click
+  is not that, so a manual send is allowed with the toggle off — and when it is
+  off, the pane says so next to the button, and the click never flips it back on.
+
+Refusals are three separate sentences, because they are three separate
+situations: the local cap ("you've already sent 5 from this computer today"),
+the account directory's per-caller 429 ("you've already sent several today"),
+and its fleet-wide 429 or 503 ("ADE isn't accepting reports right now"). The
+route answers the two 429s with distinct bodies precisely so a client can tell
+them apart; `uploadDiagnosticReport` reads the body and maps the fleet one to
+`unavailable`. No status code ever reaches the screen.
+
 | Piece | Where |
 | --- | --- |
 | Pure builder + redactor | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` |
 | Shared collection (logs, disk, notes, redaction context) | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` (`collectMachineDiagnosticSources`) |
 | Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
-| IPC | `IPC.diagnosticsOpenIssue` |
+| IPC | `IPC.diagnosticsOpenIssue`; manual send from Settings: `IPC.diagnosticsSendManual` |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
 | Headless equivalent | `ade report-issue [--open] [--send]` |
 | Headless state check | `ade doctor` → the **Diagnostics sharing** row (consent + today's spend) |
 | Settings toggle | `general.diagnostics-sharing` (General → Privacy, `#diagnostics-sharing`, default **on**, hidden on hosted web) |
 | Automatic sending (desktop) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` |
 | Automatic sending (brain) | `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` |
-| Consent flag + shared daily budget | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` → `~/.ade/secrets/diagnostics-autosend.json` |
+| Consent flag + the two daily budgets (automatic and manual) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` → `~/.ade/secrets/diagnostics-autosend.json` |
 | Upload (opt-in) | `POST /diagnostics/upload` on the account directory Worker (`apps/account-directory/src/diagnostics.ts`); one client for both senders — the renderer button and the CLI — in `apps/desktop/src/shared/diagnosticsUpload.ts` |
 
 `ade report-issue` and the desktop button read the same machine sources through
-`collectMachineDiagnosticSources`, so a log added for one appears in both; the
-CLI adds the project's `ade-cli.jsonl` and the desktop adds its own jsonl logs
-and Electron-aware volume reader on top.
+`collectMachineDiagnosticSources`, so a source added for one appears in both.
+The desktop adds only what lives under Electron's `userData` — its own
+`local-runtime.jsonl` and `ade-update.jsonl`, the typed last-failure store, and
+an Electron-aware volume reader.
+
+`ade report-issue --send` takes **no arguments and needs no project**: with
+nothing open and a cwd outside every project it still produces a complete report
+and uploads it. It also saves the exact bytes it sent to
+`~/.ade/diagnostic-reports/`, and prints where. A successful send prints the
+reference id plus that path ("exactly what was sent"); a failed one prints the
+reason in plain words plus that path, so the user is left holding a file to
+attach rather than a sentence about a service they cannot reach. Both appear in
+`--json` as `reportPath` and `sent`.
 
 The report contains: app version/channel/packaging, platform, arch, OS release
 (plus `sw_vers -productVersion` on macOS), Electron/Node/Chrome versions,
 timezone offset, the surface and recovery code the user hit, the technical
 detail that screen already showed, the local runtime status snapshot, the
 machine and project `last-failure.json`, `last-wedge.json`, the recovery
-diagnosis for the open project, free disk for the ADE home and the project, and
-a bounded tail (120 lines / 32 KB each) of the background-service log
-(`launchd.err.log`, or the Windows supervisor log), `brain.jsonl`,
-`local-runtime.jsonl`, `ade-update.jsonl` and the project's `main.jsonl`. The
+diagnosis for the open project, free disk for the ADE home and the project, the
+background-service definition, and bounded tails of the logs below. The
 `ade doctor` checks are **not** run: the report must be collectable on a machine
 whose brain will not start.
+
+**What is collected, and why each one.** Everything a headless box can read is
+collected by `collectMachineDiagnosticSources`, so the desktop button and
+`ade report-issue --send` produce the same document.
+
+| Source | Cap | Why |
+| --- | --- | --- |
+| Background service, **both** streams — `launchd.err.log` **and** `launchd.out.log` on macOS, the supervisor log on Windows (one merged stream by construction), `journalctl --user-unit` on Linux when the unit exists | 120 lines / 32 KB | Main's early-startup events mirror to `console`, so on a machine whose plist boots the desktop app as the background service they land in **stdout**. Collecting only stderr is how a user once had to read the decisive two lines off his own disk by hand. |
+| `desktop-main.jsonl` — "Desktop main (machine)" | 120 lines / 32 KB | The desktop main process's machine-scoped log, written from process start. The only main-process log on a machine where no project has ever been opened, and where the launch marker, the `ade://` claim, the single-instance outcome and the `ade_cli.auto_install` result live. Full cap, like the other machine-level streams beside it. |
+| `brain.jsonl` | 120 lines / 32 KB | The brain's own structured log. |
+| `local-runtime.jsonl`, `ade-update.jsonl` (desktop only) | 120 lines / 32 KB | Under Electron's `userData`, a per-platform per-productName directory; the CLI does not write them and does not guess at them. |
+| The project's `main.jsonl` and `ade-cli.jsonl` — "Desktop main (project)" | 80 lines / 16 KB | What the *project* did. Collected for the open project, or — when no project is open — for the most recently opened project in `~/.ade/projects.json`, with a note in the report saying which. That fallback is a mitigation: it needs some project to have been opened, and to guess the right one, which is why the machine log above exists. |
+| **Service definition**: the launchd plist, the systemd user unit, or the Windows launcher script plus its scheduled task XML | first 8 KB | Configuration, not logs, and read from the front because a plist states its `Label`, `ProgramArguments` and `EnvironmentVariables` first. A plist written without `ELECTRON_RUN_AS_NODE=1` boots the whole desktop app as the background service, which then claims the `ade://` scheme and fights the GUI for the single-instance lock — a failure with no signature in any log. |
+
+Two properties hold for every one of them. **Absence is a fact, not an error**:
+a missing or unreadable source becomes `(not present)` / `(could not be read)`
+under its own heading, never a thrown collector and never a failed upload — the
+machine this runs on is by definition damaged. And the total stays inside
+`MAX_DIAGNOSTIC_UPLOAD_BYTES` (512 KB for the serialized upload): at the caps
+above a desktop report's tails are ~240 KB at their theoretical worst and a real
+one is well under 100 KB, which is why the two project logs take the smaller cap
+and the service definition is capped at all.
+
+`resolveMostRecentProjectRoot` reads `~/.ade/projects.json` directly rather than
+through `ProjectRegistry`, which migrates a legacy v1 file by writing it back and
+throws on a version it does not know. A diagnostic collector may do neither: it
+runs on a machine whose state is already suspect, and a registry it cannot parse
+has to degrade to "no project" rather than take the report down with it.
 
 **Redaction guarantees.** `redactDiagnosticText` runs over the whole assembled
 document as the last step — not per field — so a section added later cannot leak
