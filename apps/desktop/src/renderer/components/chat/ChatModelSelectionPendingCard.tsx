@@ -19,6 +19,8 @@ import {
 } from "../../../shared/types/orchestration";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import {
   modelSupportsFastMode,
   resolveModelDescriptor,
@@ -39,12 +41,12 @@ export type ChatModelSelectionPendingCardProps = {
   /** Auth status fan-out for the picker rail. */
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   /**
-   * The machine this chat runs on, when it is not the one the project tab is
-   * bound to. The model chosen here runs on that machine, so its picker rows
-   * and thinking levels must come from that machine's runtime catalog.
+   * The machine this chat runs on. The model chosen here runs there, so picker
+   * rows and thinking levels come from that machine's runtime catalog — including
+   * when it equals the global project tab.
    */
   runtimePin?: OpenProjectBinding | null;
-  /** Catalog bucket matching {@link runtimePin}; empty means the bound machine. */
+  /** Catalog bucket matching {@link runtimePin}; empty only when no machine is known. */
   catalogScopeKey?: string;
   /** Disable while a response is in flight. */
   responding: boolean;
@@ -113,7 +115,10 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
     dependsOn: metadata?.dependsOn ?? [],
   });
 
-  const descriptor = resolveModelDescriptor(modelId);
+  const descriptor = resolveModelDescriptorWithRuntimeCatalog(
+    modelId,
+    catalogScopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
+  ) ?? resolveModelDescriptor(modelId);
   const fastModeSupported = modelSupportsFastMode(descriptor);
 
   useEffect(() => {

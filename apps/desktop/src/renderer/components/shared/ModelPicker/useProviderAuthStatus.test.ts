@@ -263,4 +263,83 @@ describe("useProviderAuthStatus", () => {
       expect(isOpenCodeInstalled).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("asks the composer machine whether OpenCode is installed", async () => {
+    const isOpenCodeInstalled = vi.fn().mockResolvedValue({ installed: true });
+    const getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+      detectedAuth: [],
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ai: { getStatus, isOpenCodeInstalled } },
+    });
+    const pin = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      projectId: "project-1",
+      rootPath: "/Users/studio/ADE",
+      displayName: "Studio",
+      runtimeName: "Studio",
+    };
+
+    function PinnedConsumer() {
+      const auth = useProviderAuthStatus({ runtimePin: pin });
+      return React.createElement("div", null, String(auth.opencodeBinaryInstalled));
+    }
+
+    render(React.createElement(PinnedConsumer));
+    await waitFor(() => {
+      expect(isOpenCodeInstalled).toHaveBeenCalledWith(pin);
+    });
+    expect(getStatus).toHaveBeenCalledWith(
+      expect.objectContaining({}),
+      pin,
+    );
+  });
+
+  it("does not re-probe OpenCode when the pin object is reallocated with the same key", async () => {
+    const isOpenCodeInstalled = vi.fn().mockResolvedValue({ installed: true });
+    const getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+      detectedAuth: [],
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ai: { getStatus, isOpenCodeInstalled } },
+    });
+    const pinOf = () => ({
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      projectId: "project-1",
+      rootPath: "/Users/studio/ADE",
+      displayName: "Studio",
+      runtimeName: "Studio",
+    });
+
+    function ChurnConsumer({ pin }: { pin: ReturnType<typeof pinOf> }) {
+      const auth = useProviderAuthStatus({ runtimePin: pin });
+      return React.createElement("div", null, String(auth.opencodeBinaryInstalled));
+    }
+
+    const { rerender } = render(React.createElement(ChurnConsumer, { pin: pinOf() }));
+    await waitFor(() => {
+      expect(isOpenCodeInstalled).toHaveBeenCalledTimes(1);
+    });
+    rerender(React.createElement(ChurnConsumer, { pin: pinOf() }));
+    rerender(React.createElement(ChurnConsumer, { pin: pinOf() }));
+    await Promise.resolve();
+    expect(isOpenCodeInstalled).toHaveBeenCalledTimes(1);
+    expect(getStatus).toHaveBeenCalledTimes(1);
+  });
 });

@@ -1929,13 +1929,21 @@ function writeLastUsedReasoningEffort(args: {
   }
 }
 
+function resolveScopedModelDescriptor(
+  modelId: string | null | undefined,
+  scopeKey: string,
+): ModelDescriptor | undefined {
+  return resolveModelDescriptorWithRuntimeCatalog(modelId, scopeKey) ?? getModelById(modelId);
+}
+
 function selectReasoningEffort(args: {
   tiers: string[];
   preferred: string | null;
   modelId?: string | null;
+  catalogScopeKey: string;
 }): string | null {
   const descriptor = args.modelId
-    ? resolveModelDescriptorWithRuntimeCatalog(args.modelId) ?? getModelById(args.modelId)
+    ? resolveScopedModelDescriptor(args.modelId, args.catalogScopeKey)
     : undefined;
   return selectSupportedReasoningEffort({
     tiers: args.tiers,
@@ -2449,11 +2457,12 @@ function nativeControlsFromLaunchSource(
 function buildLastLaunchConfig(
   source: Partial<LaunchConfigSessionSource>,
   defaults: NativeControlState,
+  catalogScopeKey: string,
   updatedAt = new Date().toISOString(),
 ): LastLaunchConfig | null {
   const modelId = source.modelId ?? resolveRegistryModelId(source.model);
   if (!modelId) return null;
-  const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+  const desc = resolveScopedModelDescriptor(modelId, catalogScopeKey);
   return {
     version: 1,
     modelId,
@@ -2472,7 +2481,6 @@ function normalizeStoredLaunchConfig(
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   if (!modelId) return null;
-  const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
   const controls = nativeControlsFromLaunchSource(
     isRecord(value.controls) ? value.controls : {},
     defaults,
@@ -2483,7 +2491,7 @@ function normalizeStoredLaunchConfig(
     reasoningEffort: typeof value.reasoningEffort === "string" && value.reasoningEffort.trim().length
       ? value.reasoningEffort.trim()
       : null,
-    fastMode: modelSupportsFastMode(desc) && readStoredFastMode(value),
+    fastMode: readStoredFastMode(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
     updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim().length
@@ -2698,14 +2706,13 @@ function normalizeStoredComposerDraft(
 ): ComposerDraftStorageSnapshot | null {
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
-  const desc = modelId ? getModelById(modelId) : null;
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
     mentionLabels: normalizeComposerMentionLabels(value.mentionLabels),
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
-    fastMode: modelSupportsFastMode(desc) && readStoredFastMode(value),
+    fastMode: readStoredFastMode(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls: nativeControlsFromLaunchSource(
       isRecord(value.controls) ? value.controls : {},
@@ -2775,14 +2782,17 @@ function stripComposerDraftScreenshots(snapshot: ComposerDraftStorageSnapshot): 
   };
 }
 
-function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "droid", value: string | null | undefined): string | null {
+function resolveCliRegistryModelId(
+  provider: "codex" | "claude" | "cursor" | "droid",
+  value: string | null | undefined,
+  catalogScopeKey: string = DEFAULT_RUNTIME_CATALOG_SCOPE,
+): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
   if (provider === "cursor") {
     const fullId = normalized.startsWith("cursor/") ? normalized : `cursor/${normalized}`;
     const dynamic =
-      resolveModelDescriptorWithRuntimeCatalog(fullId)
-      ?? getModelById(fullId)
+      resolveScopedModelDescriptor(fullId, catalogScopeKey)
       ?? resolveModelDescriptorForProvider(normalized.replace(/^cursor\//, ""), "cursor");
     if (dynamic && dynamic.family === "cursor") return dynamic.id;
     return null;
@@ -2821,9 +2831,10 @@ function cursorModelAllowedForDraftKind(
 function filterCursorModelIdsForDraftKind(
   modelIds: string[],
   workDraftKind: "chat" | "cli",
+  catalogScopeKey: string,
 ): string[] {
   return modelIds.filter((modelId) => {
-    const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+    const descriptor = resolveScopedModelDescriptor(modelId, catalogScopeKey);
     return cursorModelAllowedForDraftKind(descriptor, workDraftKind);
   });
 }
@@ -3508,8 +3519,9 @@ export function AgentChatPane({
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   /**
    * Runtime-catalog bucket for this pane's composer — the binding key of the
-   * machine that will run the turn, or `""` for the machine this window's
-   * project tab is bound to.
+   * machine that will run the turn (prompt-box picker or the chat's owner).
+   * Empty only when that machine is not yet known; it is never "whatever the
+   * global project tab is bound to."
    *
    * It is state rather than a derived value because the composer's machine
    * depends on `useDraftMachineRouting`, which is mounted far below the model
@@ -5076,7 +5088,7 @@ export function AgentChatPane({
     return ids;
   }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
-  const selectedModelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+  const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentModelChipForView = subagentView
     ? formatSubagentModelChip(subagentModelAttribution({
       snapshotModel: subagentViewSnapshot?.model ?? subagentMetadata?.model,
@@ -5231,8 +5243,8 @@ export function AgentChatPane({
 
   const sessionProvider = useMemo(() => {
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
-    return resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId));
-  }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
+    return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
+  }, [selectedSession, modelSelectionDiffersFromSession, modelId, modelCatalogScopeKey]);
   const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
     provider: selectedSession?.provider ?? sessionProvider,
     events: selectedEventsForDisplay,
@@ -5251,13 +5263,13 @@ export function AgentChatPane({
   // stale same-turn cumulative counters are ignored.
   const selectedUsageViewModel = useMemo<ContextUsageViewModel | null>(() => {
     const provider = sessionProvider ?? selectedSession?.provider ?? "";
-    const descriptor = modelId ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId)) : null;
+    const descriptor = modelId ? (resolveScopedModelDescriptor(modelId, modelCatalogScopeKey) ?? null) : null;
     const fallbackWindow = descriptor?.contextWindow ?? null;
     return toUsageViewModel(
       latestContextUsageInput(selectedEventsForDisplay, provider, selectedSession?.codexTokenUsage),
       fallbackWindow,
     );
-  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage, selectedSession?.provider, sessionProvider, modelId]);
+  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage, selectedSession?.provider, sessionProvider, modelId, modelCatalogScopeKey]);
 
   const [contextCompactionPulse, setContextCompactionPulse] = useState(false);
   const compactionPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -5390,7 +5402,7 @@ export function AgentChatPane({
   );
 
   const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
-    const desc = resolveModelDescriptorWithRuntimeCatalog(config.modelId) ?? getModelById(config.modelId);
+    const desc = resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKey);
     if (!cursorModelAllowedForDraftKind(desc, workDraftKind)) return;
     const tiers = desc?.reasoningTiers ?? [];
     setModelId(config.modelId);
@@ -5398,6 +5410,7 @@ export function AgentChatPane({
       tiers,
       preferred: config.reasoningEffort,
       modelId: config.modelId,
+      catalogScopeKey: modelCatalogScopeKey,
     }));
     setFastModeState(modelSupportsFastMode(desc) && config.fastMode);
     setExecutionMode(config.executionMode);
@@ -5410,7 +5423,7 @@ export function AgentChatPane({
     setDroidPermissionMode(config.controls.droidPermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, [setFastModeState, workDraftKind]);
+  }, [setFastModeState, workDraftKind, modelCatalogScopeKey]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -5544,21 +5557,21 @@ export function AgentChatPane({
       hasConversation: selectedEvents.length > 0,
       includeActiveSessionModel: !modelSelectionConstrained,
     });
-    if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind);
+    if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind, modelCatalogScopeKey);
     // Union in the runtime catalog's dynamic ids (ollama, LM Studio, opencode,
     // cursor) for the composer's OWN machine — reading the bound machine's
     // catalog here would offer models the target machine cannot run.
     const catalog = getSharedRuntimeCatalog(modelCatalogScopeKey);
-    if (!catalog) return filterCursorModelIdsForDraftKind(base, workDraftKind);
+    if (!catalog) return filterCursorModelIdsForDraftKind(base, workDraftKind, modelCatalogScopeKey);
     const runtimeIds = descriptorsFromAgentChatModelCatalog(
       catalog,
       undefined,
       modelCatalogScopeKey,
     ).availableModelIds;
-    if (!runtimeIds.length) return filterCursorModelIdsForDraftKind(base, workDraftKind);
+    if (!runtimeIds.length) return filterCursorModelIdsForDraftKind(base, workDraftKind, modelCatalogScopeKey);
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
-    return filterCursorModelIdsForDraftKind([...merged], workDraftKind);
+    return filterCursorModelIdsForDraftKind([...merged], workDraftKind, modelCatalogScopeKey);
   }, [availableModelIds, availableModelIdsOverride, modelCatalogScopeKey, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus
@@ -5702,7 +5715,7 @@ export function AgentChatPane({
     if (selectedSessionModelId) {
       merged.add(selectedSessionModelId);
     }
-    const filtered = filterCursorModelIdsForDraftKind([...merged], "chat");
+    const filtered = filterCursorModelIdsForDraftKind([...merged], "chat", modelCatalogScopeKey);
     const ordered = MODEL_REGISTRY
       .filter((model) => !model.deprecated && filtered.includes(model.id))
       .map((model) => model.id);
@@ -5726,8 +5739,8 @@ export function AgentChatPane({
   );
   const chatActionsHandoffActive = chatActionsOpen && chatActionsTab === "handoff";
   const handoffTargetDescriptor = useMemo(
-    () => (handoffModelId ? (resolveModelDescriptorWithRuntimeCatalog(handoffModelId) ?? null) : null),
-    [handoffModelId],
+    () => (handoffModelId ? (resolveScopedModelDescriptor(handoffModelId, modelCatalogScopeKey) ?? null) : null),
+    [handoffModelId, modelCatalogScopeKey],
   );
   const handoffTargetProvider = useMemo(
     () => (handoffTargetDescriptor ? resolveProviderGroupForModel(handoffTargetDescriptor) : null),
@@ -5872,7 +5885,7 @@ export function AgentChatPane({
 
   const resolveAiStatusRuntimeScope = useCallback(() => {
     const runtimePin = selectedSessionIdRef.current
-      ? chatRuntimePinRef.current
+      ? (chatRuntimePinRef.current ?? projectBinding)
       : draftExecutionBindingRef.current;
     if (!selectedSessionIdRef.current && draftExecutionBindingRequiredRef.current && !runtimePin) {
       return null;
@@ -5881,11 +5894,11 @@ export function AgentChatPane({
       runtimePin,
       runtimeProjectRoot: runtimePin?.rootPath ?? projectRoot,
     };
-  }, [projectRoot]);
+  }, [projectBinding, projectRoot]);
 
   const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
     const selectedModelProvider = modelId.trim()
-      ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
+      ? resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey))
       : null;
     return sessionProvider === "opencode"
       && (
@@ -5946,7 +5959,7 @@ export function AgentChatPane({
         if (resolved) available.add(resolved);
       }
       for (const model of cursorModels) {
-        const resolved = resolveCliRegistryModelId("cursor", model.id);
+        const resolved = resolveCliRegistryModelId("cursor", model.id, modelCatalogScopeKey);
         if (resolved) available.add(resolved);
       }
       for (const model of droidModels) {
@@ -5973,6 +5986,7 @@ export function AgentChatPane({
     applyAiStatusSnapshot,
     resolveAiStatusRuntimeScope,
     shouldRefreshOpenCodeInventoryForStatus,
+    modelCatalogScopeKey,
   ]);
 
   useEffect(() => {
@@ -6782,7 +6796,7 @@ export function AgentChatPane({
     if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) return;
     const draftKey = draftLaunchConfigScopeKey;
     const latestSessionConfig = sessions[0]
-      ? buildLastLaunchConfig(sessions[0], initialNativeControls)
+      ? buildLastLaunchConfig(sessions[0], initialNativeControls, modelCatalogScopeKey)
       : null;
     const sessionHydrationKey = `${draftKey}:session`;
     if (latestSessionConfig) {
@@ -6896,7 +6910,7 @@ export function AgentChatPane({
     if (!modelId) return;
     if (selectableModelIds.includes(modelId)) return;
     if (modelSelectionConstrained) return;
-    const modelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+    const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     if (modelDesc?.family === "cursor" && !cursorModelAllowedForDraftKind(modelDesc, workDraftKind)) {
       if (selectedSessionModelId && effectiveAvailableModelIds.includes(selectedSessionModelId)) {
         setModelId(selectedSessionModelId);
@@ -6918,7 +6932,7 @@ export function AgentChatPane({
     } else {
       setModelId(selectableModelIds[0]!);
     }
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId, workDraftKind]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId, workDraftKind, modelCatalogScopeKey]);
 
   useEffect(() => {
     if (!reasoningTiers.length) {
@@ -6927,8 +6941,8 @@ export function AgentChatPane({
     }
     if (reasoningEffort && reasoningTiers.includes(reasoningEffort)) return;
     const preferred = readLastUsedReasoningEffort({ laneId, modelId });
-    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred, modelId }));
-  }, [laneId, modelId, reasoningEffort, reasoningTiers]);
+    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred, modelId, catalogScopeKey: modelCatalogScopeKey }));
+  }, [laneId, modelId, reasoningEffort, reasoningTiers, modelCatalogScopeKey]);
 
   useEffect(() => {
     if (!executionModeOptions.length) {
@@ -8523,13 +8537,18 @@ export function AgentChatPane({
   }, []);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
     const previousDesc = prevModelDescRef.current;
-    const nextDesc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
+    const nextDesc = resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey);
     const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
     const nextModel = nextProvider === "opencode" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-    const nextReasoningEffort = selectReasoningEffort({ tiers, preferred, modelId: nextModelId });
+    const nextReasoningEffort = selectReasoningEffort({
+      tiers,
+      preferred,
+      modelId: nextModelId,
+      catalogScopeKey: modelCatalogScopeKey,
+    });
     const nextRec = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
     return {
       nextDesc,
@@ -8540,7 +8559,7 @@ export function AgentChatPane({
       nextOpenCodePermissionMode: nextRec,
       resetOpenCodePermissionToDefault: shouldResetOpenCodePermissionForModelSwitch(previousDesc, nextPermissionDesc),
     };
-  }, [laneId]);
+  }, [laneId, modelCatalogScopeKey]);
   const applyModelSelectionSnapshot = useCallback((snapshot: {
     nextModelId: string;
     nextReasoningEffort: string | null;
@@ -8625,7 +8644,7 @@ export function AgentChatPane({
       const launchFastMode = options.launchState?.fastMode ?? fastMode;
       const launchExecutionMode = options.launchState?.executionMode ?? executionMode;
       const baseNativeControls = options.launchState?.nativeControls ?? currentNativeControls;
-      const desc = resolveModelDescriptorWithRuntimeCatalog(launchModelId) ?? getModelById(launchModelId);
+      const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
       const permissionDesc = getModelDescriptorForPermissionMode(launchModelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
@@ -8723,7 +8742,7 @@ export function AgentChatPane({
         droidPermissionMode: launchControls.droidPermissionMode,
         cursorModeId: launchControls.cursorModeId,
         cursorConfigValues: launchControls.cursorConfigValues,
-      }, initialNativeControls);
+      }, initialNativeControls, modelCatalogScopeKey);
       if (launchConfig) writeLastLaunchConfig(lastLaunchConfigStorageKey, launchConfig);
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
@@ -9334,7 +9353,7 @@ export function AgentChatPane({
   ): Promise<StartedDraftLaunch> => {
     if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
     if (!prepared.modelId) throw new Error("Select a model before launching a CLI session.");
-    const desc = resolveModelDescriptorWithRuntimeCatalog(prepared.modelId) ?? getModelById(prepared.modelId);
+    const desc = resolveScopedModelDescriptor(prepared.modelId, modelCatalogScopeKey);
     if (!desc) throw new Error("Select a model before launching a CLI session.");
     if (desc.family === "cursor" && desc.cursorAvailability?.cli !== true) {
       throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
@@ -10780,7 +10799,7 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticIfAllowed(sessionId);
-        const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
+        const desc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
         const provider = resolveChatRuntimeProvider(desc);
         await window.ade.agentChat.updateSession({
           sessionId,
@@ -11611,18 +11630,15 @@ export function AgentChatPane({
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
   /**
-   * The composer's machine, but only when it is NOT the one this window's
-   * project tab is bound to.
+   * Catalog, auth, and model rows follow the machine that will RUN the turn —
+   * the prompt-box picker or the chat's owner — not the global project tab.
+   * Never collapse this to null: that dumped every same-as-tab catalog into
+   * one `""` bucket and let a tab switch poison the list with Electron's
+   * static OpenCode inventory (or the previous tab's leftover).
    *
-   * Which models a prompt box offers, which of them are configured, their
-   * thinking levels, and which simulator/app the tool panels drive are facts
-   * about the machine that will run the turn — a Work tab unions chats from
-   * every machine on the account, so the bound machine is frequently not that
-   * machine. `null` keeps the bound path (and its shared catalog, status
-   * cache, project-transition guard and local IPC fallback) exactly as before,
-   * which is the common case and costs nothing. Handing the tab's own binding
-   * down as a "pin" would take the pinned path for every same-machine chat and
-   * silently drop all of that.
+   * Tools / git / iOS / App Control still collapse to null when they match
+   * the tab so they keep the bound IPC path (transition guard + local
+   * fallback). Model pickers do not use this pin.
    */
   const composerRuntimePin = useMemo(
     () => (
@@ -11632,7 +11648,7 @@ export function AgentChatPane({
     ),
     [activeComposerRuntimeBinding, projectBinding?.key],
   );
-  const composerModelCatalogScopeKey = composerRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const composerModelCatalogScopeKey = activeComposerRuntimeBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -12106,7 +12122,7 @@ export function AgentChatPane({
                 availableModelIds={handoffAvailableModelIds}
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
-                runtimePin={composerRuntimePin}
+                runtimePin={activeComposerRuntimeBinding}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
@@ -12143,7 +12159,7 @@ export function AgentChatPane({
                 surfaceKey="chat-handoff"
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
-                runtimePin={composerRuntimePin}
+                runtimePin={activeComposerRuntimeBinding}
               />
               <ReasoningEffortPicker
                 modelId={handoffModelId}
@@ -12802,7 +12818,7 @@ export function AgentChatPane({
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
             cursorRuntime={cursorRuntime}
-            modelRuntimePin={composerRuntimePin}
+            modelRuntimePin={activeComposerRuntimeBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
@@ -12906,7 +12922,7 @@ export function AgentChatPane({
                       !effectiveAvailableModelIds.length
                       || effectiveAvailableModelIds.includes(nextModelId)
                       || isKnownSelectableChatModelId(nextModelId)
-                      || Boolean(resolveModelDescriptorWithRuntimeCatalog(nextModelId))
+                      || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
                     );
               if (!modelAllowed) {
                 return;
@@ -13199,10 +13215,15 @@ export function AgentChatPane({
             }}
             onParallelSlotModelChange={(index, nextModelId, options) => {
               if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
-              const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
+              const desc = resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey);
               const tiers = desc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-              const nextEffort = selectReasoningEffort({ tiers, preferred, modelId: nextModelId });
+              const nextEffort = selectReasoningEffort({
+                tiers,
+                preferred,
+                modelId: nextModelId,
+                catalogScopeKey: modelCatalogScopeKey,
+              });
               const previousPermissionDesc = getModelDescriptorForPermissionMode(parallelModelSlots[index]?.modelId ?? "");
               const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
               const nextRecommendedOpenCodeMode = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);

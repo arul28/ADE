@@ -1685,11 +1685,9 @@ export function AgentChatComposer({
   /** Cloud chats run on Cursor Cloud, not on this computer or a paired machine. */
   cursorRuntime?: "local" | "cloud" | null;
   /**
-   * {@link composerMachineBinding} when it is NOT the machine this window's
-   * project tab is bound to. What a model picker offers — which models exist,
-   * which are configured, and their thinking levels — is a fact about the
-   * machine that will run the turn, so it is read from this binding. `null`
-   * (the common case) means the bound machine, and keeps the shared catalog.
+   * Machine whose model catalog this composer should show. Work always passes
+   * the prompt-box / chat machine, including when it equals the global project
+   * tab. `null` is only for surfaces with no composer machine.
    */
   modelRuntimePin?: OpenProjectBinding | null;
   /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
@@ -2014,7 +2012,7 @@ export function AgentChatComposer({
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
-  // rows, availability, thinking levels). Empty means the bound machine.
+  // rows, availability, thinking levels). Empty only when no machine is known.
   const modelCatalogScopeKey = modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
   const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
   const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
