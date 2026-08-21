@@ -1068,7 +1068,7 @@ declare global {
           refreshOpenCodeInventory?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
-        isOpenCodeInstalled: () => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
+        isOpenCodeInstalled: (pin?: OpenProjectBinding | null) => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
         getToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         ensureToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => () => void;

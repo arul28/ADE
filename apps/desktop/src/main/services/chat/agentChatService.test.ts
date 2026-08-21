@@ -2373,13 +2373,17 @@ const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
 /**
  * Real async setup work still needs event-loop turns while the clock is faked,
  * so pump the fake clock instead of assuming a fixed number of ticks.
+ *
+ * Do not trip the silence watchdog while flushing that setup. On a slow
+ * runner, jumping 90s during `first cursor send` recycled the turn before
+ * the test queued its steer, and the later recovery wait timed out.
  */
 const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => {
   // A silence-watchdog recycle can arm the next attempt's timer after the
-  // first 90s jump, so keep a couple of extra trips in the budget. 1ms ticks
-  // still flush microtasks between jumps.
+  // first 90s jump, so keep extra trips in the budget once setup has flushed.
   for (let tick = 0; tick < 800 && !ready(); tick += 1) {
-    await vi.advanceTimersByTimeAsync(tick > 0 && tick % 200 === 0
+    const tripWatchdog = tick >= 300 && tick % 50 === 0;
+    await vi.advanceTimersByTimeAsync(tripWatchdog
       ? CURSOR_SILENCE_WATCHDOG_TRIP_MS
       : 1);
   }

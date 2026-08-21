@@ -1394,10 +1394,11 @@ async function callLocalProjectActionStrictIfBound<T>(
 }
 
 // Chat actions that mutate runtime state. Only these are gated by the
-// project-transition guard: read-only chat queries (e.g. `listSessions`,
-// `getSessionSummary`, `getAvailableModels`, `getChatEventHistory`) must be
-// allowed to fall through to IPC while a project switch is in flight, so the
-// UI can render summaries and history during the transition.
+// project-transition guard. Most read-only chat queries (e.g. `listSessions`,
+// `getSessionSummary`, `getChatEventHistory`) fall through to IPC while a
+// project switch is in flight so the UI can keep rendering. Machine
+// inventories (`modelCatalog`, `getAvailableModels`) stay on the runtime —
+// Electron's in-process registry is not that machine's OpenCode list.
 const MUTATING_CHAT_ACTIONS = new Set<string>([
   "sendMessage",
   "respondToInput",
@@ -1442,6 +1443,14 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "listPromptStashes",
   "createPromptStash",
   "deletePromptStash",
+]);
+
+// Live model inventories (OpenCode, ollama, LM Studio, cursor-agent) are facts
+// about one machine. Falling through to Electron during a project-tab switch
+// answers with the window process's registry, not that machine's OpenCode.
+const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
+  "modelCatalog",
+  "getAvailableModels",
 ]);
 
 const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
@@ -1554,7 +1563,14 @@ async function callProjectRuntimeActionIfBound<T>(
   }
   // During a project transition, let read-only chat calls fall through to
   // their IPC fallback instead of binding to a possibly-stale runtime.
-  if (freshBinding && !isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
+  // Model catalogs must not: Electron's in-process registry is not the
+  // selected machine's OpenCode inventory.
+  if (
+    freshBinding
+    && !isMutatingChatAction
+    && projectRuntimeTransitionDepth > 0
+    && !MACHINE_INVENTORY_CHAT_ACTIONS.has(action)
+  ) {
     return { handled: false };
   }
   let rebindAttempts = 0;
@@ -4426,8 +4442,10 @@ const adeBridge = {
       callProjectRuntimeActionOr("ai", "getOpenCodeRuntimeDiagnostics", {}, () =>
         ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
       ),
-    isOpenCodeInstalled: async (): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> =>
-      callProjectRuntimeActionOr("ai", "isOpenCodeInstalled", {}, () =>
+    isOpenCodeInstalled: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "isOpenCodeInstalled", {}, () =>
         ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
       ),
     // Machine-local, not project-scoped: the tools cache lives beside this

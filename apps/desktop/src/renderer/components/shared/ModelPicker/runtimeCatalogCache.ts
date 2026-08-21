@@ -26,10 +26,15 @@ const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
  * A runtime model catalog is a MACHINE fact, not a process fact: the ollama and
  * LM Studio endpoints it enumerates, the installed `cursor-agent`, and the
  * opencode inventory all live on whichever machine served `chat.modelCatalog`.
- * A Work tab shows chats from every machine on the account at once, so a single
- * process-global catalog describes the project tab's machine while a composer
- * may target another — every entry is keyed by the binding key of the machine
- * it describes. `""` is the machine this window's project tab is bound to.
+ * A Work tab shows chats from every machine on the account at once, so every
+ * entry is keyed by the binding key of the machine it describes.
+ *
+ * `""` remains the bucket for surfaces that have no composer machine (Settings,
+ * a picker mounted without a pin). Work composers must pass the prompt-box /
+ * chat machine's binding key even when that machine is also the project tab —
+ * collapsing those into `""` made every "same as tab" catalog share one drawer,
+ * so switching the global tab poisoned the prompt box with another machine's
+ * list (or Electron's static registry).
  */
 export const DEFAULT_RUNTIME_CATALOG_SCOPE = "";
 
@@ -235,8 +240,13 @@ export function rememberRuntimeCatalog(
 
   scope.catalog = catalog;
   const cursorFlavor = args.refreshProvider === "cursor" ? args.cursorSource : undefined;
+  // Cached catalogs can include ADE's static OpenCode rows without a live
+  // probe. Only a force, or a refresh-stale the host already marked not-stale,
+  // may start a live-inventory TTL. Cursor may still be marked from a cached
+  // catalog that actually carries Cursor rows.
   if (
     args.refreshProvider
+    && args.mode !== "cached"
     && (args.mode === "force" || catalog.stale !== true)
     && shouldMarkRefreshProviderFresh(catalog, args.refreshProvider, cursorFlavor)
   ) {
@@ -244,10 +254,8 @@ export function rememberRuntimeCatalog(
     return catalog;
   }
   if (args.mode === "cached" && catalog.stale !== true) {
-    for (const provider of REFRESH_PROVIDERS) {
-      if (catalogContainsRefreshProvider(catalog, provider)) {
-        markRuntimeCatalogProviderFresh(scopeKey, provider);
-      }
+    if (catalogContainsRefreshProvider(catalog, "cursor")) {
+      markRuntimeCatalogProviderFresh(scopeKey, "cursor");
     }
   }
   return catalog;

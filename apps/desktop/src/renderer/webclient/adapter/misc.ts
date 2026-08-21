@@ -426,7 +426,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       return await call("ai.getStatus", args, aiStatus());
     },
     getOpenCodeRuntimeDiagnostics: async () => ({ installed: false, available: false, diagnostics: [] }),
-    isOpenCodeInstalled: async () => ({ installed: false, source: "missing" }),
+    isOpenCodeInstalled: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.isOpenCodeInstalled", pin, infra);
+      return { installed: false, source: "missing" };
+    },
     // The pinned-tools cache is a property of the machine running the desktop
     // app, so a web client has no cache of its own to report and no business
     // kicking a 300 MB fetch on someone else's disk. An empty snapshot is the
