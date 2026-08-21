@@ -3,9 +3,10 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import type { ProjectInfo } from "../../../../shared/types";
+import type { OpenProjectBinding, ProjectInfo } from "../../../../shared/types";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
+  getAiStatusCached,
   invalidateAiDiscoveryCache,
 } from "../../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../../state/appStore";
@@ -304,6 +305,199 @@ describe("useProviderAuthStatus", () => {
       expect.objectContaining({}),
       pin,
     );
+  });
+
+  it("shares the unpinned Settings cache when the composer pin is the project tab", async () => {
+    const status = {
+      mode: "subscription",
+      availableProviders: { claude: false, codex: true, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+      detectedAuth: [],
+    };
+    const getStatus = vi.fn().mockResolvedValue(status);
+    const isOpenCodeInstalled = vi.fn().mockResolvedValue({ installed: false });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ai: { getStatus, isOpenCodeInstalled } },
+    });
+    const pin = {
+      kind: "local",
+      key: "local:/Users/me/ADE",
+      rootPath: "/Users/me/ADE",
+      displayName: "ADE",
+      gitOriginUrl: null,
+    } satisfies OpenProjectBinding;
+    useAppStore.setState({
+      project: {
+        rootPath: pin.rootPath,
+        displayName: "ADE",
+        baseRef: "main",
+      } satisfies ProjectInfo,
+      projectBinding: pin,
+    });
+    await getAiStatusCached({ projectRoot: pin.rootPath });
+    getStatus.mockClear();
+
+    function SameAsTabConsumer() {
+      const auth = useProviderAuthStatus({ runtimePin: pin });
+      return React.createElement("div", null, `${auth.status.openai ?? "empty"}:${String(auth.loaded)}`);
+    }
+
+    render(React.createElement(SameAsTabConsumer));
+    expect(await screen.findByText("ok:true")).toBeTruthy();
+    expect(getStatus).not.toHaveBeenCalled();
+  });
+
+  it("refreshes unpinned provider status when the bound runtime changes with the same project root", async () => {
+    const rootPath = "/Users/me/ADE";
+    const mac = {
+      kind: "local",
+      key: "local:/Users/me/ADE",
+      rootPath,
+      displayName: "ADE",
+      gitOriginUrl: null,
+    } satisfies OpenProjectBinding;
+    const studio = {
+      kind: "remote",
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      projectId: "project-1",
+      rootPath,
+      displayName: "Studio",
+      runtimeName: "Studio",
+    } satisfies OpenProjectBinding;
+    const unauthed = {
+      mode: "subscription",
+      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+      detectedAuth: [],
+    };
+    const authed = {
+      ...unauthed,
+      availableProviders: { claude: false, codex: false, cursor: true, droid: false },
+    };
+    const getStatus = vi.fn().mockResolvedValue(unauthed);
+    const isOpenCodeInstalled = vi.fn().mockResolvedValue({ installed: false });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ai: { getStatus, isOpenCodeInstalled } },
+    });
+    useAppStore.setState({
+      project: {
+        rootPath,
+        displayName: "ADE",
+        baseRef: "main",
+      } satisfies ProjectInfo,
+      projectBinding: mac,
+    });
+    await getAiStatusCached({ projectRoot: rootPath });
+    getStatus.mockClear();
+    getStatus.mockResolvedValue(authed);
+
+    function SameAsTabConsumer() {
+      const pin = useAppStore((state) => state.projectBinding);
+      const auth = useProviderAuthStatus({ runtimePin: pin });
+      return React.createElement("div", null, `${auth.status.cursor ?? "empty"}:${String(auth.loaded)}`);
+    }
+
+    render(React.createElement(SameAsTabConsumer));
+    expect(await screen.findByText("unauthed:true")).toBeTruthy();
+    expect(getStatus).not.toHaveBeenCalled();
+
+    act(() => {
+      useAppStore.setState({ projectBinding: studio });
+    });
+
+    expect(await screen.findByText("ok:true")).toBeTruthy();
+    expect(getStatus).toHaveBeenCalledTimes(1);
+    expect(getStatus).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+  });
+
+  it("does not treat a foreign pin as proof the unpinned cache matches the new tab", async () => {
+    const rootPath = "/Users/me/ADE";
+    const mac = {
+      kind: "local",
+      key: "local:/Users/me/ADE",
+      rootPath,
+      displayName: "ADE",
+      gitOriginUrl: null,
+    } satisfies OpenProjectBinding;
+    const studio = {
+      kind: "remote",
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      projectId: "project-1",
+      rootPath,
+      displayName: "Studio",
+      runtimeName: "Studio",
+    } satisfies OpenProjectBinding;
+    const laptop = {
+      kind: "remote",
+      key: "remote:laptop:project-1",
+      targetId: "laptop",
+      projectId: "project-1",
+      rootPath: "/Users/laptop/ADE",
+      displayName: "Laptop",
+      runtimeName: "Laptop",
+    } satisfies OpenProjectBinding;
+    const unauthed = {
+      mode: "subscription",
+      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+      detectedAuth: [],
+    };
+    const authed = {
+      ...unauthed,
+      availableProviders: { claude: false, codex: false, cursor: true, droid: false },
+    };
+    const getStatus = vi.fn().mockResolvedValue(unauthed);
+    const isOpenCodeInstalled = vi.fn().mockResolvedValue({ installed: false });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ai: { getStatus, isOpenCodeInstalled } },
+    });
+    useAppStore.setState({
+      project: {
+        rootPath,
+        displayName: "ADE",
+        baseRef: "main",
+      } satisfies ProjectInfo,
+      projectBinding: mac,
+    });
+    await getAiStatusCached({ projectRoot: rootPath });
+    getStatus.mockClear();
+    getStatus.mockResolvedValue(authed);
+
+    function Consumer({ pin }: { pin: OpenProjectBinding }) {
+      const auth = useProviderAuthStatus({ runtimePin: pin });
+      return React.createElement("div", null, `${auth.status.cursor ?? "empty"}:${String(auth.loaded)}`);
+    }
+
+    const { rerender } = render(React.createElement(Consumer, { pin: mac }));
+    expect(await screen.findByText("unauthed:true")).toBeTruthy();
+
+    rerender(React.createElement(Consumer, { pin: laptop }));
+    await waitFor(() => {
+      expect(getStatus).toHaveBeenCalled();
+    });
+    getStatus.mockClear();
+
+    act(() => {
+      useAppStore.setState({ projectBinding: studio });
+    });
+    rerender(React.createElement(Consumer, { pin: laptop }));
+    await Promise.resolve();
+    expect(getStatus).not.toHaveBeenCalled();
+
+    rerender(React.createElement(Consumer, { pin: studio }));
+    expect(await screen.findByText("ok:true")).toBeTruthy();
+    expect(getStatus).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
   });
 
   it("does not re-probe OpenCode when the pin object is reallocated with the same key", async () => {

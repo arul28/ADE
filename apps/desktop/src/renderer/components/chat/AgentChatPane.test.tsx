@@ -35,6 +35,7 @@ import {
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import {
   rememberRuntimeCatalog,
   resetModelPickerRuntimeCatalogForTests,
@@ -244,6 +245,16 @@ function buildStatusStartedTranscript(sessionId: string): string {
   })}\n`;
 }
 
+const WORK_PANE_CATALOG_SCOPE = "local:/tmp/project-under-test";
+
+function rememberWorkPaneCatalog(catalog: AgentChatModelCatalog): void {
+  rememberRuntimeCatalog(catalog, {
+    mode: "cached",
+    scopeKey: WORK_PANE_CATALOG_SCOPE,
+  });
+  descriptorsFromAgentChatModelCatalog(catalog, undefined, WORK_PANE_CATALOG_SCOPE);
+}
+
 function seedRuntimeModelCatalog(): void {
   rememberRuntimeCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
@@ -348,7 +359,7 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
     serviceTiers: ["fast"],
     cursorAvailability: { cli: true, sdk: true },
   });
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "cursor",
@@ -377,7 +388,7 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return { modelId: model.id, fastAlias: "composer-2.5-speed-fast" };
 }
 
@@ -394,7 +405,7 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
       { modelId: concreteModel, reasoningEffort: "medium", fastMode: true },
     ],
   });
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "cursor",
@@ -425,13 +436,13 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return { modelId: model.id, concreteModel };
 }
 
 function seedFastOpenCodeRuntimeModelCatalog(): string {
   const modelId = "opencode/openai/gpt-5.4";
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "opencode",
@@ -458,7 +469,7 @@ function seedFastOpenCodeRuntimeModelCatalog(): string {
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return modelId;
 }
 
@@ -926,7 +937,7 @@ const originalNavigatorPlatform = window.navigator.platform;
 const originalMatchMedia = window.matchMedia;
 const LOCAL_PROJECT_BINDING: OpenProjectBinding = {
   kind: "local",
-  key: "local:/tmp/project-under-test",
+  key: WORK_PANE_CATALOG_SCOPE,
   rootPath: "/tmp/project-under-test",
   displayName: "project-under-test",
   gitOriginUrl: null,
@@ -10747,7 +10758,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     const model = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud", {
       cursorAvailability: { cli: true, sdk: true },
     });
-    rememberRuntimeCatalog({
+    rememberWorkPaneCatalog({
       fetchedAt: "2026-05-22T00:00:00.000Z",
       groups: [{
         key: "cursor",
@@ -10776,7 +10787,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
           }],
         }],
       }],
-    } as AgentChatModelCatalog, { mode: "cached" });
+    } as AgentChatModelCatalog);
     return model.id;
   }
 

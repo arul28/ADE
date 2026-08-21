@@ -1933,7 +1933,9 @@ function resolveScopedModelDescriptor(
   modelId: string | null | undefined,
   scopeKey: string,
 ): ModelDescriptor | undefined {
-  return resolveModelDescriptorWithRuntimeCatalog(modelId, scopeKey) ?? getModelById(modelId);
+  const id = modelId?.trim();
+  if (!id) return undefined;
+  return resolveModelDescriptorWithRuntimeCatalog(id, scopeKey) ?? getModelById(id);
 }
 
 function selectReasoningEffort(args: {
@@ -3520,16 +3522,19 @@ export function AgentChatPane({
   /**
    * Runtime-catalog bucket for this pane's composer — the binding key of the
    * machine that will run the turn (prompt-box picker or the chat's owner).
-   * Empty only when that machine is not yet known; it is never "whatever the
-   * global project tab is bound to."
+   * Same-as-tab drafts start on the project-tab key, not `""`; collapsing that
+   * to the empty bucket is what let a tab switch poison OpenCode's live list.
+   * Empty only when no machine is known yet.
    *
    * It is state rather than a derived value because the composer's machine
    * depends on `useDraftMachineRouting`, which is mounted far below the model
-   * memos that need the key. The effect that publishes it runs right after the
-   * binding resolves, so a machine switch costs one extra render — the same
-   * shape as `runtimeCatalogVersion`.
+   * memos that need the key. The layout effect that publishes a foreign pin
+   * runs right after the binding resolves, so a machine switch costs one extra
+   * render — the same shape as `runtimeCatalogVersion`.
    */
-  const [modelCatalogScopeKey, setModelCatalogScopeKey] = useState(DEFAULT_RUNTIME_CATALOG_SCOPE);
+  const [modelCatalogScopeKey, setModelCatalogScopeKey] = useState(
+    () => projectBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
+  );
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
   /**
@@ -3567,6 +3572,8 @@ export function AgentChatPane({
     seedAiStatus ? deriveConfiguredModelIds(seedAiStatus, { includeDroid: true }) : [],
   );
   const availableModelsRefreshSeqRef = useRef(0);
+  /** Last project-tab key that filled the unpinned auth cache for this pane. */
+  const lastUnpinnedAuthBindingKeyRef = useRef<string | null | undefined>(undefined);
   const [claudePermissionMode, setClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(initialNativeControls.claudePermissionMode);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
@@ -5884,15 +5891,21 @@ export function AgentChatPane({
   }, []);
 
   const resolveAiStatusRuntimeScope = useCallback(() => {
-    const runtimePin = selectedSessionIdRef.current
+    const composerPin = selectedSessionIdRef.current
       ? (chatRuntimePinRef.current ?? projectBinding)
       : draftExecutionBindingRef.current;
-    if (!selectedSessionIdRef.current && draftExecutionBindingRequiredRef.current && !runtimePin) {
+    if (!selectedSessionIdRef.current && draftExecutionBindingRequiredRef.current && !composerPin) {
       return null;
     }
+    // Same-as-tab composers share Settings' unpinned auth cache. Catalogs still
+    // key off the composer machine; collapsing that pin is what poisoned OpenCode.
+    const runtimePin = composerPin && composerPin.key !== projectBinding?.key
+      ? composerPin
+      : null;
     return {
       runtimePin,
-      runtimeProjectRoot: runtimePin?.rootPath ?? projectRoot,
+      runtimeProjectRoot: composerPin?.rootPath ?? projectRoot,
+      boundRuntimeKey: projectBinding?.key ?? null,
     };
   }, [projectBinding, projectRoot]);
 
@@ -5917,15 +5930,26 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-    const { runtimePin, runtimeProjectRoot } = scope;
+    const { runtimePin, runtimeProjectRoot, boundRuntimeKey } = scope;
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
+    }
+    // Unpinned IPC follows the bound tab. Two runtimes can share one project
+    // root, so a tab switch must bypass the TTL instead of reusing the other
+    // machine's Settings cache. Leave pin-scoped buckets alone.
+    let forceStatus = options?.force === true;
+    if (!runtimePin) {
+      const previousBindingKey = lastUnpinnedAuthBindingKeyRef.current;
+      lastUnpinnedAuthBindingKeyRef.current = boundRuntimeKey;
+      if (previousBindingKey !== undefined && previousBindingKey !== boundRuntimeKey) {
+        forceStatus = true;
+      }
     }
     try {
       const status = await getAiStatusCached({
         projectRoot: runtimeProjectRoot,
         pin: runtimePin,
-        force: options?.force === true,
+        force: forceStatus,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
       return applyAiStatusSnapshot(status);
