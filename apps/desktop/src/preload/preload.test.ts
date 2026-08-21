@@ -6211,6 +6211,76 @@ describe("preload OAuth bridge", () => {
     await pendingSwitch;
   });
 
+  it("keeps model catalogs on the runtime during a project switch", async () => {
+    const runtimeCatalog = {
+      groups: [{ key: "opencode", displayName: "OpenCode", providers: [] }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    };
+    const staticCatalog = {
+      groups: [{ key: "static", displayName: "Static", providers: [] }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    };
+    let resolveSwitch!: (project: unknown) => void;
+    const switchPromise = new Promise((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/repo", displayName: "Repo" },
+          binding: {
+            kind: "local",
+            key: "local:/repo",
+            rootPath: "/repo",
+            displayName: "Repo",
+          },
+        };
+      }
+      if (channel === IPC.projectSwitchToPath) return switchPromise;
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        if (request?.domain === "chat" && request.action === "modelCatalog") {
+          return { result: runtimeCatalog };
+        }
+      }
+      if (channel === IPC.agentChatModelCatalog) return staticCatalog;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    const pendingSwitch = bridge.project.switchToPath("/next");
+
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" }))
+      .resolves.toMatchObject({ groups: [{ key: "opencode" }] });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatModelCatalog, expect.anything());
+
+    resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await pendingSwitch;
+  });
+
   it("blocks mutating local file actions while a project switch is in flight", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {

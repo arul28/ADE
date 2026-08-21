@@ -4,7 +4,10 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ProjectInfo } from "../../../../shared/types";
-import { invalidateAiDiscoveryCache } from "../../../lib/aiDiscoveryCache";
+import {
+  AI_STATUS_CACHE_INVALIDATED_EVENT,
+  invalidateAiDiscoveryCache,
+} from "../../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../../state/appStore";
 import {
   familiesFromStatus,
@@ -341,5 +344,45 @@ describe("useProviderAuthStatus", () => {
     await Promise.resolve();
     expect(isOpenCodeInstalled).toHaveBeenCalledTimes(1);
     expect(getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies AI-status cache events when project roots differ only by Windows path shape", async () => {
+    const getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: { claude: false, codex: true, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+      detectedAuth: [],
+    });
+    const isOpenCodeInstalled = vi.fn().mockResolvedValue({ installed: false });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ai: { getStatus, isOpenCodeInstalled } },
+    });
+    useAppStore.setState({
+      project: {
+        rootPath: "C:\\Users\\me\\ADE",
+        displayName: "ADE",
+        baseRef: "main",
+      } satisfies ProjectInfo,
+      projectBinding: null,
+    });
+
+    function StatusConsumer() {
+      const auth = useProviderAuthStatus();
+      return React.createElement("div", null, `${auth.status.openai ?? "empty"}:${String(auth.loaded)}`);
+    }
+
+    render(React.createElement(StatusConsumer));
+    expect(await screen.findByText("ok:true")).toBeTruthy();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AI_STATUS_CACHE_INVALIDATED_EVENT, {
+        detail: { projectRoot: "c:/users/me/ADE", allProjects: false },
+      }));
+    });
+
+    expect(await screen.findByText("empty:false")).toBeTruthy();
   });
 });

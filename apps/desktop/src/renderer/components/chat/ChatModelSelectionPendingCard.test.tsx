@@ -17,12 +17,29 @@ import type {
   ModelSelection,
   OrchestrationModelSelectionMetadata,
 } from "../../../shared/types/orchestration";
+import type { AgentChatModelCatalog } from "../../../shared/types";
+import {
+  descriptorsFromAgentChatModelCatalog,
+  resetRuntimeCatalogDescriptorCacheForTests,
+} from "../shared/ModelPicker/modelCatalog";
+import {
+  rememberRuntimeCatalog,
+  resetModelPickerRuntimeCatalogForTests,
+} from "../shared/ModelPicker/runtimeCatalogCache";
 
 // The ModelPicker mounts a Radix popover and reads from a real DOM API
 // (`window.ade.agentChat.modelCatalog`). We stub the bridge so the picker
 // renders deterministically without hitting IPC.
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
-  ModelPicker: ({ value, onChange }: { value: string; onChange: (id: string) => void }) => (
+  ModelPicker: ({
+    value,
+    onChange,
+    onFastModeToggle,
+  }: {
+    value: string;
+    onChange: (id: string) => void;
+    onFastModeToggle?: (next: boolean) => void;
+  }) => (
     <div data-testid="mock-model-picker" data-current-model={value}>
       <button data-testid="mock-pick-claude-sonnet" onClick={() => onChange("claude-sonnet-5")}>
         Pick claude-sonnet-5
@@ -33,6 +50,17 @@ vi.mock("../shared/ModelPicker/ModelPicker", () => ({
       <button data-testid="mock-pick-ollama" onClick={() => onChange("ollama/llama3.1")}>
         Pick ollama/llama3.1
       </button>
+      <button
+        data-testid="mock-pick-live-opencode"
+        onClick={() => onChange("opencode/zen/ox-alpha-free")}
+      >
+        Pick ox-alpha-free
+      </button>
+      {onFastModeToggle ? (
+        <button data-testid="mock-toggle-fast" onClick={() => onFastModeToggle(true)}>
+          Fast
+        </button>
+      ) : null}
     </div>
   ),
 }));
@@ -53,6 +81,8 @@ vi.mock("../shared/ModelPicker/ReasoningEffortPicker", () => ({
 
 afterEach(() => {
   cleanup();
+  resetModelPickerRuntimeCatalogForTests();
+  resetRuntimeCatalogDescriptorCacheForTests();
 });
 
 describe("ChatModelSelectionPendingCard", () => {
@@ -245,5 +275,79 @@ describe("ChatModelSelectionPendingCard", () => {
     fireEvent.click(confirmBtn);
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onConfirm.mock.calls[0]![0].modelId).toBe("claude-sonnet-5");
+  });
+
+  it("gates Fast mode from the composer machine catalog, not the unscoped bucket", () => {
+    const liveId = "opencode/zen/ox-alpha-free";
+    const catalogScopeKey = "remote:studio:project-1";
+    const catalog = {
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+      groups: [{
+        key: "opencode",
+        displayName: "OpenCode",
+        providers: [{
+          key: "zen",
+          displayName: "Zen",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "zen",
+            label: "Zen",
+            models: [{
+              id: liveId,
+              runtimeModelId: "zen/ox-alpha-free",
+              provider: "opencode",
+              providerKey: "zen",
+              groupKey: "opencode",
+              displayName: "ox alpha free",
+              isDefault: false,
+              isAvailable: true,
+              serviceTiers: ["fast"],
+            }],
+          }],
+        }],
+      }],
+    } as unknown as AgentChatModelCatalog;
+
+    rememberRuntimeCatalog(catalog, {
+      mode: "force",
+      refreshProvider: "opencode",
+      scopeKey: catalogScopeKey,
+    });
+    descriptorsFromAgentChatModelCatalog(catalog, undefined, catalogScopeKey);
+
+    const onConfirm = vi.fn<[selection: ModelSelection], void>();
+    const { rerender } = render(
+      <ChatModelSelectionPendingCard
+        metadata={metadata}
+        catalogScopeKey={catalogScopeKey}
+        responding={false}
+        onConfirm={onConfirm}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("mock-pick-live-opencode"));
+    expect(screen.getByTestId("mock-toggle-fast")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("mock-toggle-fast"));
+    fireEvent.click(screen.getByTestId("orchestration-model-selection-confirm"));
+    expect(onConfirm.mock.calls[0]![0]).toMatchObject({
+      modelId: liveId,
+      provider: "opencode",
+      fastMode: true,
+    });
+
+    onConfirm.mockClear();
+    rerender(
+      <ChatModelSelectionPendingCard
+        metadata={metadata}
+        responding={false}
+        onConfirm={onConfirm}
+        onCancel={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("mock-pick-live-opencode"));
+    expect(screen.queryByTestId("mock-toggle-fast")).toBeNull();
   });
 });
