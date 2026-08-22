@@ -122,7 +122,7 @@ export function writeChatCompanionUiState(key: string, state: ChatCompanionUiSta
  * Merge `patch` into the stored record for `key`.
  *
  * The namespace has two independent owners — the chat shell's drawer state and
- * `useChatPrAutoPop`'s `prPaneOpen` — so a whole-record write from either one
+ * `useChatPrPaneOpen`'s `prPaneOpen` — so a whole-record write from either one
  * clobbers the other unless it reads forward first. Doing the read-merge-write
  * here makes that structural instead of a convention each caller has to honour.
  */

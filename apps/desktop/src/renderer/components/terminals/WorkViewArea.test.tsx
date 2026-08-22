@@ -177,8 +177,12 @@ vi.mock("../chat/ChatPrPane", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../chat/ChatPrPane")>();
   return {
     ...actual,
-    ChatPrPane: ({ laneId }: { laneId: string }) => (
-      <div data-testid="chat-pr-pane" data-lane-id={laneId} />
+    ChatPrPane: ({ laneId, runtimePin }: { laneId: string; runtimePin?: { key: string } | null }) => (
+      <div
+        data-testid="chat-pr-pane"
+        data-lane-id={laneId}
+        data-runtime-pin-key={runtimePin?.key ?? ""}
+      />
     ),
   };
 });
@@ -562,7 +566,7 @@ describe("WorkViewArea", () => {
     expect(terminals.map((terminal) => terminal.getAttribute("data-session-id"))).toContain("session-1");
   });
 
-  it("pins the PR pane and auto-pop reads to the owning machine for a foreign running CLI", async () => {
+  it("pins the PR pane reads to the owning machine for a foreign running CLI", async () => {
     const session = { ...makeRunningSession("session-foreign", "pty-foreign"), toolType: "codex" as const };
     const runtimePin = {
       kind: "remote",
@@ -593,18 +597,16 @@ describe("WorkViewArea", () => {
     const local = within(view.container);
 
     // A lane's PR lives in ITS machine's database, so a foreign session gets the
-    // same PR affordance as a local one — the reads just carry the pin. Before
-    // this, both the pane and its auto-pop were suppressed outright, which is
-    // what made a remote session's PR invisible until the tab was rebound.
-    await waitFor(() => {
-      expect(prsMocks.getForLane).toHaveBeenCalledWith("lane-1", runtimePin);
-    });
-    expect(prsMocks.onEvent).toHaveBeenCalledWith(expect.any(Function), runtimePin);
+    // same PR affordance as a local one — the pane is handed the resolved pin
+    // so its reads carry it. Before this, the pane was suppressed outright,
+    // which made a remote session's PR invisible until the tab was rebound.
     fireEvent.click(local.getByRole("button", { name: "Toggle PR pane" }));
-    expect((await local.findByTestId("chat-pr-pane")).getAttribute("data-lane-id")).toBe("lane-1");
+    const pane = await local.findByTestId("chat-pr-pane");
+    expect(pane.getAttribute("data-lane-id")).toBe("lane-1");
+    expect(pane.getAttribute("data-runtime-pin-key")).toBe("remote:target-b:project-b");
   });
 
-  it("keeps PR auto-pop and pane controls enabled for a local running CLI", async () => {
+  it("keeps PR pane controls enabled for a local running CLI", async () => {
     const session = { ...makeRunningSession("session-local", "pty-local"), toolType: "codex" as const };
     const view = render(
       <WorkViewArea
@@ -624,10 +626,6 @@ describe("WorkViewArea", () => {
     );
     const local = within(view.container);
 
-    await waitFor(() => {
-      expect(prsMocks.getForLane).toHaveBeenCalledWith("lane-1", null);
-      expect(prsMocks.onEvent).toHaveBeenCalledTimes(1);
-    });
     fireEvent.click(local.getByRole("button", { name: "Toggle PR pane" }));
     expect((await local.findByTestId("chat-pr-pane")).getAttribute("data-lane-id")).toBe("lane-1");
   });

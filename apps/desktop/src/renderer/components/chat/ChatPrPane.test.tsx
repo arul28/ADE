@@ -29,12 +29,7 @@ vi.mock("framer-motion", () => {
   };
 });
 
-import {
-  ChatPrPane,
-  chatPrSignature,
-  detectChatPrDelta,
-  type ChatPrSignature,
-} from "./ChatPrPane";
+import { ChatPrPane } from "./ChatPrPane";
 import type { PrCheck, PrEventPayload, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
@@ -67,13 +62,6 @@ function makePr(over: Partial<PrSummary> = {}): PrSummary {
     ...over,
   };
 }
-
-const sig = (over: Partial<ChatPrSignature> = {}): ChatPrSignature => ({
-  exists: true,
-  state: "open",
-  headSha: "aaa111",
-  ...over,
-});
 
 const originalAde = (globalThis.window as { ade?: unknown }).ade;
 
@@ -175,45 +163,6 @@ afterEach(() => {
   clearPrReadInFlightForTest();
   (globalThis.window as { ade?: unknown }).ade = originalAde;
   vi.clearAllMocks();
-});
-
-describe("detectChatPrDelta", () => {
-  it("pops for a newly created / first-linked PR", () => {
-    expect(detectChatPrDelta(sig({ exists: false, state: null, headSha: null }), makePr())?.kind).toBe("created");
-  });
-
-  it("pops for lifecycle transitions", () => {
-    expect(detectChatPrDelta(sig(), makePr({ state: "merged" }))?.kind).toBe("merged");
-    expect(detectChatPrDelta(sig(), makePr({ state: "closed" }))?.kind).toBe("closed");
-    expect(detectChatPrDelta(sig({ state: "draft" }), makePr({ state: "open" }))?.kind).toBe("ready");
-    expect(detectChatPrDelta(sig({ state: "closed" }), makePr({ state: "open" }))?.kind).toBe("reopened");
-    expect(detectChatPrDelta(sig(), makePr({ state: "draft" }))?.kind).toBe("draft");
-  });
-
-  it("pops for a new commit (head sha change)", () => {
-    expect(detectChatPrDelta(sig({ headSha: "aaa111" }), makePr({ headSha: "bbb222" }))?.kind).toBe("commit");
-  });
-
-  it("does NOT pop for checks/review-only changes", () => {
-    // Same state + same head sha, only checks/review changed.
-    const next = makePr({ checksStatus: "failing", reviewStatus: "changes_requested" });
-    expect(detectChatPrDelta(sig(), next)).toBeNull();
-  });
-
-  it("does NOT pop when the PR was unlinked / removed", () => {
-    expect(detectChatPrDelta(sig(), null)).toBeNull();
-  });
-});
-
-describe("chatPrSignature", () => {
-  it("captures existence, state, and head sha", () => {
-    expect(chatPrSignature(makePr({ state: "merged", headSha: "zzz" }))).toEqual({
-      exists: true,
-      state: "merged",
-      headSha: "zzz",
-    });
-    expect(chatPrSignature(null)).toEqual({ exists: false, state: null, headSha: null });
-  });
 });
 
 describe("ChatPrPane", () => {
@@ -388,14 +337,6 @@ describe("ChatPrPane", () => {
     expect(screen.getByText("Open")).toBeTruthy();
     expect(screen.getByText("+420")).toBeTruthy();
     expect(screen.getByText("−38")).toBeTruthy();
-  });
-
-  it("shows the delta line describing what just changed", async () => {
-    installAde();
-    renderPane({ delta: { kind: "merged", label: "Merged", tone: "good", nonce: 1 } });
-    // Title still says the PR is open; "Merged" here is the delta line.
-    expect(await screen.findByText("Merged")).toBeTruthy();
-    expect(screen.getByText("just now")).toBeTruthy();
   });
 
   it("renders enriched check counts from getChecks", async () => {

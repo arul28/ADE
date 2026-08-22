@@ -42,7 +42,7 @@ import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder
 import { WorkStartSurface } from "./WorkStartSurface";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { ChatPrPane } from "../chat/ChatPrPane";
-import { useChatPrAutoPop } from "../chat/useChatPrAutoPop";
+import { useChatPrPaneOpen } from "../chat/useChatPrPaneOpen";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
@@ -758,8 +758,9 @@ const CLI_FLOATING_PANE_CARD_CLASS =
  * overlaid on top of the terminal. The overlay is absolutely positioned inside a
  * wrapper that sizes the terminal — it never changes the terminal host's box, so
  * the PTY's ResizeObserver never fires and the running CLI process is not
- * re-flowed (no SIGWINCH). The pill in the header toggles it, and it auto-pops on
- * webhook-driven PR changes via the same useChatPrAutoPop hook the ADE chat uses.
+ * re-flowed (no SIGWINCH). The pill in the header toggles it; it never
+ * auto-opens and shares the persisted open state with the ADE chat pane via the
+ * same useChatPrPaneOpen hook.
  */
 function CliSessionSurface({
   session,
@@ -800,11 +801,8 @@ function CliSessionSurface({
   // Persist the pane per CLI session so reopening the surface restores it, the
   // same way the ADE chat pane keys its companion UI state.
   // PR reads follow the lane's machine now, so a foreign CLI session gets the
-  // same pill, auto-pop and pane as a local one — the pin just routes them.
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId, {
-    persistKey: session.id,
-    runtimePin,
-  });
+  // same pill and pane as a local one — the pin just routes them.
+  const { prPaneOpen, setPrPaneOpen } = useChatPrPaneOpen(session.id);
   const supportsSplit = layoutVariant !== "grid-tile";
   const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
   return (
@@ -853,7 +851,6 @@ function CliSessionSurface({
                 <ChatPrPane
                   laneId={session.laneId}
                   branchName={null}
-                  delta={prPaneDelta}
                   onClose={() => setPrPaneOpen(false)}
                   runtimePin={runtimePin}
                 />
