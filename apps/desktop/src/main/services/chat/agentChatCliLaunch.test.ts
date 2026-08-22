@@ -263,16 +263,15 @@ describe("launchAgentChatCli OpenCode fast mode", () => {
     );
 
     const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    // The root TUI is the only launch surface; it has no --variant flag, so
+    // fast mode stays a chat-runtime feature rather than a CLI flag.
     expect(createArg.command).toBe("opencode");
     expect(createArg.args).toEqual(expect.arrayContaining([
-      "run",
-      "--interactive",
       "--model",
       "openai/gpt-5.4",
-      "--variant",
-      "fast",
     ]));
-    expect(createArg.startupCommand).toContain("--variant fast");
+    expect(createArg.args).not.toContain("--variant");
+    expect(createArg.startupCommand).not.toContain("run --interactive");
   });
 });
 

@@ -574,7 +574,11 @@ write paths into one call:
    Cursor is the exception: its continuation command stays prompt-free,
    then the text is submitted after the resumed CLI is input-ready.
    OpenCode uses its replay-resume command when the installed CLI
-   supports it. If the code has to reuse an already-started resume
+   supports it — root `--mini` with `--replay-limit` (an explicit
+   `--replay` flag is an upstream error), gated by probing root
+   `opencode --help` for both flags; without that support it falls back
+   to the plain root-TUI resume with the prompt embedded. If the code
+   has to reuse an already-started resume
    flight, it writes `text` after the PTY is attached. The return shape
    is `{ ptyId, sessionId, pid, session, resumed: true,
    reusedExistingRuntime: false }`.
@@ -754,6 +758,13 @@ Strategies, in order:
    in the lane cwd. Sessions whose `directory` matches are scored by
    `created`/`updated` against `startedAt` with the same 10-minute
    drift window. The recovered id becomes `opencode --session <id>`.
+   The directory match compares realpath-resolved, platform-folded
+   path keys on both sides (`fs.realpathSync` + `pathKey`): macOS hands
+   `/var/...` back from the CLI while session rows record the resolved
+   `/private/var/...` spelling, and Windows adds case drift, so raw
+   string equality made every lane under a symlinked tmp root miss its
+   own resume target. A directory that cannot be realpath-resolved
+   (deleted worktree) falls back to comparing the raw spelling.
 
 The Droid storage scan and the OpenCode `session list` invocation only
 fire on the `close` / `dispose` reasons and explicit on-demand

@@ -407,6 +407,13 @@ vi.mock("../opencode/openCodeRuntime", async () => {
             const result = streamText({} as any) as {
               fullStream?: AsyncIterable<Record<string, unknown>>;
             };
+            // Mirror the real wire order: OpenCode announces every message
+            // (with its role) before its parts arrive.
+            const assistantMessageId = `message-${sessionId}`;
+            pushEvent({
+              type: "message.updated",
+              properties: { info: { id: assistantMessageId, role: "assistant", sessionID: sessionId } },
+            });
             let text = "";
             for await (const part of result.fullStream ?? []) {
               if (state.aborted) break;
@@ -425,7 +432,7 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                 pushEvent({
                   type: "message.part.updated",
                   properties: {
-                    part: { id: `text-${sessionId}`, sessionID: sessionId, type: "text", text },
+                    part: { id: `text-${sessionId}`, type: "text", text, messageID: assistantMessageId, sessionID: sessionId },
                     delta: String(part.textDelta ?? ""),
                   },
                 });
@@ -37034,6 +37041,191 @@ describe("createAgentChatService", () => {
       status: "completed",
       turnId: started.event.turnId,
     });
+    await sendPromise;
+  });
+
+  it("never renders OpenCode user-message parts as assistant output", async () => {
+    // Regression: `message.part.updated` carries user-message parts too (the
+    // prompt echo, and historically the synthetic system-prompt part). Without
+    // an assistant-role gate, whatever rode in the user message echoed into the
+    // transcript as a left-side agent bubble before the agent answered.
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Resolve the failing test.",
+    });
+    const started = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    pushEvents(
+      // The user message echo: role announced first, then its plain text part
+      // with no synthetic/ignored flags — exactly what OpenCode streams.
+      { type: "message.updated", properties: { info: { id: "msg-user-1", role: "user", sessionID: "opencode-session-1" } } },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "prt-user-1",
+            type: "text",
+            text: "Resolve the failing test.",
+            messageID: "msg-user-1",
+            sessionID: "opencode-session-1",
+          },
+        },
+      },
+      // A part whose message role is not yet known must stay unrendered too.
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "prt-unknown-1",
+            type: "text",
+            text: "orphan part before its message.updated",
+            messageID: "msg-unannounced",
+            sessionID: "opencode-session-1",
+          },
+        },
+      },
+      // The real answer.
+      { type: "message.updated", properties: { info: { id: "msg-asst-1", role: "assistant", sessionID: "opencode-session-1" } } },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "prt-asst-1",
+            type: "text",
+            text: "Fixed it.",
+            messageID: "msg-asst-1",
+            sessionID: "opencode-session-1",
+          },
+        },
+      },
+      { type: "session.idle", properties: { sessionID: "opencode-session-1" } },
+    );
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done" && event.event.turnId === started.event.turnId,
+    );
+
+    const textPayloads = events
+      .filter((event) => event.event.type === "text")
+      .map((event) => (event.event as { text: string }).text)
+      .join("");
+    expect(textPayloads).toContain("Fixed it.");
+    expect(textPayloads).not.toContain("Resolve the failing test.");
+    expect(textPayloads).not.toContain("orphan part");
+
+    releaseStream();
+    await sendPromise;
+  });
+
+  it("does not adopt OpenCode placeholder session titles", async () => {
+    // OpenCode mints "New session - <ISO>" (and child variants) until its own
+    // titler runs; adopting one would flash timestamp soup as the chat title
+    // and block auto-titling.
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Name this thread properly.",
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    pushEvents(
+      {
+        type: "session.created",
+        properties: { info: { id: "opencode-session-1", title: "New session - 2026-08-22T15:25:28.226Z" } },
+      },
+      {
+        type: "session.updated",
+        properties: { info: { id: "opencode-session-1", title: "Child session - 2026-08-22T15:26:00.000Z" } },
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const placeholderAdoptions = events.filter(
+      (event) =>
+        event.event.type === "session_meta_updated"
+        && /[12]:\d{2}:\d{2}\.\d{3}Z$/.test((event.event as { title?: string }).title ?? ""),
+    );
+    expect(placeholderAdoptions).toEqual([]);
+
+    pushEvents({
+      type: "session.updated",
+      properties: { info: { id: "opencode-session-1", title: "Lane status sweep" } },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope &
+        { event: Extract<AgentChatEventEnvelope["event"], { type: "session_meta_updated" }> } =>
+        event.event.type === "session_meta_updated" && event.event.title === "Lane status sweep",
+    );
+
+    releaseStream();
     await sendPromise;
   });
 

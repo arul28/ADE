@@ -608,18 +608,9 @@ export function mapPermissionModeToOpenCodeAgent(mode: PermissionMode): OpenCode
 
 export function buildOpenCodePromptParts(args: {
   prompt: string;
-  system?: string;
   files?: OpenCodePromptFile[];
 }): Array<TextPartInput | FilePartInput> {
   const parts: Array<TextPartInput | FilePartInput> = [];
-  if (args.system?.trim()) {
-    parts.push({
-      type: "text",
-      text: args.system.trim(),
-      synthetic: true,
-      ignored: true,
-    });
-  }
   parts.push({
     type: "text",
     text: args.prompt,
@@ -633,6 +624,40 @@ export function buildOpenCodePromptParts(args: {
     });
   }
   return parts;
+}
+
+/**
+ * True only when an OpenCode server call failed with a confirmed
+ * "session does not exist" (HTTP 404 / `NotFoundError`). Anything else — a
+ * transport blip, timeout, HTML version-mismatch guard, auth hiccup — must NOT
+ * be treated as a missing session: the caller would silently start a fresh,
+ * empty session and strand the user's thread (t3code's #3604 silent context
+ * loss). Walks a bounded chain of `cause`/`body`/`error`/`data` properties so
+ * SDK wrapper shapes stay covered; any explicit non-404 status seals the walk.
+ */
+export function isOpenCodeNotFoundError(error: unknown): boolean {
+  const visit = (value: unknown, depth: number): boolean => {
+    if (!value || typeof value !== "object" || depth > 6) return false;
+    const record = value as Record<string, unknown>;
+    // A concrete non-404 status anywhere in this subtree seals it: the server
+    // answered and the answer was not "missing".
+    let sawStatus = false;
+    for (const key of ["status", "statusCode"] as const) {
+      const candidate = record[key];
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        if (candidate !== 404) return false;
+        sawStatus = true;
+      }
+    }
+    if (record.name === "NotFoundError") return true;
+    for (const key of ["cause", "body", "error", "data"] as const) {
+      const nested = record[key];
+      if (nested === undefined || nested === null || Array.isArray(nested)) continue;
+      if (visit(nested, depth + 1)) return true;
+    }
+    return sawStatus;
+  };
+  return visit(error, 0);
 }
 
 function createOpenCodeSessionHandle(args: {
@@ -726,7 +751,14 @@ async function startOpenCodeSessionInternal(
         directory: args.directory,
         toolSelection: null,
       });
-    } catch {
+    } catch (error) {
+      // Only a confirmed "session missing" may fall through to creation. Any
+      // other failure (transport, timeout, server restart mid-request) must
+      // surface — silently starting an empty session would strand the thread.
+      if (!isOpenCodeNotFoundError(error)) {
+        lease.close("error");
+        throw error instanceof Error ? error : new Error(String(error));
+      }
       // Fall through to session creation when the persisted session no longer exists.
     }
   }
@@ -831,10 +863,14 @@ export async function runOpenCodeTextPrompt(
       body: {
         agent: args.agent ?? "ade-helper",
         model,
+        // First-class system prompt on the wire. Never inject it as a
+        // synthetic/ignored text part: OpenCode drops `ignored` parts from
+        // model context entirely, so the prompt would silently never reach
+        // the model.
+        ...(args.system?.trim() ? { system: args.system.trim() } : {}),
         ...(toolSelection ? { tools: toolSelection } : {}),
         parts: buildOpenCodePromptParts({
           prompt: args.prompt,
-          system: args.system,
           files: args.files,
         }),
       },

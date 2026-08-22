@@ -39,8 +39,8 @@ const mocks = vi.hoisted(() => {
       return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
     }),
     realpathSync: Object.assign(
-      vi.fn((p: string) => p),
-      { native: vi.fn((p: string) => p) },
+      vi.fn((p: string) => realpathOverrides.get(p as string) ?? p),
+      { native: vi.fn((p: string) => realpathOverrides.get(p as string) ?? p) },
     ),
     statSync: vi.fn((p: string) => {
       if ((existsSyncResults.get(p) ?? true) === false) {
@@ -5605,7 +5605,6 @@ describe("ptyService", () => {
         expect(spawnArgs).toContain(buildCanonicalOpenCodeReplayResumeCommand({
           permissionMode: "plan",
           model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
-          fastMode: true,
           resumeTarget: "ses_abc",
           prompt: "continue from the freeze frame",
           replayLimit: 40,
@@ -8335,6 +8334,46 @@ describe("ptyService", () => {
         }),
       );
       expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode", "opencode --session ses_abc");
+    });
+
+    it("matches OpenCode resume rows through symlink-resolved directories", async () => {
+      // macOS hands PTY cwds out as /tmp/... while OpenCode records the
+      // resolved /private/tmp/... spelling; the backfill must compare
+      // realpath-resolved keys or lane sessions under symlinked roots lose
+      // their own resume target.
+      const startedAt = "2026-04-15T21:30:00.000Z";
+      const bundledOpenCode = "/Applications/ADE.app/Contents/Resources/app.asar.unpacked/node_modules/opencode-darwin-arm64/bin/opencode";
+      mocks.resolveOpenCodeBinaryPath.mockReturnValue(bundledOpenCode);
+      mocks.spawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify([
+          {
+            id: "ses_symlink",
+            directory: "/private/tmp/test-worktree",
+            created: Date.parse(startedAt),
+            updated: Date.parse(startedAt) + 1000,
+          },
+        ]),
+        stderr: "",
+      });
+
+      const { service, sessionService } = createHarness();
+      sessionService.readTranscriptTail.mockResolvedValueOnce("opencode\n");
+      sessionService.create({
+        sessionId: "session-opencode-symlink",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "OpenCode CLI",
+        startedAt,
+        transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-opencode-symlink.log",
+        toolType: "opencode",
+      });
+      mocks.realpathOverrides.set("/tmp/test-worktree", "/private/tmp/test-worktree");
+
+      await service.ensureResumeTargets(["session-opencode-symlink"]);
+
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode-symlink", "opencode --session ses_symlink");
     });
 
     it("does not backfill OpenCode from session list without OpenCode transcript evidence", async () => {
