@@ -1886,6 +1886,25 @@ describe("AgentChatPane pane reserve", () => {
     expect(await screen.findByAltText("ADE")).toBeTruthy();
     expect(readLeftReserve(container)).toBe("0px");
   });
+
+  it("never persists a phantom-open PR pane from the draft surface's PR pill", async () => {
+    installAdeMocks({ sessions: [] });
+    seedDrawerStore();
+    // Regression: the draft surface renders no PR pane (no selected session),
+    // so its header pill must fall back to the toolbar's inline menu instead
+    // of toggling persisted open state for a pane that cannot appear here.
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId="lane-1" hideSessionTabs onSessionCreated={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByAltText("ADE")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "PR" }));
+    await act(async () => {});
+
+    expect(readChatCompanionUiState("draft:lane-1").prPaneOpen).toBe(false);
+  });
 });
 
 describe("AgentChatPane companion drawers", () => {
