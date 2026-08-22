@@ -378,6 +378,22 @@ describe("openCodeRuntime", () => {
     expect(isOpenCodeNotFoundError(undefined)).toBe(false);
     expect(isOpenCodeNotFoundError("404")).toBe(false);
   });
+
+  it("rejects a NotFoundError whose chain carries a non-404 status", () => {
+    // A shallow NotFoundError name must not outvote a deeper concrete status:
+    // re-creating the session after a transient 503 strands the live thread.
+    expect(isOpenCodeNotFoundError(new Error("x", {
+      cause: { body: { name: "NotFoundError" }, status: 503 },
+    }))).toBe(false);
+    expect(isOpenCodeNotFoundError({
+      name: "NotFoundError",
+      cause: { status: 500 },
+    })).toBe(false);
+    // And a deep non-404 vetoes even when the name sits at the root.
+    expect(isOpenCodeNotFoundError(new Error("x", {
+      cause: { error: { data: { statusCode: 500, name: "NotFoundError" } } },
+    }))).toBe(false);
+  });
 });
 
 describe("buildOpenCodeConfig provider injection", () => {

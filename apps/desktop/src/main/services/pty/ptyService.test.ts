@@ -5619,6 +5619,70 @@ describe("ptyService", () => {
       }
     });
 
+    it("detects mini replay support from realistic root help output without overrides", async () => {
+      // Regression: \b can never match before "--" (both sides are non-word
+      // characters), so the old probe never recognized help output and replay
+      // resume stayed permanently dormant.
+      const previous = process.env.ADE_OPENCODE_REPLAY_RESUME;
+      delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+      try {
+        const { service, sessionService, loadPty } = createHarness();
+        mocks.spawnSync.mockImplementationOnce(() => ({
+          status: 0,
+          stdout: [
+            "Options:",
+            "  -m, --model         model to use in the format of provider/model",
+            "      --mini          start the minimal interactive interface   [boolean] [default: false]",
+            "      --no-replay     disable mini session history replay on resume and after resize",
+            "      --replay-limit  cap visible mini replay to the newest N messages",
+          ].join("\n"),
+          stderr: "",
+        }));
+        sessionService.create({
+          sessionId: "session-opencode-probe",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "OpenCode CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-opencode-probe.log",
+          toolType: "opencode",
+          resumeCommand: "opencode --session ses_probe",
+          resumeMetadata: {
+            provider: "opencode",
+            targetKind: "session",
+            targetId: "ses_probe",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-opencode-probe",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const result = await service.sendToSession({
+          sessionId: "session-opencode-probe",
+          text: "continue from the freeze frame",
+          permissionMode: "plan",
+        });
+
+        expect(result.resumed).toBe(true);
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const commandLine = String(spawn.mock.calls[0]?.[1]?.at(-1) ?? "");
+        expect(commandLine).toContain("opencode --mini ");
+        expect(commandLine).toContain("--replay-limit 40");
+        expect(commandLine).toContain("--session ses_probe");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+        } else {
+          process.env.ADE_OPENCODE_REPLAY_RESUME = previous;
+        }
+      }
+    });
+
     it("sendToSession single-flights concurrent resumes for the same session", async () => {
       const { service, sessionService, mockPty, loadPty } = createHarness();
       sessionService.create({

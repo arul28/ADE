@@ -9,6 +9,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import {
   buildOpenCodePromptParts,
+  openCodeEventStream,
   resolveOpenCodeExecutablePath,
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
@@ -37229,7 +37230,48 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
-  it("fails a cleanly ended OpenCode event stream and clears active child sessions", async () => {
+    it("subscribes to the OpenCode event stream before dispatching the prompt", async () => {
+    // The SSE stream is live-only. Dispatching first races the subscription:
+    // if the server publishes the assistant message.updated before /event is
+    // connected, the role announcement is lost and the role gate would drop
+    // every part of that message.
+    const observations: string[] = [];
+    vi.mocked(streamText).mockReturnValue({
+      fullStream: (async function* () {})(),
+    } as any);
+    vi.mocked(openCodeEventStream).mockImplementationOnce((async () => {
+      // Snapshot how many prompts have been dispatched at subscribe time.
+      const state = [...mockState.openCodeSessions.values()][0];
+      observations.push(`promptBodiesAtSubscribe=${state ? state.promptBodies.length : -1}`);
+      // Ends immediately: the turn fails cleanly, which is all this test needs.
+      return (async function* () {})() as AsyncGenerator<never>;
+    }) as unknown as typeof openCodeEventStream);
+
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Check dispatch order.",
+    });
+    // The turn dispatches asynchronously; wait for the subscription snapshot.
+    await vi.waitFor(() => {
+      expect(observations.length).toBeGreaterThan(0);
+    });
+    // Zero means the SSE subscription was live before any prompt was dispatched.
+    expect(observations).toEqual(["promptBodiesAtSubscribe=0"]);
+    // Let the failed turn settle (its failure is emitted as an error event).
+    await sendPromise.catch(() => undefined);
+  });
+
+it("fails a cleanly ended OpenCode event stream and clears active child sessions", async () => {
     const events: AgentChatEventEnvelope[] = [];
     let releaseStream!: () => void;
     const streamGate = new Promise<void>((resolve) => {

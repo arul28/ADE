@@ -636,28 +636,37 @@ export function buildOpenCodePromptParts(args: {
  * SDK wrapper shapes stay covered; any explicit non-404 status seals the walk.
  */
 export function isOpenCodeNotFoundError(error: unknown): boolean {
-  const visit = (value: unknown, depth: number): boolean => {
-    if (!value || typeof value !== "object" || depth > 6) return false;
+  // Two passes over the same bounded tree, so a deep non-404 status vetoes a
+  // shallow `NotFoundError` name: `{ name: "NotFoundError", cause: { status:
+  // 503 } }` must NOT re-create the session. Pass 1 seals on any explicit
+  // non-404 status anywhere; pass 2 affirms on a NotFoundError name or a 404.
+  const collect = (value: unknown, depth: number, visit: (record: Record<string, unknown>) => void): void => {
+    if (!value || typeof value !== "object" || depth > 6) return;
     const record = value as Record<string, unknown>;
-    // A concrete non-404 status anywhere in this subtree seals it: the server
-    // answered and the answer was not "missing".
-    let sawStatus = false;
-    for (const key of ["status", "statusCode"] as const) {
-      const candidate = record[key];
-      if (typeof candidate === "number" && Number.isFinite(candidate)) {
-        if (candidate !== 404) return false;
-        sawStatus = true;
-      }
-    }
-    if (record.name === "NotFoundError") return true;
+    visit(record);
     for (const key of ["cause", "body", "error", "data"] as const) {
       const nested = record[key];
       if (nested === undefined || nested === null || Array.isArray(nested)) continue;
-      if (visit(nested, depth + 1)) return true;
+      collect(nested, depth + 1, visit);
     }
-    return sawStatus;
   };
-  return visit(error, 0);
+  let sealed = false;
+  let affirmed = false;
+  collect(error, 0, (record) => {
+    if (sealed) return;
+    for (const key of ["status", "statusCode"] as const) {
+      const candidate = record[key];
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        if (candidate !== 404) {
+          sealed = true;
+          return;
+        }
+        affirmed = true;
+      }
+    }
+    if (record.name === "NotFoundError") affirmed = true;
+  });
+  return !sealed && affirmed;
 }
 
 function createOpenCodeSessionHandle(args: {

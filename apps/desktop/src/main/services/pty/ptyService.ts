@@ -476,9 +476,11 @@ function openCodeSupportsReplayResume(): boolean {
       windowsHide: true,
     });
     const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
+    // Flag tokens start with "-", a non-word character, so \b can never match
+    // before them; anchor on whitespace/string edges instead.
     cachedOpenCodeReplayResumeSupport = result.status === 0
-      && /\b--mini\b/.test(output)
-      && /\b--replay-limit\b/.test(output);
+      && /(^|\s)--mini(\s|$)/.test(output)
+      && /(^|\s)--replay-limit(\s|$)/.test(output);
     return cachedOpenCodeReplayResumeSupport;
   } catch {
     cachedOpenCodeReplayResumeSupport = false;

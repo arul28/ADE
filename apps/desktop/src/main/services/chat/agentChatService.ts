@@ -23315,17 +23315,22 @@ export function createAgentChatService(args: {
         }),
       };
 
+      // Subscribe BEFORE dispatching. The event stream is live-only — it never
+      // replays events published before the connection lands — so a prompt
+      // request that wins this race would have its assistant `message.updated`
+      // role announcement (and first parts) lost, and the role gate below
+      // would then drop every part of that message.
+      const eventStream = await openCodeEventStream({
+        client: runtime.handle.client,
+        directory: runtime.handle.directory,
+        signal: abortController.signal,
+      });
+
       const promptAccepted = runtime.handle.client.session.promptAsync({
         path: { id: runtime.handle.sessionId },
         query: { directory: runtime.handle.directory },
         throwOnError: true,
         body: openCodePromptBody,
-      });
-
-      const eventStream = await openCodeEventStream({
-        client: runtime.handle.client,
-        directory: runtime.handle.directory,
-        signal: abortController.signal,
       });
 
       await promptAccepted;
