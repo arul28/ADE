@@ -12593,7 +12593,13 @@ export function AgentChatPane({
         lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
-        onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
+        // Only wire the pane toggle where the pane actually renders (a selected
+        // session). On the draft/new-chat surface an unwired pill falls back to
+        // the toolbar's inline PR menu instead of toggling persisted state for
+        // a pane that cannot appear there.
+        onTogglePrPane={showWorkspaceChrome && laneId && Boolean(selectedSessionId)
+          ? () => setPrPaneOpen((v) => !v)
+          : undefined}
         prPaneOpen={prPaneOpen}
         runtimePin={chatRuntimePin}
         trailingActions={chatHeaderTrailingActions}

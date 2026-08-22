@@ -20,7 +20,7 @@ export type ChatCompanionUiState = {
   iosSimulatorOpen: boolean;
   appControlOpen: boolean;
   terminalDrawerOpen: boolean;
-  /** Floating PR pane (left side). Persisted per chat, incl. webhook auto-pop. */
+  /** Floating PR pane (left side). Persisted per chat; explicit open/close only. */
   prPaneOpen: boolean;
 };
 

@@ -1752,12 +1752,12 @@ best-effort — failures log a warning and do not abort the tick.
   defaults to the chat session title before falling back to the
   `<lane> -> <target>` derivation.
 - Every chat-side PR surface takes a `runtimePin`: `ChatGitToolbar`,
-  `ChatPrPane`, and `useChatPrAutoPop`, threaded from their hosts
+  `ChatPrPane`, and the PR pane surfaces, threaded from their hosts
   (`AgentChatPane` passes its `chatRuntimePin`; `WorkSurfaceHeader`,
   `CliSessionWorkSurfaceHeader` / `GridTileSessionHeaderActions`, and
   `WorkViewArea`'s CLI surface pass the session's owning binding). A chat or
-  CLI session on another machine therefore gets the same PR pill, auto-pop,
-  and pane as a local one — the pin just routes the reads and the event
+  CLI session on another machine therefore gets the same PR pill and pane as a
+  local one — the pin just routes the reads and the event
   subscription to the lane's machine. Effects key on the pin's **key**, never
   its object identity: a local pin is reconstructed on every cross-machine
   merge, and depending on the object would blank the pill and re-anchor the

@@ -12,18 +12,14 @@ import {
   DEFAULT_CHAT_COMPANION_UI_STATE,
 } from "./chatCompanionUiState";
 
-const originalAde = (globalThis.window as { ade?: unknown }).ade;
-
 beforeEach(() => {
   window.localStorage.clear();
   resetChatCompanionUiStateCacheForTests();
 });
 
 afterEach(() => {
-  (globalThis.window as { ade?: unknown }).ade = originalAde;
   window.localStorage.clear();
   resetChatCompanionUiStateCacheForTests();
-  vi.clearAllMocks();
 });
 
 describe("useChatPrPaneOpen", () => {
