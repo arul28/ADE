@@ -734,8 +734,8 @@ export async function createAdeRuntime(args: {
       analytics: productAnalyticsService,
       logger,
     });
-    usageProductAnalyticsExporter.start();
     teardown.push(() => usageProductAnalyticsExporter.stop());
+    usageProductAnalyticsExporter.start();
 
     const operationService = createOperationService({ db, projectId });
     const keybindingsService = createKeybindingsService({ db });
@@ -883,8 +883,8 @@ export async function createAdeRuntime(args: {
       role: chatOnlyRuntime ? "tui-runtime" : "ade-serve-daemon",
       projectRoot,
     });
-    processRegistry.start();
     teardown.push(() => processRegistry.stop());
+    processRegistry.start();
     const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
@@ -1490,6 +1490,7 @@ export async function createAdeRuntime(args: {
         logger,
       })
       : null;
+    teardown.push(() => linearIngressService?.stop());
     if (linearIngressService) {
       // Availability keys off configuration, not the enabled-rule-dependent
       // status.state ("disabled" while no Linear rule is enabled would make
@@ -1503,7 +1504,6 @@ export async function createAdeRuntime(args: {
       });
       linearIngressService.start();
     }
-    teardown.push(() => linearIngressService?.stop());
     const cursorCloudIngressService = createCursorCloudIngressService({
       db,
       projectId,
@@ -1534,8 +1534,8 @@ export async function createAdeRuntime(args: {
       const status = cursorCloudIngressService.getStatus();
       return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
     });
-    cursorCloudIngressService.start();
     teardown.push(() => cursorCloudIngressService.stop());
+    cursorCloudIngressService.start();
     const configReloadService = createConfigReloadService({
       paths: {
         sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -1652,8 +1652,8 @@ export async function createAdeRuntime(args: {
         });
       },
     });
-    prPollingService.start();
     teardown.push(() => prPollingService.dispose());
+    prPollingService.start();
     prPollingServiceForIngress = prPollingService;
     void automationIngressService.start().catch((error) => {
       logger.warn("automations.ingress_start_failed", {

@@ -2754,6 +2754,12 @@ app.whenReady().then(async () => {
         probeIdentity: () => localRuntimePool.probeMachineRuntimeIdentity(),
         restartService: () => machineRecoveryService.restartBrain(),
         readStaleRuntime: () => localRuntimePool.getStaleMismatchedRuntime(),
+        // Each restart attempt waits on the socket, so two of them plus the
+        // reinstall can outlast the window opened when the transaction began.
+        // Re-arming per attempt keeps opportunistic repair out of a restart
+        // that is still progressing, and a brain that never answers still
+        // lets the window expire.
+        onAttemptStart: () => localRuntimePool.beginUpdateWindow("post_update_transaction"),
         log: (event, meta) => updateLogger.info(event, meta),
       }),
       checkHealth: async () => {

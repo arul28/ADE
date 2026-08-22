@@ -18217,9 +18217,14 @@ async function runServe(
     && socketPath === layout.socketPath
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   if (isPrimaryBrain && preparedServiceCommand.filePath) {
-    const [{ createBrainFreshnessMonitor }, { requestBrainServiceRestart }] = await Promise.all([
+    const [
+      { createBrainFreshnessMonitor },
+      { requestBrainServiceRestart },
+      { createSingleFlightBrainRestart },
+    ] = await Promise.all([
       import("./services/runtime/brainFreshnessMonitor"),
       import("./commands/brainUpdate"),
+      import("./services/runtime/singleFlightBrainRestart"),
     ]);
     // Hoisted so the freshness monitor and the memory mitigation restart this
     // brain the same way. Two spellings of "restart the service" would be two
@@ -18231,7 +18236,11 @@ async function runServe(
         personalChatScope,
       })
     ).idle;
-    const restartBrainService = (failureEvent: string): void => {
+    // Single-flighted: the freshness monitor and the memory guard each
+    // serialize only their own attempts, so without a shared latch both can
+    // request a restart of this service at the same time. The second caller
+    // joins the restart already running and sees its outcome.
+    const restartBrainService = createSingleFlightBrainRestart((failureEvent: string): void => {
       const result = requestBrainServiceRestart({
         command: serviceCommand.command,
         commandArgs: preparedServiceCommand.args,
@@ -18247,7 +18256,11 @@ async function runServe(
         });
         throw new Error(result.stderr || result.stdout || "service restart failed");
       }
-    };
+    }, {
+      onCoalesced: (failureEvent) => {
+        headlessProjectLogger.info("brain.restart_coalesced", { failureEvent });
+      },
+    });
     const freshnessMonitor = createBrainFreshnessMonitor({
       filePath: preparedServiceCommand.filePath,
       runningHash:

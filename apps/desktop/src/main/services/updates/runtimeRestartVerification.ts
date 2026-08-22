@@ -102,6 +102,15 @@ export type VerifiedRuntimeRestartDeps = {
   readStaleRuntime?: () => StaleRuntimeRecord | null;
   /** How many real restarts to spend before reporting the truth. Default 2. */
   maxRestarts?: number;
+  /**
+   * Called immediately before every restart attempt.
+   *
+   * Each attempt reinstalls nothing but waits on the socket, so the whole step
+   * can outlast a caller's fixed-length update window. The caller re-arms that
+   * window here, which keeps every attempt covered while a genuine hang still
+   * lets the window expire.
+   */
+  onAttemptStart?: () => void;
   log?: (event: string, meta: Record<string, unknown>) => void;
 };
 
@@ -162,6 +171,7 @@ export async function runVerifiedRuntimeRestart(
       reason: verdict.reason,
       detail: verdict.detail,
     });
+    deps.onAttemptStart?.();
     try {
       await deps.restartService();
     } catch (error) {

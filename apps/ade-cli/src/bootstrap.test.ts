@@ -51,10 +51,12 @@ describe("createAdeRuntime startup teardown", () => {
   // no injection seam, so these assertions read the source. They exist because a
   // throw after the database open used to leak the handle and every started
   // service, once per sync-host retry.
+  // Line endings are normalized because a Windows checkout writes CRLF, and
+  // every anchor below is written against "\n".
   const source = fs.readFileSync(
     path.join(path.dirname(fileURLToPath(import.meta.url)), "bootstrap.ts"),
     "utf8",
-  );
+  ).replace(/\r\n/g, "\n");
   const runtimeFn = source.slice(source.indexOf("export async function createAdeRuntime"));
 
   /** Index of the first match of `pattern` at or after `from`, or -1. */

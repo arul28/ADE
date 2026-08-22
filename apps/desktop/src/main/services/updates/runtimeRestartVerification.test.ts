@@ -144,6 +144,38 @@ describe("runVerifiedRuntimeRestart", () => {
     });
   });
 
+  it("re-arms the caller's update window once per restart attempt", async () => {
+    // Every attempt waits on the socket, so a fixed window opened before the
+    // transaction can expire mid-restart and let opportunistic repair back in.
+    const onAttemptStart = vi.fn();
+    const calls: string[] = [];
+    await runVerifiedRuntimeRestart({
+      expectedVersion: "1.2.63",
+      probeIdentity: async () => identity({ version: "1.2.62", buildHash: "hash-old" }),
+      restartService: async () => {
+        calls.push("restart");
+      },
+      onAttemptStart: () => {
+        onAttemptStart();
+        calls.push("re-arm");
+      },
+      maxRestarts: 2,
+    });
+    expect(onAttemptStart).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual(["re-arm", "restart", "re-arm", "restart"]);
+  });
+
+  it("does not re-arm the update window when no restart is needed", async () => {
+    const onAttemptStart = vi.fn();
+    await runVerifiedRuntimeRestart({
+      expectedVersion: "1.2.63",
+      probeIdentity: async () => identity(),
+      restartService: async () => {},
+      onAttemptStart,
+    });
+    expect(onAttemptStart).not.toHaveBeenCalled();
+  });
+
   it("treats a probe that throws as an unreachable runtime", async () => {
     const restartService = vi.fn(async () => {});
     const outcome = await runVerifiedRuntimeRestart({
