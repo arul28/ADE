@@ -9,8 +9,14 @@ import {
   parseWindowsDesktopInstallProbe,
   probeDoctorBrain,
   readAutoDiagnosticsSharingForDoctor,
+  readStorageEnvironmentForDoctor,
   type DoctorInput,
 } from "./doctor";
+import type {
+  StorageEnvironment,
+  StorageEnvironmentRoot,
+} from "../services/diagnostics/storageEnvironmentProbe";
+import type { MachineAdeLayout } from "../services/projects/machineLayout";
 import { createSyncAccountDirectoryHealth } from "../../../desktop/src/shared/types/sync";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../services/account/accountMachinePublisherService";
 
@@ -19,6 +25,34 @@ const NOW = Date.parse("2026-07-23T12:00:00.000Z");
 afterEach(() => {
   vi.useRealTimers();
 });
+
+function storageRoot(
+  overrides: Partial<StorageEnvironmentRoot> & { label: string },
+): StorageEnvironmentRoot {
+  return {
+    location: "local",
+    sampledFiles: 120,
+    datalessFiles: 0,
+    sampleTruncated: false,
+    ...overrides,
+  };
+}
+
+function storageEnvironment(overrides: {
+  roots: StorageEnvironmentRoot[];
+  materializeDatalessFiles?: boolean | null;
+}): StorageEnvironment {
+  return {
+    roots: overrides.roots,
+    process: {
+      platform: "darwin",
+      processType: "cli",
+      launchdManaged: true,
+      materializeDatalessFiles: overrides.materializeDatalessFiles ?? null,
+    },
+    limitations: [],
+  };
+}
 
 function healthyInput(): DoctorInput {
   return {
@@ -194,6 +228,7 @@ describe("doctor row evaluation", () => {
       ["relay", "ok"],
       ["account", "ok"],
       ["credentials", "ok"],
+      ["storage", "ok"],
       ["diagnostics", "ok"],
     ]);
   });
@@ -510,6 +545,126 @@ describe("doctor row evaluation", () => {
       });
     } finally {
       fs.rmSync(adeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports evicted cloud files, and calls a denied download policy the failure it is", () => {
+    // The outage this row exists for: the project is in iCloud Drive, its files
+    // have been evicted, and the launch agent this machine runs predates the
+    // key that lets the background service fetch them back.
+    const denied = healthyInput();
+    denied.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({
+          label: "Project",
+          location: "icloud",
+          sampledFiles: 120,
+          datalessFiles: 47,
+        }),
+      ],
+      materializeDatalessFiles: false,
+    });
+    const deniedRow = evaluateDoctorRows(denied).find((row) => row.key === "storage");
+    expect(deniedRow?.status).toBe("fail");
+    expect(deniedRow?.detail).toContain("Project: 47 of 120 sampled files are not downloaded (icloud)");
+    expect(deniedRow?.detail).toContain("ade runtime install-service");
+
+    // The same evicted files with the policy granted are a provider taking its
+    // time, not a machine that cannot read its own data.
+    const allowed = healthyInput();
+    allowed.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({
+          label: "Project",
+          location: "icloud",
+          sampledFiles: 120,
+          datalessFiles: 47,
+        }),
+      ],
+      materializeDatalessFiles: true,
+    });
+    const allowedRow = evaluateDoctorRows(allowed).find((row) => row.key === "storage");
+    expect(allowedRow?.status).toBe("warn");
+    expect(allowedRow?.detail).not.toContain("ade runtime install-service");
+  });
+
+  it("keeps a denied download policy quiet unless this machine has bytes in the cloud", () => {
+    // Every machine that has not reinstalled its service since the key shipped
+    // reads as denied. On local disks that costs the user nothing, and a row
+    // that is yellow everywhere is a row nobody reads.
+    const local = healthyInput();
+    local.storage = storageEnvironment({
+      roots: [storageRoot({ label: "ADE home" }), storageRoot({ label: "Project" })],
+      materializeDatalessFiles: false,
+    });
+    expect(evaluateDoctorRows(local).find((row) => row.key === "storage")).toEqual({
+      key: "storage",
+      label: "Storage",
+      status: "ok",
+      detail: "ADE home: local · Project: local",
+    });
+
+    // Nothing is missing yet, but the next eviction lands on a service that may
+    // not fetch it back, and the fix is the same one.
+    const cloud = healthyInput();
+    cloud.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({ label: "Project", location: "dropbox" }),
+      ],
+      materializeDatalessFiles: false,
+    });
+    const cloudRow = evaluateDoctorRows(cloud).find((row) => row.key === "storage");
+    expect(cloudRow?.status).toBe("warn");
+    expect(cloudRow?.detail).toContain("Project on cloud storage");
+  });
+
+  it("fails the storage row when a root could not be read, and says nothing when it was not checked", () => {
+    const unreadable = healthyInput();
+    unreadable.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({ label: "Project", error: "(could not be read)" }),
+      ],
+    });
+    expect(evaluateDoctorRows(unreadable).find((row) => row.key === "storage")).toMatchObject({
+      status: "fail",
+      detail: "Project could not be read",
+    });
+
+    expect(evaluateDoctorRows(healthyInput()).find((row) => row.key === "storage"))
+      .toMatchObject({ status: "ok", detail: "not checked" });
+  });
+
+  it("samples the ADE home and the last project this machine opened", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-doctor-storage-home-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "ade-doctor-storage-project-"));
+    try {
+      fs.mkdirSync(path.join(project, ".ade"), { recursive: true });
+      fs.writeFileSync(path.join(project, "README.md"), "hello");
+      fs.writeFileSync(path.join(home, "machine.json"), "{}");
+      const projectsPath = path.join(home, "projects.json");
+      fs.writeFileSync(
+        projectsPath,
+        JSON.stringify({ projects: [{ rootPath: project, lastOpenedAt: Date.now() }] }),
+      );
+
+      const environment = await readStorageEnvironmentForDoctor(
+        { adeDir: home, projectsPath } as MachineAdeLayout,
+        {},
+        "linux",
+      );
+      expect(environment?.roots.map((root) => root.label)).toEqual(["ADE home", "Project"]);
+      // Both roots were really walked, and neither reported a path.
+      expect(environment?.roots[1]?.sampledFiles).toBeGreaterThan(0);
+      expect(JSON.stringify(environment)).not.toContain(project);
+      // Off darwin there is no launch agent and no policy to read.
+      expect(environment?.process.materializeDatalessFiles).toBeNull();
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(project, { recursive: true, force: true });
     }
   });
 

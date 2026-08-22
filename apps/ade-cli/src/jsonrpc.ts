@@ -89,6 +89,8 @@ export type JsonRpcInternalErrorReport = {
   errorId: string;
   method: string;
   error: unknown;
+  /** The file a filesystem failure named, when it named one. */
+  path?: string;
 };
 
 export type JsonRpcInternalErrorReporter = (report: JsonRpcInternalErrorReport) => void;
@@ -163,9 +165,44 @@ function isInternalRuntimeError(error: unknown): boolean {
   if (typeof raw.syscall === "string" && raw.syscall.length > 0) return true;
   if (typeof raw.errno === "number") return true;
   if (isErrnoLikeCode(raw.code)) return true;
+  // An errno the platform could not name reaches Node as its own `code`, not
+  // only as message text: "Unknown system error -11" is the literal code on the
+  // macOS File-Provider read that produced this bug. It matches no errno shape,
+  // so without this the coded-error branch below reads it as a service verdict.
+  if (typeof raw.code === "string" && UNKNOWN_SYSTEM_ERRNO_PATTERN.test(raw.code)) return true;
   if (UNKNOWN_SYSTEM_ERRNO_PATTERN.test(error.message)) return true;
   // Runtime faults (TypeError, RangeError, …) are always programming errors.
   return /^(?:Type|Range|Reference|Syntax|Eval|URI)Error$/.test(error.name);
+}
+
+/**
+ * The file a filesystem failure was about, when it named one.
+ *
+ * A path is an internal detail on the wire and the one detail that makes the
+ * process log actionable, so it travels only in the internal-error report — and
+ * inside the reported error's own text, because the reporter renders a stack,
+ * and a stack never quotes the path. The unnameable-errno message does not
+ * quote it either ("Unknown system error -11, read"), which is how the log of
+ * the original incident named no file at all.
+ */
+function annotateFailingPath(error: unknown): { error: unknown; path?: string } {
+  if (!(error instanceof Error)) return { error };
+  const failingPath = (error as Error & { path?: unknown }).path;
+  if (typeof failingPath !== "string" || !failingPath.trim()) return { error };
+  const annotated = new Error(`${error.message} (path ${failingPath})`);
+  annotated.name = error.name;
+  const frames = (error.stack ?? "").split("\n").filter((line) => /^\s+at\s/.test(line));
+  annotated.stack = [`${annotated.name}: ${annotated.message}`, ...frames].join("\n");
+  const source = error as Error & { code?: unknown; errno?: unknown; syscall?: unknown };
+  return {
+    error: Object.assign(annotated, {
+      ...(source.code !== undefined ? { code: source.code } : {}),
+      ...(source.errno !== undefined ? { errno: source.errno } : {}),
+      ...(source.syscall !== undefined ? { syscall: source.syscall } : {}),
+      path: failingPath,
+    }),
+    path: failingPath,
+  };
 }
 
 function writeMessage(
@@ -199,6 +236,38 @@ function toErrorResponse(
     };
   }
 
+  // The runtime check runs FIRST, ahead of the coded branch. A platform error
+  // whose `code` is neither an errno shape nor a Node internal one — the macOS
+  // File-Provider read whose code is the sentence "Unknown system error -11" —
+  // satisfies `readCodedErrorShape`, so a coded-first order forwarded the raw
+  // platform message to the caller AND skipped `onInternalError` entirely: no
+  // log line, no auto-diagnostics, and the errno on the user's screen.
+  if (isInternalRuntimeError(error)) {
+    // The message and stack go to the process log — which `ade report-issue`
+    // collects — and the caller gets only the reference that finds them.
+    const errorId = nextErrorId();
+    const reported = annotateFailingPath(error);
+    try {
+      context.onInternalError?.({
+        errorId,
+        method: context.method,
+        error: reported.error,
+        ...(reported.path ? { path: reported.path } : {}),
+      });
+    } catch {
+      // Reporting must not become a second failure path.
+    }
+    return {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: JsonRpcErrorCode.internalError,
+        message: `Internal error in ${context.method} (ref ${errorId})`,
+        data: { errorId },
+      }
+    };
+  }
+
   // A coded failure is a verdict the service already made and worded; forward
   // the code so the caller can act on it, in the `code: message` shape the
   // desktop already parses.
@@ -215,26 +284,6 @@ function toErrorResponse(
           coded.rootPath ? { rootPath: coded.rootPath } : undefined,
         ),
         data: { code: coded.code },
-      }
-    };
-  }
-
-  if (isInternalRuntimeError(error)) {
-    // The message and stack go to the process log — which `ade report-issue`
-    // collects — and the caller gets only the reference that finds them.
-    const errorId = nextErrorId();
-    try {
-      context.onInternalError?.({ errorId, method: context.method, error });
-    } catch {
-      // Reporting must not become a second failure path.
-    }
-    return {
-      jsonrpc: "2.0",
-      id,
-      error: {
-        code: JsonRpcErrorCode.internalError,
-        message: `Internal error in ${context.method} (ref ${errorId})`,
-        data: { errorId },
       }
     };
   }

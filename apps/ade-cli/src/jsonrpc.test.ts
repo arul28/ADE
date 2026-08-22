@@ -389,6 +389,31 @@ describe("internal error replies", () => {
     }
   });
 
+  it("redacts an errno the platform could not name, and reports the file it failed on", async () => {
+    // The exact production shape: libuv has no name for macOS EDEADLK, so the
+    // code IS the sentence "Unknown system error -11". It matches no errno
+    // pattern, which used to make it look like a service's own coded verdict:
+    // the raw platform message went to the caller and nothing was ever logged.
+    const dbPath = "/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/ADE/.ade/ade.db";
+    const raw = Object.assign(
+      new Error("Unknown system error -11: Unknown system error -11, read"),
+      { code: "Unknown system error -11", errno: -11, syscall: "read", path: dbPath },
+    );
+    const reports: JsonRpcInternalErrorReport[] = [];
+    const response = await failWith(raw, { onInternalError: (report) => reports.push(report) });
+
+    expect(response.error.message).toMatch(/^Internal error in ade\/actions\/call \(ref [0-9a-f]+\)$/);
+    expect(response.error.message).not.toContain("Unknown system error");
+    expect(response.error.data?.code).toBeUndefined();
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.path).toBe(dbPath);
+    // The reporter renders a stack, and a stack never quotes the path — so the
+    // reported error carries it in its own text too.
+    expect((reports[0]?.error as Error).message).toContain(dbPath);
+    expect((reports[0]?.error as Error).stack).toContain(dbPath);
+    expect((reports[0]?.error as Error & { code?: string }).code).toBe("Unknown system error -11");
+  });
+
   it("forwards a service's coded verdict so the caller can act on it", async () => {
     const response = await failWith(Object.assign(
       new Error("ADE couldn't read this project's data at /tmp/p/.ade/ade.db."),

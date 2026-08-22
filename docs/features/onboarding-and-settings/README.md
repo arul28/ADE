@@ -1143,6 +1143,26 @@ banner):
   repair and this restart stay mutually exclusive. Step-by-step copy and the
   bound dependencies are in
   [desktop-auto-update.md](./desktop-auto-update.md#applying-an-update-is-one-transaction).
+- `apps/desktop/src/main/services/updates/runtimeRestartVerification.ts` —
+  what the transaction's `restart` and `health` steps actually bind to.
+  `verifyRuntimeIdentity` is the pure verdict (`matches`, or one of
+  `unreachable` / `incompatible` / `version` / `build` / `stale_runtime`);
+  `checkRuntimeIdentity` is the shared probe-and-judge both steps call, so they
+  cannot drift; `runVerifiedRuntimeRestart` restarts and re-verifies up to
+  `maxRestarts` (2) and returns a **failed** step when it still cannot prove the
+  installed brain is the one answering. The old step asked the endpoint whether
+  it was `ok`, which a surviving pre-update brain answers just as well as the
+  new one — so a machine could report a green update while running yesterday's
+  code and holding the sync-host lease. Its log events are
+  `autoUpdate.restart_not_needed` / `_required` / `_attempt_failed` /
+  `_verified` / `_verification_failed`. See
+  [desktop-auto-update.md](./desktop-auto-update.md#the-restart-step-has-to-be-told-the-truth).
+- `apps/desktop/src/main/services/processes/processStartTime.ts` —
+  `readProcessStartTimeMs(pid)`, one bounded `/bin/ps -o lstart=` under a pinned
+  `LC_ALL=C`, `null` on Windows. It is what makes a recorded pid an identity
+  rather than a number the OS may already have handed to somebody else; the
+  update path uses it to recognise a stale pre-update brain, and the external
+  brain watchdog uses it before killing anything.
 - `apps/desktop/src/shared/updateVersions.ts` — the one ADE version comparator,
   shared by main and renderer. Update prompts, "is this machine behind?", and
   the auto-update state machine all have to agree on what "newer" means, so
@@ -1190,9 +1210,15 @@ banner):
   **Cancel** action wired to `updateCancelAutoApply()`.
 - `apps/desktop/src/renderer/components/app/BrainRecoveryNotice.tsx` — the
   app-shell notice shown once per distinct machine-brain event-loop recovery.
-  It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()`,
-  announces "ADE recovered from a background issue … a stuck task (…) was
-  restarted", and acknowledges by persisting the wedge `ts` to `localStorage`
+  It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()` and words
+  the notice from `formatRecoveryMessage`, which has two cases because the two
+  recoveries are not the same event. A wedge attributed to a running command
+  reads "ADE recovered from a background issue … a stuck task (…) was
+  restarted". A wedge whose `lastCommand` is `external-watchdog` had no stuck
+  task — the whole brain stopped answering and something outside it restarted
+  the service — so naming a command there would invent one, and it reads "ADE
+  restarted its background service at … after it stopped responding." It
+  acknowledges by persisting the wedge `ts` to `localStorage`
   so the same event never nags twice while a fresh recovery (new `ts`)
   reappears. The wedge itself is produced by the brain event-loop watchdog
   (see [ARCHITECTURE.md §2.1](../../ARCHITECTURE.md) and

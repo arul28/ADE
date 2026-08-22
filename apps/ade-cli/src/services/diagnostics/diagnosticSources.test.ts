@@ -559,4 +559,91 @@ describe("the new sources go through redaction", () => {
     expect(report).not.toContain(root);
     expect(report).toContain("<project:photon#");
   });
+
+  /**
+   * The section that would have named the friend's problem on line one: a
+   * project in iCloud Drive whose files are not on the disk. It is collected
+   * with pure `fs` calls, so it is there on the machine where the brain will
+   * not start — which is the only machine that ever needs it.
+   */
+  describe("storage environment", () => {
+    it("classifies both roots and counts the files it sampled", () => {
+      const { home, adeDir } = machineHome();
+      const root = project(home, "photon");
+      fs.writeFileSync(path.join(root, "README.md"), "hello", "utf8");
+      const sources = collect({ home, projectRoot: root });
+
+      expect(sources.storageEnvironment.roots.map((entry) => entry.label))
+        .toEqual(["ADE home", "Project"]);
+      for (const entry of sources.storageEnvironment.roots) {
+        expect(entry.location).toBe("local");
+        expect(entry.datalessFiles).toBe(0);
+        expect(entry.error).toBeUndefined();
+      }
+      expect(sources.storageEnvironment.roots[1]?.sampledFiles).toBeGreaterThan(0);
+      expect(sources.storageEnvironment.process.platform).toBe("darwin");
+      expect(adeDir).toContain(".ade");
+    });
+
+    it("collects without running a single command", () => {
+      const { home } = machineHome();
+      // `noCommands` refuses every subprocess, so a section that needed one
+      // could not have been built. Nothing here starts or dials the brain.
+      const sources = collect({ home, runCommand: noCommands });
+      expect(sources.storageEnvironment.roots).toHaveLength(1);
+      expect(sources.storageEnvironment.limitations[0]).toContain("materialization policy");
+    });
+
+    it("reads the materialization policy off this machine's own launch agent", () => {
+      const { home } = machineHome();
+      const agentDir = path.join(home, "Library", "LaunchAgents");
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(agentDir, "com.ade.runtime.plist"),
+        "<dict>\n<key>MaterializeDatalessFiles</key>\n<true/>\n</dict>\n",
+        "utf8",
+      );
+
+      const sources = collect({ home });
+      expect(sources.storageEnvironment.process.materializeDatalessFiles).toBe(true);
+    });
+
+    it("reports no policy at all when no launch agent is installed", () => {
+      const { home } = machineHome();
+      const sources = collect({ home });
+      expect(sources.storageEnvironment.process.materializeDatalessFiles).toBeNull();
+    });
+
+    it("renders the section as enums and counts, with no path in it", () => {
+      const { home } = machineHome();
+      const root = project(home, "photon");
+      fs.writeFileSync(path.join(root, "README.md"), "hello", "utf8");
+      const agentDir = path.join(home, "Library", "LaunchAgents");
+      fs.mkdirSync(agentDir, { recursive: true });
+      // A launch agent that names the key and denies it: the case where reads
+      // fail inside ADE and succeed in Terminal on the very same files.
+      fs.writeFileSync(
+        path.join(agentDir, "com.ade.runtime.plist"),
+        "<dict>\n<key>MaterializeDatalessFiles</key>\n<false/>\n</dict>\n",
+        "utf8",
+      );
+      const sources = collect({ home, projectRoot: root });
+
+      const report = buildDiagnosticReport({
+        generatedAt: "2026-08-21T00:00:00.000Z",
+        app: { version: "1.2.63", platform: "darwin", arch: "arm64" },
+        identity: { installId: "ade_test" },
+        context: { surface: "cli", projectRoot: root },
+        storageEnvironment: sources.storageEnvironment,
+        redaction: { ...sources.redaction, homeDir: home },
+      });
+
+      expect(report).toContain("## Storage environment");
+      expect(report).toContain("- Project: local — 0 of");
+      expect(report).toContain("sampled files not downloaded");
+      expect(report).toContain("NOT allowed to download evicted files");
+      expect(report).not.toContain(root);
+      expect(report).not.toContain("README.md");
+    });
+  });
 });

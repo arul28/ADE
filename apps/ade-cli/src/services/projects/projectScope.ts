@@ -17,6 +17,27 @@ const SYNC_HOST_CONFIGURE_TIMEOUT_MS = 10_000;
 export const SYNC_HOST_ADOPT_TIMEOUT_MS = 30_000;
 const SYNC_HOST_ADOPT_POLL_MS = 250;
 
+/**
+ * Backoff after a failed project boot.
+ *
+ * A boot failure used to leave no trace beyond the deleted cache entry, so
+ * every caller that asked for the project re-ran a full runtime construction:
+ * one field machine did 41 full boots in 49 seconds, each one opening the
+ * project database again. The delay is `BASE * 2 ** attempts`, so the first
+ * retry waits two seconds and the fifth waits the capped thirty.
+ */
+const FAILED_SCOPE_BACKOFF_BASE_MS = 1_000;
+export const FAILED_SCOPE_BACKOFF_MAX_MS = 30_000;
+
+type FailedScopeBoot = {
+  /** The failure itself, rethrown verbatim so callers keep their coded error. */
+  error: unknown;
+  /** When the boot failed. */
+  atMs: number;
+  /** How many boots have failed in a row. */
+  attempts: number;
+};
+
 class SyncHostPhaseTimeoutError extends Error {}
 
 async function runSyncHostPhase<T>(
@@ -64,6 +85,7 @@ export class ProjectScope {
 
 export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
+  private readonly failedScopes = new Map<ProjectId, FailedScopeBoot>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
   private syncHostProjectId: ProjectId | null = null;
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
@@ -83,8 +105,21 @@ export class ProjectScopeRegistry {
     private readonly options: {
       syncRuntime?: AdeRuntimeSyncOptions;
       onDisposeProject?: (projectId: ProjectId) => void;
+      /** Injectable clock for the failed-boot backoff. Tests only. */
+      now?: () => number;
     } = {},
   ) {}
+
+  private nowMs(): number {
+    return (this.options.now ?? Date.now)();
+  }
+
+  private failedScopeBackoffMs(attempts: number): number {
+    return Math.min(
+      FAILED_SCOPE_BACKOFF_MAX_MS,
+      FAILED_SCOPE_BACKOFF_BASE_MS * 2 ** attempts,
+    );
+  }
 
   onDispose(listener: (projectId: ProjectId) => void): () => void {
     this.disposeListeners.add(listener);
@@ -110,6 +145,17 @@ export class ProjectScopeRegistry {
   ): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
+
+    // A project whose boot just failed is very likely to fail the same way
+    // again, and a full boot is expensive: it opens the project database and
+    // constructs every runtime service. Serve the recorded failure until the
+    // backoff expires, so a room full of pollers costs one boot per window
+    // instead of one boot per call. The entry survives the expired window so
+    // repeated failures keep lengthening the backoff; only a success clears it.
+    const failed = this.failedScopes.get(projectId);
+    if (failed && this.nowMs() - failed.atMs < this.failedScopeBackoffMs(failed.attempts)) {
+      throw failed.error;
+    }
 
     const record = this.projectRegistry.get(projectId);
     if (!record) {
@@ -140,23 +186,40 @@ export class ProjectScopeRegistry {
     this.scopes.set(projectId, pending);
 
     try {
-      return await pending;
+      const scope = await pending;
+      // Only the attempt that still owns the cache entry may clear the
+      // backoff; an abandoned boot that succeeds late must not wipe a backoff
+      // a newer attempt earned.
+      if (this.scopes.get(projectId) === pending) {
+        this.failedScopes.delete(projectId);
+      }
+      return scope;
     } catch (error) {
       // A timed-out cold sync-host boot can be evicted and retried while the
       // original createAdeRuntime() promise is still settling. Never let that
-      // stale completion delete a newer retry from the cache or clear a host
-      // that the retry successfully promoted.
+      // stale completion delete a newer retry from the cache, clear a host that
+      // the retry successfully promoted, or hold a newer retry off with a
+      // backoff earned by the abandoned attempt.
       if (this.scopes.get(projectId) === pending) {
         this.scopes.delete(projectId);
         if (this.syncHostProjectId === projectId) {
           this.syncHostProjectId = null;
         }
+        this.failedScopes.set(projectId, {
+          error,
+          atMs: this.nowMs(),
+          attempts: (this.failedScopes.get(projectId)?.attempts ?? 0) + 1,
+        });
       }
       throw error;
     }
   }
 
   async dispose(projectId: ProjectId): Promise<void> {
+    // Disposing is how a repair asks for a clean slate, so it also drops the
+    // failed-boot backoff: the next `get` must boot rather than replay the
+    // failure the repair was meant to fix.
+    this.failedScopes.delete(projectId);
     const cached = this.scopes.get(projectId);
     if (!cached) return;
     this.scopes.delete(projectId);
@@ -174,6 +237,9 @@ export class ProjectScopeRegistry {
   async disposeAll(): Promise<void> {
     const projectIds = [...this.scopes.keys()];
     await Promise.all(projectIds.map((projectId) => this.dispose(projectId)));
+    // Projects that only ever failed to boot hold no scope, so the loop above
+    // never reaches them.
+    this.failedScopes.clear();
   }
 
   async ensureSyncHost(

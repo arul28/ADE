@@ -4,16 +4,23 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signalChildProcessTree } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { realpathIfExists } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { recordLastFailure } from "../runtime/lastFailureStore";
+import { readProcessStartTimeMs } from "../processes/processStartTime";
 
 vi.mock("electron", () => ({
   app: {
     getAppPath: () => "/Applications/ADE.app/Contents/Resources/app.asar",
   },
+}));
+
+// The one `ps` probe the pool uses to bind a pid to a process. Mocked at the
+// module so the tests state a start time instead of depending on this machine.
+vi.mock("../processes/processStartTime", () => ({
+  readProcessStartTimeMs: vi.fn((): number | null => null),
 }));
 
 import {
@@ -28,7 +35,9 @@ import {
   isLocalRuntimeConnectionDropped,
   isRetryableReadAction,
   localReleaseBuildOutputRuntimeBlock,
+  LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE,
   LocalRuntimeConnectionPool,
+  serviceRepairBackoffMs,
   parseRuntimeServiceManagerOutput,
   parseRuntimeServiceStatusJson,
   readLocalRuntimeInfo,
@@ -323,6 +332,163 @@ describe("local runtime connection pool", () => {
     expect(compareRuntimeVersionStrings("0.0.0", "1.2.13")).toBe(-1);
     expect(compareRuntimeVersionStrings(null, "1.2.13")).toBeNull();
     expect(compareRuntimeVersionStrings("next", "1.2.13")).toBeNull();
+  });
+
+  describe("getStaleMismatchedRuntime", () => {
+    type StaleInternals = {
+      lastRuntimeIdentityMismatch: {
+        pid: number | null;
+        version: string | null;
+        buildHash: string | null;
+        observedAt: string;
+        startedAtMs: number | null;
+      } | null;
+      noteRuntimeIdentityMismatch: (runtimeInfo: {
+        pid: number | null;
+        version: string | null;
+        buildHash: string | null;
+      }) => void;
+      getStaleMismatchedRuntime: () => { pid: number; version: string | null } | null;
+      dispose: () => void;
+    };
+
+    const readStartTime = vi.mocked(readProcessStartTimeMs);
+
+    // A pid this process may signal without owning one: itself is rejected by
+    // `isRuntimePidAlive`, so the parent pid stands in for a live foreign one.
+    const livePid = process.ppid;
+
+    beforeEach(() => {
+      readStartTime.mockReset();
+      readStartTime.mockReturnValue(null);
+    });
+
+    const poolWithMismatch = (overrides: {
+      observedAt?: string;
+      startedAtMs?: number | null;
+    } = {}): StaleInternals => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const pool = new LocalRuntimeConnectionPool("1.2.63", logger as never);
+      const internals = pool as unknown as StaleInternals;
+      internals.lastRuntimeIdentityMismatch = {
+        pid: livePid,
+        version: "1.2.62",
+        buildHash: "old-build",
+        observedAt: overrides.observedAt ?? new Date().toISOString(),
+        startedAtMs: overrides.startedAtMs === undefined ? 1_700_000_000_000 : overrides.startedAtMs,
+      };
+      return internals;
+    };
+
+    it("reports a pre-update runtime that is still the process that answered", () => {
+      const internals = poolWithMismatch();
+      readStartTime.mockReturnValue(1_700_000_000_000);
+      try {
+        expect(internals.getStaleMismatchedRuntime()).toEqual({ pid: livePid, version: "1.2.62" });
+      } finally {
+        internals.dispose();
+      }
+    });
+
+    it("does not mistake a recycled pid for the surviving runtime", () => {
+      // The regression: `process.kill(pid, 0)` only proves SOMETHING holds the
+      // number. An unrelated process that inherited it made the update
+      // transaction burn both restarts and report a good update as failed.
+      const internals = poolWithMismatch();
+      readStartTime.mockReturnValue(1_700_000_600_000);
+      try {
+        expect(internals.getStaleMismatchedRuntime()).toBeNull();
+      } finally {
+        internals.dispose();
+      }
+    });
+
+    it("ignores a mismatch record too old to still name a real process", () => {
+      // The only guard on Windows, where there is no `ps` to read a start time.
+      const internals = poolWithMismatch({
+        observedAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+        startedAtMs: null,
+      });
+      readStartTime.mockReturnValue(null);
+      try {
+        expect(internals.getStaleMismatchedRuntime()).toBeNull();
+        // Expired records are dropped before the process is probed at all.
+        expect(readStartTime).not.toHaveBeenCalled();
+      } finally {
+        internals.dispose();
+      }
+    });
+
+    it("reads the start time once while the same runtime keeps failing", () => {
+      // Every failing action poll re-notes the same mismatch. Spawning `ps` per
+      // note put one process per poll on a machine that is already unhappy.
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const pool = new LocalRuntimeConnectionPool("1.2.63", logger as never);
+      const internals = pool as unknown as StaleInternals;
+      readStartTime.mockReturnValue(1_700_000_000_000);
+      try {
+        const runtimeInfo = { pid: livePid, version: "1.2.62", buildHash: "old-build" };
+        internals.noteRuntimeIdentityMismatch(runtimeInfo);
+        internals.noteRuntimeIdentityMismatch(runtimeInfo);
+        expect(readStartTime).toHaveBeenCalledTimes(1);
+        expect(internals.lastRuntimeIdentityMismatch?.startedAtMs).toBe(1_700_000_000_000);
+
+        // A different build on the same pid is a different process, so it is
+        // probed again rather than inheriting the old start time.
+        internals.noteRuntimeIdentityMismatch({ ...runtimeInfo, buildHash: "new-build" });
+        expect(readStartTime).toHaveBeenCalledTimes(2);
+      } finally {
+        internals.dispose();
+      }
+    });
+
+    it("re-probes a failed start-time read once the record is 30 seconds old", () => {
+      // A null is a FAILED probe (`ps` timed out, or the pid was already gone),
+      // not a fact about the process. Cached forever it would disable the
+      // recycled-pid guard for that record; re-probed per poll it would revive
+      // the spawn-per-poll cost. The 30 s floor buys both.
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const pool = new LocalRuntimeConnectionPool("1.2.63", logger as never);
+      const internals = pool as unknown as StaleInternals;
+      readStartTime.mockReturnValue(null);
+      try {
+        const runtimeInfo = { pid: livePid, version: "1.2.62", buildHash: "old-build" };
+        internals.noteRuntimeIdentityMismatch(runtimeInfo);
+        // Inside the floor: the failed probe is reused, not repeated.
+        internals.noteRuntimeIdentityMismatch(runtimeInfo);
+        expect(readStartTime).toHaveBeenCalledTimes(1);
+
+        // Past the floor: the null is retried, and a success sticks.
+        internals.lastRuntimeIdentityMismatch = {
+          ...internals.lastRuntimeIdentityMismatch!,
+          observedAt: new Date(Date.now() - 31_000).toISOString(),
+        };
+        readStartTime.mockReturnValue(1_700_000_000_000);
+        internals.noteRuntimeIdentityMismatch(runtimeInfo);
+        expect(readStartTime).toHaveBeenCalledTimes(2);
+        expect(internals.lastRuntimeIdentityMismatch?.startedAtMs).toBe(1_700_000_000_000);
+
+        // A cached SUCCESS never re-probes, however old the record grows.
+        internals.lastRuntimeIdentityMismatch = {
+          ...internals.lastRuntimeIdentityMismatch!,
+          observedAt: new Date(Date.now() - 31_000).toISOString(),
+        };
+        internals.noteRuntimeIdentityMismatch(runtimeInfo);
+        expect(readStartTime).toHaveBeenCalledTimes(2);
+      } finally {
+        internals.dispose();
+      }
+    });
+
+    it("still reports a fresh record on a platform that cannot read start times", () => {
+      const internals = poolWithMismatch({ startedAtMs: null });
+      readStartTime.mockReturnValue(null);
+      try {
+        expect(internals.getStaleMismatchedRuntime()).toEqual({ pid: livePid, version: "1.2.62" });
+      } finally {
+        internals.dispose();
+      }
+    });
   });
 
   it("quarantines a newer brain whose protocol window excludes this desktop", async () => {
@@ -4129,6 +4295,147 @@ describe("defaultQueryServiceStatusAsync", () => {
       if (originalCliJs === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalCliJs;
       removeTempDir(dir);
+    }
+  });
+});
+
+describe("service repair storm control", () => {
+  // The repair path and the connect path are both private; the tests reach
+  // them through one cast rather than through a public seam that only tests
+  // would use.
+  type RepairPool = {
+    tryRepairServiceConnection: (
+      socketPath: string,
+      reason: "missing" | "incompatible",
+    ) => Promise<unknown>;
+    installServiceBestEffort: () => Promise<void>;
+    createConnection: () => Promise<unknown>;
+    beginUpdateWindow: (reason: string, maxMs?: number) => void;
+    endUpdateWindow: (reason: string) => void;
+    dispose: () => void;
+  };
+
+  function createRepairPool(): {
+    pool: RepairPool;
+    install: ReturnType<typeof vi.fn>;
+    logger: { debug: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+  } {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.2.63", logger as never, {
+      preferServiceRepair: true,
+    }) as unknown as RepairPool;
+    // The installer spawns a CLI child process; count the calls instead of
+    // touching this machine's real service.
+    const install = vi.fn(async () => {});
+    pool.installServiceBestEffort = install as unknown as () => Promise<void>;
+    return { pool, install, logger };
+  }
+
+  function loggedEvents(logger: { info: ReturnType<typeof vi.fn> }): string[] {
+    return logger.info.mock.calls.map((call) => String(call[0]));
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("spreads repeated repairs out instead of one installer per attempt", () => {
+    expect(serviceRepairBackoffMs(0)).toBe(0);
+    expect(serviceRepairBackoffMs(1)).toBe(5_000);
+    expect(serviceRepairBackoffMs(2)).toBe(15_000);
+    expect(serviceRepairBackoffMs(3)).toBe(30_000);
+    expect(serviceRepairBackoffMs(4)).toBe(60_000);
+    expect(serviceRepairBackoffMs(40)).toBe(60_000);
+  });
+
+  it("runs the first repair immediately and throttles the ones behind it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-20T19:05:51.000Z"));
+    const { pool, install, logger } = createRepairPool();
+    try {
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "incompatible");
+      expect(install).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2026-08-20T19:05:52.200Z"));
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "incompatible");
+      expect(install).toHaveBeenCalledTimes(1);
+      expect(loggedEvents(logger)).toContain("local_runtime.service_repair_throttled");
+    } finally {
+      pool.dispose();
+    }
+  });
+
+  it("bounds the installers a 49-second failure storm can start", async () => {
+    // The reported update window: one repair-triggering connect attempt every
+    // 1.2s for 49s. Unbounded, that was one CLI installer per attempt.
+    vi.useFakeTimers();
+    const startMs = Date.parse("2026-08-20T19:05:51.000Z");
+    vi.setSystemTime(new Date(startMs));
+    const { pool, install } = createRepairPool();
+    try {
+      for (let attempt = 0; attempt < 41; attempt++) {
+        vi.setSystemTime(new Date(startMs + attempt * 1_200));
+        await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "incompatible");
+      }
+      expect(install.mock.calls.length).toBeLessThanOrEqual(4);
+      expect(install.mock.calls.length).toBeGreaterThan(0);
+    } finally {
+      pool.dispose();
+    }
+  });
+
+  it("suppresses repair while an update is being applied", async () => {
+    const { pool, install, logger } = createRepairPool();
+    try {
+      pool.beginUpdateWindow("prepare_quit_and_install");
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "missing");
+      expect(install).not.toHaveBeenCalled();
+      expect(loggedEvents(logger)).toContain("local_runtime.service_repair_suppressed");
+
+      pool.endUpdateWindow("post_update_transaction");
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "missing");
+      expect(install).toHaveBeenCalledTimes(1);
+    } finally {
+      pool.dispose();
+    }
+  });
+
+  it("refuses a connect during the update window instead of recovering into it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-update-window-"));
+    const originalSocketPath = process.env.ADE_RUNTIME_SOCKET_PATH;
+    // A path nothing listens on: the machine's real endpoint must stay
+    // untouched by this test.
+    process.env.ADE_RUNTIME_SOCKET_PATH = path.join(dir, "absent.sock");
+    const { pool, install } = createRepairPool();
+    try {
+      pool.beginUpdateWindow("prepare_quit_and_install");
+      await expect(pool.createConnection()).rejects.toThrow(
+        LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE,
+      );
+      expect(install).not.toHaveBeenCalled();
+    } finally {
+      pool.dispose();
+      if (originalSocketPath === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalSocketPath;
+      removeTempDir(dir);
+    }
+  });
+
+  it("lets the update window expire so recovery can never be disabled for good", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.parse("2026-08-20T19:06:11.000Z");
+    vi.setSystemTime(new Date(startMs));
+    const { pool, install } = createRepairPool();
+    try {
+      pool.beginUpdateWindow("prepare_quit_and_install", 30_000);
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "missing");
+      expect(install).not.toHaveBeenCalled();
+
+      vi.setSystemTime(new Date(startMs + 30_001));
+      await pool.tryRepairServiceConnection("/tmp/ade-test.sock", "missing");
+      expect(install).toHaveBeenCalledTimes(1);
+    } finally {
+      pool.dispose();
     }
   });
 });

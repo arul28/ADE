@@ -67,6 +67,17 @@ export function renderSystemdEnvironment(key: string, value: string): string {
   return `Environment="${key}=${escapeSystemdQuotedValue(value)}"`;
 }
 
+/**
+ * There is no Linux counterpart to the launchd `MaterializeDatalessFiles` key,
+ * because there is nothing here for it to fix. The macOS failure it answers is
+ * a VFS dataless placeholder: a file whose contents the kernel evicted and
+ * refuses to download back for a process whose I/O policy forbids it, reported
+ * as EDEADLK. Linux has no such VFS state. Cloud clients here either sync whole
+ * files to local storage or expose them through a FUSE mount, and a FUSE mount
+ * that cannot serve a read answers with EIO or ENOENT from the mount itself --
+ * a failure the caller sees the same way whichever process reads it, so no
+ * per-unit policy could change the outcome.
+ */
 export function renderSystemdUnit(command: AdeServiceCommand): string {
   const envLines = Object.entries(command.env ?? {})
     .map(([key, value]) => renderSystemdEnvironment(key, value))

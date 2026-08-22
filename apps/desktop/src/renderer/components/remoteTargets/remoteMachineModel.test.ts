@@ -328,6 +328,7 @@ describe("describePublishHealth", () => {
   it("stays silent for non-publishing states", () => {
     for (const state of [
       "sync_disabled",
+      "sync_not_started",
       "no_active_sync_scope",
       "not_host",
       "account_signed_out",

@@ -761,7 +761,7 @@ export class ProjectRecoveryService {
       dbHealthy = true;
       addStep("resolve_migrations", "ok", "Interrupted saves were finished safely.");
     } catch (error) {
-      const classified = this.classifyOpenError(error);
+      const classified = this.classifyOpenError(error, { path: dbPath });
       const failureCode = classified === "unknown" ? "unknown" : classified;
       const nextAction = classified === "migration_unknown_state"
         ? "ADE found data it doesn't recognize from an interrupted save. Contact support — nothing has been deleted."

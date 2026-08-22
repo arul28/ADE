@@ -214,9 +214,11 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
 import {
+  currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 
 type JsonObject = Record<string, unknown>;
@@ -16903,6 +16905,10 @@ async function runServe(
   let stopBrainLoopWatchdog: (() => void) | null = null;
   let stopBrainHeartbeat: (() => void) | null = null;
   let stopBrainFreshnessMonitor: (() => void) | null = null;
+  // Built much later than the watchdog that feeds it: the memory mitigation may
+  // only restart a brain the service manager owns, and whether this one is that
+  // brain is not known until the service command has been resolved.
+  let brainMemoryRestartGuard: BrainMemoryRestartGuard | null = null;
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
@@ -16973,6 +16979,7 @@ async function runServe(
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    info: (event, meta) => headlessProjectLogger.info(event, meta),
     onRecovered: (breadcrumb) => {
       brainProductAnalytics.captureInternal({
         event: "ade_brain_recovered",
@@ -16985,6 +16992,9 @@ async function runServe(
         minimumIntervalMs: 24 * 60 * 60 * 1_000,
       });
     },
+    onMemoryPressure: (sample) => {
+      void brainMemoryRestartGuard?.handle(sample);
+    },
   });
   // The loop watchdog above lives inside the process it guards, so it cannot
   // report a brain whose whole runtime is stuck. This heartbeat is the same
@@ -16995,6 +17005,7 @@ async function runServe(
   stopBrainHeartbeat = startBrainHeartbeat({
     runtimeDir: layout.runtimeDir,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    info: (event, meta) => headlessProjectLogger.info(event, meta),
   });
   const rawSocketPath =
     readValue(args, ["--socket"]) ??
@@ -17371,7 +17382,7 @@ async function runServe(
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
     accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
-      "sync_disabled",
+      "sync_not_started",
       "Account-directory publishing has not started.",
     );
   /**
@@ -17844,7 +17855,42 @@ async function runServe(
         startSyncHost,
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
+        // The same failures as structured facts. Without this the most frequent
+        // brain failure there is lived only as untimestamped free text in
+        // `launchd.err.log` — never in `brain.jsonl`, so no report section and
+        // no telemetry ever saw it.
+        logEvent: (event, meta) => headlessProjectLogger.warn(event, meta),
+        // The machine-scoped last-failure record: the same file the recovery
+        // screen, `ade doctor`, and the diagnostic report already read.
+        recordStorageFault: (fault, detail) => {
+          recordLastFailure({ kind: "machine" }, {
+            code: fault.code,
+            message: fault.message,
+            detail,
+            component: "sync_host",
+          });
+        },
         getServiceMainPid: getRuntimeServiceMainPid,
+        // Auto-diagnostics driven off the FAILURE rather than off the account
+        // publisher. The publisher only exists once this brain holds the
+        // sync-host lease, which it only takes once the sync host starts — so
+        // the machine that cannot start one could never send a report about it.
+        //
+        // The fault's own words are already in the report: `recordStorageFault`
+        // writes the classified code, message and raw detail to the machine
+        // last-failure record before this fires, and that record is a section of
+        // every report. The headline stays the plain sentence.
+        onSustainedStorageFault: ({ fault }) => {
+          // `report` is documented never to reject; the catch is what keeps a
+          // silent-by-design path from becoming an unhandled rejection.
+          void brainAutoDiagnostics
+            .report({
+              failureCode: fault.code,
+              surface: "sync_host_storage",
+              headline: "This computer could not read its own data",
+            })
+            .catch(() => undefined);
+        },
       });
       // A recorded sync-host failure is cleared only once the sync host is
       // really up; clearing it on the bind would reset the crash-loop counter
@@ -17868,11 +17914,11 @@ async function runServe(
         const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
         conflict = error instanceof SyncHostSingletonConflictError;
       } catch (importError: unknown) {
-        process.stderr.write(
-          `ADE brain could not classify its sync host failure: ${
-            importError instanceof Error ? importError.message : String(importError)
-          }\n`,
-        );
+        const importMessage = importError instanceof Error
+          ? importError.message
+          : String(importError);
+        process.stderr.write(`ADE brain could not classify its sync host failure: ${importMessage}\n`);
+        headlessProjectLogger.warn("sync.host_failure_unclassifiable", { error: importMessage });
       }
       if (conflict) {
         syncHostStartupFailure = new CliExecutionError("ADE brain refusing to run without mobile sync.", {
@@ -17883,6 +17929,7 @@ async function runServe(
         });
       } else {
         process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+        headlessProjectLogger.error("sync.host_startup_loop_failed", { error: message });
         syncHostStartupFailure = error;
       }
       finish();
@@ -18113,6 +18160,15 @@ async function runServe(
   process.stderr.write(
     `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
+  // The same fact in `brain.jsonl`. The human line above stays: it is what a
+  // person reads when they run the brain in a terminal, and it is what the
+  // desktop's handover waits to see. But a report that carries a launchd stderr
+  // tail full of untimestamped lines and a `brain.jsonl` that never mentions
+  // the brain starting cannot place ANY of them in time.
+  headlessProjectLogger.info("brain.listening", {
+    socketPath,
+    tcpUrl: tcpUrl ?? null,
+  });
   serveStarted = true;
   // The RPC socket is up: any recorded startup failure that was NOT about the
   // sync host is over. Sync-host failures stay recorded until the sync host
@@ -18161,46 +18217,80 @@ async function runServe(
     && socketPath === layout.socketPath
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   if (isPrimaryBrain && preparedServiceCommand.filePath) {
-    const [{ createBrainFreshnessMonitor }, { requestBrainServiceRestart }] = await Promise.all([
+    const [
+      { createBrainFreshnessMonitor },
+      { requestBrainServiceRestart },
+      { createSingleFlightBrainRestart },
+    ] = await Promise.all([
       import("./services/runtime/brainFreshnessMonitor"),
       import("./commands/brainUpdate"),
+      import("./services/runtime/singleFlightBrainRestart"),
     ]);
+    // Hoisted so the freshness monitor and the memory mitigation restart this
+    // brain the same way. Two spellings of "restart the service" would be two
+    // things to keep in step.
+    const isBrainIdle = async (): Promise<boolean> => (
+      await readMachineRuntimeActivitySummary({
+        projectRegistry,
+        scopeRegistry,
+        personalChatScope,
+      })
+    ).idle;
+    // Single-flighted: the freshness monitor and the memory guard each
+    // serialize only their own attempts, so without a shared latch both can
+    // request a restart of this service at the same time. The second caller
+    // joins the restart already running and sees its outcome.
+    const restartBrainService = createSingleFlightBrainRestart((failureEvent: string): void => {
+      const result = requestBrainServiceRestart({
+        command: serviceCommand.command,
+        commandArgs: preparedServiceCommand.args,
+        env: {
+          ...process.env,
+          ...(serviceCommand.env ?? {}),
+        },
+      });
+      if (result.status !== 0) {
+        headlessProjectLogger.error(failureEvent, {
+          status: result.status,
+          error: result.stderr || result.stdout || "service restart failed",
+        });
+        throw new Error(result.stderr || result.stdout || "service restart failed");
+      }
+    }, {
+      onCoalesced: (failureEvent) => {
+        headlessProjectLogger.info("brain.restart_coalesced", { failureEvent });
+      },
+    });
     const freshnessMonitor = createBrainFreshnessMonitor({
       filePath: preparedServiceCommand.filePath,
       runningHash:
         process.env.ADE_RUNTIME_BUILD_HASH?.trim()
         || preparedServiceCommand.buildHash,
-      isIdle: async () => (
-        await readMachineRuntimeActivitySummary({
-          projectRegistry,
-          scopeRegistry,
-          personalChatScope,
-        })
-      ).idle,
+      isIdle: isBrainIdle,
       logger: {
         warn: (event, fields) =>
           headlessProjectLogger.warn(event, fields),
       },
-      restart: () => {
-        const result = requestBrainServiceRestart({
-          command: serviceCommand.command,
-          commandArgs: preparedServiceCommand.args,
-          env: {
-            ...process.env,
-            ...(serviceCommand.env ?? {}),
-          },
-        });
-        if (result.status !== 0) {
-          headlessProjectLogger.error("brain.freshness_restart_failed", {
-            status: result.status,
-            error: result.stderr || result.stdout || "service restart failed",
-          });
-          throw new Error(result.stderr || result.stdout || "service restart failed");
-        }
-      },
+      restart: () => restartBrainService("brain.freshness_restart_failed"),
     });
     freshnessMonitor.start();
     stopBrainFreshnessMonitor = () => freshnessMonitor.stop();
+    const { createBrainMemoryRestartGuard } = await import(
+      "./services/runtime/brainMemoryRestart"
+    );
+    brainMemoryRestartGuard = createBrainMemoryRestartGuard({
+      // Three separate ways for this brain to be busy, and all of them have to
+      // be quiet: a tracked command in flight, a chat or agent run in the
+      // activity summary, or an attached client.
+      isIdle: async () => (
+        currentBrainLoopWatchdogCommand() === "idle" && await isBrainIdle()
+      ),
+      isQuiet: () => !hasActiveHeadlessConnections(states),
+      logger: {
+        warn: (event, fields) => headlessProjectLogger.warn(event, fields),
+      },
+      restart: () => restartBrainService("brain.memory_restart_command_failed"),
+    });
   }
 
   // Remembered so the shutdown below removes only the socket file this brain
@@ -18310,6 +18400,7 @@ async function runServe(
     throw error;
   } finally {
     stopBrainFreshnessMonitor?.();
+    brainMemoryRestartGuard?.stop();
     stopBrainHeartbeat?.();
     stopBrainLoopWatchdog?.();
   }

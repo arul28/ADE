@@ -12,7 +12,12 @@ import {
   evaluateBrainLoopWatchdog,
   readBrainLoopWatchdogLastWedge,
   recoverBrainLoopWatchdogBreadcrumb,
+  classifyBrainLoopLag,
+  DEFAULT_BRAIN_RSS_RESTART_BYTES,
+  initialBrainMemoryPressureState,
   resolveBrainLoopWatchdogThresholdMs,
+  resolveBrainRssRestartBytes,
+  trackBrainMemoryPressure,
   startBrainLoopWatchdog,
 } from "./brainLoopWatchdog";
 
@@ -39,6 +44,7 @@ describe("brainLoopWatchdog", () => {
       blocked: true,
       blockedMs: 16_000,
       slept: false,
+      sleepGapMs: 0,
     });
   });
 
@@ -56,6 +62,8 @@ describe("brainLoopWatchdog", () => {
       blocked: false,
       blockedMs: 119_000,
       slept: true,
+      // Reported to the main thread, which cannot measure its own absence.
+      sleepGapMs: 118_000,
     });
   });
 
@@ -74,6 +82,149 @@ describe("brainLoopWatchdog", () => {
       blockedMs: 1_000,
       slept: false,
     });
+  });
+
+  // The 2026-08-20 report: 17-minute heartbeat lags with `lastCommand: "idle"`,
+  // 2-5 seconds of CPU across the whole gap, and an event-loop histogram that
+  // sometimes read zero. Every one of those was logged as a near miss.
+  it("reads a suspended process as a suspension, not as a near miss", () => {
+    expect(classifyBrainLoopLag({
+      heartbeatLagMs: 1_048_563,
+      eventLoopDelayMaxMs: 0,
+      cpuDeltaMs: 4_000,
+      sleepObserved: true,
+    })).toEqual({
+      verdict: "suspended",
+      suspensionShaped: true,
+      observedLagMs: 1_048_563,
+    });
+  });
+
+  it("holds the same lag as a stall until the worker confirms it slept", () => {
+    // Identical numbers, minus the worker's report. Nothing else can tell a
+    // suspended process from one blocked in a syscall, so it stays a stall.
+    expect(classifyBrainLoopLag({
+      heartbeatLagMs: 1_048_563,
+      eventLoopDelayMaxMs: 0,
+      cpuDeltaMs: 4_000,
+      sleepObserved: false,
+    })).toMatchObject({ verdict: "stall", suspensionShaped: true });
+  });
+
+  it("still warns about a genuine stall, however long it lasted", () => {
+    // A busy loop: the gap and the CPU it burned are the same length, and the
+    // worker kept ticking through it.
+    expect(classifyBrainLoopLag({
+      heartbeatLagMs: 600_000,
+      eventLoopDelayMaxMs: 599_000,
+      cpuDeltaMs: 598_000,
+      sleepObserved: true,
+    })).toEqual({
+      verdict: "stall",
+      suspensionShaped: false,
+      observedLagMs: 600_000,
+    });
+  });
+
+  it("never excuses a short stutter as sleep", () => {
+    expect(classifyBrainLoopLag({
+      heartbeatLagMs: 4_000,
+      eventLoopDelayMaxMs: 3_900,
+      cpuDeltaMs: 0,
+      sleepObserved: true,
+    })).toMatchObject({ verdict: "stall", suspensionShaped: false });
+  });
+
+  it("says nothing about an ordinary heartbeat", () => {
+    expect(classifyBrainLoopLag({
+      heartbeatLagMs: 12,
+      eventLoopDelayMaxMs: 24,
+      cpuDeltaMs: 30,
+      sleepObserved: false,
+    }).verdict).toBe("normal");
+  });
+
+  it("only reports pressure after a full run of samples over the threshold", () => {
+    const threshold = 1_000;
+    let state = initialBrainMemoryPressureState();
+    const feed = (rssBytes: number, nowMonotonicMs: number) => {
+      const outcome = trackBrainMemoryPressure({
+        state,
+        rssBytes,
+        thresholdBytes: threshold,
+        nowMonotonicMs,
+      });
+      state = outcome.state;
+      return outcome;
+    };
+
+    expect(feed(2_000, 0).triggered).toBe(false);
+    expect(feed(2_000, 300_000).triggered).toBe(false);
+    const third = feed(2_000, 600_000);
+    expect(third.triggered).toBe(true);
+    expect(third.sustainedMs).toBe(600_000);
+    // Not on every sample after that: a leak that keeps growing must not
+    // restart in a loop.
+    for (let sample = 4; sample <= 14; sample += 1) {
+      expect(feed(2_000, sample * 300_000).triggered, `sample ${sample}`).toBe(false);
+    }
+    // But it does ask again on the slow cadence. The host may have deferred or
+    // failed the restart, and the memory it was asked about is still held.
+    expect(feed(2_000, 15 * 300_000).triggered).toBe(true);
+    expect(feed(2_000, 16 * 300_000).triggered).toBe(false);
+  });
+
+  it("forgets a run the moment memory comes back down", () => {
+    const threshold = 1_000;
+    let state = initialBrainMemoryPressureState();
+    for (const rssBytes of [2_000, 2_000]) {
+      state = trackBrainMemoryPressure({
+        state,
+        rssBytes,
+        thresholdBytes: threshold,
+        nowMonotonicMs: 0,
+      }).state;
+    }
+    state = trackBrainMemoryPressure({
+      state,
+      rssBytes: 500,
+      thresholdBytes: threshold,
+      nowMonotonicMs: 300_000,
+    }).state;
+    expect(state).toEqual(initialBrainMemoryPressureState());
+  });
+
+  it("reports nothing when the mitigation is turned off", () => {
+    expect(trackBrainMemoryPressure({
+      state: initialBrainMemoryPressureState(),
+      rssBytes: 8_000_000_000,
+      thresholdBytes: null,
+      nowMonotonicMs: 0,
+      requiredSamples: 1,
+    }).triggered).toBe(false);
+  });
+
+  it("reads the restart threshold without letting a typo arm a restart loop", () => {
+    expect(resolveBrainRssRestartBytes(undefined)).toBe(DEFAULT_BRAIN_RSS_RESTART_BYTES);
+    expect(resolveBrainRssRestartBytes("nonsense")).toBe(DEFAULT_BRAIN_RSS_RESTART_BYTES);
+    expect(resolveBrainRssRestartBytes("0")).toBeNull();
+    expect(resolveBrainRssRestartBytes("off")).toBeNull();
+    // A zero in any unit is the same explicit "off" as the word: only an
+    // unparseable value earns the default back.
+    expect(resolveBrainRssRestartBytes("0kb")).toBeNull();
+    expect(resolveBrainRssRestartBytes("0 mb")).toBeNull();
+    expect(resolveBrainRssRestartBytes("2000000000")).toBe(2_000_000_000);
+    // A threshold an idle brain is already over would restart it forever.
+    expect(resolveBrainRssRestartBytes("1000")).toBe(268_435_456);
+    // A unit suffix is read, not truncated. `parseInt` read "1gb" as 1, which
+    // the floor above then turned into 256 MB -- the restart chain the floor
+    // exists to prevent.
+    expect(resolveBrainRssRestartBytes("1gb")).toBe(1_073_741_824);
+    expect(resolveBrainRssRestartBytes("2 GB")).toBe(2_147_483_648);
+    expect(resolveBrainRssRestartBytes("1500mb")).toBe(1_572_864_000);
+    // Anything the whole value does not explain falls back to the default.
+    expect(resolveBrainRssRestartBytes("1.5e9")).toBe(DEFAULT_BRAIN_RSS_RESTART_BYTES);
+    expect(resolveBrainRssRestartBytes("2000000000 bytes")).toBe(DEFAULT_BRAIN_RSS_RESTART_BYTES);
   });
 
   it("allows Windows background work more time before declaring the brain wedged", () => {

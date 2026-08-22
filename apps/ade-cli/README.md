@@ -778,6 +778,7 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 - **Relay** — relay route health as already computed by the brain. `ok` when the relay control is connected, the bridge is validated, and the end-to-end round-trip is verified; `fail` when the route is not fully validated; `warn` when relay is disabled or route health is unavailable. When another ADE process on this machine has claimed the relay slot, the brain deliberately stops redialing and this row reports that suppression ahead of any lower-level close error, so the detail names the fix (quit the rival process) instead of the symptom. `ade sync status --text` shows the same reason on its `relay` line, plus a `relay failing since` row for how long the current outage has run.
 - **Account** — whether this machine's brain is signed in to an ADE account (and the credential source), read via the brain's `account.call status`. `warn` when signed out or unavailable.
 - **Credentials** — whether the shared credential store (`$ADE_HOME/secrets/credentials.json.enc`) can be read, and whether an unreadable one was set aside earlier. `fail` when it cannot be read, naming the next step: a store sealed with a key this process cannot obtain is unlocked by opening the ADE app on this computer, while anything else needs a fresh sign-in. `warn` when a quarantined file is still waiting to be restored. Unlike every other row, this one is read **straight from disk** rather than through the brain — the failure it exists for is a brain that cannot start, so a check that needed a running brain would be silent exactly when it matters. It is non-creating: it never mints a machine key or OS key material, so running the diagnostic cannot change the state it reports. `ade brain repair-credentials` acts on the same reading.
+- **Storage** — where this machine's ADE home and its most recently opened project actually live, and whether their bytes are on the disk. `fail` when a root cannot be read at all, or when sampled files are not downloaded *and* this computer's background service is not allowed to download them; `warn` when files are not downloaded but the service may fetch them, or when a root sits on cloud storage that the service may not download from. Both facts come from a bounded `fs` walk (at most 120 files, 24 directories, and 250 ms per root) plus one read of the installed launch agent, so this row — like **Credentials** — works on the machine where the brain will not start. That is the point of it: an evicted iCloud Drive project read by a background service macOS will not let hydrate returns `EDEADLK` ("Unknown system error -11") and leaves every other row green. The remedy the row names, `ade runtime install-service`, rewrites the launch agent with the `MaterializeDatalessFiles` key. The row reports locations and counts only, never a path or a file name. `ade report-issue` prints the same facts in full under "Storage environment".
 - **Diagnostics sharing** — whether ADE may send a redacted diagnostic report by itself when something fails, and how much of today's ceiling has been spent (`on · 1 of 3 automatic reports sent today` / `off`). Read straight from the ledger both senders account against (`$ADE_HOME/secrets/diagnostics-autosend.json`), which is why the count covers the whole computer rather than one process. Always `ok`: it is a preference, not a health check. An absent or unreadable ledger reports the default the next auto-send would act on — on, nothing spent. The setting itself is toggled in the desktop app; there is no CLI flag for it.
 
 When a row fails and the checks above do not explain it, `ade doctor --text`
@@ -808,11 +809,14 @@ the desktop's local-runtime connection pool, which does not exist in a headless
 CLI. The CLI equivalents are `ade doctor` for the diagnosis, `ade brain restart`
 for the repair, and `ade brain repair-credentials` for the credential half.
 
-Default doctor does not call provider, GitHub, or Linear networks. Every row but
-**Credentials** comes from the local brain over its socket; **Credentials** is a
-read-only inspection of the machine's own secrets directory. It never prints
-secret values. The one optional network touch is the `--online` desktop-release
-lookup above.
+Default doctor does not call provider, GitHub, or Linear networks. **Brain**,
+**Sync port**, **Publish health**, **Relay**, and **Account** come from the local
+brain over its socket. **App**, **Wedge history**, **Credentials**, **Storage**,
+and **Diagnostics sharing** are read-only inspections of files this machine
+already has, so they still answer while the brain is down (Wedge history reads
+the on-disk breadcrumb first and asks the brain only as a fallback). None of them prints a
+secret value or a project path. The one optional network touch is the `--online`
+desktop-release lookup above.
 
 Agents starting an unfamiliar ADE session should begin with:
 

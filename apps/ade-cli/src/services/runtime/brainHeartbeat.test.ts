@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   BRAIN_HEARTBEAT_STALE_MS,
+  BRAIN_WATCHER_CHECK_INTERVAL_MS,
+  brainWatcherSuspendFloorMs,
   evaluateBrainHeartbeat,
   parseBrainHeartbeat,
   readBrainHeartbeat,
@@ -56,6 +58,12 @@ describe("evaluateBrainHeartbeat", () => {
     ).toEqual({ action: "healthy", ageMs: BRAIN_HEARTBEAT_STALE_MS, pid: 4242 });
   });
 
+  /** The watcher ran on time, and already saw this exact beat stale. */
+  const confirmedWedge = {
+    watcherGapMs: BRAIN_WATCHER_CHECK_INTERVAL_MS,
+    previousStaleBeat: { pid: heartbeat.pid, ts: heartbeat.ts },
+  };
+
   it("kills a stale beat whose writer is still alive", () => {
     expect(
       evaluateBrainHeartbeat({
@@ -63,6 +71,7 @@ describe("evaluateBrainHeartbeat", () => {
         nowMs: heartbeat.ts + BRAIN_HEARTBEAT_STALE_MS + 1,
         pidAlive: alive,
         selfPid: 1,
+        ...confirmedWedge,
       }),
     ).toEqual({
       action: "kill",
@@ -71,6 +80,86 @@ describe("evaluateBrainHeartbeat", () => {
       // Carried so the kill path can check identity without re-reading the file.
       heartbeat,
     });
+  });
+
+  it("waits for a second check before killing a beat it has only just seen stale", () => {
+    expect(
+      evaluateBrainHeartbeat({
+        heartbeat,
+        nowMs: heartbeat.ts + BRAIN_HEARTBEAT_STALE_MS + 1,
+        pidAlive: alive,
+        selfPid: 1,
+        watcherGapMs: BRAIN_WATCHER_CHECK_INTERVAL_MS,
+        previousStaleBeat: null,
+      }),
+    ).toEqual({
+      action: "stale_unconfirmed",
+      ageMs: BRAIN_HEARTBEAT_STALE_MS + 1,
+      pid: 4242,
+      heartbeat,
+    });
+  });
+
+  it("kills again once the brain writes a new beat and wedges on that one", () => {
+    // A beat the watcher remembers from an earlier silence must not confirm a
+    // different one: the brain beat in between, so this silence is new.
+    expect(
+      evaluateBrainHeartbeat({
+        heartbeat,
+        nowMs: heartbeat.ts + BRAIN_HEARTBEAT_STALE_MS + 1,
+        pidAlive: alive,
+        selfPid: 1,
+        watcherGapMs: BRAIN_WATCHER_CHECK_INTERVAL_MS,
+        previousStaleBeat: { pid: heartbeat.pid, ts: heartbeat.ts - 60_000 },
+      }).action,
+    ).toBe("stale_unconfirmed");
+  });
+
+  it("blames a machine that slept, not the brain that slept with it", () => {
+    // 12 minutes of silence, and the 60-second watcher was 12 minutes late too.
+    const gapMs = 12 * 60_000;
+    expect(
+      evaluateBrainHeartbeat({
+        heartbeat,
+        nowMs: heartbeat.ts + gapMs,
+        pidAlive: alive,
+        selfPid: 1,
+        watcherGapMs: gapMs,
+        previousStaleBeat: { pid: heartbeat.pid, ts: heartbeat.ts },
+      }),
+    ).toEqual({
+      action: "machine_slept",
+      ageMs: gapMs,
+      pid: 4242,
+      watcherGapMs: gapMs,
+    });
+  });
+
+  it("still kills a brain that went quiet long before the machine slept", () => {
+    expect(
+      evaluateBrainHeartbeat({
+        heartbeat,
+        // Silent for three days; the nap explains ten minutes of that.
+        nowMs: heartbeat.ts + 3 * 24 * 60 * 60_000,
+        pidAlive: alive,
+        selfPid: 1,
+        watcherGapMs: 10 * 60_000,
+        previousStaleBeat: { pid: heartbeat.pid, ts: heartbeat.ts },
+      }).action,
+    ).toBe("kill");
+  });
+
+  it("does not excuse an ordinary check cadence as a suspension", () => {
+    expect(
+      evaluateBrainHeartbeat({
+        heartbeat,
+        nowMs: heartbeat.ts + BRAIN_HEARTBEAT_STALE_MS + 1,
+        pidAlive: alive,
+        selfPid: 1,
+        watcherGapMs: BRAIN_WATCHER_CHECK_INTERVAL_MS + 5_000,
+        previousStaleBeat: { pid: heartbeat.pid, ts: heartbeat.ts },
+      }).action,
+    ).toBe("kill");
   });
 
   it("leaves a stale beat alone when the writer already exited", () => {
@@ -151,6 +240,101 @@ describe("startBrainHeartbeat", () => {
     });
     stop();
     expect(readBrainHeartbeat(runtimeDir)).toBeNull();
+  });
+
+  it("records the suspension a late beat closes", () => {
+    const runtimeDir = tempRuntimeDir();
+    let clock = 1_000_000;
+    const timers: Array<() => void> = [];
+    const realSetInterval = globalThis.setInterval;
+    // The brain's interval fires once, twelve minutes late: the shape of a
+    // process the OS stopped scheduling.
+    globalThis.setInterval = ((handler: () => void) => {
+      timers.push(handler);
+      return { unref: () => {} } as unknown as ReturnType<typeof setInterval>;
+    }) as typeof globalThis.setInterval;
+    try {
+      const stop = startBrainHeartbeat({
+        runtimeDir,
+        pid: 777,
+        intervalMs: 15_000,
+        now: () => clock,
+        env: {},
+      });
+      expect(readBrainHeartbeat(runtimeDir)?.suspendGapMs).toBeUndefined();
+      clock += 12 * 60_000;
+      timers[0]?.();
+      expect(readBrainHeartbeat(runtimeDir)?.suspendGapMs).toBe(12 * 60_000);
+      stop();
+    } finally {
+      globalThis.setInterval = realSetInterval;
+    }
+  });
+
+  it("reports the suspension through warn when no info sink is wired", () => {
+    const runtimeDir = tempRuntimeDir();
+    let clock = 1_000_000;
+    const timers: Array<() => void> = [];
+    const realSetInterval = globalThis.setInterval;
+    globalThis.setInterval = ((handler: () => void) => {
+      timers.push(handler);
+      return { unref: () => {} } as unknown as ReturnType<typeof setInterval>;
+    }) as typeof globalThis.setInterval;
+    const warned: Array<[string, Record<string, unknown>]> = [];
+    try {
+      const stop = startBrainHeartbeat({
+        runtimeDir,
+        pid: 777,
+        intervalMs: 15_000,
+        now: () => clock,
+        env: {},
+        warn: (event, meta) => warned.push([event, meta]),
+      });
+      clock += 12 * 60_000;
+      timers[0]?.();
+      stop();
+    } finally {
+      globalThis.setInterval = realSetInterval;
+    }
+    expect(warned).toEqual([
+      ["brain.suspend_gap", { source: "heartbeat", gapMs: 12 * 60_000 }],
+    ]);
+  });
+
+  it("prefers the info sink over warn for the suspension", () => {
+    const runtimeDir = tempRuntimeDir();
+    let clock = 1_000_000;
+    const timers: Array<() => void> = [];
+    const realSetInterval = globalThis.setInterval;
+    globalThis.setInterval = ((handler: () => void) => {
+      timers.push(handler);
+      return { unref: () => {} } as unknown as ReturnType<typeof setInterval>;
+    }) as typeof globalThis.setInterval;
+    const infos: string[] = [];
+    const warned: string[] = [];
+    try {
+      const stop = startBrainHeartbeat({
+        runtimeDir,
+        pid: 777,
+        intervalMs: 15_000,
+        now: () => clock,
+        env: {},
+        info: (event) => infos.push(event),
+        warn: (event) => warned.push(event),
+      });
+      clock += 12 * 60_000;
+      timers[0]?.();
+      stop();
+    } finally {
+      globalThis.setInterval = realSetInterval;
+    }
+    expect(infos).toEqual(["brain.suspend_gap"]);
+    expect(warned).toEqual([]);
+  });
+
+  it("sizes the suspension floor above any ordinary check cadence", () => {
+    expect(brainWatcherSuspendFloorMs({})).toBe(3 * BRAIN_WATCHER_CHECK_INTERVAL_MS);
+    expect(brainWatcherSuspendFloorMs({ checkIntervalMs: 15_000 })).toBe(BRAIN_HEARTBEAT_STALE_MS);
   });
 
   it("publishes nothing when heartbeats are disabled", () => {

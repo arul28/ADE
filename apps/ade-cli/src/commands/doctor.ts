@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   parseRuntimeLastWedge,
@@ -24,7 +25,14 @@ import {
   readAutoDiagnosticsState,
   resolveAutoDiagnosticsStateFile,
 } from "../../../desktop/src/main/services/diagnostics/autoDiagnosticsStore";
-import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import {
+  isCloudStorageLocation,
+  type StorageEnvironment,
+} from "../services/diagnostics/storageEnvironmentProbe";
+import {
+  resolveMachineAdeLayout,
+  type MachineAdeLayout,
+} from "../services/projects/machineLayout";
 import { readBrainStartupState } from "../services/runtime/brainStartupState";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
 import type {
@@ -43,6 +51,7 @@ export type DoctorRow = {
     | "relay"
     | "account"
     | "credentials"
+    | "storage"
     | "diagnostics";
   label: string;
   status: DoctorRowStatus;
@@ -102,6 +111,18 @@ export type DoctorInput = {
    * running brain to answer would be silent in exactly the case it is for.
    */
   credentials: CredentialStoreHealth | null;
+  /**
+   * Where this machine's ADE data lives, and whether its bytes are on the disk.
+   *
+   * Read from disk for the same reason the credential row is: the failure it
+   * exists for stops the brain from starting, so a check that asked the brain
+   * would be silent exactly when it is needed. It is the same section `ade
+   * report-issue` prints, reduced to the one row a person can act on.
+   *
+   * OPTIONAL, like {@link DoctorInput.diagnostics}: a caller that does not
+   * supply it gets a truthful "not checked" row rather than a fabricated one.
+   */
+  storage?: StorageEnvironment | null;
   /**
    * Automatic diagnostics sharing: the consent flag and today's spend, read off
    * the same ledger both senders account against.
@@ -184,6 +205,7 @@ export type DoctorCommandResult = {
   relayHealth: DoctorInput["relayHealth"];
   account: DoctorInput["account"];
   credentials: DoctorInput["credentials"];
+  storage: DoctorInput["storage"];
   diagnostics: DoctorInput["diagnostics"];
 };
 
@@ -200,6 +222,19 @@ const DOCTOR_BRAIN_DEADLINE_MS = 2_000;
 const DOCTOR_ONLINE_DEADLINE_MS = 1_200;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const RECENT_PUBLISH_MS = 2 * 60 * 1_000;
+/**
+ * Tighter bounds than the diagnostic report's, because the two commands are
+ * asked for different things. A report is read once by a person who is already
+ * stuck, so it may spend a second per root. `ade doctor` runs in scripts and in
+ * agent sessions, and one row is not worth a visible pause: a sample this size
+ * still finds an evicted project, and a project with no evicted file in its
+ * first hundred is not the machine this row is for.
+ */
+const DOCTOR_STORAGE_MAX_FILES = 120;
+const DOCTOR_STORAGE_MAX_DIRECTORIES = 24;
+const DOCTOR_STORAGE_TIME_BUDGET_MS = 250;
+/** Rewrites the launch agent, which is how the missing policy key is granted. */
+const INSTALL_SERVICE_COMMAND = "ade runtime install-service";
 const PUBLISH_FAILURE_RED_MS = 2 * 60 * 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -892,6 +927,138 @@ function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
 }
 
 /**
+ * Where the ADE home and the last project this machine opened actually live,
+ * and whether their bytes are on this disk.
+ *
+ * The same two roots the diagnostic report samples, in the same order, through
+ * the same probe — one report and one health check must not disagree about the
+ * machine they both read. The heavy modules load on demand because `doctor` is
+ * imported by the CLI at startup and most commands never need them.
+ *
+ * Never throws: a health check that fell over while measuring the disk would
+ * take the other eight rows with it.
+ */
+export async function readStorageEnvironmentForDoctor(
+  layout: MachineAdeLayout,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<StorageEnvironment | null> {
+  try {
+    const [{ collectStorageEnvironment }, { resolveMostRecentProjectRoot }] =
+      await Promise.all([
+        import("../services/diagnostics/storageEnvironmentProbe"),
+        import("../services/diagnostics/diagnosticSources"),
+      ]);
+    const projectRoot = resolveMostRecentProjectRoot(layout.projectsPath);
+    // The channel is resolved from the environment this process was handed
+    // rather than from the module constant, so a doctor run against a temp home
+    // does not read the stable channel's plist. See `launchAgentPath`.
+    let installedLaunchAgentPath: string | null = null;
+    if (platform === "darwin") {
+      const [{ launchAgentPath }, { resolveRuntimeServiceName }] = await Promise.all([
+        import("../serviceManager/installLaunchd"),
+        import("../serviceManager/common"),
+      ]);
+      installedLaunchAgentPath = launchAgentPath(
+        os.homedir(),
+        resolveRuntimeServiceName(env),
+      );
+    }
+    return collectStorageEnvironment(
+      [
+        { label: "ADE home", path: layout.adeDir },
+        ...(projectRoot ? [{ label: "Project", path: projectRoot }] : []),
+      ],
+      {
+        platform,
+        env,
+        launchAgentPath: installedLaunchAgentPath,
+        maxFiles: DOCTOR_STORAGE_MAX_FILES,
+        maxDirectories: DOCTOR_STORAGE_MAX_DIRECTORIES,
+        timeBudgetMs: DOCTOR_STORAGE_TIME_BUDGET_MS,
+      },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function storageRootNames(roots: readonly { label: string }[]): string {
+  return roots.map((root) => root.label).join(" and ");
+}
+
+/**
+ * One line about the bytes under this machine's two ADE roots.
+ *
+ * The row exists because of a specific outage: a project in iCloud Drive whose
+ * files had been evicted, read by a background service that macOS would not let
+ * hydrate them. Every other row was green, the brain row said "not responding",
+ * and nothing on the machine said why. The two facts that separate the two
+ * variants of that failure — are any bytes missing, and is the background
+ * service allowed to fetch them — are both cheap file reads, so they are here.
+ *
+ * A denied policy is reported only when this machine has something to lose by
+ * it. A launch agent that predates the key is on every machine that has not
+ * reinstalled the service since, and painting all of them yellow over a file
+ * that is not in the cloud teaches people to ignore the colour.
+ */
+function storageRow(environment: DoctorInput["storage"]): DoctorRow {
+  const label = "Storage";
+  if (!environment) {
+    return { key: "storage", label, status: "ok", detail: "not checked" };
+  }
+  const unreadable = environment.roots.filter((root) => root.error);
+  if (unreadable.length > 0) {
+    return {
+      key: "storage",
+      label,
+      status: "fail",
+      detail: `${storageRootNames(unreadable)} could not be read`,
+    };
+  }
+  const denied = environment.process.materializeDatalessFiles === false;
+  const remedy = denied
+    ? ` · the background service on this computer may not download evicted files;`
+      + ` run \`${INSTALL_SERVICE_COMMAND}\` to grant it permission`
+    : "";
+  const evicted = environment.roots.filter((root) => root.datalessFiles > 0);
+  if (evicted.length > 0) {
+    const counts = evicted
+      .map((root) =>
+        `${root.label}: ${root.datalessFiles} of ${root.sampledFiles} sampled files`
+        + ` are not downloaded (${root.location})`,
+      )
+      .join(" · ");
+    return {
+      key: "storage",
+      label,
+      // A missing byte the brain is forbidden to fetch is the outage itself.
+      // The same missing byte with permission granted is the provider taking
+      // its time, which is slow rather than broken.
+      status: denied ? "fail" : "warn",
+      detail: `${counts}${remedy}`,
+    };
+  }
+  const cloud = environment.roots.filter((root) => isCloudStorageLocation(root.location));
+  if (denied && cloud.length > 0) {
+    return {
+      key: "storage",
+      label,
+      status: "warn",
+      detail: `${storageRootNames(cloud)} on cloud storage${remedy}`,
+    };
+  }
+  return {
+    key: "storage",
+    label,
+    status: "ok",
+    detail: environment.roots.length
+      ? environment.roots.map((root) => `${root.label}: ${root.location}`).join(" · ")
+      : "no roots checked",
+  };
+}
+
+/**
  * The consent flag and today's spend, read off disk through the store itself.
  *
  * Deliberately NOT a second parser: `readAutoDiagnosticsState` is the same
@@ -947,6 +1114,7 @@ export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
     relayRow(input.relayHealth),
     accountRow(input.account),
     credentialsRow(input.credentials),
+    storageRow(input.storage),
     diagnosticsRow(input.diagnostics),
   ];
 }
@@ -995,6 +1163,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
   }
   const wedge = readBrainLoopWatchdogLastWedge(layout.runtimeDir)
     ?? brainProbe.runtimeLastWedge;
+  const storage = await readStorageEnvironmentForDoctor(layout);
   // Asked only of a brain that did not answer: a responding brain is running,
   // never starting.
   const startupState = brainProbe.brain.running
@@ -1022,6 +1191,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     relayHealth,
     account: brainProbe.account,
     credentials: readCredentialStoreHealthForDoctor(layout.secretsDir),
+    storage,
     diagnostics: readAutoDiagnosticsSharingForDoctor(layout.adeDir),
   };
   const rows = evaluateDoctorRows(input);
@@ -1039,6 +1209,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     relayHealth,
     account: input.account,
     credentials: input.credentials,
+    storage,
     diagnostics: input.diagnostics,
   };
 }

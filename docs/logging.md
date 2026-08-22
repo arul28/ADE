@@ -34,6 +34,32 @@ Not every operational log belongs to the active project. The rule is the **subje
 
 `createFileLogger` backs other machine-scoped sinks for the same reason: `accountBridge` writes `account.local_machines_removed` to `<machine ade dir>/runtime/account-trust.jsonl`, because dropping a paired machine credential is a machine-level mutation and the project logger follows the active project — on a remote-bound project it would ship the record to the other machine and leave nothing on the machine that actually lost its trust. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
 
+The brain's sync host and memory watchdog write their own local structured
+lines. `sync.host_start_failed` (signature, attempt, classified code, errno,
+the human-readable failure message — the redacted sentence for a classified
+storage fault, the raw error text otherwise —
+provider — at the failure deduper's one-per-minute cadence) and
+`sync.host_start_recovered` replace the free-text stderr lines that once made
+the most frequent brain failure invisible to structured logs.
+`brain.suspend_gap` records a sleep the watchdogs would previously have
+mis-reported as an event-loop stall. `brain.memory_sample` (rss, heap,
+external, uptime; every five minutes) and `brain.memory_restart` /
+`brain.memory_restart_deferred` record the RSS slope and the planned
+idle restart that mitigates a known native leak. All of these are local
+operational logs and none is a PostHog event; the only analytics adjacent to
+them is the existing `ade_feature_used` `auto_sent` outcome when a sustained
+storage fault triggers an automatic diagnostic send through the unchanged
+consent, deduplication, and budget path.
+
+The desktop's runtime connection pool writes its own local lines around the
+update window and repair throttle: `local_runtime.update_window_started` /
+`_ended` / `_expired`, `local_runtime.connect_deferred_for_update`,
+`local_runtime.service_repair_suppressed`, and
+`local_runtime.service_repair_throttled`. They record why a repair or connect
+was held back during an update transaction and carry no paths or versions
+beyond the bounded fields already in `local-runtime.jsonl`; none is a PostHog
+event.
+
 Claude compaction observations use the local structured line
 `agent_chat.claude_context_compaction_observed` with `sessionId`, `trigger`
 (`natural`, `ade_fallback`, or `recovery`), and `occupancyPctAtTrigger`. Record

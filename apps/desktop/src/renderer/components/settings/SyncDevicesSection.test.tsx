@@ -847,6 +847,15 @@ describe("accountDirectorySummary", () => {
     );
   });
 
+  it("never calls sync off while it is still trying to start", () => {
+    // The regression: a brain whose sync host was failing and retrying reported
+    // the same state as a brain with sync switched off, so the pane told the
+    // user sync was off and sent them looking for a switch already on.
+    const label = summaryForState("sync_not_started", "Account-directory publishing has not started.").label;
+    expect(label).toBe("Signed in — sync hasn't started on this computer yet");
+    expect(label).not.toContain("off");
+  });
+
   it("falls back without a raw state string or a claim of permanence", () => {
     const label = summaryForState("snapshot_failed", "Snapshot build failed: EPERM").label;
     expect(label).toBe("Signed in — this computer isn't published yet");
@@ -855,9 +864,24 @@ describe("accountDirectorySummary", () => {
     expect(label).not.toContain("EPERM");
   });
 
+  it("survives a publish state this build's union does not carry", () => {
+    // A brain newer than this window can name a state this build never heard
+    // of. The shared advice table's switch is exhaustive over the union only,
+    // so it returns undefined for anything else — and the destructure used to
+    // throw a TypeError that blanked the whole Connections pane.
+    const summary = summaryForState(
+      "a_state_from_a_newer_brain" as SyncRoleSnapshot["routeHealth"]["accountDirectory"]["state"],
+      null,
+    );
+    expect(summary.healthy).toBe(false);
+    expect(summary.label).toBe("Signed in — sync state isn't available on this computer yet");
+    expect(summary.label).not.toContain("a_state_from_a_newer_brain");
+  });
+
   it("keeps every unpublished state free of underscores and skipReason text", () => {
     const states = [
       "sync_disabled",
+      "sync_not_started",
       "no_active_sync_scope",
       "snapshot_failed",
       "machine_key_unavailable",

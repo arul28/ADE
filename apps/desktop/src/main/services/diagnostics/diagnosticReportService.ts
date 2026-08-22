@@ -269,6 +269,7 @@ export async function collectDiagnosticReport(
       updateTransaction: request.updateTransaction ?? null,
     },
     storage: sources.storage,
+    storageEnvironment: sources.storageEnvironment,
     logs,
     serviceDefinition: sources.serviceDefinition,
     notes: [...sources.notes, ...(request.extraNotes ?? [])],

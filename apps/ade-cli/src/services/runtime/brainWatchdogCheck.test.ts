@@ -22,10 +22,13 @@ import path from "node:path";
 import {
   BRAIN_HEARTBEAT_FILE,
   BRAIN_HEARTBEAT_STALE_MS,
+  BRAIN_WATCHER_CHECK_INTERVAL_MS,
   writeBrainHeartbeat,
 } from "./brainHeartbeat";
+import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/processes/processStartTime";
 import {
-  defaultBrainProcessIdentity,
+  BRAIN_WATCHDOG_CHECK_RECORD_FILE,
+  readBrainWatchdogCheckRecord,
   resolveBrainHeartbeatStaleMs,
   runBrainWatchdogCheck,
 } from "./brainWatchdogCheck";
@@ -42,7 +45,17 @@ function tempRuntimeDir(): string {
 const NOW = 10_000_000;
 
 /** The live pid really is the process that wrote the beat. */
-const MATCHING_IDENTITY = (): { startedAtMs: number } => ({ startedAtMs: 1 });
+const MATCHING_IDENTITY = (): number => 1;
+
+/**
+ * A watcher that ran one cadence ago and already saw this beat stale: the two
+ * facts a kill needs on top of staleness. Without them every check below would
+ * stop at "seen once", which is the whole point of the confirmation rule.
+ */
+const CONFIRMED_STALE = (beatTs: number) => () => ({
+  ts: NOW - BRAIN_WATCHER_CHECK_INTERVAL_MS,
+  staleBeat: { pid: 4242, ts: beatTs },
+});
 
 describe("resolveBrainHeartbeatStaleMs", () => {
   it("falls back to the default for missing or nonsense values", () => {
@@ -56,22 +69,22 @@ describe("resolveBrainHeartbeatStaleMs", () => {
   });
 });
 
-describe("defaultBrainProcessIdentity", () => {
+describe("readProcessStartTimeMs (watchdog identity probe)", () => {
   // Read-only, and the only pid guaranteed to exist: this one. Without this the
   // whole identity gate is covered by injected fakes and a `ps` output change
   // would silently turn every wedge kill into a no-op.
   (process.platform === "win32" ? it.skip : it)("reads a live pid's start time", () => {
-    const identity = defaultBrainProcessIdentity(process.pid);
-    expect(identity).not.toBeNull();
+    const startedAtMs = readProcessStartTimeMs(process.pid);
+    expect(startedAtMs).not.toBeNull();
     const uptimeMs = process.uptime() * 1_000;
-    expect(Math.abs(Date.now() - uptimeMs - (identity?.startedAtMs ?? 0))).toBeLessThan(5_000);
+    expect(Math.abs(Date.now() - uptimeMs - (startedAtMs ?? 0))).toBeLessThan(5_000);
   });
 
   // `ps -o lstart=` renders in the process locale. On a de_DE or fr_FR host the
   // unpinned probe returned null forever, so the wedge kill never fired there.
   (process.platform === "win32" ? it.skip : it)("asks ps in a fixed locale", () => {
     execFileSyncCalls.mockClear();
-    defaultBrainProcessIdentity(process.pid);
+    readProcessStartTimeMs(process.pid);
     const options = execFileSyncCalls.mock.calls.at(-1)?.[2] as
       | { env?: NodeJS.ProcessEnv }
       | undefined;
@@ -81,8 +94,8 @@ describe("defaultBrainProcessIdentity", () => {
 
   it("returns no identity for a pid that does not exist, and never on win32", () => {
     // 0x7FFFFFFF is above every platform's pid_max, so it cannot be assigned.
-    expect(defaultBrainProcessIdentity(2_147_483_647)).toBeNull();
-    expect(defaultBrainProcessIdentity(process.pid, "win32")).toBeNull();
+    expect(readProcessStartTimeMs(2_147_483_647)).toBeNull();
+    expect(readProcessStartTimeMs(process.pid, "win32")).toBeNull();
   });
 });
 
@@ -140,6 +153,7 @@ describe("runBrainWatchdogCheck", () => {
       kill,
       pidAlive: () => true,
       processIdentity: MATCHING_IDENTITY,
+      readCheckRecord: CONFIRMED_STALE(NOW - 600_000),
     });
 
     expect(result.action).toBe("killed");
@@ -163,6 +177,7 @@ describe("runBrainWatchdogCheck", () => {
       selfPid: 1,
       pidAlive: () => true,
       processIdentity: MATCHING_IDENTITY,
+      readCheckRecord: CONFIRMED_STALE(NOW - 600_000),
       kill: () => {
         throw new Error("EPERM");
       },
@@ -184,8 +199,9 @@ describe("runBrainWatchdogCheck", () => {
       selfPid: 1,
       kill,
       pidAlive: () => true,
+      readCheckRecord: CONFIRMED_STALE(NOW - 600_000),
       // Same pid, but it started long after the brain wrote its first beat.
-      processIdentity: () => ({ startedAtMs: NOW - 30_000 }),
+      processIdentity: () => NOW - 30_000,
     });
 
     expect(result.action).toBe("already_exited");
@@ -209,6 +225,7 @@ describe("runBrainWatchdogCheck", () => {
       kill,
       pidAlive: () => true,
       processIdentity: () => null,
+      readCheckRecord: CONFIRMED_STALE(NOW - 600_000),
     });
 
     expect(result.action).toBe("already_exited");
@@ -230,6 +247,7 @@ describe("runBrainWatchdogCheck", () => {
       pidAlive: () => true,
       platform: "win32",
       processIdentity,
+      readCheckRecord: CONFIRMED_STALE(NOW - 600_000),
     });
 
     expect(result.action).toBe("already_exited");
@@ -237,6 +255,125 @@ describe("runBrainWatchdogCheck", () => {
     expect(processIdentity).not.toHaveBeenCalled();
     // The supervisor still reads that file to find its own wedged child.
     expect(fs.existsSync(path.join(runtimeDir, BRAIN_HEARTBEAT_FILE))).toBe(true);
+  });
+
+  // The 2026-08-20 report: a laptop slept for 12.7 minutes, the brain was
+  // suspended with it, and the watchdog SIGKILLed a completely healthy process
+  // -- then told the user "a stuck task was restarted".
+  it("does not kill a brain that was suspended along with the machine", () => {
+    const runtimeDir = tempRuntimeDir();
+    const gapMs = 762_879;
+    writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: NOW - gapMs, seq: 3, startedAt: 1 });
+    const kill = vi.fn();
+    const result = runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW,
+      selfPid: 1,
+      kill,
+      pidAlive: () => true,
+      processIdentity: MATCHING_IDENTITY,
+      // This check is 12.7 minutes late itself: it was asleep too.
+      readCheckRecord: () => ({ ts: NOW - gapMs, staleBeat: { pid: 4242, ts: NOW - gapMs } }),
+    });
+
+    expect(result.action).toBe("machine_slept");
+    expect(kill).not.toHaveBeenCalled();
+    // No breadcrumb means no "ADE recovered from a background issue" notice.
+    expect(fs.existsSync(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE))).toBe(false);
+    expect(fs.existsSync(path.join(runtimeDir, BRAIN_HEARTBEAT_FILE))).toBe(true);
+  });
+
+  it("waits one cadence before stopping a brain it has only just seen stale", () => {
+    const runtimeDir = tempRuntimeDir();
+    writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: NOW - 600_000, seq: 3, startedAt: 1 });
+    const kill = vi.fn();
+    const result = runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW,
+      selfPid: 1,
+      kill,
+      pidAlive: () => true,
+      processIdentity: MATCHING_IDENTITY,
+    });
+
+    expect(result.action).toBe("stale_unconfirmed");
+    expect(kill).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE))).toBe(false);
+    // …and it remembers the exact beat, so the next check can confirm it.
+    expect(readBrainWatchdogCheckRecord(runtimeDir)).toEqual({
+      ts: NOW,
+      staleBeat: { pid: 4242, ts: NOW - 600_000 },
+    });
+  });
+
+  it("stops a brain that is still sitting on the same beat one cadence later", () => {
+    const runtimeDir = tempRuntimeDir();
+    const beatTs = NOW - 600_000;
+    writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: beatTs, seq: 3, startedAt: 1 });
+    const kill = vi.fn();
+    const first = runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW,
+      selfPid: 1,
+      kill,
+      pidAlive: () => true,
+      processIdentity: MATCHING_IDENTITY,
+    });
+    const second = runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW + BRAIN_WATCHER_CHECK_INTERVAL_MS,
+      selfPid: 1,
+      kill,
+      pidAlive: () => true,
+      processIdentity: MATCHING_IDENTITY,
+    });
+
+    expect(first.action).toBe("stale_unconfirmed");
+    expect(second.action).toBe("killed");
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(4242);
+  });
+
+  it("forgets a stale beat once the brain beats again", () => {
+    const runtimeDir = tempRuntimeDir();
+    writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: NOW - 600_000, seq: 3, startedAt: 1 });
+    const kill = vi.fn();
+    runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW,
+      selfPid: 1,
+      kill,
+      pidAlive: () => true,
+      processIdentity: MATCHING_IDENTITY,
+    });
+    // The brain was napping, not wedged: it beats again before the next check.
+    writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: NOW + 1_000, seq: 4, startedAt: 1 });
+    const result = runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW + BRAIN_WATCHER_CHECK_INTERVAL_MS,
+      selfPid: 1,
+      kill,
+      pidAlive: () => true,
+      processIdentity: MATCHING_IDENTITY,
+    });
+
+    expect(result.action).toBe("healthy");
+    expect(kill).not.toHaveBeenCalled();
+    expect(readBrainWatchdogCheckRecord(runtimeDir)?.staleBeat).toBeNull();
+  });
+
+  it("records every run, so the next one can tell sleep from silence", () => {
+    const runtimeDir = tempRuntimeDir();
+    writeBrainHeartbeat(runtimeDir, { pid: 4242, ts: NOW, seq: 3, startedAt: 1 });
+    runBrainWatchdogCheck({
+      runtimeDir,
+      now: () => NOW,
+      selfPid: 1,
+      kill: vi.fn(),
+      pidAlive: () => true,
+    });
+    expect(fs.existsSync(path.join(runtimeDir, BRAIN_WATCHDOG_CHECK_RECORD_FILE))).toBe(true);
+    expect(readBrainWatchdogCheckRecord(runtimeDir)).toEqual({ ts: NOW, staleBeat: null });
   });
 
   it("never kills the process running the check", () => {

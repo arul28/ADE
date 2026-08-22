@@ -37,6 +37,29 @@ export function formatRecoveryCommand(command: string): string {
   return trimmed.length > 48 ? `${trimmed.slice(0, 47)}…` : trimmed;
 }
 
+/**
+ * The sentinel the external watchdog writes in place of a command name. It is
+ * the name of a mechanism, not of anything the person was doing.
+ */
+export const EXTERNAL_WATCHDOG_COMMAND = "external-watchdog";
+
+/**
+ * What the notice says happened.
+ *
+ * The external watchdog stops the whole background service, so naming a "stuck
+ * task (external-watchdog)" told the user about our plumbing and nothing about
+ * their work. Only a real command name earns the task wording.
+ */
+export function formatRecoveryMessage(lastWedge: { lastCommand: string; ts: string }): string {
+  const at = formatRecoveryTime(lastWedge.ts);
+  if (lastWedge.lastCommand.trim() === EXTERNAL_WATCHDOG_COMMAND) {
+    return `ADE restarted its background service at ${at} after it stopped responding.`;
+  }
+  return `ADE recovered from a background issue at ${at} — a stuck task (${
+    formatRecoveryCommand(lastWedge.lastCommand)
+  }) was restarted.`;
+}
+
 function readAckedTs(): string | null {
   try {
     return window.localStorage.getItem(RECOVERY_ACK_STORAGE_KEY);
@@ -100,8 +123,7 @@ export function BrainRecoveryNotice() {
     <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800">
       <ArrowCounterClockwise size={14} weight="bold" className="shrink-0" aria-hidden="true" />
       <span className="flex-1 min-w-0">
-        ADE recovered from a background issue at {formatRecoveryTime(lastWedge.ts)} — a
-        stuck task ({formatRecoveryCommand(lastWedge.lastCommand)}) was restarted.
+        {formatRecoveryMessage(lastWedge)}
       </span>
       <button
         type="button"

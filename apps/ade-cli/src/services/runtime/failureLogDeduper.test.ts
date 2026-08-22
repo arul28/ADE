@@ -21,4 +21,23 @@ describe("createFailureLogDeduper", () => {
     deduper.note("disk", "failed");
     expect(lines).toHaveLength(2);
   });
+
+  it("carries each note's meta to the log callback, on both branches", () => {
+    const calls: Array<{ line: string; meta: Record<string, unknown> | undefined }> = [];
+    let now = 0;
+    const deduper = createFailureLogDeduper({
+      log: (line, meta) => calls.push({ line, meta }),
+      now: () => now,
+    });
+
+    deduper.note("disk", "failed", { attempt: 1 });
+    expect(calls[0]?.meta).toEqual({ attempt: 1 });
+
+    // The summary carries the LATEST attempt, not the first one's.
+    deduper.note("disk", "failed", { attempt: 2 });
+    now = 60_000;
+    deduper.note("disk", "failed", { attempt: 3 });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.meta).toEqual({ attempt: 3 });
+  });
 });

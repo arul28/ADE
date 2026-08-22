@@ -3,6 +3,7 @@ import { spawn, spawnSync, spawnSync as spawnChildSync } from "node:child_proces
 import os from "node:os";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { resolveTrustedWindowsTool, trustedWindowsToolKernelPath } from "../lib/trustedWindowsTools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildWindowsProcessCommandLineQueryArgs,
@@ -47,7 +48,10 @@ import {
   BRAIN_HEARTBEAT_INTERVAL_MS,
   BRAIN_HEARTBEAT_STALE_MS,
 } from "../services/runtime/brainHeartbeat";
-import { waitForWindowsRuntimeReadiness } from "./windowsSupervisor";
+import {
+  buildWindowsSupervisorQueryArgs,
+  waitForWindowsRuntimeReadiness,
+} from "./windowsSupervisor";
 
 const tempDirs: string[] = [];
 
@@ -391,7 +395,7 @@ describe("Windows background service helpers", () => {
         ),
       })}`,
     );
-    expect(fs.readFileSync(launcherPath, "utf8")).toContain("Test-BrainWedged");
+    expect(fs.readFileSync(launcherPath, "utf8")).toContain("Get-StaleBeatTs");
     expect(readinessProbe).toHaveBeenCalledWith(expect.objectContaining({
       command: serviceCommand,
       launcherPath,
@@ -1476,11 +1480,51 @@ describe("windows supervisor wedge guard", () => {
     // An unbounded WaitForExit is exactly what makes a wedge invisible.
     expect(script).not.toContain("$process.WaitForExit()\r\n      $lastExitCode");
     expect(script).toContain("while (-not $process.WaitForExit($heartbeatPollMs))");
-    expect(script).toContain("Test-BrainWedged $process.Id");
+    expect(script).toContain("Get-StaleBeatTs -runtimePid $process.Id -nowMs $nowMs");
     expect(script).toContain("Write-WedgeBreadcrumb $wedgeAgeMs");
     // Kill($true) is .NET Core only; the supervisor must run under PS 5.1.
     expect(script).toContain("$process.Kill()");
     expect(script).not.toContain("$process.Kill($true)");
+  });
+
+  it("treats a suspended machine as sleep rather than as a wedge", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+
+    // The same floor the macOS watchdog uses (`brainWatcherSuspendFloorMs`), so
+    // one rule decides sleep on both platforms.
+    expect(script).toContain(
+      "$watcherSuspendFloorMs = [Math]::Max($heartbeatStaleMs, $heartbeatPollMs * 3)",
+    );
+    // The supervisor measures its OWN lateness. Nothing about a suspended brain
+    // can be asked of the suspended brain.
+    expect(script).toContain("$watcherGapMs = $nowMs - $lastPollAtMs");
+    expect(script).toContain(
+      "if ($watcherGapMs -ge $watcherSuspendFloorMs -and $beatAgeMs -le ($watcherGapMs + $heartbeatStaleMs))",
+    );
+    expect(script).toContain("machine slept pid=");
+  });
+
+  it("requires the same stale beat twice before killing", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+      wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+    });
+
+    // The beat's timestamp, not its age: the age changes between two polls of
+    // the same unchanged beat, so only the timestamp can identify it.
+    expect(script).toContain("return [long]$beat.ts");
+    expect(script).toContain("elseif ($confirmedStaleBeatTs -ne $staleBeatTs)");
+    expect(script).toContain("waiting for a second check before acting");
+    // A beat that came back fresh clears the strike, so two stale polls have to
+    // be consecutive.
+    expect(script).toContain("if ($null -eq $staleBeatTs) { $confirmedStaleBeatTs = $null }");
+    // The kill is the last branch, reachable only once both rules pass.
+    expect(script).toContain("else { $wedgeAgeMs = $beatAgeMs }");
   });
 
   it("stops the wedged brain's whole process tree, through an absolute taskkill", () => {
@@ -1559,5 +1603,153 @@ describe("windows supervisor wedge guard", () => {
       heartbeatStaleMs: 500,
     });
     expect(script).toContain("$heartbeatStaleMs = 30000");
+  });
+});
+
+/**
+ * Every other assertion in this file checks that the generated PowerShell
+ * CONTAINS some text. None of them can tell whether the result parses: a stray
+ * brace or a branch split the wrong way produces a script that matches every
+ * substring and still dies at launch, on a user's machine, with the supervisor
+ * never starting. These tests close that gap by handing the rendered text to
+ * PowerShell's own parser.
+ *
+ * `Parser::ParseFile` and `Parser::ParseInput` only build a syntax tree. They do
+ * not execute the script, dot-source it, or run anything it names, so this is
+ * safe on CI and safe here -- the launcher these tests parse would start a brain
+ * if it were ever run, and it never is.
+ *
+ * PowerShell exists only on Windows hosts, so the probe below resolves to null
+ * on macOS and Linux and every test here skips. The `windows-foundation` CI job
+ * (.github/workflows/ci.yml) runs this file on `windows-latest`, which is where
+ * they actually execute -- so the parse gate holds on every PR without anyone
+ * running a manual smoke test.
+ */
+function resolvePowerShellForParsing(): string | null {
+  if (process.platform !== "win32") return null;
+  // The same canonical System32 resolution the product code uses, rather than a
+  // bare name a PATH-planted powershell.exe could answer.
+  let candidate: string;
+  try {
+    candidate = resolveTrustedWindowsTool("powershell");
+  } catch {
+    return null;
+  }
+  try {
+    const probe = spawnChildSync(
+      candidate,
+      ["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+      { encoding: "utf8" },
+    );
+    if (!probe.error && probe.status === 0) return candidate;
+  } catch {
+    // An interpreter that will not start is not a test failure; the tests skip.
+  }
+  return null;
+}
+
+const powerShellForParsing = resolvePowerShellForParsing();
+const itWithPowerShell = powerShellForParsing ? it : it.skip;
+
+/**
+ * Parses a file and reports the parser's own diagnostics. Written as a one-line
+ * `-Command` program on purpose: it is the form that tolerates no split
+ * branches, which is exactly the property being tested for elsewhere.
+ */
+function parsePowerShellFile(scriptPath: string): { status: number | null; output: string } {
+  const literal = scriptPath.replace(/'/g, "''");
+  const program = [
+    "$tokens = $null",
+    "$errs = $null",
+    `[void][System.Management.Automation.Language.Parser]::ParseFile('${literal}', [ref]$tokens, [ref]$errs)`,
+    "if ($errs -and $errs.Count -gt 0) { $errs | ForEach-Object { Write-Output $_.Message }; exit 1 }",
+    "exit 0",
+  ].join("; ");
+  const result = spawnChildSync(
+    powerShellForParsing ?? trustedWindowsToolKernelPath("powershell"),
+    ["-NoProfile", "-NonInteractive", "-Command", program],
+    { encoding: "utf8" },
+  );
+  return {
+    status: result.status,
+    output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim(),
+  };
+}
+
+function writeScript(dir: string, name: string, contents: string): string {
+  const scriptPath = path.join(dir, name);
+  // The BOM the installer writes is part of what ships, so parse what ships.
+  fs.writeFileSync(scriptPath, `\uFEFF${contents}`, "utf8");
+  return scriptPath;
+}
+
+describe("generated PowerShell parses", () => {
+  const command = {
+    command: "C:\\ade\\node.exe",
+    args: ["C:\\ade\\cli.cjs", "serve"],
+    env: { ADE_HOME: "C:\\Users\\example\\.ade" },
+  };
+
+  (process.platform === "win32" ? it : it.skip)(
+    "resolves a PowerShell interpreter on a Windows host",
+    () => {
+      // The guard on the guard. Every parse check below is skipped when the
+      // probe finds no interpreter, so a probe that quietly stopped working
+      // would skip all of them on CI and leave a green job proving nothing.
+      // On a Windows host, failing to find PowerShell is a failure, not a skip.
+      expect(powerShellForParsing).not.toBeNull();
+    },
+  );
+
+  itWithPowerShell("the supervisor launcher is syntactically valid", () => {
+    const dir = makeTempHome("ade-windows-parse-");
+    const scriptPath = writeScript(
+      dir,
+      "brain-service.ps1",
+      renderWindowsServiceLauncher(command, {
+        pidPath: "C:\\ade\\launcher.pid.json",
+        logPath: "C:\\ade\\launcher.log",
+        heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+        wedgeBreadcrumbPath: "C:\\ade\\runtime\\event-loop-wedge.json",
+      }),
+    );
+
+    const parsed = parsePowerShellFile(scriptPath);
+    expect(parsed.output).toBe("");
+    expect(parsed.status).toBe(0);
+  });
+
+  itWithPowerShell("the launcher still parses with every optional path absent", () => {
+    // The `$null` branches of the renderer produce different text, so the
+    // minimal launcher is a genuinely different program from the full one.
+    const dir = makeTempHome("ade-windows-parse-minimal-");
+    const scriptPath = writeScript(
+      dir,
+      "brain-service.ps1",
+      renderWindowsServiceLauncher(command, { pidPath: "C:\\ade\\launcher.pid.json" }),
+    );
+
+    const parsed = parsePowerShellFile(scriptPath);
+    expect(parsed.output).toBe("");
+    expect(parsed.status).toBe(0);
+  });
+
+  itWithPowerShell("the one-line -Command query builders are syntactically valid", () => {
+    const dir = makeTempHome("ade-windows-parse-queries-");
+    // These are joined with "; " into a single line and passed to `-Command`,
+    // where a branch split across lines would NOT parse. Parsing them as files
+    // is equivalent: a one-line program is valid script-file content too.
+    const builders: Array<[string, string[]]> = [
+      ["supervisor-query.ps1", buildWindowsSupervisorQueryArgs(1234, "C:\\ade\\brain-service.ps1")],
+      ["runtime-query.ps1", buildWindowsRuntimeQueryArgs(1234, command)],
+    ];
+
+    for (const [name, args] of builders) {
+      const program = args[args.indexOf("-Command") + 1];
+      expect(program).toBeTruthy();
+      const parsed = parsePowerShellFile(writeScript(dir, name, program));
+      expect(parsed.output, name).toBe("");
+      expect(parsed.status, name).toBe(0);
+    }
   });
 });
