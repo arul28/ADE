@@ -709,7 +709,7 @@ export function createAccountMachinePublisherService(options: {
   let successfulPublishCount = 0;
   let unsubscribeSignIn: (() => void) | null = null;
   let health = createSyncAccountDirectoryHealth(
-    "sync_disabled",
+    "sync_not_started",
     "Account-directory publishing has not started.",
   );
 

@@ -352,7 +352,16 @@ export type SyncTailnetDiscoveryStatus = {
 
 export type SyncAccountDirectoryState =
   | "published"
+  /** Sync is genuinely turned off on this computer. Nothing is trying. */
   | "sync_disabled"
+  /**
+   * Sync is meant to run here but has not come up yet — the publisher has made
+   * no attempt, or the sync host is still failing and retrying. Distinct from
+   * `sync_disabled` because the copy for the two is not the same sentence:
+   * this state was reported as "sync is off on this computer" while ADE was in
+   * fact retrying a read it could not complete.
+   */
+  | "sync_not_started"
   | "no_active_sync_scope"
   | "snapshot_failed"
   | "machine_key_unavailable"
@@ -386,6 +395,7 @@ export function isBrainAccountSessionFailure(
 const SYNC_ACCOUNT_DIRECTORY_STATES: readonly SyncAccountDirectoryState[] = [
   "published",
   "sync_disabled",
+  "sync_not_started",
   "no_active_sync_scope",
   "snapshot_failed",
   "machine_key_unavailable",
@@ -459,6 +469,14 @@ export function describeUnpublishedAccountDirectory(
       return {
         summary: "sync is off on this computer, so other devices can't reach it",
         nextAction: null,
+      };
+    case "sync_not_started":
+      // Only ever true, never "off": this is also what a brain reports while
+      // its sync host is failing and retrying, and telling someone sync is off
+      // sends them looking for a switch that is already on.
+      return {
+        summary: "sync hasn't started on this computer yet",
+        nextAction: "ade doctor",
       };
     case "missing_pairing_connect_info":
       return {

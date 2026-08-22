@@ -12,6 +12,10 @@ import {
   type DiagnosticRedactionContext,
   type DiagnosticVolumeSpace,
 } from "./diagnosticReport";
+import {
+  collectStorageEnvironment,
+  type StorageEnvironment,
+} from "./storageEnvironmentProbe";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { MACHINE_MAIN_LOG_FILE_NAME } from "../../../../desktop/src/main/services/logging/machineLogger";
 import { resolveRuntimeServiceName } from "../../serviceManager/common";
@@ -561,6 +565,11 @@ export type MachineDiagnosticSources = {
   /** The launchd plist / systemd unit / Windows launcher + scheduled task. */
   serviceDefinition: DiagnosticLogTail[];
   storage: DiagnosticVolumeSpace[];
+  /**
+   * How the two ADE directories are STORED, as opposed to how much room is left
+   * on them. Enums and counts only — see `storageEnvironmentProbe.ts`.
+   */
+  storageEnvironment: StorageEnvironment;
   state: {
     machineLastFailure: unknown;
     projectLastFailure: unknown;
@@ -625,6 +634,30 @@ export function collectMachineDiagnosticSources(
     projectRoot ? readVolume("Project", projectRoot) : null,
   ].filter((entry): entry is DiagnosticVolumeSpace => entry != null);
 
+  // Same two roots as the disk-space pair above, and the same order, because
+  // the two sections answer the same question from opposite sides: one says how
+  // much room is left, the other says whether the bytes are on this machine at
+  // all. `EDEADLK` is what the second one exists for.
+  const storageEnvironment = collectStorageEnvironment(
+    [
+      { label: "ADE home", path: layout.adeDir },
+      ...(projectRoot ? [{ label: "Project", path: projectRoot }] : []),
+    ],
+    {
+      platform,
+      env,
+      // The same plist the service-definition section reads in full. Read here
+      // too, for one key: whether this machine's launch agent grants the brain
+      // permission to hydrate a dataless file. An agent installed before ADE
+      // set `MaterializeDatalessFiles` is the case where reads fail in ADE and
+      // succeed in Terminal — which is otherwise indistinguishable, in a
+      // report, from a provider that will not hand the bytes over to anyone.
+      launchAgentPath: platform === "darwin"
+        ? launchAgentPath(homeDir, resolveRuntimeServiceName(env))
+        : null,
+    },
+  );
+
   const notes: string[] = [...DIAGNOSTIC_COLLECTION_NOTES];
   if (fallbackProjectRoot) {
     notes.push(
@@ -639,6 +672,7 @@ export function collectMachineDiagnosticSources(
     logs,
     serviceDefinition: collectServiceDefinition({ env, platform, homeDir, run }),
     storage,
+    storageEnvironment,
     state: {
       machineLastFailure: readDiagnosticJsonFile(path.join(layout.runtimeDir, "last-failure.json")),
       projectLastFailure: projectRoot

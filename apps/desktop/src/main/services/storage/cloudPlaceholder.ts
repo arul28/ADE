@@ -120,13 +120,16 @@ const PROVIDER_LABELS: Record<CloudStorageProvider, string | null> = {
  * machine — and it is the brand that was DETECTED, never a list, because
  * naming three services a Google Drive folder is not in only reads as wrong.
  */
+export function storageUnreadableRemedy(provider?: CloudStorageProvider | null): string {
+  const label = provider ? PROVIDER_LABELS[provider] ?? "the cloud" : null;
+  return label
+    ? `The folder is stored in ${label} and isn't downloaded to this computer. Move the project to a folder on this computer, then open it again.`
+    : "If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.";
+}
+
 export function storageUnreadableMessage(
   targetPath: string,
   provider?: CloudStorageProvider | null,
 ): string {
-  const label = provider ? PROVIDER_LABELS[provider] ?? "the cloud" : null;
-  const remedy = label
-    ? `The folder is stored in ${label} and isn't downloaded to this computer. Move the project to a folder on this computer, then open it again.`
-    : "If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.";
-  return `ADE couldn't read this project's data at ${targetPath}. ${remedy}`;
+  return `ADE couldn't read this project's data at ${targetPath}. ${storageUnreadableRemedy(provider)}`;
 }

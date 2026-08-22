@@ -404,6 +404,27 @@ export function resolveWindowsStartTaskName(taskName = resolveWindowsTaskName())
  * the Task Scheduler default is three days, and an always-on brain must not be
  * terminated by its own launcher on day four. Unregistering does not terminate
  * the process the task already started, so nothing is left registered.
+ *
+ * ---
+ *
+ * Why this task needs no counterpart to the launchd `MaterializeDatalessFiles`
+ * key.
+ *
+ * Windows has the same class of file the macOS key exists for: a OneDrive
+ * Files On-Demand placeholder holds no contents until something reads it. The
+ * difference is who is allowed to hydrate one. macOS gates materialization on a
+ * per-process I/O policy that a launchd job does not get by default; Windows
+ * gates it on the cloud filter driver being able to reach a sync engine running
+ * in the reader's own logon session, and grants it to every ordinary process
+ * there. This task registers no `-Principal`, so it runs as the user who
+ * installed it, in that user's session -- the same session their OneDrive runs
+ * in. Hydration is therefore already allowed, and there is no per-task setting
+ * that would grant or deny it.
+ *
+ * The failure mode Windows does have is a hydration that is attempted and does
+ * not finish: OneDrive signed out, offline, or paused. That surfaces as an
+ * ERROR_CLOUD_FILE_* code rather than as EDEADLK, and classifying it belongs to
+ * the storage errno classifier, not to this launcher.
  */
 export function buildWindowsStartTaskArgs(
   launcherPath: string,

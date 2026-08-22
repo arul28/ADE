@@ -4,10 +4,11 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import { codedError, UNKNOWN_SYSTEM_ERRNO_PATTERN } from "../../../shared/codedError";
+import { codedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
+import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
   EVENT_LOG_RETENTION_DAYS,
@@ -73,35 +74,18 @@ const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
 ]);
 
 /**
- * Filesystem failures that mean "the bytes are not readable here", as opposed
- * to "the database is damaged". Reading a File-Provider placeholder (iCloud
- * Drive, Dropbox, OneDrive) that the provider cannot materialize is the common
- * cause; a failing disk or a dropped network mount produces the same shapes.
+ * Buckets an open failure into the code the recovery UI keys on.
+ *
+ * `options.path` is the database file being opened, and is required so that no
+ * caller forgets it by omission: SQLite errors rarely carry a path of their
+ * own, and the storage classifier needs one both to corroborate a bare errno
+ * and to name the cloud provider behind a Windows on-demand placeholder. Pass
+ * `null` only when the path is genuinely unknown.
  */
-const STORAGE_READ_ERRNO_CODES = new Set([
-  "EDEADLK",
-  "EIO",
-  "ENXIO",
-  "ENODEV",
-  "ESTALE",
-  "EHOSTDOWN",
-  "EREMOTEIO",
-]);
-
-/**
- * An unnameable platform errno (see `UNKNOWN_SYSTEM_ERRNO_PATTERN` in
- * `shared/codedError`) is a raw filesystem failure here, never a SQLite-level
- * verdict — which is why it is classified ahead of the integrity bucket below.
- */
-function isStorageReadError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const raw = error as { code?: unknown; errno?: unknown; syscall?: unknown };
-  if (typeof raw.code === "string" && STORAGE_READ_ERRNO_CODES.has(raw.code)) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return UNKNOWN_SYSTEM_ERRNO_PATTERN.test(message);
-}
-
-export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
+export function classifySqliteOpenError(
+  error: unknown,
+  options: { path: string | null },
+): KvDbOpenErrorCode {
   const explicitCode = error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code)
     : "";
@@ -113,7 +97,9 @@ export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
   if (isNoSpaceError(error) || /SQLITE_FULL/i.test(message)) return "disk_full";
   // Ahead of the integrity bucket: an unreadable file is not a corrupt one, and
   // offering to "repair" a placeholder would rewrite data ADE cannot even read.
-  if (isStorageReadError(error)) return "storage_read_failed";
+  // One classifier decides this for the whole app — the brain's sync-host loop
+  // reaches the same verdict through the same function.
+  if (classifyStorageFault(error, { path: options.path })) return "storage_read_failed";
   if (/malformed|not a database|integrity/i.test(message)) return "db_integrity";
   return "unknown";
 }

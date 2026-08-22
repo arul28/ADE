@@ -330,6 +330,10 @@ import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
+import {
+  checkRuntimeIdentity,
+  runVerifiedRuntimeRestart,
+} from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
@@ -2487,6 +2491,9 @@ app.whenReady().then(async () => {
   let runtimeServiceUninstalledForUpdate = false;
   let autoUpdateInstallRollbackReason: string | null = null;
   const reinstallRuntimeServiceAfterUpdateAbort = async (reason: string): Promise<void> => {
+    // The install is off. Normal recovery owns the service again from here,
+    // whether or not this abort has anything to reinstall.
+    localRuntimePool.endUpdateWindow(`install_aborted:${reason}`);
     if (!runtimeServiceUninstalledForUpdate) return;
     const result = await installRuntimeService();
     const payload = {
@@ -2508,6 +2515,10 @@ app.whenReady().then(async () => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
     });
+    // From here until the app quits, the missing (or old) background service
+    // is the update working. The pool must not answer it with a repair that
+    // reinstalls what this function is about to remove.
+    localRuntimePool.beginUpdateWindow("prepare_quit_and_install");
     runtimeServiceUninstalledForUpdate = false;
     autoUpdateInstallRollbackReason = null;
     if (!shouldRepairRuntimeServiceOnFallback) {
@@ -2517,6 +2528,11 @@ app.whenReady().then(async () => {
       return;
     }
     const result = await uninstallRuntimeService();
+    if (!result.ok) {
+      // Nothing was removed and the install will not proceed, so recovery must
+      // get its normal freedom back immediately.
+      localRuntimePool.endUpdateWindow("uninstall_before_install_failed");
+    }
     const payload = {
       ok: result.ok,
       serviceName: result.serviceName,
@@ -2698,10 +2714,22 @@ app.whenReady().then(async () => {
     // per-user service itself.
     const recentlyInstalledVersion =
       autoUpdateService.getSnapshot().recentlyInstalled?.version ?? null;
+    // What the service must be answering as once this transaction finishes. The
+    // installed version is the fallback for an update that did not name one.
+    const expectedRuntimeVersion = recentlyInstalledVersion ?? app.getVersion();
+    // The post-relaunch half of the same update. The pool's own repair path
+    // would otherwise race these steps: it reinstalls and restarts the service
+    // this transaction is already reinstalling and restarting.
+    localRuntimePool.beginUpdateWindow("post_update_transaction");
     void runUpdateTransaction({
       installedVersion: app.getVersion(),
       expectedVersion: recentlyInstalledVersion,
       reinstallService: async () => {
+        // Read who is serving this machine BEFORE the service is replaced. A
+        // pre-update brain that outlives the reinstall can only be recognised
+        // afterwards if it was seen once beforehand, and this probe is what
+        // records it.
+        await localRuntimePool.probeMachineRuntimeIdentity().catch(() => null);
         await localRuntimePool.installServiceBestEffort();
         const status = localRuntimePool.getStatus().serviceInstall;
         if (status.state === "installed") {
@@ -2714,28 +2742,32 @@ app.whenReady().then(async () => {
           detail: status.message?.trim() ?? "",
         };
       },
-      restartService: async () => {
-        // The app and the brain move together on an update, so restarting is
-        // the default — but a relaunch where the service is ALREADY answering
-        // on the new build has nothing to restart, and bouncing it there kills
-        // live work for no gain. Same side-effect-free probe the health step
-        // uses, so this is a skip in front of the one restart path, not a
-        // second one.
-        const alreadyCurrent = await localRuntimePool
-          .probeMachineRuntimeHealth()
-          .catch(() => null);
-        if (alreadyCurrent?.ok) {
-          return {
-            ok: true,
-            detail: alreadyCurrent.version
-              ? `Background service already running ${alreadyCurrent.version} — restart not needed.`
-              : "Background service already on the new build — restart not needed.",
-          };
-        }
-        await machineRecoveryService.restartBrain();
-        return { ok: true };
+      // The app and the brain move together on an update, so restarting is the
+      // default — but a relaunch where the service is ALREADY answering as the
+      // new build has nothing to restart, and bouncing it there kills live work
+      // for no gain. That skip has to be earned by identity, not by a bare
+      // "something answered": the pre-update brain can survive the service
+      // reinstall, let a replacement bind the socket, and keep the machine-wide
+      // sync lease — which is exactly what a green "restart not needed" hid.
+      restartService: () => runVerifiedRuntimeRestart({
+        expectedVersion: expectedRuntimeVersion,
+        probeIdentity: () => localRuntimePool.probeMachineRuntimeIdentity(),
+        restartService: () => machineRecoveryService.restartBrain(),
+        readStaleRuntime: () => localRuntimePool.getStaleMismatchedRuntime(),
+        log: (event, meta) => updateLogger.info(event, meta),
+      }),
+      checkHealth: async () => {
+        const { identity, verdict } = await checkRuntimeIdentity({
+          expectedVersion: expectedRuntimeVersion,
+          probeIdentity: () => localRuntimePool.probeMachineRuntimeIdentity(),
+          readStaleRuntime: () => localRuntimePool.getStaleMismatchedRuntime(),
+        });
+        return {
+          ok: verdict.matches,
+          version: identity?.version ?? null,
+          detail: verdict.detail,
+        };
       },
-      checkHealth: () => localRuntimePool.probeMachineRuntimeHealth(),
     })
       .then((result) => {
         autoUpdateService.setUpdateTransaction(result);
@@ -2770,6 +2802,9 @@ app.whenReady().then(async () => {
         updateLogger.warn("autoUpdate.transaction_publish_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
+      })
+      .finally(() => {
+        localRuntimePool.endUpdateWindow("post_update_transaction");
       });
   }
 

@@ -162,7 +162,28 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   wait for the desktop handler timeout. `LocalRuntimeStatus` now also carries
   the brain's `pid`, its bound `syncPort`, the account-directory `publishHealth`
   slice (state + `failingSinceMs` + last-leg durations), and the one-shot
-  `lastWedge` recovered by the event-loop watchdog. The Machines panel renders
+  `lastWedge` recovered by the event-loop watchdog.
+  `probeMachineRuntimeIdentity()` is the side-effect-free question "what is
+  answering on this machine's endpoint, exactly": a `MachineRuntimeIdentity`
+  carrying version, build hash, pid, the build hash this desktop expected, and
+  whether the answering brain is a compatible newer one. It replaces the older
+  `probeMachineRuntimeHealth()`, which answered `ok` and thereby could not tell
+  a correctly updated brain from the pre-update one still holding the socket —
+  see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction).
+  The pool's own opportunistic service repair is now both throttled and
+  suppressible. `serviceRepairBackoffMs` spaces attempts at 0 / 5 s / 15 s /
+  30 s / 60 s, capped at one a minute, because a mismatched runtime previously
+  spawned one installer per connect attempt — that is per failing action poll.
+  `beginUpdateWindow` / `endUpdateWindow` suppress repair entirely for at most
+  `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 minutes) while an update is applying,
+  and connects refused during it get
+  `LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE` ("ADE is applying an update. The
+  background service is restarting.") rather than a repair. The window
+  self-expires, so a transaction that never settles cannot leave recovery
+  disabled for the session. `getStaleMismatchedRuntime()` reports a
+  still-running pre-update brain, verified alive and start-time-matched through
+  `readProcessStartTimeMs` so a recycled pid is never mistaken for it, and never
+  reports a brain *newer* than this desktop. The Machines panel renders
   publish health as a This-computer indicator (`remoteMachineModel.describePublishHealth`,
   which reads inactive states as "none" and only alarms a real failure after it
   has persisted ~2 minutes), and the app shell reads `lastWedge` for the
@@ -334,7 +355,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   did not have. Connection failures also carry a **Report issue** button. `remoteMachineModel.ts`
   (`describePublishHealth`) is the pure classifier for that indicator: the
   publishing `published` state reads healthy, the non-publishing states
-  (`sync_disabled`, `not_host`, `account_signed_out`, `machine_key_unavailable`,
+  (`sync_disabled`, `sync_not_started`, `not_host`, `account_signed_out`,
+  `machine_key_unavailable`,
   …) read as "none", and every other state is a failure that only alarms once it
   has persisted at least `PUBLISH_FAILING_ALARM_MS` (2 min) so a transient blip
   stays quiet. When that failure is specifically the brain-side unreadable
@@ -683,12 +705,22 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   externally-readable liveness beat: `<ADE home>/runtime/heartbeat.json`
   (`{pid, ts, seq, startedAt}`) rewritten every 15 s from a timer that ticks
   while the brain is completely idle, which is exactly the state a wedge hides
-  in.
+  in. A beat that is itself overdue by more than 60 s records `suspendGapMs` and
+  logs `brain.suspend_gap`: the writer noticing its own lateness is the cheapest
+  evidence that the machine slept. `evaluateBrainHeartbeat` is the shared
+  verdict function, and `brainWatcherSuspendFloorMs` the shared floor both
+  platforms measure a watcher's own lateness against.
 - `apps/ade-cli/src/services/runtime/brainWatchdogCheck.ts` — `runBrainWatchdogCheck`,
   behind `ade runtime watchdog-check`. Reads the heartbeat and, at most, kills
   one pid. It deliberately never opens the runtime socket: a wedged brain is
   precisely the case where connecting hangs, and a watchdog that blocks on its
-  patient is not a watchdog.
+  patient is not a watchdog. It keeps one file of its own,
+  `<ADE home>/runtime/watchdog-check.json` (`{ts, staleBeat}`), which is how it
+  knows how long ago it last ran and whether it has already seen this exact
+  beat — the two facts behind the `machine_slept` and `stale_unconfirmed`
+  verdicts below. The record is written before the judgement, so a check that
+  dies mid-run still leaves its timestamp; an unwritable runtime directory means
+  the watcher stops killing rather than kills on stale information.
 - `apps/ade-cli/src/serviceManager/installLaunchdWatchdog.ts` — install/uninstall
   of the `com.ade.watchdog` launch agent (`.beta` / `.alpha` per channel,
   `StartInterval` 60 s), done alongside the brain's own agent and best effort: a
@@ -1330,6 +1362,32 @@ Three layers now cover that, and they are deliberately different in kind:
   alive. Both conditions are required: an absent or unreadable heartbeat means
   "no judgement available", never "wedged", and a stale beat with a dead writer
   is left to the supervisor that already owns the restart.
+
+  Those two facts are necessary and were not sufficient. A laptop that sleeps
+  suspends the brain and its watcher together, so on wake the beat is 40 minutes
+  old and describes the suspension, not a wedge — and the watchdog killed a
+  perfectly healthy brain every time the lid closed. A kill now needs three
+  facts, and `evaluateBrainHeartbeat` returns a named verdict for each way it
+  can fail to get them:
+
+  1. the beat is stale and its writer is alive and positively identified;
+  2. **the watcher was awake to watch it go stale** — it measures its own
+     lateness, which is the one thing a suspended process can still report.
+     When the gap since its previous run reaches
+     `brainWatcherSuspendFloorMs` (`max(90 s, 3 × the check interval)`) and the
+     beat's age fits inside that gap plus the staleness window, the verdict is
+     `machine_slept` and nothing is killed. A brain that went quiet days before
+     a ten-minute nap is not explained by the nap and still dies;
+  3. **a previous check already saw this same beat**, matched on the beat's own
+     timestamp rather than on its age. A brain the OS merely stopped scheduling
+     beats again before the next check and never reaches a kill; a wedged one is
+     still sitting on the same timestamp a cadence later. Until then the verdict
+     is `stale_unconfirmed`. A beat that comes back fresh clears the strike, so
+     the two stale checks have to be consecutive.
+
+  Both platforms apply the same three rules. macOS gets them from
+  `evaluateBrainHeartbeat`; the Windows supervisor implements them inline in
+  PowerShell against the same heartbeat file and the same suspend floor.
   - *macOS*: a separate launch agent, `com.ade.watchdog` (`.beta`/`.alpha` per
     channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
     the same binary the brain was installed from. It is installed and removed
@@ -1337,7 +1395,10 @@ Three layers now cover that, and they are deliberately different in kind:
     install the watchdog still gets a brain.
   - *Windows*: the PowerShell supervisor already runs a restart loop, so the
     check folds into it. It waits in 15 s slices instead of one unbounded
-    `WaitForExit()` and stops a child that stopped beating. No Scheduled Task.
+    `WaitForExit()` and stops a child that stopped beating, applying the same
+    three rules — `Get-StaleBeatTs` returns the stale beat's *timestamp* rather
+    than its age precisely so the second-strike rule can recognise the same beat
+    across polls. No Scheduled Task.
 - **Desktop, when running** — `projectRecoveryService.restartBrain` already
   probes and repairs. The watchdog exists for the headless case, and does not
   duplicate it.

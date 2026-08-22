@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { StorageEnvironment } from "./storageEnvironmentProbe";
 
 /**
  * Diagnostic-report assembly and redaction, shared by the desktop
@@ -117,6 +118,17 @@ export type DiagnosticReportInput = {
     updateTransaction?: unknown;
   };
   storage?: readonly DiagnosticVolumeSpace[];
+  /**
+   * How the reported directories are stored, rather than how full they are.
+   *
+   * The probe's own type, so a field or an enum member added there is a
+   * compile error here rather than a section that silently stops rendering it.
+   * The import is `type`-only: this module renders whatever the collector hands
+   * it and never reaches for the filesystem itself. Paths are deliberately
+   * absent from the shape — this section reports enums and counts, and there is
+   * nothing here to leak.
+   */
+  storageEnvironment?: StorageEnvironment | null;
   logs?: readonly DiagnosticLogTail[];
   /**
    * How this machine's background service is DEFINED — the launchd plist, the
@@ -454,6 +466,41 @@ function fileEntriesSection(title: string, entries: readonly DiagnosticLogTail[]
 }
 
 /**
+ * The storage-environment section, or null when the collector did not run one.
+ *
+ * Deliberately flat prose bullets rather than a JSON blob: the reader of a
+ * report is looking for one sentence — "the project is in iCloud Drive and 47
+ * of 200 sampled files are not downloaded" — and that sentence is the whole
+ * point of the section.
+ */
+function storageEnvironmentBlock(
+  environment: DiagnosticReportInput["storageEnvironment"],
+): string | null {
+  if (!environment) return null;
+  const rows = environment.roots.map((root) => {
+    if (root.error) return `- ${root.label}: ${root.location} — ${root.error}`;
+    const sampleNote = root.sampleTruncated ? ", sample truncated" : "";
+    return `- ${root.label}: ${root.location} — ${root.datalessFiles} of ${root.sampledFiles} sampled files not downloaded${sampleNote}`;
+  });
+  const launchd = environment.process.launchdManaged;
+  const processRow = `- Collected by: ${environment.process.processType} on ${environment.process.platform}${
+    launchd == null ? "" : launchd ? ", started by launchd" : ", not started by launchd"
+  }`;
+  // Stated as a sentence rather than a boolean, because the whole value of the
+  // line is which of two very different failures the reader is looking at.
+  const materialize = environment.process.materializeDatalessFiles;
+  const policyRow = materialize == null
+    ? null
+    : materialize
+      ? "- Cloud file downloads: the background service is allowed to download evicted files"
+      : "- Cloud file downloads: this computer's background service is NOT allowed to download evicted files (launch agent predates MaterializeDatalessFiles)";
+  const limitations = (environment.limitations ?? []).map((note) => `- ${note}`);
+  return [...rows, processRow, policyRow, ...limitations]
+    .filter((row): row is string => row != null)
+    .join("\n");
+}
+
+/**
  * Renders the Markdown report, then redacts the whole thing. Redaction runs on
  * the assembled text rather than per-field on purpose: a future section cannot
  * leak by forgetting to opt in.
@@ -529,6 +576,8 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
         : null,
     ),
   );
+
+  parts.push(section("Storage environment", storageEnvironmentBlock(input.storageEnvironment)));
 
   // Before the logs: what the service was told to be explains what the logs
   // then show, and it is short enough to read first.

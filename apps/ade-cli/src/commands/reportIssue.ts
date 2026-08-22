@@ -125,6 +125,7 @@ function finishCliDiagnosticReport(
     },
     state: sources.state,
     storage: sources.storage,
+    storageEnvironment: sources.storageEnvironment,
     logs: sources.logs,
     serviceDefinition: sources.serviceDefinition,
     notes: sources.notes,

@@ -107,6 +107,25 @@ describe("createBrainAutoDiagnostics", () => {
     expect(fs.existsSync(stateFilePath)).toBe(true);
   });
 
+  /**
+   * The sync host's storage fault reaches this sender directly rather than
+   * through the account publisher, because a brain that cannot start a sync
+   * host never takes the lease that would give it a publisher. What the sender
+   * has to hold up in return is the ceiling: the fault repeats every 30 seconds
+   * for as long as the provider refuses, all day.
+   */
+  it("sends one report for a storage fault that repeats all day", async () => {
+    const { sender, send } = harness();
+    const request = { failureCode: "storage_read_failed", surface: "sync_host_storage" } as const;
+
+    await expect(sender.report(request)).resolves.toBe("completed");
+    for (let repeat = 0; repeat < 5; repeat += 1) {
+      await expect(sender.report(request)).resolves.toBe("skipped_budget");
+    }
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[1]).toMatchObject({ failureCode: "storage_read_failed" });
+  });
+
   it("treats a refused upload as a silent skip and offers no toast for it", async () => {
     const { sender, stateFilePath } = harness({ sendResult: { ok: false, reason: "rate_limited" } });
 

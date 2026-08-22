@@ -1038,6 +1038,26 @@ Desktop connection UI:
   it. `nextAction` is a CLI command, so a surface that has a button for the
   same fix (the pane's **Repair** control for `token_unreadable`) drops it and
   renders the summary alone.
+
+  The union separates two states that look identical from the outside and mean
+  opposite things. `sync_disabled` is sync genuinely off: nothing is trying, and
+  there is nothing to wait for. `sync_not_started` is sync that is *meant* to
+  run and has not come up — the publisher has not attempted yet, or the sync
+  host is still failing and retrying. Both used to report `sync_disabled`, which
+  told a user whose sync host was crash-looping that sync was switched off and
+  sent them hunting for a switch that was already on. `sync_not_started` reads
+  "sync hasn't started on this computer yet" and offers `ade doctor`, which is
+  the surface that can actually say why. It is produced by `syncService.ts` and
+  `projectlessSyncSnapshot.ts`, and by the account publisher's initial health
+  before its first attempt. The Machines panel treats it as a non-publishing
+  state rather than a failure (`PUBLISH_INACTIVE_STATES`), so a brain that is
+  merely still coming up never raises the publish-failing alarm.
+
+  `unpublishedMachineLabel` also guards the lookup with
+  `isSyncAccountDirectoryState` before destructuring. A newer brain can name a
+  state this desktop build's union does not have; that used to throw a
+  `TypeError` and blank the entire Connections pane, and now degrades to
+  "Signed in — sync state isn't available on this computer yet".
 - `apps/desktop/src/renderer/components/settings/accountDirectorySummary.ts` —
   turns that advice into the one Connections line: `Signed in — <summary>`.
 - `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` — hosts
@@ -1646,6 +1666,32 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   cadence and auto-recover the moment the foreign owner exits, instead of
   permanently giving up and stranding paired phones on the ingress
   fallback.
+
+  The loop also classifies what it caught rather than retrying everything the
+  same way. Each failure goes through `classifyStorageFault`
+  (`storage/storageErrnoClassifier.ts`, shared with the database open — see
+  [storage and recovery](../storage-and-recovery/README.md)). A classified
+  storage fault always takes the **slow** 30 s cadence and never the 2 s fast
+  ladder: an unreadable `~/.ade` is not going to be readable two seconds later,
+  and retrying at that rate only spends CPU and fills the log. The human line
+  quotes the classified sentence — the one naming the folder and the fix —
+  instead of "Unknown system error -11".
+
+  Three side channels hang off the classification, all guarded so telemetry can
+  never become a second failure path. `logEvent` emits the structured
+  `sync.host_start_failed` (signature, attempt, code, errno, provider, message)
+  and `sync.host_start_recovered` (attempts, last signature) through the same
+  deduper as the human line, so both are throttled together instead of one
+  flooding while the other stays quiet. `recordStorageFault` writes a
+  machine-scoped last-failure record with `component: "sync_host"`, so the fault
+  is in the diagnostic report even when nobody was watching. And after
+  `sustainedStorageFaultAttempts` (3) consecutive storage faults,
+  `onSustainedStorageFault` fires **once per loop** to send an automatic
+  diagnostic report; the counter resets on any non-storage failure. That trigger
+  lives here rather than on the account publisher for a structural reason
+  explained under [auto-send](../storage-and-recovery/README.md#auto-send): the
+  publisher does not exist until the sync host starts, so it could never report
+  a sync host that would not.
 - `changesetPump.ts` — batch-chunk selection for changeset fan-out.
   Splits an export into `changeset_batch` envelopes at ~256 KB / 250
   rows while never splitting rows that share a `db_version` (the ack

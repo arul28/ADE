@@ -1402,7 +1402,7 @@ export function createSyncService(args: SyncServiceArgs) {
       let accountDirectory: SyncAccountDirectoryHealth;
       try {
         accountDirectory = args.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
-          "sync_disabled",
+          "sync_not_started",
           "Account-directory publishing is not enabled in this runtime.",
         );
       } catch {

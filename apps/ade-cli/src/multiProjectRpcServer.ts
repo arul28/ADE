@@ -1191,7 +1191,7 @@ export function createMultiProjectRpcRequestHandler(
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
     try {
       return options.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
-        "sync_disabled",
+        "sync_not_started",
         "Account-directory publishing is not enabled in this brain.",
       );
     } catch {
