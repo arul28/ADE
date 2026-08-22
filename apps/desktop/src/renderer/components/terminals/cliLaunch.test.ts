@@ -1144,21 +1144,23 @@ describe("buildTrackedCliStartupCommand", () => {
         initialPrompt: "Use OpenCode fast mode.",
       });
       expect(launch.command).toBe("opencode");
+      // The root TUI is the only launch surface now: `run --interactive`'s
+      // bare split-footer read as "a plain terminal with no UI", and the root
+      // command has no --variant flag to branch on.
       expect(launch.args).toEqual(expect.arrayContaining([
-        "run",
-        "--interactive",
         "--model",
         "openai/gpt-5.4",
-        "--variant",
-        "fast",
       ]));
-      expect(launch.args).not.toEqual(expect.arrayContaining(["--prompt"]));
-      expect(launch.startupCommand).toContain("opencode run --interactive");
-      expect(launch.startupCommand).toContain("--variant fast");
+      expect(launch.args).not.toContain("--variant");
+      // The root command takes the kickoff through --prompt (the positional
+      // slot belongs to the project path); the prompt value carries ADE's
+      // session-guidance preamble with the user's text inside it.
+      expect(launch.args).toContain("--prompt");
+      expect(launch.startupCommand).not.toContain("run --interactive");
       expect(launch.startupCommand).toContain("Use OpenCode fast mode.");
     });
 
-    it("launches OpenCode reasoning through the interactive run variant flag when fast is off", () => {
+    it("keeps reasoning effort out of OpenCode CLI launches (root TUI has no --variant)", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "opencode",
         permissionMode: "full-auto",
@@ -1167,13 +1169,10 @@ describe("buildTrackedCliStartupCommand", () => {
         fastMode: false,
         initialPrompt: "Use OpenCode high reasoning.",
       });
-      expect(launch.args).toEqual(expect.arrayContaining([
-        "run",
-        "--interactive",
-        "--variant",
-        "high",
-      ]));
-      expect(launch.args).not.toEqual(expect.arrayContaining(["--variant", "fast"]));
+      // The root command silently drops unknown args, so passing --variant
+      // there would be a lie; reasoning effort stays a chat-runtime feature.
+      expect(launch.args).not.toContain("--variant");
+      expect(launch.startupCommand).not.toContain("run --interactive");
     });
 
     it("normalizes ADE OpenCode registry model ids before launching the CLI", () => {
@@ -1290,12 +1289,15 @@ describe("tracked CLI resume helpers", () => {
     });
     expect(replay.command).toBe("opencode");
     expect(replay.args).toEqual(expect.arrayContaining([
+      "--mini",
       "--session",
       "ses_99",
-      "--replay",
-      "--",
+      "--replay-limit",
+      "40",
+      "--prompt",
       prompt,
     ]));
+    expect(replay.args).not.toContain("--replay");
     expect(replay.env?.OPENCODE_CONFIG_CONTENT).toBeTruthy();
   });
 
@@ -1565,21 +1567,20 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "ses_99",
       launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4", fastMode: true },
-    })).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --variant fast --session ses_99");
+    })).toContain("opencode --agent plan --model \"openai/gpt-5.4\" --session ses_99");
   });
 
   it("builds OpenCode interactive replay resume commands for freeze-frame continuation", () => {
     const command = buildOpenCodeReplayResumeCommand({
       permissionMode: "plan",
       model: `opencode/openai/${encodeURIComponent("gpt-5.4")}`,
-      fastMode: true,
       resumeTarget: "ses_99",
       prompt: "continue from the snapshot",
       replayLimit: 12,
     });
 
     expect(command).toContain("OPENCODE_CONFIG_CONTENT=");
-    expect(command).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --variant fast --session ses_99 --replay --replay-limit 12 --");
+    expect(command).toContain("opencode --mini --agent plan --model \"openai/gpt-5.4\" --session ses_99 --replay-limit 12 --prompt");
     expect(command).toContain("continue from the snapshot");
     expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });

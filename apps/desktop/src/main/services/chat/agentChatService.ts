@@ -4775,7 +4775,7 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
 
   const collapsed = normalized.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   if (REJECTED_TITLES.has(collapsed)) return null;
-  if (/^(new session|new chat|untitled chat|untitled)\b/u.test(collapsed)) return null;
+  if (/^(new session|new chat|child session|untitled chat|untitled)\b/u.test(collapsed)) return null;
 
   if (/^(completed?|done|finished|resolved|success)\b/u.test(collapsed)) {
     const remainder = collapsed.replace(/^(completed?|done|finished|resolved|success)\b/u, "").trim();
@@ -23315,17 +23315,22 @@ export function createAgentChatService(args: {
         }),
       };
 
+      // Subscribe BEFORE dispatching. The event stream is live-only — it never
+      // replays events published before the connection lands — so a prompt
+      // request that wins this race would have its assistant `message.updated`
+      // role announcement (and first parts) lost, and the role gate below
+      // would then drop every part of that message.
+      const eventStream = await openCodeEventStream({
+        client: runtime.handle.client,
+        directory: runtime.handle.directory,
+        signal: abortController.signal,
+      });
+
       const promptAccepted = runtime.handle.client.session.promptAsync({
         path: { id: runtime.handle.sessionId },
         query: { directory: runtime.handle.directory },
         throwOnError: true,
         body: openCodePromptBody,
-      });
-
-      const eventStream = await openCodeEventStream({
-        client: runtime.handle.client,
-        directory: runtime.handle.directory,
-        signal: abortController.signal,
       });
 
       await promptAccepted;
@@ -23334,7 +23339,14 @@ export function createAgentChatService(args: {
       }
 
       let stepNumber = 0;
-      const openCodeAssistantMessageIds = new Set<string>();
+      // Role of every message OpenCode tells us about, keyed by message id.
+      // Part events alone carry no role, and user-message parts (including
+      // synthetic/ignored prompt context) ride the same `message.part.updated`
+      // stream as assistant output — so content emission must be gated on a
+      // known assistant role, never on the part shape alone. OpenCode publishes
+      // `message.updated` before the first part of a message, so the role is
+      // always resolved by the time its parts arrive.
+      const openCodeMessageRoleById = new Map<string, "assistant" | "user">();
       const emittedOpenCodeImagePartIds = new Set<string>();
       const emitOpenCodeImagePart = (part: unknown): void => {
         const imageEvent = mapOpenCodeImagePart({
@@ -23514,10 +23526,8 @@ export function createAgentChatService(args: {
         }
 
         if (event.type === "message.updated") {
-          if (event.properties.info.role === "assistant") {
-            openCodeAssistantMessageIds.add(event.properties.info.id);
-          } else {
-            openCodeAssistantMessageIds.delete(event.properties.info.id);
+          if (event.properties.info.role === "assistant" || event.properties.info.role === "user") {
+            openCodeMessageRoleById.set(event.properties.info.id, event.properties.info.role);
           }
           continue;
         }
@@ -23591,10 +23601,21 @@ export function createAgentChatService(args: {
             continue;
           }
 
+          // Only assistant messages produce rendered content. User-message text
+          // parts stream through the same event; without this role gate the
+          // user's own prompt (or injected system context) would echo into the
+          // transcript as an assistant bubble. OpenCode announces every message
+          // (with its role) before its parts, so an unknown role means "not
+          // announced yet" — those stay unrendered too.
+          const openCodePartMessageRole = openCodeMessageRoleById.get(part.messageID);
+
           if (part.type === "text") {
             // Skip synthetic/ignored prompt parts (e.g. ADE launch directives
             // injected as system context) — they should not be rendered in chat.
             if ((part as { synthetic?: boolean }).synthetic || (part as { ignored?: boolean }).ignored) {
+              continue;
+            }
+            if (openCodePartMessageRole !== "assistant") {
               continue;
             }
             const previous = runtime.textByPartId.get(part.id) ?? "";
@@ -23618,6 +23639,9 @@ export function createAgentChatService(args: {
           }
 
           if (part.type === "reasoning") {
+            if (openCodePartMessageRole !== "assistant") {
+              continue;
+            }
             const previous = runtime.reasoningByPartId.get(part.id) ?? "";
             const nextText = part.text;
             const nextDelta = typeof delta === "string"
@@ -23646,7 +23670,7 @@ export function createAgentChatService(args: {
           if (part.type === "file") {
             // Prompt attachments use the same wire part. Only assistant-owned
             // files are output; tool attachments are handled below directly.
-            if (openCodeAssistantMessageIds.has(part.messageID)) {
+            if (openCodePartMessageRole === "assistant") {
               emitOpenCodeImagePart(part);
             }
             continue;

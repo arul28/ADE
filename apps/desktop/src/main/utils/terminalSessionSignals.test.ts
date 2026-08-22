@@ -214,7 +214,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "ses_1",
       launch: { permissionMode: "full-auto", fastMode: true },
-    })).toBe("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode run --interactive --variant fast --session ses_1");
+    })).toBe("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode --session ses_1");
   });
 
   it("applies resume-time model, reasoning, and permission overrides", () => {
@@ -403,11 +403,10 @@ describe("terminalSessionSignals", () => {
       permissionMode: "edit",
       targetId: "ses_abc",
       model: "openai/gpt-5.4",
-      fastMode: true,
       prompt: "continue from here",
     });
 
-    expect(command).toContain("opencode run --interactive --model \"openai/gpt-5.4\" --variant fast --session ses_abc --replay --replay-limit 40 -- \"continue from here\"");
+    expect(command).toContain("opencode --mini --model \"openai/gpt-5.4\" --session ses_abc --replay-limit 40 --prompt \"continue from here\"");
     expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });
 

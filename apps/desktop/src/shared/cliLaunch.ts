@@ -830,8 +830,6 @@ export function buildTrackedCliLaunchCommand(args: {
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model: args.model,
-    reasoningEffort: args.reasoningEffort,
-    fastMode: args.fastMode,
     prompt: workTabCliPrompt(initialPrompt, skillRoots),
   });
   const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
@@ -1183,42 +1181,44 @@ function normalizeOpenCodeCliModel(model: string | null | undefined): string | n
   return `${decoded.openCodeProviderId}/${decoded.openCodeModelId}`;
 }
 
-function openCodeVariantForLaunch(args: {
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-}): string | null {
-  // Fast mode takes priority: when enabled, the "fast" variant supersedes any reasoningEffort variant.
-  if (args.fastMode === true) return "fast";
-  return normalizeCliFlagValue(args.reasoningEffort);
-}
-
-function buildOpenCodeCommandParts(args: {
+/// Shared OpenCode launch-argument core: permission agent, model, and the
+/// resume/continue selector. Both the fresh-launch builder (root TUI) and the
+/// replay-resume builder (`--mini`) wrap this so flag assembly cannot drift —
+/// the old pair diverged once already (`--` positional vs `--prompt`).
+function openCodeCoreCommandArgs(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-  prompt?: string;
   resumeTarget?: string | null;
   continueLast?: boolean;
-}): { args: string[]; startupCommand: string; env?: Record<string, string> } {
-  const variant = openCodeVariantForLaunch(args);
+}): string[] {
   const commandArgs = [
-    ...(variant ? ["run", "--interactive"] : []),
     ...permissionModeToOpenCodeArgs(args.permissionMode),
   ];
   commandArgs.push(...modelToCliFlag(normalizeOpenCodeCliModel(args.model)));
-  if (variant) commandArgs.push("--variant", variant);
   if (args.resumeTarget) {
     commandArgs.push("--session", args.resumeTarget);
   } else if (args.continueLast) {
     commandArgs.push("--continue");
   }
+  return commandArgs;
+}
+
+function buildOpenCodeCommandParts(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  prompt?: string;
+  resumeTarget?: string | null;
+  continueLast?: boolean;
+}): { args: string[]; startupCommand: string; env?: Record<string, string> } {
+  // Always launch the full root TUI. The old shape branched into
+  // `opencode run --interactive` whenever a reasoning variant was set, which is
+  // OpenCode's bare split-footer mode — users read it as "a plain terminal with
+  // no UI". The root command has no --variant flag (it silently drops unknown
+  // args), so variants remain a chat-runtime feature; CLI launches keep the
+  // model and permission agent only.
+  const commandArgs = openCodeCoreCommandArgs(args);
   if (args.prompt) {
-    if (variant) {
-      commandArgs.push("--", args.prompt);
-    } else {
-      commandArgs.push("--prompt", args.prompt);
-    }
+    commandArgs.push("--prompt", args.prompt);
   }
   const config = openCodeConfigEnv(args.permissionMode);
   return {
@@ -1233,8 +1233,6 @@ export const OPENCODE_RESUME_REPLAY_LIMIT = 40;
 type OpenCodeReplayResumeArgs = {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
   prompt: string;
   resumeTarget?: string | null;
   continueLast?: boolean;
@@ -1244,24 +1242,20 @@ type OpenCodeReplayResumeArgs = {
 export function buildOpenCodeReplayResumeLaunchCommand(
   args: OpenCodeReplayResumeArgs,
 ): TrackedCliLaunchCommand {
-  const variant = openCodeVariantForLaunch(args);
+  // Mini mode replays the newest messages on resume by default (upstream made
+  // an explicit --replay flag an error); --replay-limit caps how far back the
+  // freeze-frame reaches.
   const commandArgs = [
-    "run",
-    "--interactive",
-    ...permissionModeToOpenCodeArgs(args.permissionMode),
-    ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
+    "--mini",
+    ...openCodeCoreCommandArgs(args),
   ];
-  if (variant) commandArgs.push("--variant", variant);
-  if (args.resumeTarget) {
-    commandArgs.push("--session", args.resumeTarget);
-  } else if (args.continueLast) {
-    commandArgs.push("--continue");
-  }
-  commandArgs.push("--replay");
   const replayLimit = Number.isFinite(args.replayLimit)
     ? Math.max(1, Math.floor(Number(args.replayLimit)))
     : OPENCODE_RESUME_REPLAY_LIMIT;
-  commandArgs.push("--replay-limit", String(replayLimit), "--", args.prompt);
+  commandArgs.push("--replay-limit", String(replayLimit));
+  if (args.prompt) {
+    commandArgs.push("--prompt", args.prompt);
+  }
   const config = openCodeConfigEnv(args.permissionMode);
   return {
     command: "opencode",
@@ -1456,8 +1450,6 @@ export function buildTrackedCliResumeLaunchCommand(
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model,
-    reasoningEffort,
-    fastMode,
     ...(prompt ? { prompt } : {}),
     resumeTarget: targetId || null,
     continueLast: !targetId,

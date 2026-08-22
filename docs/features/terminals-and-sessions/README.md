@@ -1239,8 +1239,12 @@ Renderer surfaces:
   it waits for Cursor's interactive prompt and submits the ADE guidance
   plus user text through PTY input instead of argv. Droid materializes a
   temp `--settings` JSON keyed off the active
-  permission mode, and OpenCode passes its inline permission policy
-  through the `OPENCODE_CONFIG_CONTENT` env var. ADE session guidance is
+   permission mode, and OpenCode passes its inline permission policy
+   through the `OPENCODE_CONFIG_CONTENT` env var and always launches the
+   root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — tracked
+   launches have no `run --interactive` branch and no reasoning/fast
+   variant flag (the root command silently drops unknown args), so
+   variants remain a chat-runtime feature. ADE session guidance is
   injected on every launch with skill roots resolved from the active
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
   through `--append-system-prompt`; Codex, Droid, and OpenCode receive

@@ -166,16 +166,12 @@ export function buildOpenCodeReplayResumeCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   targetId: string | null;
   model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
   prompt: string;
   replayLimit?: number | null;
 }): string {
   return buildCanonicalOpenCodeReplayResumeCommand({
     permissionMode: args.permissionMode,
     model: args.model,
-    reasoningEffort: args.reasoningEffort,
-    fastMode: args.fastMode,
     prompt: args.prompt,
     resumeTarget: args.targetId,
     continueLast: !args.targetId,

@@ -51,7 +51,7 @@ import {
   shouldUseWindowsCmdWrapper,
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
-import { pathsEqual } from "../shared/pathCompare";
+import { pathKey, pathsEqual } from "../shared/pathCompare";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -465,7 +465,10 @@ function openCodeSupportsReplayResume(): boolean {
     const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
     delete env.FORCE_COLOR;
     const executable = resolveOpenCodeBinaryPath() ?? "opencode";
-    const result = spawnSync(executable, ["run", "--help"], {
+    // Replay resume is a root `--mini` feature: `--replay-limit` requires
+    // --mini, and an explicit `--replay` flag is rejected outright on current
+    // OpenCode. Probe the root help, not `run --help`.
+    const result = spawnSync(executable, ["--help"], {
       encoding: "utf8",
       timeout: 3000,
       maxBuffer: 512 * 1024,
@@ -473,9 +476,11 @@ function openCodeSupportsReplayResume(): boolean {
       windowsHide: true,
     });
     const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
+    // Flag tokens start with "-", a non-word character, so \b can never match
+    // before them; anchor on whitespace/string edges instead.
     cachedOpenCodeReplayResumeSupport = result.status === 0
-      && /\b--replay\b/.test(output)
-      && /\b--interactive\b/.test(output);
+      && /(^|\s)--mini(\s|$)/.test(output)
+      && /(^|\s)--replay-limit(\s|$)/.test(output);
     return cachedOpenCodeReplayResumeSupport;
   } catch {
     cachedOpenCodeReplayResumeSupport = false;
@@ -3453,6 +3458,20 @@ export function createPtyService({
       if (jsonStart < 0) return null;
       const rows = JSON.parse(stdout.slice(jsonStart)) as unknown;
       if (!Array.isArray(rows)) return null;
+      // macOS hands back /var/... while the session row records the resolved
+      // /private/var/... spelling (and Windows adds case drift). Compare
+      // realpath-resolved, platform-folded keys or every lane under a symlinked
+      // tmp root misses its own resume target.
+      const canonicalKey = (value: string): string => {
+        let resolved = value;
+        try {
+          resolved = fs.realpathSync(value);
+        } catch {
+          // Missing/deleted directory: compare the raw spelling.
+        }
+        return pathKey(resolved);
+      };
+      const requestedKey = canonicalKey(args.cwd);
       const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
       const hasStartedAt = Number.isFinite(requestedStartedAtMs);
       let bestMatch: { id: string; score: number; updatedMs: number } | null = null;
@@ -3460,7 +3479,7 @@ export function createPtyService({
         const record = row && typeof row === "object" ? row as Record<string, unknown> : null;
         const id = typeof record?.id === "string" ? record.id.trim() : "";
         const directory = typeof record?.directory === "string" ? record.directory.trim() : "";
-        if (!id || directory !== args.cwd) continue;
+        if (!id || !directory || canonicalKey(directory) !== requestedKey) continue;
         const createdMs = Number(record?.created);
         const updatedMs = Number(record?.updated);
         let referenceMs: number;
@@ -6845,11 +6864,6 @@ export function createPtyService({
                 ?? resumableSession.resumeMetadata?.launch.permissionMode
                 ?? null,
               model: overrides.model ?? launchMetadata?.model ?? null,
-              reasoningEffort: overrides.reasoningEffort ?? launchMetadata?.reasoningEffort ?? null,
-              fastMode: overrides.fastMode
-                ?? launchMetadata?.fastMode
-                ?? launchMetadata?.codexFastMode
-                ?? null,
               prompt: text,
             };
             return process.platform === "win32"

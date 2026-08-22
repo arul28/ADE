@@ -13,7 +13,7 @@ where the machinery lives.
 | `apps/desktop/src/shared/chatModelSwitching.ts` | `canSwitchChatSessionModel` / `filterChatModelIdsForSession` -- rules for mid-session model changes. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | `handoffSession`, permission translation, per-provider adapter. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | macOS-only signed Codex Computer Use MCP resolver. Requires explicit Codex config opt-in and verifies the standalone OpenAI client before it can be injected into a chat or CLI runtime. |
-| `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. |
+| `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. Reasoning/fast variants are per-provider: Claude/Codex/Droid/Pi keep their flags, but tracked OpenCode launches always run the root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — no `run --interactive` branch and no `--variant`, because the root command silently drops unknown args; variants remain a chat-runtime feature. |
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
 | `apps/desktop/src/main/services/ai/providerOptions.ts` | Normalises provider-native options (Claude permission mode, Codex approval + sandbox, OpenCode permission). |
 | `apps/desktop/src/main/services/shared/providerConfigHomes.ts` | Where each provider CLI keeps its user-level config (`claudeConfigHome`, `codexConfigHome`, `factoryConfigHome`), and the canonical statement of the config-ownership rule below. Every adapter that reads or writes a provider config path goes through it. |
@@ -422,6 +422,15 @@ not agents the user should meet in Tab-cycle or `@`-autocomplete; without a
 `mode` they default to `"all"` and show up in the picker. `ade-helper` uses
 `steps: 1` (`maxSteps` is the deprecated spelling).
 
+ADE's system prompt is neither config nor a message part: every turn carries it
+on the chat request body's first-class `system` field. It must never be injected
+as a `synthetic`/`ignored` text part — OpenCode drops `ignored` parts from model
+context entirely, so a part-shaped injection silently never reaches the model.
+Session re-attach follows the same fail-loud spirit: when a persisted session id
+fails `session.get`, only a confirmed 404 (`isOpenCodeNotFoundError`) falls
+through to fresh-session creation; any other error surfaces rather than
+silently resetting the thread into a new empty session.
+
 ## Permission modes
 
 Permission controls are provider-native. The session carries an abstract
@@ -581,7 +590,9 @@ discovery populates `serviceTiers` from app-server-reported
 pre-marks GPT-5.6 and older fast-capable Codex CLI entries. Cursor discovery
 populates `serviceTiers` from SDK/CLI parameters and folds CLI
 `*-fast` rows into their base descriptors as aliases. OpenCode maps Fast
-to the provider variant `fast` for both chat and Work CLI launches.
+to the provider variant `fast` in chat prompt bodies; Work CLI launches
+carry no variant at all — the root TUI has no `--variant` flag, so tracked
+launches keep only the permission agent and model.
 Droid preserves Factory's concrete fast model IDs when they are reported,
 and its canonical Anthropic normalization also publishes `serviceTiers:
 ["fast"]` for fast-capable rows such as Opus 5. The former launch as the

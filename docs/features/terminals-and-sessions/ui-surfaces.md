@@ -912,7 +912,12 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
   - **OpenCode** → an inline JSON permission policy passed via the
     `OPENCODE_CONFIG_CONTENT` env var (`config-toml` mode skips the env
     so OpenCode reads `opencode.json` instead). Plan mode adds `--agent
-    plan`.
+    plan`. Fresh launches always start the full root TUI —
+    `opencode [-m model] [--agent plan] [--prompt <initial prompt>]`.
+    There is deliberately no `run --interactive` branch and no
+    reasoning/fast `--variant`: the root command silently drops unknown
+    args, so variants remain a chat-runtime feature and tracked launches
+    carry only the model and permission agent.
   Every provider also receives ADE CLI guidance — Claude through
   `--append-system-prompt`, Codex/Droid/OpenCode as a leading prompt
   argument, and Cursor through PTY `initialInput` only when there is an
@@ -929,6 +934,17 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
   `prompt` override is used by `sendToSession` for the first
   ended-session follow-up; `resumeSession` rebuilds the same command
   without a prompt.
+- `buildOpenCodeReplayResumeLaunchCommand` — OpenCode continuations that
+  carry the first follow-up prompt use this shape when the installed CLI
+  supports replay resume: root `--mini` mode replays the newest messages on
+  resume by default, and `--replay-limit <N>` (`OPENCODE_RESUME_REPLAY_LIMIT`,
+  40) caps how far back the freeze-frame reaches; the prompt travels via
+  `--prompt`. An explicit `--replay` flag is an upstream error on current
+  OpenCode, so nothing sends one. The support gate probes root
+  `opencode --help` (not `run --help`) for both `--mini` and
+  `--replay-limit`, with an env override
+  (`ADE_OPENCODE_REPLAY_RESUME=1|0`) forcing either way; without support ADE
+  falls back to the plain root-TUI resume above.
 
 ## Context menu: `SessionContextMenu.tsx`
 

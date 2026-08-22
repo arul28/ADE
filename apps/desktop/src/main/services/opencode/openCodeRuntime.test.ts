@@ -115,7 +115,9 @@ vi.mock("./openCodeServerManager", () => ({
 import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
   buildOpenCodeConfig,
+  buildOpenCodePromptParts,
   getOpenCodeRuntimeSnapshot,
+  isOpenCodeNotFoundError,
   refreshOpenCodeSessionToolSelection,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
@@ -237,6 +239,160 @@ describe("openCodeRuntime", () => {
     expect(snapshot.sharedCount).toBe(1);
     expect(snapshot.dedicatedCount).toBe(0);
     expect(Object.keys(snapshot).sort()).toEqual(["dedicatedCount", "entries", "sharedCount"]);
+  });
+
+  it("sends a provided system prompt through the body system field, not a text part", async () => {
+    await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "System prompt transport",
+      modelDescriptor: {
+        id: "opencode/openai/gpt-5-mini",
+        family: "openai",
+        providerRoute: "opencode",
+        providerModelId: "openai/gpt-5-mini",
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5-mini",
+      } as any,
+      prompt: "ping",
+      system: "You are ADE's naming agent.",
+      projectConfig: { ai: {} },
+    });
+
+    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
+      [{ body: Record<string, unknown> } | undefined];
+    const body = lastPromptCall?.[0]?.body ?? {};
+    expect(body.system).toBe("You are ADE's naming agent.");
+    // The synthetic/ignored part injection is gone for good: OpenCode drops
+    // `ignored` parts from model context, so that transport never worked.
+    const parts = body.parts as Array<Record<string, unknown>>;
+    expect(parts.every((part) => !part.synthetic && !part.ignored)).toBe(true);
+  });
+
+  it("omits the body system field when no system prompt is provided", async () => {
+    await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "No system prompt",
+      modelDescriptor: {
+        id: "opencode/openai/gpt-5-mini",
+        family: "openai",
+        providerRoute: "opencode",
+        providerModelId: "openai/gpt-5-mini",
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5-mini",
+      } as any,
+      prompt: "ping",
+      projectConfig: { ai: {} },
+    });
+
+    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
+      [{ body: Record<string, unknown> } | undefined];
+    const body = lastPromptCall?.[0]?.body ?? {};
+    expect(body).not.toHaveProperty("system");
+  });
+
+  it("builds prompt parts from the user text plus file attachments only", () => {
+    const parts = buildOpenCodePromptParts({
+      prompt: "hello",
+      files: [{ path: "/tmp/pic.png", mime: "image/png", filename: "pic.png" }],
+    });
+
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toMatchObject({ type: "text", text: "hello" });
+    expect(parts[1]).toMatchObject({ type: "file", mime: "image/png" });
+  });
+
+  it("recreates a persisted session only on a confirmed miss, and rethrows anything else", async () => {
+    // Confirmed 404 → fall through to session.create.
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new Error("not found", { cause: { body: { name: "NotFoundError" }, status: 404 } });
+    });
+    const recreated = await startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_gone",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-404",
+      ownerKey: "chat:chat-404",
+    });
+    expect(recreated.sessionId).toContain("opencode-session-");
+    expect(mockState.createSession).toHaveBeenCalled();
+
+    // Transient failure (no response / non-404 status) must surface, not reset
+    // the thread onto a brand-new empty session.
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new Error("opencode server GET → 503", { cause: { body: {}, status: 503 } });
+    });
+    await expect(startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_blip",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-blip",
+      ownerKey: "chat:chat-blip",
+    })).rejects.toThrow(/503/);
+    expect(mockState.dedicatedLease.close).toHaveBeenCalledWith("error");
+
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_network",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-net",
+      ownerKey: "chat:chat-network",
+    })).rejects.toThrow(/fetch failed/);
+
+    // A live session is adopted as-is, with its title.
+    mockState.getSession.mockImplementationOnce((async () => ({
+      data: { id: "ses_live", title: "Real thread" },
+    })) as unknown as typeof mockState.getSession);
+    const adopted = await startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_live",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-live",
+      ownerKey: "chat:chat-live",
+    });
+    expect(adopted.initialTitle).toBe("Real thread");
+    expect(mockState.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies OpenCode missing-session errors precisely", () => {
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { body: { name: "NotFoundError" }, status: 404 } }))).toBe(true);
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { body: { name: "NotFoundError" } } }))).toBe(true);
+    expect(isOpenCodeNotFoundError({ status: 404 })).toBe(true);
+    expect(isOpenCodeNotFoundError({ name: "NotFoundError" })).toBe(true);
+    // Deeply nested but bounded walk still finds it.
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { error: { data: { statusCode: 404 } } } }))).toBe(true);
+    // Anything else is NOT a confirmed miss — transient blips included.
+    expect(isOpenCodeNotFoundError(new Error("session not found"))).toBe(false);
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { status: 500 } }))).toBe(false);
+    expect(isOpenCodeNotFoundError({ status: 400 })).toBe(false);
+    expect(isOpenCodeNotFoundError(undefined)).toBe(false);
+    expect(isOpenCodeNotFoundError("404")).toBe(false);
+  });
+
+  it("rejects a NotFoundError whose chain carries a non-404 status", () => {
+    // A shallow NotFoundError name must not outvote a deeper concrete status:
+    // re-creating the session after a transient 503 strands the live thread.
+    expect(isOpenCodeNotFoundError(new Error("x", {
+      cause: { body: { name: "NotFoundError" }, status: 503 },
+    }))).toBe(false);
+    expect(isOpenCodeNotFoundError({
+      name: "NotFoundError",
+      cause: { status: 500 },
+    })).toBe(false);
+    // And a deep non-404 vetoes even when the name sits at the root.
+    expect(isOpenCodeNotFoundError(new Error("x", {
+      cause: { error: { data: { statusCode: 500, name: "NotFoundError" } } },
+    }))).toBe(false);
   });
 });
 
