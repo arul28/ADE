@@ -106,6 +106,15 @@ own interval)` — not the same number: 90 s on Windows (15 s poll) and 180 s on
 macOS (60 s StartInterval), with `brainWatcherSuspendFloorMs` computing it
 there and the rendered PowerShell computing it inline.
 
+`ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
+platforms, with the same rules: a positive integer wins, anything else keeps the
+default, and the result never drops below 30 s. The suspend floor is computed
+after the override, so it rescales with it. Only the pickup differs. The macOS
+checker is a fresh process every 60 s, so it reads the variable at the next
+check. The Windows supervisor reads the variable once when it starts, so a
+changed machine variable applies after the brain service restarts. Neither
+platform has an override for the poll interval.
+
 The PID JSON is advisory ownership evidence. It is not a readiness file, and an
 ONLOGON Scheduled Task is not a current supervisor or readiness mechanism.
 The Run entry re-establishes the supervisor at the next user logon; the launcher

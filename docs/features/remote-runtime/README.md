@@ -1388,6 +1388,13 @@ Three layers now cover that, and they are deliberately different in kind:
   Both platforms apply the same three rules. macOS gets them from
   `evaluateBrainHeartbeat`; the Windows supervisor implements them inline in
   PowerShell against the same heartbeat file and the same suspend floor.
+  `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
+  platforms, under the same rules — a positive integer wins, anything else keeps
+  the default, and the result never drops below 30 s — and the suspend floor is
+  computed after the override, so it rescales. Only the pickup differs: the
+  macOS check is a fresh process every 60 s and reads the variable at the next
+  check, while the Windows supervisor reads it once at start, so a changed
+  machine variable applies after the brain service restarts.
   - *macOS*: a separate launch agent, `com.ade.watchdog` (`.beta`/`.alpha` per
     channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
     the same binary the brain was installed from. It is installed and removed
