@@ -1559,7 +1559,9 @@ comments and launch the next round if new actionable work appears.
 PR state appears in two intentionally different chat surfaces:
 
 - **The PR companion panel answers “what is true now?”** It owns current
-  rollups and may auto-open for high-level lifecycle/push transitions.
+  rollups while open, and opens only by explicit toggle — the pane never
+  auto-opens on PR events, and its open/closed state persists per chat
+  through `chatCompanionUiState`.
 - **An `ade_card` transcript row answers “what happened then?”** It is one
   bounded episode, live while the episode is running and frozen when terminal.
   It remains in chronology to explain the surrounding agent conversation.
