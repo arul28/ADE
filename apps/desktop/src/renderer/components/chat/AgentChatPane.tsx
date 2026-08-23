@@ -13468,10 +13468,11 @@ export function AgentChatPane({
   //
   // Gate the reserve on the surface that actually renders those panes. Both the
   // PR pane and the chat-actions pane live in the `selectedSessionId` branch
-  // below; the empty/draft surface renders neither. `prPaneOpen` is persisted
-  // per chat by `useChatPrPaneOpen`, so without this gate a lane that once had
-  // the PR pane open pays a 276px left gutter on the new-chat screen — shoving
-  // the hero composer sideways to clear a pane that is not on screen.
+  // below; the empty/draft surface renders neither. `chatActionsOpen` (like
+  // `prPaneOpen`) is persisted per chat, so without this gate a lane that once
+  // had the chat-actions pane open pays a 276px right gutter on the new-chat
+  // screen — shoving the hero composer sideways to clear a pane that is not on
+  // screen.
   const sessionSurfaceMounted = Boolean(selectedSessionId);
   const paneReserve = sessionSurfaceMounted
     ? computePaneReserve(chatAreaWidth, chatActionsFloating)
