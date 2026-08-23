@@ -209,6 +209,29 @@ export function renderWindowsServiceLauncher(
     }`,
     `$heartbeatStaleMs = ${Math.max(30_000, Math.floor(options.heartbeatStaleMs ?? BRAIN_HEARTBEAT_STALE_MS))}`,
     `$heartbeatPollMs = ${Math.max(1_000, Math.floor(options.heartbeatPollMs ?? BRAIN_HEARTBEAT_INTERVAL_MS))}`,
+    // The same runtime override the macOS watchdog reads
+    // (`resolveBrainHeartbeatStaleMs` in
+    // `src/services/runtime/brainWatchdogCheck.ts`), with the same rules: a
+    // positive integer wins, anything else keeps the rendered default, and the
+    // result never drops below 30s -- under the beat interval the watchdog
+    // would fire on every ordinary gap. The regex mirrors `Number.parseInt`,
+    // which reads the leading digits and ignores the rest.
+    //
+    // The pickup differs from macOS, and only here: the macOS checker is a
+    // fresh process every 60s, so it sees a changed machine variable at the
+    // next check. This supervisor reads the variable once at start, so a
+    // changed value applies after the brain service restarts.
+    //
+    // No poll-interval override: macOS has none, and parity means staleness
+    // only.
+    "$staleOverrideRaw = $env:ADE_BRAIN_HEARTBEAT_STALE_MS",
+    "if ($staleOverrideRaw -match '^\\s*[+-]?\\d+') {",
+    "  $staleOverrideMs = [long]0",
+    "  if ([long]::TryParse($Matches[0].Trim(), [ref]$staleOverrideMs) -and $staleOverrideMs -gt 0) {",
+    "    $heartbeatStaleMs = [Math]::Max(30000, $staleOverrideMs)",
+    "  }",
+    "}",
+    // Computed AFTER the override so the sleep floor rescales with it.
     // How late this supervisor's own poll may be before the machine counts as
     // having been suspended. Mirrors `brainWatcherSuspendFloorMs`, the rule the
     // macOS watchdog applies, so both platforms judge sleep the same way.

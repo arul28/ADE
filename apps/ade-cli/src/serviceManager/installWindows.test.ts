@@ -1604,6 +1604,45 @@ describe("windows supervisor wedge guard", () => {
     });
     expect(script).toContain("$heartbeatStaleMs = 30000");
   });
+
+  it("reads the same runtime staleness override the macOS watchdog reads", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+    });
+    expect(script).toContain("$staleOverrideRaw = $env:ADE_BRAIN_HEARTBEAT_STALE_MS");
+    // Same rules as `resolveBrainHeartbeatStaleMs`: leading digits only, a
+    // positive value only, and never below the 30s floor.
+    expect(script).toContain("if ($staleOverrideRaw -match '^\\s*[+-]?\\d+') {");
+    expect(script).toContain(
+      "if ([long]::TryParse($Matches[0].Trim(), [ref]$staleOverrideMs) -and $staleOverrideMs -gt 0) {",
+    );
+    expect(script).toContain("$heartbeatStaleMs = [Math]::Max(30000, $staleOverrideMs)");
+    // The rendered default still has to be there for the override to fall back to.
+    expect(script).toContain(`$heartbeatStaleMs = ${BRAIN_HEARTBEAT_STALE_MS}`);
+  });
+
+  it("computes the suspend floor after the override so it rescales", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+    });
+    const overrideAt = script.indexOf("$heartbeatStaleMs = [Math]::Max(30000, $staleOverrideMs)");
+    const floorAt = script.indexOf(
+      "$watcherSuspendFloorMs = [Math]::Max($heartbeatStaleMs, $heartbeatPollMs * 3)",
+    );
+    expect(overrideAt).toBeGreaterThan(-1);
+    expect(floorAt).toBeGreaterThan(overrideAt);
+  });
+
+  it("does not override the poll interval, which macOS has no override for", () => {
+    const script = renderWindowsServiceLauncher(command, {
+      pidPath: "C:\\ade\\launcher.pid.json",
+      heartbeatPath: "C:\\ade\\runtime\\heartbeat.json",
+    });
+    expect(script).not.toContain("ADE_BRAIN_HEARTBEAT_POLL_MS");
+    expect(script).toContain(`$heartbeatPollMs = ${BRAIN_HEARTBEAT_INTERVAL_MS}`);
+  });
 });
 
 /**
