@@ -205,7 +205,7 @@ import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawer
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import { ChatPrPane } from "./ChatPrPane";
-import { useChatPrAutoPop } from "./useChatPrAutoPop";
+import { useChatPrPaneOpen } from "./useChatPrPaneOpen";
 import {
   patchChatCompanionUiState,
   readChatCompanionUiState,
@@ -3994,16 +3994,11 @@ export function AgentChatPane({
   // a chat on another machine reports paths on that machine's disk, so opening
   // one has to ask that machine — not whichever machine this tab is bound to.
   const chatWorkspacePaths = useWorkspacePathOpener({ laneId, navigate, runtimePin: chatRuntimePin });
-  // Left PR floating pane (ADE chats only). Auto-pops on webhook-driven PR
-  // changes; shared with the CLI session surface via useChatPrAutoPop.
-  // `persistKey` makes open/closed per chat and durable across restarts.
-  // Declared HERE, below `chatRuntimePin`, because a chat on another machine
-  // must read its PR from that machine — the pane and its auto-pop take the
-  // same pin every other call this chat makes already takes.
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(laneId, {
-    persistKey: companionStateKey,
-    runtimePin: chatRuntimePin,
-  });
+  // Left PR floating pane (ADE chats only). It never auto-opens — only an
+  // explicit toggle moves it; shared with the CLI session surface via
+  // useChatPrPaneOpen. `persistKey` makes open/closed per chat and durable
+  // across restarts: open it once for a chat and it stays open until closed.
+  const { prPaneOpen, setPrPaneOpen } = useChatPrPaneOpen(companionStateKey);
   const renderedSession = useMemo(
     () => (
       renderedSessionId
@@ -4108,7 +4103,7 @@ export function AgentChatPane({
       companionHydrationKeyRef.current = null;
       return;
     }
-    // `prPaneOpen` is owned by useChatPrAutoPop's own persist effect; the patch
+    // `prPaneOpen` is owned by useChatPrPaneOpen's own persist effect; the patch
     // helper does the read-merge-write, so a drawer toggle can't clobber it.
     patchChatCompanionUiState(companionStateKey, {
       chatActionsOpen,
@@ -12598,7 +12593,13 @@ export function AgentChatPane({
         lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
-        onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
+        // Only wire the pane toggle where the pane actually renders (a selected
+        // session). On the draft/new-chat surface an unwired pill falls back to
+        // the toolbar's inline PR menu instead of toggling persisted state for
+        // a pane that cannot appear there.
+        onTogglePrPane={showWorkspaceChrome && laneId && Boolean(selectedSessionId)
+          ? () => setPrPaneOpen((v) => !v)
+          : undefined}
         prPaneOpen={prPaneOpen}
         runtimePin={chatRuntimePin}
         trailingActions={chatHeaderTrailingActions}
@@ -13467,10 +13468,11 @@ export function AgentChatPane({
   //
   // Gate the reserve on the surface that actually renders those panes. Both the
   // PR pane and the chat-actions pane live in the `selectedSessionId` branch
-  // below; the empty/draft surface renders neither. `prPaneOpen` is persisted
-  // per lane by `useChatPrAutoPop`, so without this gate a lane that once had
-  // the PR pane open pays a 276px left gutter on the new-chat screen — shoving
-  // the hero composer sideways to clear a pane that is not on screen.
+  // below; the empty/draft surface renders neither. `chatActionsOpen` (like
+  // `prPaneOpen`) is persisted per chat, so without this gate a lane that once
+  // had the chat-actions pane open pays a 276px right gutter on the new-chat
+  // screen — shoving the hero composer sideways to clear a pane that is not on
+  // screen.
   const sessionSurfaceMounted = Boolean(selectedSessionId);
   const paneReserve = sessionSurfaceMounted
     ? computePaneReserve(chatAreaWidth, chatActionsFloating)
@@ -13976,7 +13978,6 @@ export function AgentChatPane({
                             branchName={laneGitBranch}
                             sessionTitle={selectedSession?.title ?? null}
                             sessionId={renderedSessionId}
-                            delta={prPaneDelta}
                             onClose={() => setPrPaneOpen(false)}
                             runtimePin={chatRuntimePin}
                           />,
