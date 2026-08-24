@@ -830,3 +830,368 @@ struct ContentView: View {
     }
   });
 });
+
+function encodeTargetId(parts: string[]): string {
+  return Buffer.from(parts.join("|")).toString("base64url");
+}
+
+function simulatorRunMock(options: {
+  projectName?: string;
+  bundleId?: string;
+  installedApps?: string;
+  onBuild?: (commandArgs: string[], runOptions?: { cwd?: string }) => Promise<void> | void;
+} = {}) {
+  const projectName = options.projectName ?? "Prox";
+  const bundleId = options.bundleId ?? "com.prox.app";
+  const builds: Array<{ args: string[]; cwd: string | undefined }> = [];
+  const run = vi.fn(async (command: string, commandArgs: string[], runOptions?: { cwd?: string }) => {
+    if (command === "ps") return { stdout: "", stderr: "" };
+    if (command === "sh") return { stdout: "", stderr: "" };
+    if (command === "xcodebuild" && commandArgs[0] === "-version") {
+      return { stdout: "Xcode 26.3\nBuild version 17C52\n", stderr: "" };
+    }
+    if (command === "xcodebuild") {
+      builds.push({ args: commandArgs, cwd: runOptions?.cwd });
+      await options.onBuild?.(commandArgs, runOptions);
+      const derivedDataPath = commandArgs[commandArgs.indexOf("-derivedDataPath") + 1];
+      const appPath = path.join(derivedDataPath, "Build", "Products", "Debug-iphonesimulator", `${projectName}.app`);
+      fs.mkdirSync(appPath, { recursive: true });
+      fs.writeFileSync(path.join(appPath, "Info.plist"), "<plist />");
+      return { stdout: "", stderr: "" };
+    }
+    if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+      return { stdout: simulatorDevicesJson, stderr: "" };
+    }
+    if (command === "xcrun" && commandArgs[1] === "listapps") {
+      return { stdout: options.installedApps ?? "", stderr: "" };
+    }
+    if (command === "xcrun" && commandArgs[1] === "io") {
+      const outPath = commandArgs[commandArgs.length - 1];
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, "not-a-real-png");
+      return { stdout: "", stderr: "" };
+    }
+    if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleIdentifier")) {
+      return { stdout: `${bundleId}\n`, stderr: "" };
+    }
+    if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleDisplayName")) {
+      return { stdout: `${projectName}\n`, stderr: "" };
+    }
+    return { stdout: "", stderr: "" };
+  });
+  return { run, builds };
+}
+
+describe("iosSimulatorService lane-correct build root", () => {
+  it("builds the lane worktree when the caller passes a laneId", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-lane-root-`);
+    const laneWorktree = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneWorktree, { recursive: true });
+    // Both roots hold the same project, so a passing assertion can only come
+    // from picking the lane, not from the primary checkout lacking a project.
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    writeMinimalXcodeProject(laneWorktree, "Prox");
+    const { run, builds } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: (laneId) => (laneId === "lane-1" ? laneWorktree : null),
+    });
+
+    try {
+      const result = await service.launch({ laneId: "lane-1", build: true });
+
+      expect(builds).toHaveLength(1);
+      expect(builds[0]?.cwd).toBe(laneWorktree);
+      const derivedDataPath = builds[0]?.args[builds[0].args.indexOf("-derivedDataPath") + 1];
+      expect(derivedDataPath).toBe(path.join(laneWorktree, ".ade", "cache", "ios-simulator", "DerivedData"));
+      expect(result.buildRoot).toBe(laneWorktree);
+      expect(result.projectRoot).toBe(laneWorktree);
+      expect(result.usedInstalledBinary).toBe(false);
+      expect(result.capabilities).toEqual({ canTap: true, canType: true, canDrag: true, canInspect: true });
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("prefers an explicit projectRoot over the caller's laneId", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-lane-override-`);
+    const laneWorktree = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneWorktree, { recursive: true });
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    writeMinimalXcodeProject(laneWorktree, "Prox");
+    const { run, builds } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => laneWorktree,
+    });
+
+    try {
+      const result = await service.launch({ laneId: "lane-1", projectRoot, build: true });
+      expect(builds[0]?.cwd).toBe(projectRoot);
+      expect(result.buildRoot).toBe(projectRoot);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+});
+
+describe("iosSimulatorService target provenance", () => {
+  it("rejects a built target id whose app bundle lives under a different root", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-target-root-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await expect(service.launch({
+        projectRoot,
+        targetId: encodeTargetId(["built", path.join(os.tmpdir(), "somewhere-else", "Prox.app"), "com.prox.app"]),
+      })).rejects.toThrow(/IOS_SIMULATOR_TARGET_ROOT_MISMATCH/);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("rejects a project target id that names no project under the build root", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-target-missing-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await expect(service.launch({
+        projectRoot,
+        targetId: encodeTargetId(["project", "apps/Other/Other.xcodeproj", "Other"]),
+      })).rejects.toThrow(/IOS_SIMULATOR_TARGET_ROOT_MISMATCH/);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+});
+
+describe("iosSimulatorService stale binary honesty", () => {
+  const installedApps = `"com.example.app" = {\n  CFBundleDisplayName = "Example";\n};\n`;
+
+  it("refuses to silently launch a preinstalled app when nothing buildable was found", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-no-buildable-`);
+    const { run } = simulatorRunMock({ installedApps });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await expect(service.launch({ projectRoot })).rejects.toThrow(/IOS_SIMULATOR_NO_BUILDABLE_TARGET/);
+      await expect(service.launch({ projectRoot })).rejects.toThrow(/Example/);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("flags an explicitly chosen preinstalled app as a build that predates the caller's changes", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-installed-explicit-`);
+    const events: IosSimulatorEventPayload[] = [];
+    const { run } = simulatorRunMock({ installedApps });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      onEvent: (payload) => events.push(payload),
+    });
+
+    try {
+      const result = await service.launch({ projectRoot, bundleId: "com.example.app", build: false });
+      expect(result.usedInstalledBinary).toBe(true);
+      const buildStep = events
+        .filter((event): event is Extract<IosSimulatorEventPayload, { type: "launch-progress" }> =>
+          event.type === "launch-progress")
+        .findLast((event) => event.progress.step === "build-app");
+      expect(buildStep?.progress.status).toBe("skipped");
+      expect(buildStep?.progress.detail).toContain("current code changes are not included");
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+});
+
+describe("iosSimulatorService launch concurrency and ownership", () => {
+  it("rejects a second launch while one is still running", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-concurrent-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    let markBuildStarted!: () => void;
+    const buildStarted = new Promise<void>((resolve) => { markBuildStarted = resolve; });
+    let releaseBuild!: () => void;
+    const buildRelease = new Promise<void>((resolve) => { releaseBuild = resolve; });
+    const { run } = simulatorRunMock({
+      onBuild: async () => {
+        markBuildStarted();
+        await buildRelease;
+      },
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      const first = service.launch({ projectRoot, build: true });
+      await buildStarted;
+      await expect(service.launch({ projectRoot, build: true })).rejects.toThrow(/IOS_SIMULATOR_LAUNCH_IN_PROGRESS/);
+      releaseBuild();
+      await expect(first).resolves.toMatchObject({ bundleId: "com.prox.app" });
+    } finally {
+      releaseBuild();
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("makes an anonymous caller pass force before taking a chat-owned simulator", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-anon-takeover-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await service.launch({ projectRoot, build: true, chatSessionId: "chat-A", laneId: "lane-A" });
+      await expect(service.launch({ projectRoot, build: true }))
+        .rejects.toThrow(new RegExp(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE));
+      await expect(service.launch({ projectRoot, build: true })).rejects.toThrow(/lane-A/);
+      await expect(service.launch({ projectRoot, build: true })).rejects.toThrow(/shutdown --force/);
+      await expect(service.launch({ projectRoot, build: true, force: true })).resolves.toMatchObject({
+        chatSessionId: null,
+      });
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("transfers ownership on attach takeOver without a shutdown, and still guards plain attach", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-attach-takeover-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await service.launch({ projectRoot, build: true, chatSessionId: "chat-A" });
+      // A different chat cannot attach without takeOver.
+      expect(() => service.attachToChatSession("chat-B", "chat-B"))
+        .toThrow(new RegExp(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE));
+      // takeOver adopts the running session in place: same session, new owner.
+      const transferred = service.attachToChatSession("chat-B", "chat-B", { takeOver: true });
+      expect(transferred).toMatchObject({ chatSessionId: "chat-B" });
+      expect((await service.getStatus()).activeSession).toMatchObject({ chatSessionId: "chat-B" });
+      // takeOver never applies to detach: a third chat still cannot free it.
+      expect(() => service.attachToChatSession(null, "chat-C", { takeOver: true }))
+        .toThrow(new RegExp(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE));
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("releases the session when the owning chat ends and ignores other chats", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-release-owner-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await service.launch({ projectRoot, build: true, chatSessionId: "chat-A" });
+      expect(await service.releaseIfOwnedBy("chat-B")).toMatchObject({ released: false });
+      expect((await service.getStatus()).activeSession).not.toBeNull();
+      expect(await service.releaseIfOwnedBy("chat-A")).toMatchObject({ released: true });
+      expect((await service.getStatus()).activeSession).toBeNull();
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+});
+
+describe("iosSimulatorService screenshots and platform guards", () => {
+  it("writes the screenshot to a readable file under the build root", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-screenshot-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      const shot = await service.screenshot({ projectRoot });
+      expect(shot.filePath.startsWith(path.join(projectRoot, ".ade", "cache", "ios-simulator", "screenshots"))).toBe(true);
+      expect(fs.existsSync(shot.filePath)).toBe(true);
+      expect(shot.dataUrl.startsWith("data:image/png;base64,")).toBe(true);
+
+      const explicit = path.join(projectRoot, "custom", "shot.png");
+      const custom = await service.screenshot({ projectRoot, outPath: explicit });
+      expect(custom.filePath).toBe(explicit);
+      expect(fs.existsSync(explicit)).toBe(true);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("fails screenshot, tap, and typeText on non-darwin with the macOS-only error", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      await expect(service.screenshot()).rejects.toThrow(/only available on macOS/);
+      await expect(service.tap({ x: 1, y: 2 })).rejects.toThrow(/only available on macOS/);
+      await expect(service.typeText({ text: "hi" })).rejects.toThrow(/only available on macOS/);
+      await expect(service.drag({ startX: 1, startY: 2, endX: 3, endY: 4 })).rejects.toThrow(/only available on macOS/);
+      await expect(service.getScreenSnapshot()).rejects.toThrow(/only available on macOS/);
+      await expect(service.inspectPoint({ x: 1, y: 2 })).rejects.toThrow(/only available on macOS/);
+      await expect(service.selectPoint({ x: 1, y: 2 })).rejects.toThrow(/only available on macOS/);
+    } finally {
+      service.dispose();
+      platformSpy.mockRestore();
+    }
+  });
+});

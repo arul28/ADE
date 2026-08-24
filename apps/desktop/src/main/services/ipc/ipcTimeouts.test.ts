@@ -177,6 +177,16 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorLaunch)).toBe(10 * 60_000);
   });
 
+  // The brain daemon — not Electron main — owns `ios_simulator.launch` in
+  // production, so a cold launch reaches it through localRuntimeCallAction.
+  // Without a long-running entry that path fell through to the 30s default and
+  // reported "Remote ADE service timed out" while xcodebuild kept building.
+  it("gives a runtime-backed iOS launch room for a cold xcodebuild", () => {
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "ios_simulator", action: "launch", args: {} },
+    }])).toBe(1_305_000);
+  });
+
   it("lets transcription run longer than the default invoke ceiling", () => {
     expect(ipcInvokeTimeoutMs(IPC.transcriptionTranscribe)).toBe(6 * 60_000);
   });
@@ -185,12 +195,15 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorResolvePreviewMatch)).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderCurrentPreview)).toBe(2 * 60_000);
+    // Preview Lab compiles the target before it can render a frame, so the
+    // runtime-backed path composes project-setup margin with a 10 minute
+    // action budget rather than the 30s default it used to fall through to.
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "ensurePreviewWorkspace", args: {} },
-    }])).toBe(315_000);
+    }])).toBe(885_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "renderCurrentPreview", args: {} },
-    }])).toBe(315_000);
+    }])).toBe(885_000);
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
       projectId: "project-1",

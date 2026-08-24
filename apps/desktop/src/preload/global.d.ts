@@ -616,6 +616,7 @@ import type {
   IosSimulatorInspectPointArgs,
   IosSimulatorInspectResult,
   IosSimulatorLaunchArgs,
+  IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
   IosSimulatorScreenshot,
@@ -626,8 +627,6 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
-  IosSimulatorWindowState,
-  IosSimulatorWindowSource,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlEventPayload,
@@ -709,6 +708,12 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type {
+  IosSimulatorPrivacyPane,
+  IosSimulatorWindowCaptureSessionHint,
+  IosSimulatorWindowSourcesResult,
+  IosSimulatorWindowStateEx,
+} from "../shared/types/iosSimulatorWindowCapture";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   MaintenanceRunReport,
@@ -2000,10 +2005,11 @@ declare global {
         listLaunchTargets: (
           args?: IosSimulatorListLaunchTargetsArgs,
         ) => Promise<IosSimulatorLaunchTarget[]>;
-        launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorSession>;
+        launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorLaunchResult>;
         attachToChatSession: (args: {
           chatSessionId: string | null;
           callerChatSessionId?: string | null;
+          takeOver?: boolean;
         }) => Promise<IosSimulatorSession | null>;
         shutdown: (
           args?: IosSimulatorShutdownArgs,
@@ -2046,8 +2052,15 @@ declare global {
         ) => Promise<IosSimulatorStreamStatus>;
         stopStream: () => Promise<IosSimulatorStreamStatus>;
         getStreamStatus: () => Promise<IosSimulatorStreamStatus>;
-        getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
-        listSimulatorWindowSources: () => Promise<IosSimulatorWindowSource[]>;
+        getSimulatorWindowState: () => Promise<IosSimulatorWindowStateEx>;
+        listSimulatorWindowSources: (opts?: {
+          projectRootPath?: string | null;
+          session?: IosSimulatorWindowCaptureSessionHint | null;
+        }) => Promise<IosSimulatorWindowSourcesResult>;
+        openSystemSettings: (args: {
+          pane: IosSimulatorPrivacyPane;
+        }) => Promise<{ ok: boolean }>;
+        revealSimulator: () => Promise<{ ok: boolean; message: string | null }>;
         tap: (args: {
           deviceUdid?: string | null;
           projectRoot?: string | null;

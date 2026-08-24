@@ -95,6 +95,17 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],
+  // A cold simulator launch is boot (90s) + xcodebuild (600s) + install (180s)
+  // + launch (60s) = 930s; 17 min keeps headroom above that sum. The 30s
+  // default reported "Remote ADE service timed out" while the daemon kept
+  // building, so the session surfaced minutes later with no error to explain
+  // it.
+  ["ios_simulator.launch", 17 * 60_000],
+  // Preview Lab drives Xcode's preview toolchain, which compiles the target
+  // before it can render a single frame — the same build cost as a launch.
+  ["ios_simulator.renderPreview", 10 * 60_000],
+  ["ios_simulator.renderCurrentPreview", 10 * 60_000],
+  ["ios_simulator.ensurePreviewWorkspace", 10 * 60_000],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

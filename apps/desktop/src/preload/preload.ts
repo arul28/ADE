@@ -668,6 +668,7 @@ import type {
   IosSimulatorInspectPointArgs,
   IosSimulatorInspectResult,
   IosSimulatorLaunchArgs,
+  IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
   IosSimulatorScreenshot,
@@ -678,8 +679,6 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
-  IosSimulatorWindowState,
-  IosSimulatorWindowSource,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlEventPayload,
@@ -765,6 +764,12 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type {
+  IosSimulatorPrivacyPane,
+  IosSimulatorWindowCaptureSessionHint,
+  IosSimulatorWindowSourcesResult,
+  IosSimulatorWindowStateEx,
+} from "../shared/types/iosSimulatorWindowCapture";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -7120,7 +7125,7 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     launch: async (
       args: IosSimulatorLaunchArgs = {},
-    ): Promise<IosSimulatorSession> => {
+    ): Promise<IosSimulatorLaunchResult> => {
       clearIosSimulatorStatusCaches();
       try {
         return await callProjectRuntimeActionOr(
@@ -7136,13 +7141,20 @@ contextBridge.exposeInMainWorld("ade", {
     attachToChatSession: async (args: {
       chatSessionId: string | null;
       callerChatSessionId?: string | null;
+      takeOver?: boolean;
     }): Promise<IosSimulatorSession | null> => {
       clearIosSimulatorStatusCaches();
       try {
         return await callProjectRuntimeActionOr(
           "ios_simulator",
           "attachToChatSession",
-          { argsList: [args.chatSessionId, args.callerChatSessionId] },
+          {
+            argsList: [
+              args.chatSessionId,
+              args.callerChatSessionId,
+              { takeOver: args.takeOver === true },
+            ],
+          },
           () => ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
         );
       } finally {
@@ -7292,17 +7304,40 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ios_simulator", "getStreamStatus", {}, () =>
         ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
       ),
-    getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> => {
+    getSimulatorWindowState: async (): Promise<IosSimulatorWindowStateEx> => {
       await assertLocalProjectHostAction("iOS Simulator window state");
       return ipcRenderer.invoke(IPC.iosSimulatorGetWindowState);
     },
-    listSimulatorWindowSources: async (): Promise<
-      IosSimulatorWindowSource[]
-    > => {
+    listSimulatorWindowSources: async (
+      opts: {
+        projectRootPath?: string | null;
+        session?: IosSimulatorWindowCaptureSessionHint | null;
+      } = {},
+    ): Promise<IosSimulatorWindowSourcesResult> => {
       const binding = await requireLocalProjectHostBinding("iOS Simulator window sources");
+      const requestedRoot = opts.projectRootPath?.trim() || null;
+      if (requestedRoot && requestedRoot !== binding.rootPath) {
+        throw new Error(
+          "iOS Simulator window sources are only available for the window's bound local project.",
+        );
+      }
+      // Window parking runs in Electron main, whose simulator service never sees
+      // a launch the brain daemon owns. Callers that already hold the runtime
+      // session pass it here so parking keys off a session that exists.
       return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources, {
         projectRoot: binding.rootPath,
+        ...(opts.session ? { session: opts.session } : {}),
       });
+    },
+    openSystemSettings: async (args: {
+      pane: IosSimulatorPrivacyPane;
+    }): Promise<{ ok: boolean }> => {
+      await assertLocalProjectHostAction("iOS Simulator system settings");
+      return ipcRenderer.invoke(IPC.iosSimulatorOpenSystemSettings, args);
+    },
+    revealSimulator: async (): Promise<{ ok: boolean; message: string | null }> => {
+      await assertLocalProjectHostAction("iOS Simulator reveal");
+      return ipcRenderer.invoke(IPC.iosSimulatorRevealWindow);
     },
     tap: async (args: {
       deviceUdid?: string | null;

@@ -54,6 +54,11 @@ import {
 } from "../../desktop/src/shared/accountDirectory";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import {
+  IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
+  IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
+  IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
+} from "../../desktop/src/shared/types/iosSimulator";
+import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
   isAdeUsageRangePreset,
@@ -283,6 +288,7 @@ type FormatterId =
   | "ios-sim-status"
   | "ios-sim-devices"
   | "ios-sim-apps"
+  | "ios-sim-launch"
   | "ios-sim-stream"
   | "ios-sim-snapshot"
   | "ios-sim-selection"
@@ -356,6 +362,17 @@ type CliPlan =
        * finishing Pi's sign-in and is budgeted well past the CLI default.
        */
       minTimeoutMs?: number;
+      /**
+       * Written to stderr before the plan's blocking call starts.
+       *
+       * `ios-sim launch --follow` uses it. The daemon's launch progress events
+       * are delivered to the desktop drawer over Electron IPC; the only
+       * JSON-RPC notification the CLI socket ever receives is `chat/event`, so
+       * there is no existing stream for the CLI to follow and adding one would
+       * mean new daemon RPC. `--follow` therefore announces the wait up front
+       * and prints the full launch timeline once the action returns.
+       */
+      progressNotice?: string;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -844,7 +861,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Flags:
     --device, --udid <id>  Simulator device to inspect.
-    --project-root <path>  ADE project root to scan for iOS projects.
+    --project-root <path>  Root to scan; defaults to the lane worktree.
+    --lane, --lane-id <id> Lane whose worktree to scan.
     --text                 Compact table with target ids.
 `,
   launch: `${ADE_BANNER}
@@ -864,13 +882,31 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --app-bundle, --app <path>  Install/launch a built .app bundle.
     --project, --xcodeproj <p>  Xcode project path.
     --scheme <name>             Xcode scheme.
-    --project-root <path>       ADE project root.
-    --lane, --lane-id <id>      Lane to bind this simulator session to.
+    --project-root <path>       Build root; defaults to the lane worktree.
+    --lane, --lane-id <id>      Lane to build in and bind the session to.
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
     --mode snapshot|live        Inspector launch mode; default live.
-    --background                Leave Simulator.app in the background without parking it under ADE.
+    --foreground                Bring Simulator.app to the front; default is background.
+    --background                Accepted, no-op: background is the default.
+    --open-drawer               Also open the iOS drawer for the user.
+    --follow                    Announce the wait, then print the launch timeline.
     --arg KEY=VALUE             Extra service args for advanced launch options.
+`,
+  proof: `${ADE_BANNER}
+  iOS Simulator: proof
+
+  Captures a simulator screenshot and files it in the chat's proof drawer.
+  Alias: promote.
+
+    $ ade --socket ios-sim proof --caption "Settings screen after the fix" --text
+
+  Flags:
+    --caption <text>       Artifact description; also the default title.
+    --title <text>         Artifact title.
+    --out <path>           Screenshot path; relative to the build root.
+    --device, --udid <id>  Simulator device.
+    --project-root <path>  Build root; defaults to the lane worktree.
 `,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
@@ -898,11 +934,14 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   iOS Simulator: screenshot
 
   Captures a one-shot PNG from the simulator via simctl. Alias: capture.
+  Prints the written file path; read that file instead of the data URL.
 
-    $ ade --socket ios-sim screenshot --device <udid> --text
+    $ ade --socket ios-sim screenshot --out shot.png --text
 
   Flags:
+    --out <path>           Where to write the PNG; relative to the build root.
     --device, --udid <id>  Simulator device; defaults to the active session or booted device.
+    --project-root <path>  Build root; defaults to the lane worktree.
 `,
   snapshot: `${ADE_BANNER}
   iOS Simulator: snapshot
@@ -1150,6 +1189,7 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   end: "shutdown",
   "end-session": "shutdown",
   capture: "screenshot",
+  promote: "proof",
   screen: "snapshot",
   elements: "snapshot",
   "hit-test": "inspect",
@@ -2173,8 +2213,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
   surface. For drawer/shared session state, prefer attached runtime mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch opens Simulator by default and ADE shows it in the drawer. Optional
-  simulator control tools enable tap, drag, type, and inspect actions.
+  Launch keeps Simulator.app in the background; pass --foreground to raise it,
+  or --open-drawer when the user should see the iOS drawer. Optional simulator
+  control tools enable tap, drag, type, and inspect actions.
+
+  Every rooted subcommand builds and captures in the lane worktree: an explicit
+  --project-root wins, else --lane/ADE_LANE_ID, else the worktree the shell is
+  in. Pass --project-root to target the primary checkout from inside a lane.
 
   A launched simulator session belongs to one chat at a time. Run
   "ios-sim shutdown" before launching it from a different chat, or use
@@ -2186,6 +2231,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim devices --text                   List available simulators
     $ ade ios-sim apps --device <udid> --text      List launchable apps
     $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
+    $ ade --socket ios-sim launch --follow         Same, printing the launch timeline
     $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
     $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
@@ -2195,7 +2241,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade ios-sim screenshot --text                Capture a screenshot
+    $ ade ios-sim screenshot --out shot.png --text Capture a screenshot to a file
+    $ ade ios-sim proof --caption "<what>" --text  Screenshot into the proof drawer
     $ ade ios-sim snapshot --text                  Capture selectable UI context
     $ ade ios-sim inspector --text                 Show current inspector data
     $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
@@ -9133,10 +9180,77 @@ function buildProofPlan(args: string[]): CliPlan {
   };
 }
 
+/**
+ * Workspace root of the shell that invoked the CLI. Mirrors `resolveRoots`
+ * minus the global-option layer, which plan builders do not receive: inside a
+ * lane worktree (`.ade/worktrees/<lane>`) this is the worktree, everywhere else
+ * it is the project root — so it is a safe default even outside a lane.
+ */
+function callerWorkspaceRoot(): string {
+  const fromEnv = process.env.ADE_WORKSPACE_ROOT?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  return findProjectRoots(process.cwd()).workspaceRoot;
+}
+
+/**
+ * Root/lane defaults every rooted `ios-sim` subcommand shares.
+ *
+ * Precedence: an explicit `--project-root`/`--root` wins; otherwise a known
+ * lane is forwarded and the service resolves that lane's worktree; otherwise
+ * the caller's own workspace root is sent, which covers a plain shell sitting
+ * in a lane worktree with no `ADE_LANE_ID`. Without this an agent working in a
+ * lane built, screenshotted, and inspected the primary checkout instead of its
+ * own code.
+ */
+function iosSimulatorRootArgs(args: string[], laneId: string | null): JsonObject {
+  const explicitRoot = readValue(args, ["--project-root", "--root"]);
+  if (explicitRoot) {
+    return { projectRoot: explicitRoot, ...(laneId ? { laneId } : {}) };
+  }
+  if (laneId) return { laneId };
+  return { projectRoot: callerWorkspaceRoot() };
+}
+
+/**
+ * One actionable line for the iOS simulator failures whose service message
+ * states the problem but not the next command. The daemon reports these as
+ * plain action errors, so the code prefix in the message is the only thing the
+ * CLI can key on.
+ */
+function iosSimulatorErrorHint(message: string): string | null {
+  if (message.includes(IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE)) {
+    return "This target belongs to a different checkout — re-run: ade ios-sim apps";
+  }
+  if (message.includes(IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE)) {
+    const launchId = /\(([^)]+)\)/.exec(message)?.[1];
+    return `A launch${launchId ? ` (${launchId})` : ""} is already running — wait for it, or run: ade ios-sim shutdown --force`;
+  }
+  if (message.includes(IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE)) {
+    return "No buildable app under that root. The message above names the root and any targets found — check --project-root/--lane, or pass --target-id/--bundle-id to run an installed app.";
+  }
+  return null;
+}
+
+/**
+ * `--out <path>` for the capture subcommands. A relative path resolves against
+ * the build root service-side, so the CLI forwards it verbatim.
+ */
+function readIosSimulatorOutPath(args: string[]): JsonObject {
+  const outPath = readValue(args, ["--out", "--out-path", "--output"]);
+  return outPath ? { outPath } : {};
+}
+
 function buildIosSimulatorPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help")
     return { kind: "help", text: buildIosSimulatorHelp(args) };
+  // `claim` reads its own (required) lane/chat-session args in its branch; for
+  // every other subcommand the claim args are consumed once here so the lane
+  // is available to the shared root defaults below without double-reading the
+  // flags out of `args`.
+  const claimArgs: ToolClaimArgs = sub === "claim" ? {} : readToolClaimArgs(args);
+  const laneId = asString(claimArgs.laneId);
+  const rootArgs = (): JsonObject => iosSimulatorRootArgs(args, laneId);
   const numericPositionals = () =>
     args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
@@ -9209,20 +9323,24 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "listLaunchTargets",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
           }),
         ),
       ],
     };
   }
   if (sub === "launch" || sub === "open") {
-    const claimArgs = readToolClaimArgs(args);
-    const keepSimulatorInBackground = readFlag(args, ["--background", "--keep-background"]);
-    const openSimulator = readFlag(args, ["--foreground", "--open-simulator"]);
+    // Agent launches must not steal the user's screen, so the CLI parks
+    // Simulator.app in the background unless asked otherwise. `--background`
+    // stays accepted as a no-op alias for callers written against the old
+    // opt-in behaviour.
+    const foreground = readFlag(args, ["--foreground", "--open-simulator"]);
+    readFlag(args, ["--background", "--keep-background"]);
+    const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
+    const follow = readFlag(args, ["--follow"]);
     const launchArgs: JsonObject = {
       deviceUdid: readValue(args, ["--device", "--udid"]),
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      laneId: claimArgs.laneId,
+      ...rootArgs(),
       targetId: readValue(args, ["--target", "--target-id"]),
       bundleId: readValue(args, ["--bundle-id", "--bundle"]),
       appBundlePath: readValue(args, ["--app-bundle", "--app"]),
@@ -9231,15 +9349,23 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       chatSessionId: claimArgs.chatSessionId,
       build: !readFlag(args, ["--no-build"]),
       mode: readValue(args, ["--mode"]) ?? "live",
+      keepSimulatorInBackground: !foreground,
+      ...(openDrawer ? { openDrawer: true } : {}),
     };
-    if (keepSimulatorInBackground) {
-      launchArgs.keepSimulatorInBackground = true;
-    } else if (openSimulator) {
-      launchArgs.keepSimulatorInBackground = false;
-    }
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs(
+      "ios_simulator.launch",
+    );
     return {
       kind: "execute",
       label: "iOS simulator launch",
+      formatter: "ios-sim-launch",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      ...(follow
+        ? {
+            progressNotice:
+              "ios-sim launch: building and installing… step progress is not streamed to the CLI; the timeline prints when the launch returns.",
+          }
+        : {}),
       steps: [
         actionStep(
           "result",
@@ -9261,8 +9387,65 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "screenshot",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
+            ...rootArgs(),
+            ...readIosSimulatorOutPath(args),
           }),
         ),
+      ],
+    };
+  }
+  if (sub === "proof" || sub === "promote") {
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const title =
+      readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
+    const ownerBase = readProofOwnerBase(args);
+    const screenshotArgs = collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      ...rootArgs(),
+      ...readIosSimulatorOutPath(args),
+    });
+    return {
+      kind: "execute",
+      label: "iOS simulator proof",
+      steps: [
+        actionStep("screenshot", "ios_simulator", "screenshot", screenshotArgs),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          params: (values) => {
+            // `ade/actions/call` answers with the `{domain, action, result}`
+            // envelope, so the screenshot record has to be unwrapped before
+            // its written path is readable.
+            const screenshot = unwrapActionEnvelope(values.screenshot);
+            const filePath = isRecord(screenshot)
+              ? asString(screenshot.filePath)
+              : null;
+            if (!filePath) {
+              throw new CliUsageError(
+                "iOS simulator proof could not find the captured screenshot path.",
+              );
+            }
+            return {
+              name: "ingest_computer_use_artifacts",
+              arguments: {
+                backendStyle: "manual",
+                backendName: "ade-ios-simulator",
+                toolName: "ios-sim proof",
+                callerRoot: process.cwd(),
+                ...ownerBase,
+                inputs: [
+                  {
+                    kind: "screenshot",
+                    title,
+                    ...(caption ? { description: caption } : {}),
+                    path: filePath,
+                  },
+                ],
+              },
+            };
+          },
+        },
       ],
     };
   }
@@ -9292,7 +9475,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "getPreviewCapability",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
           }),
@@ -9310,7 +9493,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "listPreviewTargets",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
           }),
@@ -9332,7 +9515,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "resolvePreviewMatch",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
             elementLabel: readValue(args, ["--label"]),
@@ -9356,7 +9539,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "ensurePreviewWorkspace",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
             openIfNeeded: readFlag(args, ["--no-open"]) ? false : undefined,
@@ -9380,7 +9563,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "renderPreview",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFilePath: requireValue(
               readValue(args, ["--source", "--file"]),
               "sourceFilePath",
@@ -9413,7 +9596,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "renderCurrentPreview",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
             elementLabel: readValue(args, ["--label"]),
@@ -9439,7 +9622,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "openPreviewWorkspace",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
           }),
         ),
       ],
@@ -9456,7 +9639,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "getScreenSnapshot",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
           }),
         ),
       ],
@@ -9473,7 +9656,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "inspectPoint",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
             includeScreenshot: readFlag(args, [
@@ -9566,7 +9749,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "tap",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
           }),
@@ -9585,7 +9768,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           sub,
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             startX: readCoordinate("--start-x", 0),
             startY: readCoordinate("--start-y", 1),
             endX: readCoordinate("--end-x", 2),
@@ -9607,7 +9790,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "selectPoint",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
           }),
@@ -9626,7 +9809,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "typeText",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             text: requireValue(
               readValue(args, ["--value", "--message", "--input-text"]) ??
                 readCommandTextValue(args, ["--text"]) ??
@@ -10633,8 +10816,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
           method: "ade/actions/call",
           unwrapToolResult: true,
           params: (values) => {
-            const observation = isRecord(values.observation) ? values.observation : {};
-            const filePath = asString(observation.filePath);
+            // ade/actions/call answers with an {domain, action, result} envelope;
+            // the observation record lives under result.
+            const observation = unwrapActionEnvelope(values.observation);
+            const filePath = isRecord(observation) ? asString(observation.filePath) : null;
             if (!filePath) {
               throw new CliUsageError("Browser proof could not find an observation file path.");
             }
@@ -19781,6 +19966,61 @@ function formatIosSimApps(value: unknown): string {
   );
 }
 
+/**
+ * Keep the tail of a long absolute path. A build root is only useful here as
+ * "which checkout was this", and the lane worktree segment lives at the end.
+ */
+function abbreviatePathTail(value: string | null, segments = 4): string | null {
+  if (!value) return null;
+  const parts = value.split(/[/\\]/).filter(Boolean);
+  if (parts.length <= segments) return value;
+  return `…/${parts.slice(-segments).join("/")}`;
+}
+
+function formatIosSimLaunch(value: unknown): string {
+  const session = isRecord(value) ? value : {};
+  const capabilities = isRecord(session.capabilities) ? session.capabilities : {};
+  const capabilityLabel = (key: string): string =>
+    capabilities[key] === true ? "yes" : "no";
+  const lines = [
+    renderKeyValues("ADE iOS simulator launch", [
+      ["app", session.appName ?? session.bundleId],
+      ["bundle", session.bundleId],
+      [
+        "device",
+        session.deviceName
+          ? `${session.deviceName} (${session.deviceUdid})`
+          : session.deviceUdid,
+      ],
+      ["target", session.targetId],
+      ["lane", session.laneId],
+      ["mode", session.mode],
+      [
+        "simulator",
+        session.keepSimulatorInBackground === false ? "foreground" : "background",
+      ],
+      ["session", session.id],
+      ["started", session.startedAt],
+      [
+        "tap/type/drag/inspect",
+        [
+          capabilityLabel("canTap"),
+          capabilityLabel("canType"),
+          capabilityLabel("canDrag"),
+          capabilityLabel("canInspect"),
+        ].join("/"),
+      ],
+    ]),
+    `build root: ${abbreviatePathTail(asString(session.buildRoot)) ?? "unknown"}`,
+  ];
+  if (session.usedInstalledBinary === true) {
+    lines.push(
+      "warning: launched a prebuilt binary — current changes not included.",
+    );
+  }
+  return lines.join("\n");
+}
+
 function formatIosSimStream(value: unknown): string {
   const status = isRecord(value) ? value : {};
   return renderKeyValues("ADE iOS simulator live view", [
@@ -19831,6 +20071,9 @@ function formatIosSimSnapshot(value: unknown): string {
       ["elements", elements.length],
       ["providers", providerSummary],
     ]),
+    // Printed raw rather than as a table cell: agents Read this path back,
+    // and the key/value renderer truncates long values.
+    asString(screenshot.filePath) ? `file: ${asString(screenshot.filePath)}` : "",
     elements.length ? "" : "",
     elements.length
       ? renderTable(
@@ -20859,6 +21102,8 @@ function formatTextOutput(
       return formatIosSimDevices(value);
     case "ios-sim-apps":
       return formatIosSimApps(value);
+    case "ios-sim-launch":
+      return formatIosSimLaunch(value);
     case "ios-sim-stream":
       return formatIosSimStream(value);
     case "ios-sim-snapshot":
@@ -20969,6 +21214,7 @@ function inferFormatter(
   if (label === "ios simulator status") return "ios-sim-status";
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";
+  if (label === "ios simulator launch") return "ios-sim-launch";
   if (
     label === "ios simulator live view start" ||
     label === "ios simulator live view status" ||
@@ -22147,6 +22393,9 @@ async function runCli(
     const notice = detectUnmergedLaneCreateNudge(plan.laneCreationNudge);
     if (notice) process.stderr.write(`${notice}\n`);
   }
+  if (plan.kind === "execute" && plan.progressNotice) {
+    process.stderr.write(`${plan.progressNotice}\n`);
+  }
   if (
     plan.kind === "execute"
     && plan.machineOnly
@@ -22451,6 +22700,8 @@ async function main(): Promise<void> {
     }
     if (error instanceof CliToolError) {
       await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
+      const iosHint = iosSimulatorErrorHint(error.message);
+      if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
       if (error.details !== undefined) {
         await writeProcessOutput(
           process.stderr,
@@ -22502,6 +22753,7 @@ export {
   formatOutput,
   graphWaitState,
   inferFormatter,
+  iosSimulatorErrorHint,
   applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,

@@ -1,9 +1,10 @@
 # iOS Simulator
 
-ADE drives the system iOS Simulator from the Work tools pane. It discovers
-launchable iOS targets, builds and launches the selected app, mirrors the
-running Simulator.app window into the drawer, and turns drawer gestures into
-simulator input or context items for the active chat.
+ADE drives the system iOS Simulator from the Work tools pane and from
+`ade ios-sim`. It discovers launchable iOS targets, builds and launches the
+selected app, mirrors the running Simulator.app window into the drawer when the
+user wants to watch, and turns drawer gestures into simulator input or context
+items for the active chat. Agent launches stay in the background.
 
 The feature is macOS-only. `xcrun`, `xcodebuild`, and Simulator.app must be
 available on the runtime host. `idb` and `idb_companion` are optional but
@@ -13,13 +14,27 @@ recommended for direct tap, drag, text, accessibility, and hit-test actions.
 
 The simulator service runs where the ADE runtime runs. A local Mac runtime can
 build, launch, mirror, and control the local Simulator.app. Non-macOS runtimes
-report `supported: false`; the renderer hides simulator controls and CLI calls
-reject with the macOS-only error.
+report `supported: false`; the renderer hides simulator controls and every CLI
+command rejects with the macOS-only error. `status` is the capability gate.
+A remote Mac runtime supports control, screenshots, and Preview Lab, but not
+the drawer live view, which is a local desktop-window capture.
 
 Each launched simulator session has one owner chat/lane. A second chat trying
 to launch against an active session receives
-`IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` until the current owner releases it or a
-force shutdown is requested.
+`IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`, whose message carries the owning chat
+id and lane, how long ago it claimed, and the `shutdown --force` hint.
+Ownership releases automatically when the owning chat closes. An anonymous
+caller cannot evict an owner silently; it must pass `--force`, and
+`launch --force` validates the new target before evicting.
+
+### Build root
+
+Simulator commands default their build root to the caller's lane worktree, not
+the primary checkout, so a lane builds and launches its own code. An explicit
+`--project-root` still wins. Target ids are validated against the resolved
+root: an id minted under a different root fails with
+`IOS_SIMULATOR_TARGET_ROOT_MISMATCH`, and the caller re-runs `apps` for a fresh
+id. The resolved root comes back on the launch result as `buildRoot`.
 
 ## Source file map
 
@@ -45,26 +60,39 @@ force shutdown is requested.
 
 3. **Launch.** `launch(args)` emits progress for
    `resolve-device -> boot-simulator -> open-simulator -> resolve-target ->
-   build-app -> install-app -> launch-app -> ready`. The default opens
-   Simulator.app. Passing `keepSimulatorInBackground: true` skips that visible
-   open step. IPC then parks the real Simulator.app window under the owning ADE
-   window so the drawer can mirror it without leaving an extra foreground
-   window in the user's way.
+   build-app -> install-app -> launch-app -> ready`. The drawer renders those
+   steps live. `ade ios-sim launch --follow` waits on a budget sized for a real
+   cold build and prints the launch summary when it completes; the CLI does not
+   stream per-step progress.
 
-4. **Live view.** `startStream()` starts the Simulator.app window stream. The
-   compatibility `backend: "auto"` input is normalized to
-   `simulator-window-capture`; there is no separate ADE-managed streaming
-   backend. The service records running status and opens Simulator.app with
-   `open -g -a Simulator`. The renderer asks IPC for capturable Simulator window
-   sources, passing the bound local project root so Electron-only window capture
-   uses the same project context as the runtime stream state, then attaches a
-   desktop-capture stream to a `<video>`.
+   CLI launches run in the background: Simulator.app is not foregrounded and
+   the drawer is not forced open (`openDrawer` defaults to false; the drawer
+   passes true for its own launches), so the user gets a "Simulator running"
+   pill with an Open action instead. Only `selectPoint` / `inspectPoint` still reveal
+   the drawer on their own. `--foreground` opts into the visible open, after
+   which IPC parks the real Simulator.app window under the owning ADE window.
 
-5. **Window parking.** `prepareSimulatorWindowForCapture()` opens Simulator.app,
-   unhides/unminimizes its windows, sizes the simulator window, and places it
-   under the ADE window that owns the active session. `followSimulatorWindowUnderAde()`
-   re-parks the window on ADE move/resize. `iosSimulatorListWindowSources` uses
-   the existing owner instead of stealing placement from another ADE window.
+   The result carries `capabilities` (`canTap`, `canType`, `canDrag`,
+   `canInspect`), the resolved `buildRoot`, and `usedInstalledBinary`. A launch
+   that would silently reuse a previously-installed binary instead of the one
+   just built fails, unless that installed target was chosen explicitly.
+
+4. **Screenshot and proof.** `screenshot` writes a PNG and always returns an
+   absolute `filePath` an agent can read (`dataUrl` remains for the renderer).
+   `--out <path>` chooses where, resolving relative paths against the build
+   root; with no `--out` the file lands in
+   `<buildRoot>/.ade/cache/ios-simulator/screenshots/` and the newest 20 are
+   kept. `proof [--caption <text>]` captures a screenshot and attaches it to
+   the ADE proof drawer, mirroring `ade browser proof`.
+
+5. **Live view.** `startStream()` starts the Simulator.app window stream; the
+   compatibility `backend: "auto"` input normalizes to
+   `simulator-window-capture` and there is no separate ADE-managed backend. The
+   renderer asks IPC for capturable Simulator window sources, passing the bound
+   local project root, then attaches a desktop-capture stream to a `<video>`.
+   `prepareSimulatorWindowForCapture()` unhides, sizes, and parks the simulator
+   window under the owning ADE window; `followSimulatorWindowUnderAde()`
+   re-parks on ADE move/resize.
 
 6. **Inspect and select.** `getScreenSnapshot()` captures a PNG, reads the
    app's ADEInspector snapshot when present, optionally augments it with idb
@@ -73,57 +101,84 @@ force shutdown is requested.
 
 7. **Input.** `tap`, `drag`, `swipe`, and `typeText` use idb when both `idb`
    and `idb_companion` are installed. Missing idb does not block the live view;
-   it only blocks direct control and accessibility-backed inspection.
+   it only blocks direct control and accessibility-backed inspection, and shows
+   up as false `capabilities` on the launch result.
 
 8. **Preview Lab.** `listPreviewTargets()` discovers nearby `#Preview` and
    `PreviewProvider` definitions. `resolvePreviewMatch()` ranks the best target
-   for the selected source file or the drawer's last selected simulator item,
-   using inspector label/component metadata only as naming hints when a preview
-   needs to be created. `renderCurrentPreview()` is the one-shot bridge from the
-   current simulator selection to ADE's Preview drawer: it resolves the match,
-   opens/waits for Xcode when needed, then calls `renderPreview()` through Xcode
-   MCP.
+   for the selected source file or the drawer's last selected item, using
+   inspector label/component metadata only as naming hints when a preview must
+   be created. `renderCurrentPreview()` resolves the match, opens/waits for
+   Xcode, then calls `renderPreview()` through Xcode MCP.
 
 9. **Shutdown.** `shutdown({ force? })` stops live-view status, releases the
    active session, stops idb companion work, clears window parking follow state,
-   and emits `session-released`.
+   and emits `session-released`. The session also releases on its own when the
+   owning chat closes.
 
 ## CLI
 
+The agent path is `status` (gate on `supported`) → `apps` → `launch` →
+`screenshot --out` → `proof`.
+
 ```bash
 ade --socket ios-sim status --text
-ade --socket ios-sim devices --text
 ade --socket ios-sim apps --text
-ade --socket ios-sim launch --target <id> --text
-ade --socket ios-sim live-start --fps 60 --text
-ade --socket ios-sim stream-status --text
-ade --socket ios-sim snapshot --text
-ade --socket ios-sim select --x 120 --y 420 --text
-ade --socket ios-sim tap --x 120 --y 420 --text
-ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
-ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --line 42 --text
-ade --socket ios-sim preview-current --text
-ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
+ade --socket ios-sim launch --target <id> --follow --text
+ade --socket ios-sim screenshot --out .ade/tmp/sim.png --text
+ade --socket ios-sim proof --caption "Settings row renders" --text
 ade --socket ios-sim shutdown --text
 ```
 
-Use `--socket` whenever the CLI and desktop drawer must share live session,
-selection, and proof state.
+Beyond that: `devices`, `launch --foreground`, `live-start --fps 60`,
+`stream-status`, `snapshot`, `select --x --y`, `tap --x --y`, `preview-match`,
+`preview-ensure`, `preview-current`, `preview-render`, `shutdown --force`.
 
-For current-screen Preview Lab work, run `select` on a source-backed simulator
-element or pass an explicit `--source` and `--line`, then use
-`preview-current`. A `no-context` result means ADE has no selected source-backed
-element yet; it is not a signal to guess the SwiftUI screen from stale code.
+Use `--socket` whenever the CLI and desktop drawer must share live session,
+selection, and proof state. `launch` defaults to the caller's lane worktree and
+to a background Simulator.app; `--foreground` opts into the visible window.
+`claim --lane <id>` only attaches an already-running session to a lane; it is
+not a step in a normal launch.
+
+For current-screen Preview Lab work, run `select` on a source-backed element or
+pass an explicit `--source` and `--line`, then `preview-current`. A `no-context`
+result means nothing source-backed is selected; it is not a signal to guess the
+SwiftUI screen from stale code.
 
 ## Troubleshooting
 
-- If the live view is blank, verify Simulator.app is running and not minimized.
-  The drawer polls `getSimulatorWindowState()` and shows the specific macOS
-  window issue when capture is blocked.
-- If taps or text fail but the live view works, install `idb` and
-  `idb_companion`.
-- If a launch is blocked by another owner, run
-  `ade --socket ios-sim shutdown --force --text` or use the drawer's takeover
-  action.
-- If target discovery is wrong, run `ade --socket ios-sim apps --text` before
-  creating schemes or project shims.
+The drawer polls `getSimulatorWindowState()` and renders the specific
+`IosSimulatorWindowIssue` as an overlay on the video area with one action:
+
+| Issue | Overlay | Action |
+|---|---|---|
+| `screen-recording-permission` | ADE can't see the simulator window. | Open Privacy & Security > Screen Recording |
+| `automation-denied` | ADE can't control Simulator. | Open Privacy & Security > Automation |
+| `not-running` / `no-window` | Simulator not running / no window. | Relaunch |
+| `hidden` / `minimized` | Simulator hidden or minimized. | Reveal |
+
+A stream that reports active but delivers no new frame for ~3s shows a
+"No frames" overlay with a restart action — a UI-only watchdog, not an `issue`.
+
+- Taps or text fail but the live view works: install `idb` and `idb_companion`.
+  The launch result's `capabilities` flags say up front which inputs are usable.
+- Live view never renders on a remote Mac runtime: expected. Window capture is
+  local-only. Use `screenshot` and `proof`.
+- `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`: see "Runtime ownership". Closing the
+  owning chat releases it. The drawer offers Attach (adopt the running session
+  without a rebuild) and Take over (force shutdown + relaunch); the CLI
+  equivalent is `ade --socket ios-sim shutdown --force --text`.
+- `IOS_SIMULATOR_TARGET_ROOT_MISMATCH`: a stored target id points outside the
+  resolved root — a `built` id carrying an absolute `.app` path from another
+  checkout, or a `project` id naming a `.xcodeproj` that does not exist here.
+  Re-run `ade --socket ios-sim apps --text` and relaunch with an id from that
+  list.
+- `IOS_SIMULATOR_NO_BUILDABLE_TARGET`: nothing buildable under the root and the
+  caller named no target, so the only candidates would run stale code. The
+  message lists buildable targets when any exist; `--target-id` / `--bundle-id`
+  selects an installed app deliberately.
+- `IOS_SIMULATOR_LAUNCH_IN_PROGRESS`: a launch is already running; the message
+  carries its `launchId`. Wait rather than retrying, or
+  `ade --socket ios-sim shutdown --force --text` if it is wedged.
+- Target discovery wrong: run `ade --socket ios-sim apps --text` before creating
+  schemes or project shims.

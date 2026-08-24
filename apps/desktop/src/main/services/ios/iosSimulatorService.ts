@@ -34,8 +34,11 @@ import type {
   IosSimulatorLaunchProgress,
   IosSimulatorLaunchStepId,
   IosSimulatorLaunchStepStatus,
+  IosSimulatorPoint,
+  IosSimulatorCapabilities,
   IosSimulatorDevice,
   IosSimulatorLaunchArgs,
+  IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
   IosSimulatorShutdownArgs,
@@ -45,11 +48,17 @@ import type {
   IosSimulatorStreamStatus,
   IosSimulatorToolStatus,
   IosSimulatorScreenshot,
+  IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorStatus,
 } from "../../../shared/types";
-import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE } from "../../../shared/types/iosSimulator";
+import {
+  IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
+  IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
+  IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
+  IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
+} from "../../../shared/types/iosSimulator";
 import { commandExists } from "../ai/utils";
 import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
@@ -75,10 +84,28 @@ const INSTALL_HINT_IDB = "Install Facebook idb: brew tap facebook/fb && brew ins
 const INSTALL_HINT_IDB_COMPANION = "Install idb_companion: brew tap facebook/fb && brew install idb-companion.";
 const XCODE_MCP_SESSION_ID = "906026e2-d248-4770-8654-032d0e1fbb54";
 const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
+const MACOS_ONLY_MESSAGE = "iOS Simulator control is only available on macOS.";
+const SCREENSHOT_CACHE_SEGMENTS = [".ade", "cache", "ios-simulator", "screenshots"] as const;
+const SCREENSHOT_KEEP_COUNT = 20;
+// idb_companion processes ADE started, recorded across restarts so a crashed
+// ADE can still stop its own leftovers without touching companions started by
+// the user, XcodeBuildMCP, or Maestro.
+const IDB_COMPANION_REGISTRY_PATH = path.join(os.tmpdir(), "ade-ios-simulator-idb-companions.json");
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
 type CommandExistsProbe = typeof commandExists;
+
+function describeClaimAge(claimedAt: string | null | undefined): string | null {
+  if (!claimedAt) return null;
+  const claimedMs = Date.parse(claimedAt);
+  if (!Number.isFinite(claimedMs)) return null;
+  const seconds = Math.max(0, Math.round((Date.now() - claimedMs) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
+}
 
 export class IosSimulatorOwnedBySessionError extends Error {
   readonly code: typeof IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE = IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE;
@@ -87,10 +114,46 @@ export class IosSimulatorOwnedBySessionError extends Error {
 
   constructor(currentSession: IosSimulatorSession | null) {
     const owner = currentSession?.chatSessionId ?? null;
-    super(`${IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE}: simulator is owned by chat session ${owner ?? "unknown"}.`);
+    const age = describeClaimAge(currentSession?.claimedAt ?? currentSession?.startedAt);
+    super([
+      `${IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE}: simulator is owned by chat session ${owner ?? "unknown"}`,
+      currentSession?.laneId ? ` on lane ${currentSession.laneId}` : "",
+      age ? ` (claimed ${age})` : "",
+      ".",
+      " Wait for that chat to finish, or take it over with `ade ios-sim shutdown --force` and launch again.",
+    ].join(""));
     this.name = "IosSimulatorOwnedBySessionError";
     this.currentChatSessionId = owner;
     this.currentSession = currentSession;
+  }
+}
+
+export class IosSimulatorLaunchInProgressError extends Error {
+  readonly code: typeof IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE = IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE;
+  readonly launchId: string;
+
+  constructor(launchId: string) {
+    super(`${IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE}: an iOS simulator launch (${launchId}) is already running. Wait for it to report ready, or run \`ade ios-sim shutdown --force\` first.`);
+    this.name = "IosSimulatorLaunchInProgressError";
+    this.launchId = launchId;
+  }
+}
+
+export class IosSimulatorTargetRootMismatchError extends Error {
+  readonly code: typeof IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE = IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE;
+
+  constructor(detail: string) {
+    super(`${IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE}: ${detail} Re-run the launch target listing for this root and launch with an id from that list.`);
+    this.name = "IosSimulatorTargetRootMismatchError";
+  }
+}
+
+export class IosSimulatorNoBuildableTargetError extends Error {
+  readonly code: typeof IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE = IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE;
+
+  constructor(detail: string) {
+    super(`${IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE}: ${detail}`);
+    this.name = "IosSimulatorNoBuildableTargetError";
   }
 }
 
@@ -98,6 +161,17 @@ type CreateIosSimulatorServiceArgs = {
   projectRoot: string;
   logger: Logger;
   onEvent?: ((payload: IosSimulatorEventPayload) => void) | null;
+  /**
+   * Maps a lane id to its worktree path. Without it a lane-scoped call falls
+   * back to the primary checkout, which is how an agent could build code it
+   * had not written.
+   */
+  resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
+};
+
+type RootScope = {
+  projectRoot?: string | null;
+  laneId?: string | null;
 };
 
 type SimctlListDevicesJson = {
@@ -501,28 +575,69 @@ function objectFromMcpResult(result: unknown): Record<string, unknown> {
   return { message: text };
 }
 
-async function cleanupOrphanedIdbCompanions(deviceUdid?: string | null): Promise<number> {
-  if (process.platform !== "darwin") return 0;
+type IdbCompanionRegistry = Record<string, { udid: string | null; startedAt: string }>;
+
+function readIdbCompanionRegistry(): IdbCompanionRegistry {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(IDB_COMPANION_REGISTRY_PATH, "utf8")) as unknown;
+    return isRecord(parsed) ? parsed as IdbCompanionRegistry : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeIdbCompanionRegistry(registry: IdbCompanionRegistry): void {
+  try {
+    fs.writeFileSync(IDB_COMPANION_REGISTRY_PATH, JSON.stringify(registry), "utf8");
+  } catch {
+    // The registry is an optimisation for cross-restart cleanup, never a
+    // correctness requirement.
+  }
+}
+
+function recordIdbCompanionPid(pid: number, udid: string | null): void {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  const registry = readIdbCompanionRegistry();
+  registry[String(pid)] = { udid, startedAt: nowIso() };
+  writeIdbCompanionRegistry(registry);
+}
+
+function forgetIdbCompanionPids(pids: number[]): void {
+  if (!pids.length) return;
+  const registry = readIdbCompanionRegistry();
+  let changed = false;
+  for (const pid of pids) {
+    if (registry[String(pid)]) {
+      delete registry[String(pid)];
+      changed = true;
+    }
+  }
+  if (changed) writeIdbCompanionRegistry(registry);
+}
+
+/**
+ * Stops only idb_companion processes ADE itself started. A machine-wide sweep
+ * would also kill the companions the user, XcodeBuildMCP, or Maestro own.
+ * The pid is re-checked against `ps` so a recycled pid is never killed.
+ */
+async function stopTrackedIdbCompanions(pids: number[]): Promise<number> {
+  const candidates = Array.from(new Set(pids.filter((pid) => Number.isFinite(pid) && pid > 0)));
+  if (process.platform !== "darwin" || !candidates.length) return 0;
   let stdout = "";
   try {
-    ({ stdout } = await run("ps", ["-axo", "pid=,ppid=,command="], { timeoutMs: 5_000 }));
+    ({ stdout } = await run("ps", ["-o", "pid=,command=", "-p", candidates.join(",")], { timeoutMs: 5_000 }));
   } catch {
+    forgetIdbCompanionPids(candidates);
     return 0;
   }
-  let stopped = 0;
   const stoppedPids: number[] = [];
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line);
     if (!match) continue;
     const pid = Number(match[1]);
-    const parentPid = Number(match[2]);
-    const command = match[3] ?? "";
-    if (!Number.isFinite(pid) || pid <= 0 || parentPid !== 1) continue;
-    if (!/\bidb_companion\b/.test(command) || !command.includes("--udid")) continue;
-    if (deviceUdid && !command.includes(deviceUdid)) continue;
+    if (!candidates.includes(pid) || !/\bidb_companion\b/.test(match[2] ?? "")) continue;
     try {
       process.kill(pid, "SIGTERM");
-      stopped += 1;
       stoppedPids.push(pid);
     } catch {
       // Best effort cleanup; a process may exit between ps and kill.
@@ -539,7 +654,8 @@ async function cleanupOrphanedIdbCompanions(deviceUdid?: string | null): Promise
       }
     }
   }
-  return stopped;
+  forgetIdbCompanionPids(candidates);
+  return stoppedPids.length;
 }
 
 async function readPlistValue(plistPath: string, key: string): Promise<string | null> {
@@ -1709,13 +1825,41 @@ async function discoverXcodeProjectPaths(projectRoot: string): Promise<string[]>
   return Array.from(projectPaths);
 }
 
-function recoverStaleLaunchTarget(targetIdValue: string | null | undefined, targets: IosSimulatorLaunchTarget[]): IosSimulatorLaunchTarget | null {
+/** Last two path segments, so progress detail names the root without a full path. */
+function abbreviateRoot(root: string): string {
+  const segments = root.split(path.sep).filter(Boolean);
+  return segments.slice(-2).join(path.sep) || root;
+}
+
+function isPathWithinRoot(root: string, absolutePath: string): boolean {
+  const relative = path.relative(root, absolutePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function targetPathWithinRoot(root: string, target: IosSimulatorLaunchTarget): boolean {
+  if (target.kind === "project" && target.projectPath) {
+    return isPathWithinRoot(root, path.resolve(root, target.projectPath));
+  }
+  if (target.kind === "built" && target.appBundlePath) {
+    return isPathWithinRoot(root, path.resolve(root, target.appBundlePath));
+  }
+  return true;
+}
+
+function recoverStaleLaunchTarget(
+  targetIdValue: string | null | undefined,
+  targets: IosSimulatorLaunchTarget[],
+  projectRoot: string,
+): IosSimulatorLaunchTarget | null {
   const parts = decodeTargetId(targetIdValue);
+  // Every recovery candidate must live under the resolved root. Recovering
+  // across roots is how a lane launch ends up running the primary checkout.
+  const inRoot = targets.filter((candidate) => targetPathWithinRoot(projectRoot, candidate));
   if (parts[0] === "project" && parts[1]) {
-    const matches = targets.filter((candidate) => candidate.kind === "project" && candidate.projectPath === parts[1]);
+    const matches = inRoot.filter((candidate) => candidate.kind === "project" && candidate.projectPath === parts[1]);
     if (matches.length === 1) return matches[0];
     const projectBasename = path.basename(parts[1]);
-    const basenameMatches = targets.filter((candidate) => (
+    const basenameMatches = inRoot.filter((candidate) => (
       candidate.kind === "project"
       && candidate.projectPath
       && path.basename(candidate.projectPath) === projectBasename
@@ -1723,13 +1867,32 @@ function recoverStaleLaunchTarget(targetIdValue: string | null | undefined, targ
     return basenameMatches.length === 1 ? basenameMatches[0] : null;
   }
   if (parts[0] === "built" && parts[1]) {
-    const matches = targets.filter((candidate) => candidate.kind === "built" && candidate.appBundlePath === parts[1]);
+    const matches = inRoot.filter((candidate) => candidate.kind === "built" && candidate.appBundlePath === parts[1]);
     return matches.length === 1 ? matches[0] : null;
   }
   if (parts[0] === "installed" && parts[2]) {
-    return targets.find((candidate) => candidate.kind === "installed" && candidate.bundleId === parts[2]) ?? null;
+    return inRoot.find((candidate) => candidate.kind === "installed" && candidate.bundleId === parts[2]) ?? null;
   }
   return null;
+}
+
+/**
+ * Target ids are stable across roots by design (project ids carry a relative
+ * path), so a drawer id from another checkout looks valid here. Reject the two
+ * shapes that provably point outside the resolved root before any build runs.
+ */
+function assertTargetIdWithinRoot(targetIdValue: string, projectRoot: string): void {
+  const parts = decodeTargetId(targetIdValue);
+  if (parts[0] === "project" && parts[1]) {
+    const absolute = path.resolve(projectRoot, parts[1]);
+    if (!isPathWithinRoot(projectRoot, absolute)) {
+      throw new IosSimulatorTargetRootMismatchError(`launch target project ${parts[1]} is outside the build root ${projectRoot}.`);
+    }
+    return;
+  }
+  if (parts[0] === "built" && parts[1] && path.isAbsolute(parts[1]) && !isPathWithinRoot(projectRoot, parts[1])) {
+    throw new IosSimulatorTargetRootMismatchError(`launch target app bundle ${parts[1]} was built under a different root than ${projectRoot}.`);
+  }
 }
 
 export type IosSimulatorService = ReturnType<typeof createIosSimulatorService>;
@@ -1749,11 +1912,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
   let controlQueue: Promise<void> = Promise.resolve();
   let activeLaunchId: string | null = null;
+  const trackedCompanionPids = new Set<number>();
+  const toolBinaryPaths = new Map<string, string>();
   const activeBuildDataPaths = new Map<string, number>();
   let disposed = false;
   let xcodeMcpBridge: XcodeMcpBridge | null = null;
-  const tempFiles = new Set<string>();
   const toolAvailabilityCache = new Map<string, { available: boolean; checkedAt: number }>();
+  let simulatorAppCache: { path: string | null; checkedAt: number } | null = null;
   let cachedStatus: { value: IosSimulatorStatus; computedAt: number; inflight: Promise<IosSimulatorStatus> | null } = {
     value: {
       platform: process.platform,
@@ -1776,7 +1941,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     backend: null,
     fps: null,
     targetFps: null,
-    frameCount: 0,
+    frameCount: null,
     startedAt: null,
     lastFrameAt: null,
     lastError: null,
@@ -1789,15 +1954,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     inputBackend: null,
   };
 
-  void cleanupOrphanedIdbCompanions().then((stopped) => {
-    if (stopped > 0) {
-      args.logger.info("ios_simulator.cleaned_orphaned_idb_companions", { stopped });
-    }
-  }).catch((error) => {
-    args.logger.debug("ios_simulator.orphaned_idb_companion_cleanup_failed", {
-      error: error instanceof Error ? error.message : String(error),
+  // One sweep at construction, for companions a previous ADE process left
+  // behind. It never runs on the status path: that path is hit every ~500ms
+  // while the drawer is open.
+  const leakedCompanionPids = Object.keys(readIdbCompanionRegistry()).map(Number);
+  if (leakedCompanionPids.length) {
+    void stopTrackedIdbCompanions(leakedCompanionPids).then((stopped) => {
+      if (stopped > 0) {
+        args.logger.info("ios_simulator.cleaned_leaked_idb_companions", { stopped });
+      }
+    }).catch((error) => {
+      args.logger.debug("ios_simulator.leaked_idb_companion_cleanup_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
-  });
+  }
 
   const emit = (payload: IosSimulatorEventPayload) => {
     args.onEvent?.(payload);
@@ -1810,6 +1981,43 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const available = process.platform === "darwin" ? commandExistsProbe(command) : false;
     toolAvailabilityCache.set(command, { available, checkedAt: nowMs });
     return available;
+  };
+
+  /**
+   * Detection asks a login shell (`command -v`), execution used to inherit the
+   * process PATH — so a daemon whose PATH lacked /opt/homebrew/bin reported
+   * "idb available" and then failed every tap with ENOENT. Spawns use the
+   * absolute path this returns instead.
+   */
+  const resolveToolBinary = async (command: string): Promise<string> => {
+    const cached = toolBinaryPaths.get(command);
+    if (cached) return cached;
+    let resolved = command;
+    try {
+      const { stdout } = await run("sh", ["-lc", `command -v ${command}`], { timeoutMs: 5_000 });
+      const first = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+      if (first && path.isAbsolute(first)) resolved = first;
+    } catch {
+      // Fall back to a PATH lookup at spawn time.
+    }
+    toolBinaryPaths.set(command, resolved);
+    return resolved;
+  };
+
+  const currentCapabilities = (): IosSimulatorCapabilities => {
+    const canControl = cachedCommandExists("idb") && cachedCommandExists("idb_companion");
+    return {
+      canTap: canControl,
+      canType: canControl,
+      canDrag: canControl,
+      // Snapshots still work without idb: the screenshot and the ADEInspector
+      // element file only need xcrun. idb only adds the accessibility layer.
+      canInspect: canControl || cachedCommandExists("xcrun"),
+    };
+  };
+
+  const assertDarwin = () => {
+    if (process.platform !== "darwin") throw new Error(MACOS_ONLY_MESSAGE);
   };
 
   const runSimctlWithTimeout = async (simctlArgs: string[], timeoutMs: number, timeoutMessage: string) => {
@@ -1834,22 +2042,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       SIMCTL_INSTALL_TIMEOUT_MS,
       `Timed out installing the app on ${device.name} after ${Math.round(SIMCTL_INSTALL_TIMEOUT_MS / 1000)}s. CoreSimulator did not respond; shut down that simulator and launch again.`,
     );
-
-  const trackTempFile = (filePath: string): string => {
-    tempFiles.add(filePath);
-    return filePath;
-  };
-
-  const releaseTempFile = (filePath: string) => {
-    tempFiles.delete(filePath);
-  };
-
-  const cleanupTempFiles = () => {
-    for (const filePath of [...tempFiles]) {
-      tempFiles.delete(filePath);
-      fs.promises.unlink(filePath).catch(() => {});
-    }
-  };
 
   const onXcodeMcpBridgeTerminated = (bridge: XcodeMcpBridge, reason: Error): void => {
     if (xcodeMcpBridge === bridge) xcodeMcpBridge = null;
@@ -1939,6 +2131,36 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return resolved;
   };
 
+  const resolveLaneRoot = async (laneId?: string | null): Promise<string | null> => {
+    const trimmed = laneId?.trim();
+    if (!trimmed || !args.resolveLaneWorktreePath) return null;
+    try {
+      const worktreePath = (await args.resolveLaneWorktreePath(trimmed))?.trim();
+      if (!worktreePath) return null;
+      const resolved = path.resolve(worktreePath);
+      return fs.existsSync(resolved) ? resolved : null;
+    } catch (error) {
+      args.logger.debug("ios_simulator.lane_worktree_resolve_failed", {
+        laneId: trimmed,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  /**
+   * Build root precedence: an explicit projectRoot wins, then the caller's lane
+   * worktree, then the service's own root. Without the lane step an agent
+   * working in a lane builds and screenshots the primary checkout, so "verify
+   * my change" passes on code the agent never wrote.
+   */
+  const resolveScopedRoot = async (scope: RootScope = {}): Promise<string> => {
+    const explicit = scope.projectRoot?.trim();
+    if (explicit) return resolveProjectRoot(explicit);
+    const laneRoot = await resolveLaneRoot(scope.laneId);
+    return laneRoot ?? resolveProjectRoot(null);
+  };
+
   const setStreamStopped = (error: string | null = null): IosSimulatorStreamStatus => {
     streamStatus = {
       ...streamStatus,
@@ -1949,6 +2171,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       degradationReason: null,
       fps: null,
       targetFps: null,
+      frameCount: null,
       lastError: error,
       error: error ? { code: "stream-stopped", exitCode: null, signal: null } : null,
       streamUrl: null,
@@ -1976,11 +2199,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
+  const forgetCompanionPid = (child: ChildProcess | null) => {
+    const pid = child?.pid;
+    if (typeof pid !== "number") return;
+    trackedCompanionPids.delete(pid);
+    forgetIdbCompanionPids([pid]);
+  };
+
   const stopCompanion = () => {
     if (companionIdleTimer) {
       clearTimeout(companionIdleTimer);
       companionIdleTimer = null;
     }
+    forgetCompanionPid(companionProcess);
     stopChild(companionProcess);
     companionProcess = null;
     companionDeviceUdid = null;
@@ -2011,10 +2242,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!cachedCommandExists("idb_companion")) {
       throw new Error(`idb_companion is required for simulator accessibility and input. ${INSTALL_HINT_IDB_COMPANION}`);
     }
-    const stopped = await cleanupOrphanedIdbCompanions(deviceUdid);
-    if (stopped > 0) {
-      args.logger.info("ios_simulator.cleaned_orphaned_idb_companions", { deviceUdid, stopped });
-    }
+    const companionBinary = await resolveToolBinary("idb_companion");
     if (disposed) {
       throw new Error("iOS simulator service has been disposed.");
     }
@@ -2025,7 +2253,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     const address = `127.0.0.1:${port}`;
     let stderr = "";
-    const process = spawnProcess("idb_companion", [
+    const process = spawnProcess(companionBinary, [
       "--udid",
       deviceUdid,
       "--grpc-port",
@@ -2036,6 +2264,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     companionProcess = process;
     companionDeviceUdid = deviceUdid;
     companionAddress = address;
+    if (typeof process.pid === "number") {
+      trackedCompanionPids.add(process.pid);
+      recordIdbCompanionPid(process.pid, deviceUdid);
+    }
     process.stderr?.on("data", (chunk: Buffer) => {
       stderr = `${stderr}${chunk.toString()}`.slice(-4000);
     });
@@ -2046,6 +2278,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // idb_companion is not installed on CI) surface as a normal stream-error
     // instead of becoming an unhandled exception that fails the test runner.
     process.once("error", (error) => {
+      forgetCompanionPid(process);
       if (companionProcess !== process) return;
       companionProcess = null;
       companionDeviceUdid = null;
@@ -2059,6 +2292,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
     });
     process.once("exit", (code) => {
+      forgetCompanionPid(process);
       if (companionProcess !== process) return;
       companionProcess = null;
       companionDeviceUdid = null;
@@ -2235,7 +2469,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const listLaunchTargets = async (targetArgs: IosSimulatorListLaunchTargetsArgs = {}): Promise<IosSimulatorLaunchTarget[]> => {
-    const projectRoot = resolveProjectRoot(targetArgs.projectRoot);
+    const projectRoot = await resolveScopedRoot(targetArgs);
     const [projectTargets, builtTargets, installedTargets] = await Promise.all([
       listProjectLaunchTargets(projectRoot),
       listBuiltLaunchTargets(projectRoot),
@@ -2277,12 +2511,40 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return fallback;
   };
 
+  /**
+   * Probes for a real Simulator.app instead of reporting "available" for every
+   * macOS. Filesystem checks only, cached: the status path runs every ~500ms
+   * while the drawer is open. Screen-recording permission is a separate,
+   * desktop-layer concern.
+   */
+  const findSimulatorApp = (): string | null => {
+    if (process.platform !== "darwin") return null;
+    const cached = simulatorAppCache;
+    if (cached && Date.now() - cached.checkedAt < TOOL_STATUS_CACHE_MS) return cached.path;
+    const developerDir = process.env.DEVELOPER_DIR?.trim();
+    const candidates = [
+      developerDir ? path.join(developerDir, "Applications", "Simulator.app") : null,
+      "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app",
+      "/Applications/Simulator.app",
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    const found = candidates.find((candidate) => {
+      try {
+        return fs.existsSync(candidate);
+      } catch {
+        return false;
+      }
+    }) ?? null;
+    simulatorAppCache = { path: found, checkedAt: Date.now() };
+    return found;
+  };
+
   const buildToolStatuses = (): IosSimulatorToolStatus[] => {
     const isDarwin = process.platform === "darwin";
     const xcrunAvailable = isDarwin && cachedCommandExists("xcrun");
     const xcodebuildAvailable = isDarwin && cachedCommandExists("xcodebuild");
     const idbAvailable = isDarwin && cachedCommandExists("idb");
     const idbCompanionAvailable = isDarwin && cachedCommandExists("idb_companion");
+    const simulatorAppPath = findSimulatorApp();
     return [
       {
         name: "xcrun",
@@ -2306,11 +2568,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       },
       {
         name: "simulator_window",
-        available: isDarwin,
-        detail: isDarwin
-          ? "Available for ADE's live Simulator.app window stream."
-          : "Simulator window mirroring is only available on macOS.",
-        installHint: isDarwin ? "" : "iOS Simulator control requires macOS.",
+        available: Boolean(simulatorAppPath),
+        detail: simulatorAppPath
+          ? `Simulator.app found at ${simulatorAppPath}.`
+          : isDarwin
+            ? "Simulator.app was not found. Install Xcode, then run xcode-select --install."
+            : "Simulator window mirroring is only available on macOS.",
+        installHint: isDarwin ? INSTALL_HINT_XCODE : "iOS Simulator control requires macOS.",
       },
       {
         name: "idb",
@@ -2338,15 +2602,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const activeDevice = activeSession
       ? devices.find((device) => device.udid === activeSession?.deviceUdid) ?? null
       : devices.find((device) => device.state === "Booted" && /iphone/i.test(device.name)) ?? null;
-    if (isDarwin && !companionProcess && !disposed) {
-      const stopped = await cleanupOrphanedIdbCompanions(activeDevice?.udid ?? null).catch(() => 0);
-      if (stopped > 0) {
-        args.logger.info("ios_simulator.cleaned_orphaned_idb_companions", {
-          deviceUdid: activeDevice?.udid ?? null,
-          stopped,
-        });
-      }
-    }
     const xcrunAvailable = tools.find((tool) => tool.name === "xcrun")?.available ?? false;
     const xcodebuildAvailable = tools.find((tool) => tool.name === "xcodebuild")?.available ?? false;
     return {
@@ -2439,7 +2694,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const getPreviewCapability = async (previewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewCapability> => {
-    const projectRoot = resolveProjectRoot(previewArgs.projectRoot);
+    const projectRoot = await resolveScopedRoot(previewArgs);
     const [xcodeVersion, mcpbridgeAvailable, xcodeRunning] = await Promise.all([
       readXcodeVersion(),
       findMcpbridge(),
@@ -2479,7 +2734,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const listPreviewTargets = async (previewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewTarget[]> => {
-    const projectRoot = resolveProjectRoot(previewArgs.projectRoot);
+    const projectRoot = await resolveScopedRoot(previewArgs);
     const selectedFile = resolveSwiftSourceFile(projectRoot, previewArgs.sourceFile);
     const selectedSourceLine = previewArgs.sourceLine != null && Number.isFinite(previewArgs.sourceLine)
       ? Math.max(1, Math.round(previewArgs.sourceLine))
@@ -2573,7 +2828,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const resolvePreviewMatch = async (rawPreviewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewMatch> => {
     const previewArgs = previewArgsWithLastSelection(rawPreviewArgs);
-    const projectRoot = resolveProjectRoot(previewArgs.projectRoot);
+    const projectRoot = await resolveScopedRoot(previewArgs);
     const rawSourceFile = previewArgs.sourceFile?.trim() ?? "";
     const selectedFile = resolveSwiftSourceFile(projectRoot, previewArgs.sourceFile);
     const selectedSourceFile = selectedFile ? relativeToRoot(projectRoot, selectedFile) : rawSourceFile || null;
@@ -2659,6 +2914,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
     const render = await renderPreview({
       projectRoot: previewArgs.projectRoot,
+      laneId: previewArgs.laneId,
       sourceFilePath: target.sourceFilePath,
       previewDefinitionIndexInFile: target.previewDefinitionIndexInFile,
       tabIdentifier: previewArgs.tabIdentifier,
@@ -2676,7 +2932,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const ensurePreviewWorkspace = async (
     ensureArgs: IosSimulatorEnsurePreviewWorkspaceArgs = {},
   ): Promise<IosSimulatorEnsurePreviewWorkspaceResult> => {
-    const projectRoot = resolveProjectRoot(ensureArgs.projectRoot);
+    const projectRoot = await resolveScopedRoot(ensureArgs);
     const openPath = previewWorkspaceOpenPath(projectRoot);
     const openIfNeeded = ensureArgs.openIfNeeded !== false;
     const rawTimeoutMs = Number(ensureArgs.timeoutMs ?? 12_000);
@@ -2724,7 +2980,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const renderPreview = async (renderArgs: IosSimulatorRenderPreviewArgs): Promise<IosSimulatorRenderPreviewResult> => {
-    const projectRoot = resolveProjectRoot(renderArgs.projectRoot);
+    const projectRoot = await resolveScopedRoot(renderArgs);
     const previewDefinitionIndexInFile = Math.max(0, Math.round(Number(renderArgs.previewDefinitionIndexInFile ?? 0)));
     const rawSourceFilePath = typeof renderArgs.sourceFilePath === "string" ? renderArgs.sourceFilePath.trim() : "";
     if (!rawSourceFilePath) {
@@ -2822,7 +3078,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const openPreviewWorkspace = async (openArgs: IosSimulatorOpenPreviewWorkspaceArgs = {}): Promise<{ ok: true; path: string }> => {
-    const projectRoot = resolveProjectRoot(openArgs.projectRoot);
+    const projectRoot = await resolveScopedRoot(openArgs);
     const openPath = previewWorkspaceOpenPath(projectRoot);
     if (process.platform !== "darwin") throw new Error("Xcode preview setup is only available on macOS.");
     spawnProcess("open", ["-a", "Xcode", openPath], { detached: true, stdio: "ignore" }).unref();
@@ -2839,9 +3095,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     let target: IosSimulatorLaunchTarget | null = null;
 
     if (launchArgs.targetId) {
+      assertTargetIdWithinRoot(launchArgs.targetId, projectRoot);
       target = targets.find((candidate) => candidate.id === launchArgs.targetId) ?? null;
-      target ??= recoverStaleLaunchTarget(launchArgs.targetId, targets);
-      if (!target) throw new Error(`Launch target ${launchArgs.targetId} was not found. Refresh launchable iOS apps and try again.`);
+      target ??= recoverStaleLaunchTarget(launchArgs.targetId, targets, projectRoot);
+      if (!target) {
+        const decoded = decodeTargetId(launchArgs.targetId);
+        if (decoded[0] === "project" && decoded[1]) {
+          throw new IosSimulatorTargetRootMismatchError(`no Xcode project ${decoded[1]} exists under the build root ${projectRoot}.`);
+        }
+        throw new Error(`Launch target ${launchArgs.targetId} was not found. Refresh launchable iOS apps and try again.`);
+      }
+      if (!targetPathWithinRoot(projectRoot, target)) {
+        throw new IosSimulatorTargetRootMismatchError(`launch target ${target.name} resolves outside the build root ${projectRoot}.`);
+      }
     }
     if (!target && launchArgs.bundleId) {
       target = targets.find((candidate) => candidate.bundleId === launchArgs.bundleId) ?? null;
@@ -2895,12 +3161,31 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         source: "xcode-project",
       };
     }
+    // Only fall back to a target the caller did not name when it can actually
+    // be built. Silently picking an already-installed app used to report
+    // "App launched" for code that was never compiled.
+    const namedATarget = Boolean(launchArgs.targetId || launchArgs.bundleId || launchArgs.appBundlePath);
     target ??= targets.find((candidate) => candidate.kind === "project" && candidate.projectPath === ADE_IOS_PROJECT && candidate.scheme === ADE_IOS_SCHEME)
       ?? targets.find((candidate) => candidate.kind === "project")
-      ?? targets[0]
       ?? null;
+    if (!target && !namedATarget) {
+      const buildable = targets.filter((candidate) => candidate.canBuild);
+      const installedOnly = targets.filter((candidate) => !candidate.canBuild);
+      throw new IosSimulatorNoBuildableTargetError([
+        "no buildable iOS app was found under the build root",
+        ` ${projectRoot}.`,
+        buildable.length
+          ? ` Buildable targets: ${buildable.map((candidate) => `${candidate.name} (${candidate.id})`).join(", ")}.`
+          : " Add an application target to a root-level .xcodeproj or apps/*/*.xcodeproj project.",
+        installedOnly.length
+          ? ` Only previously installed apps are available (${installedOnly.map((candidate) => candidate.name).join(", ")}); launching one would run code that predates your changes. Pass --target-id or --bundle-id to use one anyway.`
+          : "",
+      ].join(""));
+    }
     if (!target) {
-      throw new Error("No launchable iOS apps were found. Add a buildable application target to a root-level .xcodeproj or apps/*/*.xcodeproj project, or provide --app-bundle/--bundle-id.");
+      throw new Error(namedATarget
+        ? `No launchable iOS app matched the requested ${launchArgs.bundleId ? `bundle id ${launchArgs.bundleId}` : "target"} under ${projectRoot}. Refresh launchable iOS apps and try again.`
+        : "No launchable iOS apps were found. Add a buildable application target to a root-level .xcodeproj or apps/*/*.xcodeproj project, or provide --app-bundle/--bundle-id.");
     }
 
     const projectPath = normalizeProjectPath(projectRoot, target.projectPath);
@@ -2986,23 +3271,30 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const attachToChatSession = (chatSessionId: string | null, callerChatSessionId: string | null = chatSessionId): IosSimulatorSession | null => {
+  const attachToChatSession = (
+    chatSessionId: string | null,
+    callerChatSessionId: string | null = chatSessionId,
+    options: { takeOver?: boolean } = {},
+  ): IosSimulatorSession | null => {
     if (!activeSession) return null;
     // Ownership check applies symmetrically: callers passing null to detach
     // must still be the current owner, otherwise an unrelated chat could free
     // another chat's simulator binding. The caller's own chat id is supplied
     // via callerChatSessionId; for attach calls it is the same as the new
     // chatSessionId, for detach calls (chatSessionId === null) it identifies
-    // the chat requesting the detach.
+    // the chat requesting the detach. takeOver transfers ownership to a real
+    // chat without a shutdown/rebuild; it never applies to detach requests.
+    const takeOver = options.takeOver === true && Boolean(chatSessionId);
     if (
-      activeSession.chatSessionId
+      !takeOver
+      && activeSession.chatSessionId
       && callerChatSessionId
       && activeSession.chatSessionId !== callerChatSessionId
     ) {
       throw new IosSimulatorOwnedBySessionError(activeSession);
     }
     if (activeSession.chatSessionId === chatSessionId) return activeSession;
-    activeSession = { ...activeSession, chatSessionId };
+    activeSession = { ...activeSession, chatSessionId, claimedAt: nowIso() };
     emit({ type: "session-updated", session: activeSession });
     return activeSession;
   };
@@ -3026,45 +3318,52 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return getStatus();
   };
 
-  const launch = async (launchArgs: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> => {
-    if (process.platform !== "darwin") {
-      throw new Error("iOS Simulator control is only available on macOS.");
-    }
+  const launch = async (launchArgs: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorLaunchResult> => {
+    assertDarwin();
     if (!cachedCommandExists("xcrun") || !cachedCommandExists("xcodebuild")) {
       throw new Error("Xcode command line tools are required for iOS Simulator control. Install Xcode and run xcode-select --install.");
     }
+    // Two overlapping launches share one DerivedData directory and the last one
+    // to finish wins `activeSession`, so the caller is told about an app the
+    // other launch installed. Reject the second launch instead.
+    if (activeLaunchId) throw new IosSimulatorLaunchInProgressError(activeLaunchId);
     const incomingChatSessionId = launchArgs.chatSessionId ?? null;
-    // Anonymous sessions (chatSessionId == null on either side) are intentionally
-    // unowned — the CLI and tests routinely launch without a chat session id,
-    // so any subsequent caller may take over without `force: true`. We only block
-    // when both sides identify a chat session and they differ.
+    // A launch that names no chat session may not evict one that does: an
+    // agent's anonymous CLI launch would otherwise silently take the simulator
+    // away from the chat the user is watching.
     if (
       activeSession
       && activeSession.chatSessionId
-      && incomingChatSessionId
       && activeSession.chatSessionId !== incomingChatSessionId
       && !launchArgs.force
     ) {
       throw new IosSimulatorOwnedBySessionError(activeSession);
     }
-    if (
+    const needsForceTakeover = Boolean(
       activeSession
       && launchArgs.force
-      && (!incomingChatSessionId || activeSession.chatSessionId !== incomingChatSessionId)
-    ) {
-      await shutdown({ force: true }).catch((error) => {
-        args.logger.warn("ios_simulator.shutdown_during_force_launch_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
+      && (!incomingChatSessionId || activeSession.chatSessionId !== incomingChatSessionId),
+    );
     const launchId = randomUUID();
     activeLaunchId = launchId;
     let currentStep: IosSimulatorLaunchStepId = "resolve-device";
-    const projectRoot = resolveProjectRoot(launchArgs.projectRoot);
     try {
+      const projectRoot = await resolveScopedRoot(launchArgs);
+      // Validate before evicting: a force launch that cannot find its device or
+      // target must not leave the user with no simulator session at all.
+      let preflightDevice: IosSimulatorDevice | null = null;
+      let preflightTarget: ResolvedLaunchTarget | null = null;
+      if (needsForceTakeover) {
+        preflightDevice = await resolveDevice(launchArgs.deviceUdid);
+        preflightTarget = await resolveLaunchTarget(launchArgs, preflightDevice.udid, projectRoot);
+        await shutdown({ force: true }).catch((error) => {
+          args.logger.warn("ios_simulator.shutdown_during_force_launch_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
       emitLaunchProgress(launchId, "resolve-device", "running", "Finding installed simulator device...");
-      const device = await resolveDevice(launchArgs.deviceUdid);
+      const device = preflightDevice ?? await resolveDevice(launchArgs.deviceUdid);
       emitLaunchProgress(launchId, "resolve-device", "complete", `${device.name} selected.`, device.runtime, { deviceUdid: device.udid });
 
       currentStep = "boot-simulator";
@@ -3092,19 +3391,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
       currentStep = "resolve-target";
       emitLaunchProgress(launchId, "resolve-target", "running", "Resolving launchable app...", null, { deviceUdid: device.udid });
-      const target = await resolveLaunchTarget(launchArgs, device.udid, projectRoot);
+      const target = preflightTarget ?? await resolveLaunchTarget(launchArgs, device.udid, projectRoot);
       emitLaunchProgress(launchId, "resolve-target", "complete", `${target.target.name} selected.`, target.target.detail, { deviceUdid: device.udid, targetId: target.target.id });
 
       currentStep = "build-app";
+      // Nothing is compiled on this path, so the app that runs can be older
+      // than the caller's edits. Say so instead of reporting a clean build.
+      const usedInstalledBinary = !target.shouldBuild;
+      const staleBinaryDetail = "previously installed build — current code changes are not included";
       if (target.shouldBuild) {
-        emitLaunchProgress(launchId, "build-app", "running", "Building iOS app...", target.target.detail, { deviceUdid: device.udid, targetId: target.target.id });
+        emitLaunchProgress(launchId, "build-app", "running", `Building iOS app in ${abbreviateRoot(projectRoot)}...`, target.target.detail, { deviceUdid: device.udid, targetId: target.target.id });
       } else {
-        emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", target.target.detail, { deviceUdid: device.udid, targetId: target.target.id });
+        emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", staleBinaryDetail, { deviceUdid: device.udid, targetId: target.target.id });
       }
       const appBundle = target.shouldBuild || target.shouldInstall
         ? await buildProjectApp(target, device, projectRoot)
         : target.appBundlePath;
-      emitLaunchProgress(launchId, "build-app", target.shouldBuild ? "complete" : "skipped", target.shouldBuild ? "Build complete." : "Using installed app.", appBundle ? relativeToRoot(projectRoot, appBundle) : null, { deviceUdid: device.udid, targetId: target.target.id });
+      emitLaunchProgress(
+        launchId,
+        "build-app",
+        target.shouldBuild ? "complete" : "skipped",
+        target.shouldBuild ? "Build complete." : "Using a previously built app.",
+        target.shouldBuild
+          ? [relativeToRoot(projectRoot, appBundle ?? projectRoot), `root ${abbreviateRoot(projectRoot)}`].join(" · ")
+          : staleBinaryDetail,
+        { deviceUdid: device.udid, targetId: target.target.id },
+      );
 
       const bundleId = target.bundleId
         ?? (appBundle ? await readPlistValue(path.join(appBundle, "Info.plist"), "CFBundleIdentifier") : null);
@@ -3143,6 +3455,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         startedAt,
         claimedAt: launchArgs.laneId || launchArgs.chatSessionId ? startedAt : null,
       };
+      // A launch that was superseded (force takeover, dispose) must not publish
+      // its session over the newer one.
+      if (activeLaunchId !== launchId) {
+        throw new Error("This iOS simulator launch was superseded before it finished.");
+      }
       activeSession = session;
       const childEnv: NodeJS.ProcessEnv = {
         ...process.env,
@@ -3170,7 +3487,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       emitLaunchProgress(launchId, "launch-app", "complete", "App launched.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
       emitLaunchProgress(launchId, "ready", "complete", "iOS simulator drawer is ready.", device.name, { deviceUdid: device.udid, targetId: target.target.id });
       emit({ type: "session-started", session });
-      return session;
+      return {
+        ...session,
+        buildRoot: projectRoot,
+        usedInstalledBinary,
+        capabilities: currentCapabilities(),
+      };
     } catch (error) {
       emitLaunchProgress(
         launchId,
@@ -3189,24 +3511,45 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
-  const screenshot = async (arg: { deviceUdid?: string | null } = {}): Promise<IosSimulatorScreenshot> => {
-    const device = await resolveDevice(arg.deviceUdid ?? activeSession?.deviceUdid);
-    const tmpPath = trackTempFile(path.join(os.tmpdir(), `ade-ios-sim-${device.udid}-${randomUUID()}.png`));
+  const pruneScreenshotCache = async (directory: string): Promise<void> => {
     try {
-      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", tmpPath], { timeoutMs: 30_000 });
-      const buffer = await fs.promises.readFile(tmpPath);
-      const dimensions = pngDimensions(buffer) ?? { width: null, height: null };
-      return {
-        deviceUdid: device.udid,
-        dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
-        width: dimensions.width,
-        height: dimensions.height,
-        capturedAt: nowIso(),
-      };
-    } finally {
-      releaseTempFile(tmpPath);
-      fs.promises.unlink(tmpPath).catch(() => {});
+      const entries = (await fs.promises.readdir(directory))
+        .filter((name) => name.startsWith("shot-") && name.endsWith(".png"))
+        .sort();
+      const stale = entries.slice(0, Math.max(0, entries.length - SCREENSHOT_KEEP_COUNT));
+      await Promise.all(stale.map((name) => fs.promises.unlink(path.join(directory, name)).catch(() => {})));
+    } catch {
+      // Pruning is best effort; a full cache never blocks a capture.
     }
+  };
+
+  const screenshot = async (arg: IosSimulatorScreenshotArgs = {}): Promise<IosSimulatorScreenshot> => {
+    assertDarwin();
+    const device = await resolveDevice(arg.deviceUdid ?? activeSession?.deviceUdid);
+    const root = await resolveScopedRoot({
+      projectRoot: arg.projectRoot ?? activeSession?.projectRoot,
+      laneId: arg.laneId ?? activeSession?.laneId,
+    });
+    const requestedOutPath = arg.outPath?.trim();
+    // Agents need a file they can read; the data URL alone forces them to
+    // shuttle megabytes of base64 through the transcript.
+    const cacheDirectory = path.join(root, ...SCREENSHOT_CACHE_SEGMENTS);
+    const filePath = requestedOutPath
+      ? path.resolve(root, requestedOutPath)
+      : path.join(cacheDirectory, `shot-${nowIso().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.png`);
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", filePath], { timeoutMs: 30_000 });
+    const buffer = await fs.promises.readFile(filePath);
+    const dimensions = pngDimensions(buffer) ?? { width: null, height: null };
+    if (!requestedOutPath) void pruneScreenshotCache(cacheDirectory);
+    return {
+      deviceUdid: device.udid,
+      dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
+      filePath,
+      width: dimensions.width,
+      height: dimensions.height,
+      capturedAt: nowIso(),
+    };
   };
 
   const getAppContainerPath = async (deviceUdid?: string | null): Promise<{ device: IosSimulatorDevice; containerPath: string }> => {
@@ -3274,9 +3617,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!cachedCommandExists("idb")) {
       throw new Error(`idb is not installed. ${INSTALL_HINT_IDB}`);
     }
-    const companion = await ensureCompanion(deviceUdid);
+    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
     try {
-      const { stdout } = await run("idb", [
+      const { stdout } = await run(idbBinary, [
         "--companion",
         companion,
         "ui",
@@ -3294,9 +3637,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const getScreenSnapshot = async (snapshotArgs: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> => {
+    assertDarwin();
     const hitX = snapshotArgs.x == null ? null : normalizeCoordinate(snapshotArgs.x, "x");
     const hitY = snapshotArgs.y == null ? null : normalizeCoordinate(snapshotArgs.y, "y");
-    const shot = await screenshot({ deviceUdid: snapshotArgs.deviceUdid ?? activeSession?.deviceUdid });
+    const shot = await screenshot({
+      deviceUdid: snapshotArgs.deviceUdid ?? activeSession?.deviceUdid,
+      projectRoot: snapshotArgs.projectRoot,
+      laneId: snapshotArgs.laneId,
+    });
     const providers: IosScreenSnapshot["providers"] = [
       {
         source: "screenshot",
@@ -3347,7 +3695,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
 
-    const projectRoot = snapshotArgs.projectRoot ?? activeSession?.projectRoot ?? args.projectRoot;
+    const projectRoot = await resolveScopedRoot({
+      projectRoot: snapshotArgs.projectRoot ?? activeSession?.projectRoot,
+      laneId: snapshotArgs.laneId ?? activeSession?.laneId,
+    }).catch(() => args.projectRoot);
     const baseElements = mergeScreenElements(inspectorElements, accessibilityElements);
     const syntheticElements = synthesizeSwiftUITabBarElements(projectRoot, baseElements);
     const elements = syntheticElements.length
@@ -3480,9 +3831,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   });
 
   const inspectPoint = async (point: IosSimulatorInspectPointArgs): Promise<IosSimulatorInspectResult> => {
+    assertDarwin();
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
-    const screenSnapshot = await getScreenSnapshot({ deviceUdid: point.deviceUdid, x, y });
+    const screenSnapshot = await getScreenSnapshot({
+      deviceUdid: point.deviceUdid,
+      projectRoot: point.projectRoot,
+      laneId: point.laneId,
+      x,
+      y,
+    });
     const element = screenSnapshot.hitElement;
     if (!element) {
       return {
@@ -3519,9 +3877,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
     stopCompanion();
-    cleanupTempFiles();
     if (shutdownArgs.force) {
-      await cleanupOrphanedIdbCompanions(previousSession?.deviceUdid ?? null).catch(() => 0);
+      await stopTrackedIdbCompanions([...trackedCompanionPids]).catch(() => 0);
+      trackedCompanionPids.clear();
     }
     const released = activeSession !== null;
     activeSession = null;
@@ -3531,6 +3889,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       emit({ type: "session-released", previousSession });
     }
     return { released, previousSession };
+  };
+
+  /**
+   * Called when the owning chat ends or is deleted. Without it the simulator
+   * stays locked to a chat that no longer exists and every later launch fails
+   * the ownership check.
+   */
+  const releaseIfOwnedBy = async (chatSessionId: string | null | undefined): Promise<IosSimulatorShutdownResult> => {
+    const owner = activeSession?.chatSessionId ?? null;
+    const trimmed = chatSessionId?.trim() || null;
+    if (!owner || !trimmed || owner !== trimmed) {
+      return { released: false, previousSession: null };
+    }
+    args.logger.info("ios_simulator.released_with_chat_session", { chatSessionId: trimmed });
+    return shutdown({ force: false });
   };
 
   const startedStreamStatus = (
@@ -3543,9 +3916,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     requestedBackend: streamRequestContext.requestedBackend ?? null,
     fallbackReason: null,
     degradationReason: null,
+    // fps and frameCount stay null: the renderer captures the Simulator.app
+    // window, so the service has no frames to count. streamUrl stays null for
+    // the same reason — this backend has no URL to hand out.
     fps: null,
     targetFps,
-    frameCount: 0,
+    frameCount: null,
     startedAt: nowIso(),
     lastFrameAt: null,
     lastError: null,
@@ -3613,9 +3989,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!cachedCommandExists("idb")) {
       throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
     }
-    const companion = await ensureCompanion(deviceUdid);
+    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
     try {
-      await run("idb", ["--companion", companion, "ui", "tap", String(Math.round(x)), String(Math.round(y)), "--udid", deviceUdid], { timeoutMs: 20_000 });
+      await run(idbBinary, ["--companion", companion, "ui", "tap", String(Math.round(x)), String(Math.round(y)), "--udid", deviceUdid], { timeoutMs: 20_000 });
     } finally {
       scheduleCompanionIdleStop();
     }
@@ -3625,9 +4001,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!cachedCommandExists("idb")) {
       throw new Error(`idb is required for text input. ${INSTALL_HINT_IDB}`);
     }
-    const companion = await ensureCompanion(deviceUdid);
+    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
     try {
-      await run("idb", ["--companion", companion, "ui", "text", text, "--udid", deviceUdid], { timeoutMs: 20_000 });
+      await run(idbBinary, ["--companion", companion, "ui", "text", text, "--udid", deviceUdid], { timeoutMs: 20_000 });
     } finally {
       scheduleCompanionIdleStop();
     }
@@ -3637,7 +4013,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!cachedCommandExists("idb")) {
       throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
     }
-    const companion = await ensureCompanion(deviceUdid);
+    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
     const idbArgs = [
       "--companion",
       companion,
@@ -3659,13 +4035,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       idbArgs.push("--delta", String(input.delta));
     }
     try {
-      await run("idb", idbArgs, { timeoutMs: 20_000 });
+      await run(idbBinary, idbArgs, { timeoutMs: 20_000 });
     } finally {
       scheduleCompanionIdleStop();
     }
   };
 
   const tap = async (point: { deviceUdid?: string | null; x: number; y: number }): Promise<{ ok: true }> => {
+    assertDarwin();
     const deviceUdid = await resolveControlDeviceUdid(point.deviceUdid);
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
@@ -3677,6 +4054,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const typeText = async (input: { deviceUdid?: string | null; text: string }): Promise<{ ok: true }> => {
+    assertDarwin();
     const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid);
     return enqueueControl("text", async () => {
       await runIdbText(deviceUdid, input.text);
@@ -3686,6 +4064,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const drag = async (input: IosSimulatorDragArgs): Promise<{ ok: true }> => {
+    assertDarwin();
     const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid);
     const startX = normalizeCoordinate(input.startX, "startX");
     const startY = normalizeCoordinate(input.startY, "startY");
@@ -3709,10 +4088,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const selectPoint = async (point: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }): Promise<IosSimulatorSelectResult> => {
+  const selectPoint = async (point: IosSimulatorPoint): Promise<IosSimulatorSelectResult> => {
+    assertDarwin();
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
-    const screenSnapshot = await getScreenSnapshot({ deviceUdid: point.deviceUdid ?? activeSession?.deviceUdid, projectRoot: point.projectRoot, x, y });
+    const screenSnapshot = await getScreenSnapshot({
+      deviceUdid: point.deviceUdid ?? activeSession?.deviceUdid,
+      projectRoot: point.projectRoot,
+      laneId: point.laneId,
+      x,
+      y,
+    });
     const element = screenSnapshot.hitElement;
     const item = element
       ? contextItemFromScreenElement(element, screenSnapshot, screenSnapshot.screenshot.dataUrl, point.projectRoot)
@@ -3729,6 +4115,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     listLaunchTargets,
     launch,
     attachToChatSession,
+    releaseIfOwnedBy,
+    getCapabilities: currentCapabilities,
     shutdown,
     screenshot,
     getScreenSnapshot,
@@ -3758,8 +4146,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       activeSession = null;
       activeLaunchId = null;
       activeBuildDataPaths.clear();
-      cleanupTempFiles();
-      toolAvailabilityCache.clear();
+        toolAvailabilityCache.clear();
       if (xcodeMcpBridge) {
         const bridge = xcodeMcpBridge;
         xcodeMcpBridge = null;

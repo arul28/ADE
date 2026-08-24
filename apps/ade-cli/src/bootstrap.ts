@@ -1112,6 +1112,15 @@ export async function createAdeRuntime(args: {
     : createIosSimulatorService({
         projectRoot,
         logger,
+        // Agent launches arrive at the brain, so this is the instance that most
+        // needs lane-correct build roots.
+        resolveLaneWorktreePath: (laneId: string): string | null => {
+          try {
+            return laneService.getLaneWorktreePath(laneId);
+          } catch {
+            return null;
+          }
+        },
         onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
       });
   // Late-bound chat session lookup. agentChatService is created after
@@ -1277,6 +1286,16 @@ export async function createAdeRuntime(args: {
     }
   }
   agentChatServiceHolder.current = agentChatService;
+  if (agentChatService && iosSimulatorService) {
+    agentChatService.registerChatSessionEndedListener((sessionId) => {
+      void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
+        logger.debug("ios_simulator.release_on_chat_end_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+  }
   if (agentChatService) {
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),

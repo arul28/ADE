@@ -7812,6 +7812,22 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  // Listeners for "this chat is over" (deleted or archived). Services that hold
+  // a per-chat lock — the iOS simulator session, for one — release it here
+  // instead of staying bound to a chat that no longer exists.
+  const chatSessionEndedListeners = new Set<(sessionId: string) => void>();
+  const notifyChatSessionEnded = (sessionId: string): void => {
+    for (const listener of chatSessionEndedListeners) {
+      try {
+        listener(sessionId);
+      } catch (error) {
+        logger.debug("agent_chat.session_ended_listener_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
   const lastPersistedPointerFingerprints = new Map<string, string>();
   const codexRecoveryInFlight = new Set<string>();
   const continuityRecoveryInFlight = new Set<string>();
@@ -42956,6 +42972,7 @@ export function createAgentChatService(args: {
     }
 
     sessionService.deleteSession(trimmedSessionId);
+    notifyChatSessionEnded(trimmedSessionId);
   };
 
   const archiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
@@ -42984,6 +43001,7 @@ export function createAgentChatService(args: {
       );
     }
     sessionService.archiveSession(trimmedSessionId);
+    notifyChatSessionEnded(trimmedSessionId);
   };
 
   const unarchiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
@@ -46243,6 +46261,16 @@ export function createAgentChatService(args: {
       const orchestrationService = getOrchestrationService?.() ?? null;
       if (!orchestrationService) return;
       ensureOrchestrationDrainerRegistered(orchestrationService);
+    },
+    /**
+     * Subscribe to "this chat is over" (deleted or archived). Returns an
+     * unsubscribe function.
+     */
+    registerChatSessionEndedListener(listener: (sessionId: string) => void): () => void {
+      chatSessionEndedListeners.add(listener);
+      return () => {
+        chatSessionEndedListeners.delete(listener);
+      };
     },
   };
 }

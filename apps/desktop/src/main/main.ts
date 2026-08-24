@@ -4004,21 +4004,33 @@ app.whenReady().then(async () => {
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
+      // Lane-scoped calls build the lane's worktree, not the primary checkout.
+      resolveLaneWorktreePath: (laneId: string): string | null => {
+        try {
+          return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return null;
+        }
+      },
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
     });
+    agentChatService.registerChatSessionEndedListener((sessionId) => {
+      void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
+        logger.debug("ios_simulator.release_on_chat_end_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    // Only the two actions whose whole point is showing the user something on
+    // screen open the drawer. Launch, input, streaming, and preview rendering
+    // are routine agent work; stealing the screen for them made the drawer feel
+    // like a popup. The renderer builds its own affordance from `session-started`.
     const iosSimulatorDrawerActionModes: Partial<Record<string, IosSimulatorDrawerMode>> = {
       inspectPoint: "inspect",
-      launch: "interact",
-      openPreviewWorkspace: "preview",
-      renderCurrentPreview: "preview",
-      renderPreview: "preview",
       selectPoint: "inspect",
-      startStream: "interact",
-      tap: "interact",
-      typeText: "interact",
-      drag: "interact",
-      swipe: "interact",
+      launch: "interact",
     };
     const requestIosSimulatorDrawerOpen = (
       action: keyof typeof iosSimulatorDrawerActionModes,
@@ -4052,52 +4064,14 @@ app.whenReady().then(async () => {
       },
       launch: async (arg?: Parameters<typeof iosSimulatorService.launch>[0]) => {
         const result = await iosSimulatorService.launch(arg);
-        requestIosSimulatorDrawerOpen("launch", arg, result);
-        return result;
-      },
-      openPreviewWorkspace: async (arg?: Parameters<typeof iosSimulatorService.openPreviewWorkspace>[0]) => {
-        const result = await iosSimulatorService.openPreviewWorkspace(arg);
-        requestIosSimulatorDrawerOpen("openPreviewWorkspace", arg, result);
-        return result;
-      },
-      renderPreview: async (arg: Parameters<typeof iosSimulatorService.renderPreview>[0]) => {
-        const result = await iosSimulatorService.renderPreview(arg);
-        requestIosSimulatorDrawerOpen("renderPreview", arg, result);
-        return result;
-      },
-      renderCurrentPreview: async (arg?: Parameters<typeof iosSimulatorService.renderCurrentPreview>[0]) => {
-        const result = await iosSimulatorService.renderCurrentPreview(arg);
-        requestIosSimulatorDrawerOpen("renderCurrentPreview", arg, result);
+        // Opt-in only: the drawer passes openDrawer when the user pressed its
+        // own launch button.
+        if (arg?.openDrawer === true) requestIosSimulatorDrawerOpen("launch", arg, result);
         return result;
       },
       selectPoint: async (arg: Parameters<typeof iosSimulatorService.selectPoint>[0]) => {
         const result = await iosSimulatorService.selectPoint(arg);
         requestIosSimulatorDrawerOpen("selectPoint", arg, result);
-        return result;
-      },
-      startStream: async (arg?: Parameters<typeof iosSimulatorService.startStream>[0]) => {
-        const result = await iosSimulatorService.startStream(arg);
-        requestIosSimulatorDrawerOpen("startStream", arg, result);
-        return result;
-      },
-      tap: async (arg: Parameters<typeof iosSimulatorService.tap>[0]) => {
-        const result = await iosSimulatorService.tap(arg);
-        requestIosSimulatorDrawerOpen("tap", arg, result);
-        return result;
-      },
-      typeText: async (arg: Parameters<typeof iosSimulatorService.typeText>[0]) => {
-        const result = await iosSimulatorService.typeText(arg);
-        requestIosSimulatorDrawerOpen("typeText", arg, result);
-        return result;
-      },
-      drag: async (arg: Parameters<typeof iosSimulatorService.drag>[0]) => {
-        const result = await iosSimulatorService.drag(arg);
-        requestIosSimulatorDrawerOpen("drag", arg, result);
-        return result;
-      },
-      swipe: async (arg: Parameters<typeof iosSimulatorService.swipe>[0]) => {
-        const result = await iosSimulatorService.swipe(arg);
-        requestIosSimulatorDrawerOpen("swipe", arg, result);
         return result;
       },
     };

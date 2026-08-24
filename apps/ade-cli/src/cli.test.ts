@@ -22,6 +22,7 @@ import {
   graphWaitState,
   inferFormatter,
   includeHostProjectInCatalog,
+  iosSimulatorErrorHint,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
@@ -11070,6 +11071,226 @@ describe("ADE CLI", () => {
       if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
       else process.env.ADE_CHAT_SESSION_ID = previousChat;
     }
+  });
+
+  describe("ios-sim build root and capture flags", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+
+    const launchArgsFor = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { args?: Record<string, unknown> } }
+        | undefined;
+      return params?.arguments?.args ?? {};
+    };
+
+    beforeEach(() => {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+      process.env.ADE_WORKSPACE_ROOT = "/tmp/ade-project/.ade/worktrees/lane-a";
+    });
+
+    afterEach(() => {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    });
+
+    it("routes rooted subcommands at the lane, then the caller's worktree", () => {
+      // An agent in a lane: the lane resolves the build root service-side, so
+      // the CLI must not pin a projectRoot that would override it.
+      process.env.ADE_LANE_ID = "lane-ios-1";
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "apps"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "apps"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "snapshot"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "snapshot"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "previews", "--source", "A.swift"]))
+        .toMatchObject({ laneId: "lane-ios-1" });
+
+      // A plain shell inside the worktree with no ADE_LANE_ID still builds the
+      // worktree it is standing in, not the primary checkout.
+      delete process.env.ADE_LANE_ID;
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        projectRoot: "/tmp/ade-project/.ade/worktrees/lane-a",
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).laneId).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "select", "120", "420"])).toMatchObject({
+        projectRoot: "/tmp/ade-project/.ade/worktrees/lane-a",
+      });
+    });
+
+    it("lets an explicit --project-root beat the lane default", () => {
+      process.env.ADE_LANE_ID = "lane-ios-1";
+      expect(
+        launchArgsFor(["ios-sim", "launch", "--project-root", "/tmp/primary"]),
+      ).toMatchObject({ projectRoot: "/tmp/primary" });
+      expect(
+        launchArgsFor(["ios-sim", "apps", "--root", "/tmp/primary"]),
+      ).toMatchObject({ projectRoot: "/tmp/primary", laneId: "lane-ios-1" });
+    });
+
+    it("keeps the simulator in the background unless asked otherwise", () => {
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        keepSimulatorInBackground: true,
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).openDrawer).toBeUndefined();
+      // Back-compat: --background was the old opt-in and must stay harmless.
+      expect(launchArgsFor(["ios-sim", "launch", "--background"])).toMatchObject({
+        keepSimulatorInBackground: true,
+      });
+      expect(launchArgsFor(["ios-sim", "launch", "--foreground"])).toMatchObject({
+        keepSimulatorInBackground: false,
+      });
+      expect(launchArgsFor(["ios-sim", "launch", "--open-drawer"])).toMatchObject({
+        openDrawer: true,
+        keepSimulatorInBackground: true,
+      });
+    });
+
+    it("gives launch the daemon's own budget and a follow notice", () => {
+      const plan = buildCliPlan(["ios-sim", "launch", "--follow"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.formatter).toBe("ios-sim-launch");
+      expect(plan.minTimeoutMs).toBe(17 * 60_000);
+      expect(plan.progressNotice).toContain("not streamed");
+
+      const quiet = buildCliPlan(["ios-sim", "launch"]);
+      expect(quiet.kind).toBe("execute");
+      if (quiet.kind !== "execute") return;
+      expect(quiet.progressNotice).toBeUndefined();
+    });
+
+    it("passes --out through to the screenshot action", () => {
+      expect(
+        launchArgsFor(["ios-sim", "screenshot", "--out", "shot.png"]),
+      ).toMatchObject({ outPath: "shot.png" });
+      expect(launchArgsFor(["ios-sim", "screenshot"]).outPath).toBeUndefined();
+
+      // The written path is what an agent reads next, so it prints raw and
+      // untruncated rather than as a table cell.
+      const longPath = `/Users/someone/Projects/ADE/.ade/worktrees/${"a".repeat(80)}/shot.png`;
+      const output = formatOutput(
+        { deviceUdid: "UDID-1", filePath: longPath, width: 393, height: 852 },
+        { text: true } as any,
+        inferFormatter({
+          kind: "execute",
+          label: "iOS simulator screenshot",
+          steps: [],
+        }),
+      );
+      expect(output).toContain(`file: ${longPath}`);
+    });
+
+    it("files an ios-sim proof as screenshot-then-ingest", () => {
+      const plan = buildCliPlan([
+        "ios-sim",
+        "proof",
+        "--caption",
+        "Settings after the fix",
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps).toHaveLength(2);
+      expect(plan.steps[0]).toMatchObject({
+        key: "screenshot",
+        params: {
+          arguments: { domain: "ios_simulator", action: "screenshot" },
+        },
+      });
+      const ingest = plan.steps[1]?.params;
+      expect(typeof ingest).toBe("function");
+      if (typeof ingest !== "function") return;
+      // The action envelope, not the bare record: that is what the runtime
+      // actually answers with.
+      expect(
+        ingest({
+          screenshot: {
+            domain: "ios_simulator",
+            action: "screenshot",
+            result: { filePath: "/tmp/lane-a/.ade/ios/shot.png" },
+          },
+        }),
+      ).toMatchObject({
+        name: "ingest_computer_use_artifacts",
+        arguments: {
+          backendName: "ade-ios-simulator",
+          toolName: "ios-sim proof",
+          inputs: [
+            {
+              kind: "screenshot",
+              title: "Settings after the fix",
+              description: "Settings after the fix",
+              path: "/tmp/lane-a/.ade/ios/shot.png",
+            },
+          ],
+        },
+      });
+      expect(() => ingest({ screenshot: { result: {} } })).toThrow(
+        /could not find the captured screenshot path/,
+      );
+    });
+
+    it("turns the new simulator error codes into one actionable line", () => {
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_TARGET_ROOT_MISMATCH: launch target x is outside the build root /tmp/a.",
+        ),
+      ).toContain("ade ios-sim apps");
+      const busy = iosSimulatorErrorHint(
+        "IOS_SIMULATOR_LAUNCH_IN_PROGRESS: an iOS simulator launch (launch-7) is already running.",
+      );
+      expect(busy).toContain("launch-7");
+      expect(busy).toContain("ade ios-sim shutdown --force");
+      expect(
+        iosSimulatorErrorHint("IOS_SIMULATOR_NO_BUILDABLE_TARGET: none under /tmp/a."),
+      ).toContain("--target-id");
+      expect(iosSimulatorErrorHint("something else went wrong")).toBeNull();
+    });
+
+    it("summarises a launch with its build root, warning, and capabilities", () => {
+      const output = formatOutput(
+        {
+          id: "sess-1",
+          deviceUdid: "UDID-1",
+          deviceName: "iPhone 16",
+          bundleId: "com.example.app",
+          appName: "Example",
+          laneId: "lane-ios-1",
+          mode: "live",
+          keepSimulatorInBackground: true,
+          buildRoot: "/Users/x/Projects/ADE/.ade/worktrees/lane-a",
+          usedInstalledBinary: true,
+          capabilities: {
+            canTap: true,
+            canType: true,
+            canDrag: false,
+            canInspect: false,
+          },
+        },
+        { text: true } as any,
+        "ios-sim-launch",
+      );
+      expect(output).toContain("iPhone 16 (UDID-1)");
+      expect(output).toContain("build root: …/ADE/.ade/worktrees/lane-a");
+      expect(output).toContain("tap/type/drag/inspect  yes/yes/no/no");
+      expect(output).toContain("prebuilt binary");
+    });
   });
 
   it("update commands map to auto-update actions", () => {

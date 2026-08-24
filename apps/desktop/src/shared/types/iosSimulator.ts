@@ -14,6 +14,12 @@ export type IosSimulatorToolStatus = {
 };
 
 export const IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE = "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION" as const;
+/** A stored target id points at a project/app bundle that is not under the resolved build root. */
+export const IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE = "IOS_SIMULATOR_TARGET_ROOT_MISMATCH" as const;
+/** A second launch arrived while one was still running. */
+export const IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE = "IOS_SIMULATOR_LAUNCH_IN_PROGRESS" as const;
+/** Only a previously installed app resolved, and the caller did not ask for it by name. */
+export const IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE = "IOS_SIMULATOR_NO_BUILDABLE_TARGET" as const;
 
 export type IosSimulatorShutdownArgs = {
   force?: boolean | null;
@@ -68,6 +74,12 @@ export type IosSimulatorLaunchTarget = {
 export type IosSimulatorListLaunchTargetsArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  /**
+   * Lane the caller is working in. When no explicit `projectRoot` is given the
+   * service resolves this lane's worktree and uses it as the build root, so an
+   * agent running in a lane never builds the primary checkout by accident.
+   */
+  laneId?: string | null;
 };
 
 export type IosSimulatorClaimArgs = {
@@ -91,6 +103,19 @@ export type IosSimulatorLaunchArgs = {
   force?: boolean | null;
   environment?: Record<string, string> | null;
   arguments?: string[] | null;
+  /**
+   * Ask the desktop shell to open the iOS simulator drawer for this launch.
+   * Defaults to false: agent launches must not steal the user's screen. The
+   * drawer passes true for its own launches.
+   */
+  openDrawer?: boolean | null;
+};
+
+export type IosSimulatorCapabilities = {
+  canTap: boolean;
+  canType: boolean;
+  canDrag: boolean;
+  canInspect: boolean;
 };
 
 export type IosSimulatorSession = {
@@ -111,9 +136,27 @@ export type IosSimulatorSession = {
   claimedAt: string | null;
 };
 
+export type IosSimulatorLaunchResult = IosSimulatorSession & {
+  /** Absolute directory xcodebuild ran in. Equals the lane worktree for lane launches. */
+  buildRoot: string;
+  /** True when nothing was rebuilt, so the running app can predate the caller's code changes. */
+  usedInstalledBinary: boolean;
+  capabilities: IosSimulatorCapabilities;
+};
+
+export type IosSimulatorScreenshotArgs = {
+  deviceUdid?: string | null;
+  projectRoot?: string | null;
+  laneId?: string | null;
+  /** Where to write the PNG. Relative paths resolve against the build root. */
+  outPath?: string | null;
+};
+
 export type IosSimulatorScreenshot = {
   deviceUdid: string;
   dataUrl: string;
+  /** Absolute path of the written PNG. Agents read this instead of the data URL. */
+  filePath: string;
   width: number | null;
   height: number | null;
   capturedAt: string;
@@ -126,9 +169,15 @@ export type IosSimulatorStreamStatus = {
   requestedBackend?: IosSimulatorStreamBackend | null;
   fallbackReason?: string | null;
   degradationReason?: string | null;
+  /**
+   * Measured frame rate. The service never measures frames — the renderer owns
+   * the Simulator.app window capture — so this stays null service-side instead
+   * of reporting a number nobody counted.
+   */
   fps: number | null;
   targetFps: number | null;
-  frameCount: number;
+  /** Null service-side for the same reason as `fps`. */
+  frameCount: number | null;
   startedAt: string | null;
   lastFrameAt: string | null;
   lastError: string | null;
@@ -158,6 +207,8 @@ export type IosSimulatorWindowIssue =
   | "hidden"
   | "minimized"
   | "no-window"
+  | "screen-recording-permission"
+  | "automation-denied"
   | "unknown";
 
 export type IosSimulatorWindowState = {
@@ -223,6 +274,7 @@ export type IosSimulatorPreviewMatch = {
 
 export type IosSimulatorListPreviewsArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
   sourceFile?: string | null;
   sourceLine?: number | null;
   elementLabel?: string | null;
@@ -231,6 +283,7 @@ export type IosSimulatorListPreviewsArgs = {
 
 export type IosSimulatorEnsurePreviewWorkspaceArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
   sourceFile?: string | null;
   sourceLine?: number | null;
   openIfNeeded?: boolean | null;
@@ -247,6 +300,7 @@ export type IosSimulatorEnsurePreviewWorkspaceResult = {
 
 export type IosSimulatorRenderPreviewArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
   sourceFilePath: string;
   previewDefinitionIndexInFile?: number | null;
   tabIdentifier?: string | null;
@@ -285,6 +339,7 @@ export type IosSimulatorRenderCurrentPreviewResult = {
 
 export type IosSimulatorOpenPreviewWorkspaceArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
 };
 
 export type IosSimulatorStartStreamArgs = {
@@ -329,6 +384,7 @@ export type IosSimulatorLaunchProgress = {
 export type IosSimulatorPoint = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   x: number;
   y: number;
 };
@@ -421,6 +477,7 @@ export type IosScreenSnapshotProvider = {
 export type IosScreenSnapshotArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   x?: number | null;
   y?: number | null;
 };
@@ -439,6 +496,7 @@ export type IosScreenSnapshot = {
 export type IosSimulatorInspectPointArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   x: number;
   y: number;
   includeScreenshot?: boolean | null;

@@ -2949,7 +2949,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { projectRoot: "/repo" },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ sources: [] });
 
     expect(getProjectContext).toHaveBeenCalledWith("/repo");
     expect(repoGetStatus).toHaveBeenCalledTimes(1);
@@ -2995,7 +2995,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { projectRoot: "/repo" },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ sources: [] });
 
     expect(getProjectContext).toHaveBeenCalledWith("/repo");
     expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
@@ -3145,7 +3145,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { projectRoot: "/repo" },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ sources: [] });
 
     expect(getStatus).toHaveBeenCalledTimes(1);
   });

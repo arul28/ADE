@@ -3653,6 +3653,12 @@ export function AgentChatPane({
   );
   const [iosSimulatorDrawerModeRequest, setIosSimulatorDrawerModeRequest] = useState<{ mode: IosSimulatorDrawerMode; nonce: number } | null>(null);
   const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
+  const iosSimulatorOpenRef = useRef(iosSimulatorOpen);
+  iosSimulatorOpenRef.current = iosSimulatorOpen;
+  // An agent launching the simulator used to force this drawer open, closing
+  // whatever the user had on screen. It now only offers: a chip appears while a
+  // simulator session is live and the drawer is closed.
+  const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{ deviceName: string | null } | null>(null);
   // CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR. The state
   // and its `setCursorCloudPaneOpen(false)` call sites stay wired so the panel can be restored by
   // uncommenting the mount below — nothing sets it true while the panel is off.
@@ -6943,21 +6949,43 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.onEvent || hideLaneToolDrawers) return undefined;
+    // Is this event about the chat this pane is showing? Unscoped events only
+    // apply to the active tile.
+    const addressesThisPane = (chatSessionId?: string | null, eventLaneId?: string | null) => {
+      const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
+        ? chatSessionId.trim()
+        : null;
+      const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
+        ? eventLaneId.trim()
+        : null;
+      if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
+      if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
+      if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
+      return true;
+    };
     return api.onEvent((event) => {
+      if (event.type === "session-started") {
+        if (!addressesThisPane(event.session.chatSessionId, event.session.laneId)) return;
+        setIosSimulatorAvailable(true);
+        setIosSimulatorSessionChip({ deviceName: event.session.deviceName });
+        return;
+      }
+      if (event.type === "session-released") {
+        setIosSimulatorSessionChip(null);
+        return;
+      }
       if (event.type !== "drawer-open-requested") return;
-      const eventChatSessionId = typeof event.chatSessionId === "string" && event.chatSessionId.trim().length
-        ? event.chatSessionId.trim()
-        : null;
-      const eventLaneId = typeof event.laneId === "string" && event.laneId.trim().length
-        ? event.laneId.trim()
-        : null;
-      if (eventChatSessionId && eventChatSessionId !== selectedSessionIdRef.current) return;
-      if (eventLaneId && laneId && eventLaneId !== laneId) return;
-      if (!eventChatSessionId && !eventLaneId && !isTileActive) return;
+      if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
       setIosSimulatorAvailable(true);
-      setChatActionsOpen(false);
-      setAppControlOpen(false);
-      setCursorCloudPaneOpen(false);
+      // This event now only arrives for surfaces the user drove (point selection
+      // and inspection, or a launch started from this drawer). Yield the right
+      // pane only on the closed → open transition, and only to App Control,
+      // which is the one panel that cannot share the split. Chat actions (proof)
+      // stays exactly as the user left it.
+      if (!iosSimulatorOpenRef.current) {
+        setAppControlOpen(false);
+        setCursorCloudPaneOpen(false);
+      }
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     });
@@ -6971,6 +6999,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
+    setIosSimulatorSessionChip(null);
   }, [selectedSessionId, laneId]);
 
   useEffect(() => {
@@ -12206,6 +12235,27 @@ export function AgentChatPane({
           chatSessionId={selectedSessionId}
           onRevealTerminal={revealChatTerminal}
         />
+      ) : null}
+      {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
+        <button
+          type="button"
+          onClick={() => {
+            setAppControlOpen(false);
+            setCursorCloudPaneOpen(false);
+            setIosSimulatorOpen(true);
+          }}
+          className={cn(
+            "inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
+            "border-cyan-300/20 bg-cyan-400/[0.06] text-cyan-100/75 hover:border-cyan-200/32 hover:text-cyan-50",
+          )}
+          title={iosSimulatorSessionChip.deviceName
+            ? `Simulator running on ${iosSimulatorSessionChip.deviceName}`
+            : "Simulator running"}
+        >
+          <DeviceMobile size={11} weight="fill" aria-hidden className="shrink-0" />
+          <span className="min-w-0 truncate">Simulator running</span>
+          <span className="shrink-0 text-cyan-200/55">Open</span>
+        </button>
       ) : null}
       {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
