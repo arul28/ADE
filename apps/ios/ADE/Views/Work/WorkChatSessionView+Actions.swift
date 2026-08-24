@@ -575,6 +575,8 @@ extension WorkChatSessionView {
     lastTimelineTailId = nil
     scrollMetrics = WorkChatScrollMetrics()
     timelineDragActive = false
+    timelineScrollPhaseUserDriven = false
+    transcriptContentFitsViewport = true
     bottomStickinessReleasedByUser = false
     olderHistoryLoadTask?.cancel()
     olderHistoryLoadTask = nil
@@ -583,20 +585,61 @@ extension WorkChatSessionView {
     olderHistoryTriggerArmed = true
     olderHistoryAutomaticContinuationPending = false
     pendingInitialBottomPinSessionId = session.id
+    initialBottomPinQuiescenceGeneration &+= 1
     cancelLatestPinTask()
     timelineIncrementalCache.reset()
   }
 
+  /// Re-applies the opening pin for as long as the content is still growing.
+  ///
+  /// Called on content-size changes only — never per scroll frame — because it
+  /// scans the visible timeline for the tail entry.
+  ///
+  /// The pin used to fire once and disarm, so any hydration that landed after
+  /// the retry ladder (0/16/80/180/320ms) grew the content under a scroll offset
+  /// nobody re-pinned, which is what opened chats "at a random spot". It now
+  /// stays armed until either the reader takes over
+  /// (`cancelPendingInitialBottomPinForUserScroll`) or the content height has
+  /// been quiet for `workChatInitialPinQuiescence` — the wall-clock reading of
+  /// "stable across consecutive layout passes", since a change-driven observer
+  /// by construction never reports the passes where nothing changed.
   @MainActor
   func resolvePendingInitialBottomPinAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
     guard pendingInitialBottomPinSessionId == session.id else { return }
+    // A brand-new chat has nothing to pin: its single bubble is top-anchored
+    // (desktop parity), and forcing it to the bottom of an empty screen is the
+    // exact layout that rule exists to remove.
+    guard timeline.count > 1 else {
+      pendingInitialBottomPinSessionId = nil
+      return
+    }
     guard let tailId = timeline.last?.id, !tailId.isEmpty else { return }
     guard visibleTimeline.contains(where: { $0.id == tailId }) else {
       return
     }
+    guard workChatMayWriteScrollOffset(
+      dragActive: timelineDragActive,
+      scrollPhaseUserDriven: timelineScrollPhaseUserDriven
+    ) else { return }
 
-    pendingInitialBottomPinSessionId = nil
     forcePinToLatestAfterLayout(proxy, reason: "initial-\(reason)")
+    armInitialBottomPinQuiescence()
+  }
+
+  /// Disarms the opening pin once the content stops changing size.
+  @MainActor
+  private func armInitialBottomPinQuiescence() {
+    initialBottomPinQuiescenceGeneration &+= 1
+    let generation = initialBottomPinQuiescenceGeneration
+    let pinnedSessionId = session.id
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(workChatInitialPinQuiescenceMilliseconds))
+      guard !Task.isCancelled,
+            generation == initialBottomPinQuiescenceGeneration,
+            pendingInitialBottomPinSessionId == pinnedSessionId
+      else { return }
+      pendingInitialBottomPinSessionId = nil
+    }
   }
 
   /// Paints the user's own bubble on the tap frame.
@@ -840,6 +883,8 @@ extension WorkChatSessionView {
     lastTimelineTailId = nil
     scrollMetrics = WorkChatScrollMetrics()
     timelineDragActive = false
+    timelineScrollPhaseUserDriven = false
+    transcriptContentFitsViewport = true
     bottomStickinessReleasedByUser = false
     olderHistoryLoadTask?.cancel()
     olderHistoryLoadTask = nil
@@ -848,6 +893,7 @@ extension WorkChatSessionView {
     olderHistoryTriggerArmed = true
     olderHistoryAutomaticContinuationPending = false
     pendingInitialBottomPinSessionId = session.id
+    initialBottomPinQuiescenceGeneration &+= 1
     cancelLatestPinTask()
     timelineRebuildTask?.cancel()
     timelineRebuildTask = nil
@@ -1004,11 +1050,22 @@ extension WorkChatSessionView {
     }
   }
 
+  /// The reader took the transcript over, so the initial bottom pin stands down.
+  ///
+  /// Split from `releaseBottomStickinessForUserScroll` because the two answer
+  /// different questions at different sensitivities: 2pt of travel is enough to
+  /// mean "stop following the stream", but cancelling the opening pin needs a
+  /// deliberate drag (`workChatInitialPinCancelDeadband`) — finger jitter on a
+  /// tap used to strand a freshly-opened chat mid-transcript.
+  @MainActor
+  func cancelPendingInitialBottomPinForUserScroll() {
+    guard pendingInitialBottomPinSessionId == session.id else { return }
+    pendingInitialBottomPinSessionId = nil
+    initialBottomPinQuiescenceGeneration &+= 1
+  }
+
   @MainActor
   func releaseBottomStickinessForUserScroll(reason: String) {
-    if pendingInitialBottomPinSessionId == session.id {
-      pendingInitialBottomPinSessionId = nil
-    }
     guard isNearBottom else { return }
     bottomStickinessReleasedByUser = true
     isNearBottom = false
@@ -1038,20 +1095,30 @@ extension WorkChatSessionView {
     }
   }
 
+  /// Whether an automatic pin may run right now. A pin is a scroll write, so it
+  /// defers to the reader for the whole interaction — finger-down through the
+  /// end of the fling — not just while the drag gesture is live.
+  var canWriteAutomaticScrollOffset: Bool {
+    workChatMayWriteScrollOffset(
+      dragActive: timelineDragActive,
+      scrollPhaseUserDriven: timelineScrollPhaseUserDriven
+    )
+  }
+
   @MainActor
   func pinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
-    guard isNearBottom, !timelineDragActive else { return }
+    guard isNearBottom, canWriteAutomaticScrollOffset else { return }
     latestPinGeneration &+= 1
     let generation = latestPinGeneration
     latestPinTask?.cancel()
     latestPinTask = Task { @MainActor in
-      guard generation == latestPinGeneration, isNearBottom, !timelineDragActive else { return }
+      guard generation == latestPinGeneration, isNearBottom, canWriteAutomaticScrollOffset else { return }
       scrollToLatest(proxy, animated: false)
       try? await Task.sleep(for: .milliseconds(16))
       guard !Task.isCancelled,
             generation == latestPinGeneration,
             isNearBottom,
-            !timelineDragActive else { return }
+            canWriteAutomaticScrollOffset else { return }
       scrollToLatest(proxy, animated: false)
       if generation == latestPinGeneration {
         latestPinTask = nil
@@ -1061,6 +1128,7 @@ extension WorkChatSessionView {
 
   @MainActor
   func forcePinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
+    guard canWriteAutomaticScrollOffset else { return }
     isNearBottom = true
     if unreadBelowCount > 0 {
       unreadBelowCount = 0
@@ -1069,14 +1137,14 @@ extension WorkChatSessionView {
     let generation = latestPinGeneration
     latestPinTask?.cancel()
     latestPinTask = Task { @MainActor in
-      guard generation == latestPinGeneration, isNearBottom, !timelineDragActive else { return }
+      guard generation == latestPinGeneration, isNearBottom, canWriteAutomaticScrollOffset else { return }
       scrollToLatest(proxy, animated: false)
       for delay in [16, 80, 180, 320] {
         try? await Task.sleep(for: .milliseconds(delay))
         guard !Task.isCancelled,
               generation == latestPinGeneration,
               isNearBottom,
-              !timelineDragActive else { return }
+              canWriteAutomaticScrollOffset else { return }
         scrollToLatest(proxy, animated: false)
       }
       if generation == latestPinGeneration {

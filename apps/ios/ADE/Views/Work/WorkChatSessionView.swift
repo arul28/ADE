@@ -6,12 +6,25 @@ let workChatScrollCoordinateSpace = "WorkChatScrollCoordinateSpace"
 let workChatStickThreshold: CGFloat = 160
 let workChatStickResumeThreshold: CGFloat = 48
 let workChatTouchScrollDeadband: CGFloat = 2
+/// How far a drag has to travel before it counts as the reader taking over from
+/// the initial bottom pin.
+///
+/// Deliberately larger than `workChatTouchScrollDeadband`: 2pt is the right
+/// sensitivity for releasing bottom-stickiness during a streaming turn (a nudge
+/// upward means "stop following"), but it is well inside the finger jitter of a
+/// tap on a freshly-opened chat, and cancelling the pin there is what left
+/// transcripts parked at a random offset while hydration was still growing the
+/// content underneath.
+let workChatInitialPinCancelDeadband: CGFloat = 16
 let workChatBottomAnchorSpacerHeight: CGFloat = 1
 let workChatContentBottomGutterHeight: CGFloat = 2
 let workChatSubagentActivePopupHeight: CGFloat = 34
 let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
+/// How long the transcript's content size has to stay unchanged before the
+/// opening bottom pin is considered settled.
+let workChatInitialPinQuiescenceMilliseconds = 600
 
 struct WorkChatOlderHistoryLoadResult {
   let succeeded: Bool
@@ -132,6 +145,38 @@ struct WorkChatScrollGeometrySample: Equatable {
 
 /// Number of layout passes a prepend anchor stays armed for.
 let workChatPrependAnchorAttempts = 12
+
+/// Whether a scroll phase means the reader — not the app — owns the offset.
+///
+/// `.animating` is deliberately not user-driven: it is the phase our own
+/// `scrollTo` animations run in, and treating it as the reader's would let one
+/// programmatic scroll suppress the next one.
+func workChatScrollPhaseIsUserDriven(_ phase: ScrollPhase) -> Bool {
+  switch phase {
+  case .tracking, .interacting, .decelerating:
+    return true
+  default:
+    return false
+  }
+}
+
+/// Whether the transcript may write the scroll offset right now.
+///
+/// Every programmatic scroll — bottom-follow pins, the initial pin, the prepend
+/// correction — goes through this. Writing an offset while the reader's finger
+/// is down or a fling is still decelerating kills the fling and lands the
+/// content somewhere neither the app nor the reader chose.
+func workChatMayWriteScrollOffset(dragActive: Bool, scrollPhaseUserDriven: Bool) -> Bool {
+  !dragActive && !scrollPhaseUserDriven
+}
+
+/// Where the transcript's content sits inside a viewport it does not fill.
+///
+/// Only meaningful while the content is shorter than the viewport: past that the
+/// content frame is sized by the content and the alignment is inert.
+func workChatTranscriptContentAlignment(contentFitsViewport: Bool) -> Alignment {
+  contentFitsViewport ? .topLeading : .bottomLeading
+}
 
 /// Position of the single probed row, published from the row itself so a
 /// prepend's displacement can be measured without a geometry reader per row.
@@ -296,6 +341,10 @@ struct WorkChatSessionView: View {
   /// follow and the jump-to-latest pill keep using `ScrollViewProxy.scrollTo`.
   @State var scrollPosition = ScrollPosition()
   @State var timelineDragActive = false
+  /// True from the moment the reader touches the transcript until the fling it
+  /// launched has come to rest. The drag gesture alone ends at finger-up, which
+  /// is the middle of the interaction, not the end of it.
+  @State var timelineScrollPhaseUserDriven = false
   @State var bottomStickinessReleasedByUser = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
@@ -316,6 +365,10 @@ struct WorkChatSessionView: View {
   @State var pendingCodexFastMode: Bool?
   @State var scrollStateSessionId: String?
   @State var pendingInitialBottomPinSessionId: String?
+  @State var initialBottomPinQuiescenceGeneration = 0
+  /// Whether the whole transcript fits on screen. Flips rarely, so it is safe as
+  /// `@State` even though the sample that produces it arrives per scroll frame.
+  @State var transcriptContentFitsViewport = true
   @State var timelineLayoutPinToken = 0
   @State var olderHistoryLoadInFlight = false
   @State var olderHistoryLoadError: String?
@@ -785,6 +838,24 @@ struct WorkChatSessionView: View {
     scrollMetrics.prependAnchor?.rowId ?? timelinePresentation.visibleEntries.first?.id
   }
 
+  /// The last real probe measurement, replayed when a correction had to wait for
+  /// the reader's fling to settle (no new preference change arrives once layout
+  /// is quiet).
+  var lastPrependProbeSample: WorkChatPrependProbeSample? {
+    guard let rowId = scrollMetrics.probeRowId, let y = scrollMetrics.probeRowY else { return nil }
+    return WorkChatPrependProbeSample(rowId: rowId, y: y)
+  }
+
+  /// Where a transcript shorter than the viewport sits.
+  ///
+  /// The alignment only has an effect while the content is shorter than the
+  /// viewport (past that the frame is content-sized), and there desktop renders
+  /// the first prompt at the TOP — a one-message chat pinned to the bottom of an
+  /// otherwise empty screen reads like the transcript failed to load.
+  var transcriptContentAlignment: Alignment {
+    workChatTranscriptContentAlignment(contentFitsViewport: transcriptContentFitsViewport)
+  }
+
   /// Records where the reader is whenever the next presentation inserts rows
   /// above the ones already on screen — whether that came from revealing locally
   /// buffered entries or from an older page landing from the host. Without this
@@ -792,14 +863,33 @@ struct WorkChatSessionView: View {
   /// user was reading slides down by the height of the inserted page.
   @MainActor
   private func armPrependAnchorIfRowsInsertedAbove(_ nextPresentation: WorkTimelinePresentation) {
-    guard scrollMetrics.prependAnchor == nil,
-          nextPresentation.visibleEntries.count > timelinePresentation.visibleEntries.count,
+    guard nextPresentation.visibleEntries.count > timelinePresentation.visibleEntries.count,
           let previousFirstId = timelinePresentation.visibleEntries.first?.id,
-          nextPresentation.visibleEntries.first?.id != previousFirstId,
-          // The probe has to already be measuring the row we are about to anchor
-          // on, or there is no "before" position to restore to.
-          scrollMetrics.probeRowId == previousFirstId,
-          let previousFirstRowY = scrollMetrics.probeRowY
+          nextPresentation.visibleEntries.first?.id != previousFirstId
+    else { return }
+
+    // Back-to-back prepends. The armed anchor rides a row that BOTH insertions
+    // pushed down, so the displacement it measures already accumulates them —
+    // re-arming on the new first row would instead measure only the second
+    // insertion and leave the first one uncorrected (the "teleport up"). Keep
+    // the existing anchor and only extend the window it may fire in.
+    if var anchor = scrollMetrics.prependAnchor {
+      guard nextPresentation.visibleEntries.contains(where: { $0.id == anchor.rowId }) else {
+        // The anchored row fell out of the list; nothing left to measure
+        // against, so retire it rather than restore to a row that is gone.
+        scrollMetrics.prependAnchor = nil
+        return
+      }
+      anchor.remainingAttempts = workChatPrependAnchorAttempts
+      scrollMetrics.prependAnchor = anchor
+      return
+    }
+
+    guard
+      // The probe has to already be measuring the row we are about to anchor
+      // on, or there is no "before" position to restore to.
+      scrollMetrics.probeRowId == previousFirstId,
+      let previousFirstRowY = scrollMetrics.probeRowY
     else { return }
     // Only a genuine prepend: the row that used to lead the list has to still be
     // in the list, just further down.
@@ -822,13 +912,35 @@ struct WorkChatSessionView: View {
   func restorePrependAnchorIfNeeded(probed: WorkChatPrependProbeSample?) {
     guard var anchor = scrollMetrics.prependAnchor else { return }
 
+    // A correction is a scroll write, so it waits for the reader to let go.
+    // The anchor stays armed (and does not burn an attempt) meanwhile: the
+    // measurement below isolates the insertion from the reader's own scrolling,
+    // so applying it after the fling settles restores the same reading position
+    // it would have restored mid-fling — without fighting the fling for the
+    // offset, which is what double-applied the reader's own scroll.
+    guard workChatMayWriteScrollOffset(
+      dragActive: timelineDragActive,
+      scrollPhaseUserDriven: timelineScrollPhaseUserDriven
+    ) else { return }
+
+    // No usable measurement for THIS anchor: the probe is describing some other
+    // row (it moved with a recompose, or the anchored row was recycled out of
+    // the LazyVStack). Bail out rather than fall through with a zero row shift —
+    // that reduces the correction to the reader's own scroll delta and applies
+    // it a second time, which is a teleport, not a correction.
+    guard let probed, probed.rowId == anchor.rowId else {
+      anchor.remainingAttempts -= 1
+      scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
+      return
+    }
+
     // The anchored row moves by the height inserted above it *minus* whatever
     // the reader scrolled in the meantime, because scrolling moves the row up
     // the screen too. Adding the offset change back isolates the insertion:
     // with an inserted height H and a user scroll D, the row moves H - D and the
     // offset moves D, so the sum is H either way — and a pure scroll with no
     // prepend sums to zero and correctly restores nothing.
-    let rowShift = probed?.rowId == anchor.rowId ? (probed?.y ?? anchor.rowY) - anchor.rowY : 0
+    let rowShift = probed.y - anchor.rowY
     let scrolled = scrollMetrics.offsetY - anchor.offsetY
     let insertedHeight = rowShift + scrolled
     guard insertedHeight > 0.5 else {
@@ -1331,7 +1443,7 @@ struct WorkChatSessionView: View {
           .frame(
             maxWidth: .infinity,
             minHeight: max(scrollViewportHeight, 0),
-            alignment: .bottomLeading
+            alignment: transcriptContentAlignment
           )
           .modifier(
             WorkChatTranscriptEnvironmentModifier(
@@ -1349,7 +1461,21 @@ struct WorkChatSessionView: View {
           .clipped()
           .scrollIndicators(.hidden)
           .scrollDismissesKeyboard(.interactively)
+          // Open at the tail without waiting for a layout pass. Scoped to
+          // `.initialOffset` on purpose: the `.sizeChanges` anchor would keep
+          // the bottom pinned as content grows, which is exactly the total-height
+          // correction the prepend machinery exists to avoid. The retry pin
+          // stays as belt-and-braces for the hydration that lands afterwards.
+          .defaultScrollAnchor(.bottom, for: .initialOffset)
           .scrollPosition($scrollPosition)
+          .onScrollPhaseChange { _, phase in
+            let userDriven = workChatScrollPhaseIsUserDriven(phase)
+            guard timelineScrollPhaseUserDriven != userDriven else { return }
+            timelineScrollPhaseUserDriven = userDriven
+            guard !userDriven else { return }
+            // A fling that ended may have left a prepend correction waiting.
+            restorePrependAnchorIfNeeded(probed: lastPrependProbeSample)
+          }
           .onScrollGeometryChange(for: WorkChatScrollGeometrySample.self) { geometry in
             WorkChatScrollGeometrySample(geometry)
           } action: { _, sample in
@@ -1377,6 +1503,9 @@ struct WorkChatSessionView: View {
               .onChanged { value in
                 if !timelineDragActive {
                   timelineDragActive = true
+                }
+                if abs(value.translation.height) > workChatInitialPinCancelDeadband {
+                  cancelPendingInitialBottomPinForUserScroll()
                 }
                 if value.translation.height > workChatTouchScrollDeadband {
                   releaseBottomStickinessForUserScroll(reason: "drag")
