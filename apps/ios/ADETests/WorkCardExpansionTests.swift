@@ -305,6 +305,68 @@ final class WorkCardExpansionTests: XCTestCase {
     )
   }
 
+  // MARK: - Finished turns keep their work
+
+  /// The shape that reported this: a Claude turn whose whole body was one
+  /// `Read` and one approved shell command. Both fold into one cluster, and the
+  /// transcript has to still draw that cluster once the turn ends — a finished
+  /// turn collapses to one line, it does not disappear.
+  func testFinishedTurnKeepsItsToolClusterInTheTranscript() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      userMessage("msg-1"),
+      toolCard(id: "read-1", toolName: "Read", argsText: #"{"file_path":"README.md"}"#),
+      commandCard(id: "bash-1", command: "npm test"),
+      assistantMessage("msg-2"),
+      turnEnd("turn-1", id: "end-1"),
+    ])
+
+    let presented = workPresentedTimelineEntries(grouped)
+    let members = presented.flatMap { entry -> [WorkToolGroupMember] in
+      guard case .toolGroup(let group) = entry.payload else { return [] }
+      return group.members
+    }
+
+    XCTAssertTrue(
+      members.contains { $0.id == "tool:read-1" },
+      "the finished turn's Read has to keep a row in the transcript"
+    )
+    XCTAssertTrue(
+      members.contains { $0.id == "command:bash-1" },
+      "the finished turn's shell command has to keep a row in the transcript"
+    )
+  }
+
+  /// A cluster and a file-change group are the same kind of thing to a reader,
+  /// so the transcript cannot draw one and swallow the other.
+  func testPresentationDrawsToolClustersAndFileChangesAlike() {
+    let grouped = collapseConsecutiveWorkToolEntries([
+      toolCard(id: "read-1", toolName: "Read", argsText: #"{"file_path":"README.md"}"#),
+      assistantMessage("msg-1"),
+      toolCard(id: "edit-1", toolName: "Edit", argsText: #"{"file_path":"main.swift"}"#),
+    ])
+
+    let presented = workPresentedTimelineEntries(grouped)
+    let hasToolCluster = presented.contains {
+      if case .toolGroup = $0.payload { return true }
+      return false
+    }
+    let hasChangedFiles = presented.contains {
+      if case .changedFiles = $0.payload { return true }
+      return false
+    }
+
+    XCTAssertTrue(hasChangedFiles, "file-change clusters already render")
+    XCTAssertTrue(hasToolCluster, "so read-only clusters have to render too")
+  }
+
+  /// Nothing streams in a reopened chat, so the cluster lands on its own default
+  /// — the one-line row, not the member list.
+  func testFinishedToolClusterDefaultsToItsCollapsedRow() {
+    let state = WorkCardExpansionState()
+
+    XCTAssertFalse(state.isExpanded(id: "tool-group:read-1", defaultsOpen: false))
+  }
+
   // MARK: - Composer chip count
 
   func testChatInfoCountCoversSubagentsAndScheduledWork() {
@@ -355,6 +417,71 @@ final class WorkCardExpansionTests: XCTestCase {
           provider: "claude",
           modelLabel: "Opus",
           modelId: nil
+        )
+      )
+    )
+  }
+
+  private func toolCard(id: String, toolName: String, argsText: String?) -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: "tool-\(id)",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .toolCard(
+        WorkToolCardModel(
+          id: id,
+          toolName: toolName,
+          status: .completed,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          completedAt: "2026-01-01T00:00:01.000Z",
+          argsText: argsText,
+          resultText: "ok"
+        )
+      )
+    )
+  }
+
+  private func commandCard(id: String, command: String) -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: "command-\(id)",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .commandCard(
+        WorkCommandCardModel(
+          id: id,
+          command: command,
+          cwd: "/repo",
+          output: "3 passing",
+          status: .completed,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          exitCode: 0,
+          durationMs: 1200
+        )
+      )
+    )
+  }
+
+  private func userMessage(_ id: String) -> WorkTimelineEntry {
+    message(id, role: "user", markdown: "run the tests")
+  }
+
+  private func assistantMessage(_ id: String) -> WorkTimelineEntry {
+    message(id, role: "assistant", markdown: "Done.")
+  }
+
+  private func message(_ id: String, role: String, markdown: String) -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: "message-\(id)",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .message(
+        WorkChatMessage(
+          id: id,
+          role: role,
+          markdown: markdown,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          turnId: "turn-1",
+          itemId: nil
         )
       )
     )

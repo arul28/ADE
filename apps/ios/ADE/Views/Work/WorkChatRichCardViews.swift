@@ -602,6 +602,10 @@ struct WorkToolCallsPanelView: View {
 struct WorkTurnActivitySheet: View {
   let group: WorkToolGroupModel
   @State private var expanded = true
+  /// The panel's member expansion moved out to its caller, so the sheet has to
+  /// hold it: without this every call in the sheet rendered permanently shut and
+  /// tapping one did nothing — and the sheet is the whole-turn view of the work.
+  @State private var expandedMemberIds: Set<String> = []
 
   var body: some View {
     NavigationStack {
@@ -609,7 +613,15 @@ struct WorkTurnActivitySheet: View {
         WorkToolCallsPanelView(
           group: group,
           isExpanded: expanded,
-          onToggle: { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } }
+          onToggle: { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } },
+          expandedMemberIds: expandedMemberIds,
+          onToggleMember: { memberId in
+            if expandedMemberIds.contains(memberId) {
+              expandedMemberIds.remove(memberId)
+            } else {
+              expandedMemberIds.insert(memberId)
+            }
+          }
         )
         .padding(.horizontal, 20)
         .padding(.vertical, 16)

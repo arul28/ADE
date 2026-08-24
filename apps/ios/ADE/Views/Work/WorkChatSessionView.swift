@@ -945,10 +945,7 @@ struct WorkChatSessionView: View {
   func refreshTimelinePresentation(sourceTimeline: [WorkTimelineEntry]? = nil) {
     let timeline = sourceTimeline ?? timelineSnapshot.timeline
     turnToolActivity = workTurnToolActivityIndex(from: timeline)
-    let presentedTimeline = timeline.filter { entry in
-      if case .toolGroup = entry.payload { return false }
-      return true
-    }
+    let presentedTimeline = workPresentedTimelineEntries(timeline)
     var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: presentedTimeline,

@@ -3110,16 +3110,22 @@ the stats and shows update guidance.
   Codex and other adapters reuse compact tool cards; data URIs are never printed
   into the timeline, and stored/mobile compaction byte counts become a short
   "preview omitted" detail.
-- **Tool telemetry is disclosed from turn status, not repeated through the
-  mobile transcript.** `WorkChatSessionView` keeps assistant narration,
-  reasoning, provider-specific cards, and `WorkChangedFilesPanelView` rows in
-  chronological order, but filters normalized `toolGroup` rows from the visible
-  timeline. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView`
-  open the corresponding activity in `WorkTurnActivitySheet`. The live row uses
-  `ViewThatFits` so narrow phones retain the activity verb and monospaced elapsed
-  time without squeezing tool details into the same line. The association is
-  data-driven and never invents file changes for providers that did not emit
-  them.
+- **Tool telemetry keeps one chronological row, and is also disclosed from turn
+  status.** `WorkChatSessionView` draws assistant narration, reasoning,
+  provider-specific cards, `WorkToolCallsPanelView` clusters and
+  `WorkChangedFilesPanelView` rows in chronological order;
+  `workPresentedTimelineEntries` in `WorkTimelineHelpers.swift` is the seam that
+  decides what reaches the visible timeline. It used to drop every normalized
+  `toolGroup` row, which meant a turn whose only work was a `Read` and an
+  approved shell command left no trace in the transcript at all. That rule was
+  written when a cluster had no compact form; a finished cluster is now a single
+  44pt row in the same one-liner grammar the changed-files panel uses, so it
+  stays. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still
+  open the whole turn's activity in `WorkTurnActivitySheet`, where tapping a
+  member reveals its result or output. The live row uses `ViewThatFits` so
+  narrow phones retain the activity verb and monospaced elapsed time without
+  squeezing tool details into the same line. The association is data-driven and
+  never invents file changes for providers that did not emit them.
 - **Active-turn send and Stop use dismissing native popovers.** The in-session
   composer's delivery choices come from `WorkActiveSendCapability` in
   `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical

@@ -1687,6 +1687,24 @@ private func isInterruptStoppedSubagentResultEntry(_ entry: WorkTimelineEntry) -
   return false
 }
 
+/// The rows the transcript actually draws, from the rows the timeline holds.
+///
+/// This is the seam where a presentation-only rule belongs — and for a while it
+/// held one that swallowed whole turns: every normalized `.toolGroup` row was
+/// dropped here, so a turn whose only work was one `Read` and one approved shell
+/// command rendered no trace of either. The turn-end marker's 8pt chevron was
+/// the sole way back to them.
+///
+/// That filter dated from when a cluster had no compact form and N stacked tool
+/// cards ate the phone viewport. A finished cluster is now a single 44pt row in
+/// the same one-liner grammar `WorkChangedFilesPanelView` already uses right
+/// beside it, so there is nothing left to protect the viewport from — and
+/// hiding tool calls while showing file changes made the transcript disagree
+/// with itself about what a cluster is.
+func workPresentedTimelineEntries(_ timeline: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  timeline
+}
+
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into
 /// a single `.toolGroup` entry so the iOS chat mirrors the desktop
 /// `work_log_group` behavior — one summary row per cluster instead of N
