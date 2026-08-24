@@ -462,7 +462,6 @@ export type IosSimulatorPoint = {
 
 export type IosSimulatorDragArgs = {
   deviceUdid?: string | null;
-  projectRoot?: string | null;
   startX: number;
   startY: number;
   endX: number;

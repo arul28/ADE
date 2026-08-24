@@ -454,7 +454,29 @@ describe("ChatIosSimulatorPanel", () => {
     );
 
     await screen.findByText("Live");
-    expect(screen.queryByText(/tmp\/project/)).toBeNull();
+    expect(screen.queryByText("…/tmp/project")).toBeNull();
+  });
+
+  it("stays silent when a /private alias carries a doubled separator", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        // Stripping `/private` before normalizing left `//tmp/project`, which
+        // reads as a UNC root and never matched the plain `/tmp/project`.
+        activeSession: { ...activeStatus.activeSession!, buildRoot: "/private//tmp/project" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Live");
+    expect(screen.queryByText("…/tmp/project")).toBeNull();
   });
 
   it("stays silent when the build root differs only by Windows drive casing", async () => {
@@ -476,7 +498,9 @@ describe("ChatIosSimulatorPanel", () => {
     );
 
     await screen.findByText("Live");
-    expect(screen.queryByText(/Users\/me\/project/i)).toBeNull();
+    // The chip renders the abbreviated tail, so that — not the full root — is
+    // the only text an assertion here can discriminate on.
+    expect(screen.queryByText("…/Me/Project")).toBeNull();
   });
 
   it("does not attach a live view without an active launch session", async () => {

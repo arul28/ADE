@@ -118,17 +118,6 @@ export const IDB_COMPANION_REGISTRY_PATH = path.join(
   `ade-ios-simulator-idb-companions-${IDB_COMPANION_REGISTRY_OWNER}.json`,
 );
 
-/**
- * The pre-per-user registry path. An ADE that ran before the rename left its
- * companions recorded only here, so without folding this file in once those
- * processes leak forever. Entries predate `ownerPid`, so they read as orphans —
- * the correct verdict for a file no current process claims.
- */
-export const LEGACY_IDB_COMPANION_REGISTRY_PATH = path.join(
-  os.tmpdir(),
-  "ade-ios-simulator-idb-companions.json",
-);
-
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
 type CommandExistsProbe = typeof commandExists;
@@ -729,39 +718,6 @@ function readLeakedIdbCompanionPids(): number[] {
     .filter(([, entry]) => !processIsAlive(entry.ownerPid))
     .map(([pid]) => Number(pid))
     .filter((pid) => Number.isFinite(pid) && pid > 0);
-}
-
-/**
- * Folds the pre-rename registry into the per-user one, once. Legacy entries
- * carry no ownerPid, so they land as orphans and the construction sweep reaps
- * them. The legacy file is unlinked afterwards so this runs exactly once per
- * machine; failure to unlink is harmless (the entries are already merged and
- * re-merging is idempotent).
- */
-function migrateLegacyIdbCompanionRegistry(): void {
-  let legacy: IdbCompanionRegistry;
-  try {
-    if (!fs.existsSync(LEGACY_IDB_COMPANION_REGISTRY_PATH)) return;
-    legacy = readIdbCompanionRegistryAt(LEGACY_IDB_COMPANION_REGISTRY_PATH);
-  } catch {
-    return;
-  }
-  const legacyPids = Object.keys(legacy);
-  if (legacyPids.length) {
-    const merged = readIdbCompanionRegistry();
-    for (const pid of legacyPids) {
-      // The current file wins: a live companion recorded there must keep its
-      // ownerPid, or the sweep below would kill a companion still in use.
-      if (merged[pid]) continue;
-      merged[pid] = { ...legacy[pid], ownerPid: null };
-    }
-    writeIdbCompanionRegistry(merged);
-  }
-  try {
-    fs.unlinkSync(LEGACY_IDB_COMPANION_REGISTRY_PATH);
-  } catch {
-    // Nothing to clean up.
-  }
 }
 
 function recordIdbCompanionPid(pid: number, udid: string | null): void {
@@ -2117,7 +2073,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   // brain daemon alongside the app) never kills a live companion out from under
   // the process still using it. It never runs on the status path: that path is
   // hit every ~500ms while the drawer is open.
-  migrateLegacyIdbCompanionRegistry();
   const leakedCompanionPids = readLeakedIdbCompanionPids();
   if (leakedCompanionPids.length) {
     void stopTrackedIdbCompanions(leakedCompanionPids).then((stopped) => {
@@ -3805,10 +3760,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
-  const screenshot = async (arg: IosSimulatorScreenshotArgs = {}): Promise<IosSimulatorScreenshot> => {
-    assertDarwin();
+  /**
+   * The capture itself, against a scope its caller has already resolved.
+   *
+   * A snapshot-driven call (inspect, select) resolves the lane ladder once and
+   * hands the result down, so one filesystem-backed resolution serves the whole
+   * request instead of each layer re-deriving — and re-deciding — the same root.
+   */
+  const captureScreenshot = async (arg: IosSimulatorScreenshotArgs, root: string): Promise<IosSimulatorScreenshot> => {
     const device = await resolveDevice(arg.deviceUdid ?? activeSession?.deviceUdid);
-    const root = await resolveScopedRootForSession({ projectRoot: arg.projectRoot, laneId: arg.laneId });
     const requestedOutPath = arg.outPath?.trim();
     // Agents need a file they can read; the data URL alone forces them to
     // shuttle megabytes of base64 through the transcript.
@@ -3837,6 +3797,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       height: dimensions.height,
       capturedAt: nowIso(),
     };
+  };
+
+  const screenshot = async (arg: IosSimulatorScreenshotArgs = {}): Promise<IosSimulatorScreenshot> => {
+    assertDarwin();
+    return captureScreenshot(
+      arg,
+      await resolveScopedRootForSession({ projectRoot: arg.projectRoot, laneId: arg.laneId }),
+    );
   };
 
   const getAppContainerPath = async (deviceUdid?: string | null): Promise<{ device: IosSimulatorDevice; containerPath: string }> => {
@@ -3923,15 +3891,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
-  const getScreenSnapshot = async (snapshotArgs: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> => {
-    assertDarwin();
+  /**
+   * The snapshot itself, against a scope its caller has already resolved.
+   *
+   * `projectRoot` here is both where the capture is written and the tree the
+   * synthetic-element and source matchers read, so it must be the same root the
+   * caller resolved — resolving again per layer is how a lane-scoped inspect
+   * ended up matching the primary checkout's sources.
+   */
+  const captureScreenSnapshot = async (snapshotArgs: IosScreenSnapshotArgs, projectRoot: string): Promise<IosScreenSnapshot> => {
     const hitX = snapshotArgs.x == null ? null : normalizeCoordinate(snapshotArgs.x, "x");
     const hitY = snapshotArgs.y == null ? null : normalizeCoordinate(snapshotArgs.y, "y");
-    const shot = await screenshot({
-      deviceUdid: snapshotArgs.deviceUdid ?? activeSession?.deviceUdid,
-      projectRoot: snapshotArgs.projectRoot,
-      laneId: snapshotArgs.laneId,
-    });
+    const shot = await captureScreenshot(
+      { deviceUdid: snapshotArgs.deviceUdid ?? activeSession?.deviceUdid },
+      projectRoot,
+    );
     const providers: IosScreenSnapshot["providers"] = [
       {
         source: "screenshot",
@@ -3982,17 +3956,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
 
-    // A named-but-unresolvable lane is an error, never a fallback: swallowing
-    // it here reinstates the silent primary-checkout fallback and an agent
-    // screenshots source it never wrote. Other failures (a missing explicit
-    // root, say) still degrade to the service's own root.
-    const projectRoot = await resolveScopedRootForSession({
-      projectRoot: snapshotArgs.projectRoot,
-      laneId: snapshotArgs.laneId,
-    }).catch((error) => {
-      if (error instanceof IosSimulatorLaneUnresolvedError) throw error;
-      return args.projectRoot;
-    });
     const baseElements = mergeScreenElements(inspectorElements, accessibilityElements);
     const syntheticElements = synthesizeSwiftUITabBarElements(projectRoot, baseElements);
     const elements = syntheticElements.length
@@ -4016,6 +3979,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       providers,
       inspectorSnapshot,
     };
+  };
+
+  /**
+   * Resolves the scope once for the whole snapshot — capture, synthetic
+   * elements, and source matching all read the same tree.
+   *
+   * Resolution failures are failures, never a quiet fallback: a named lane that
+   * cannot be resolved and an explicit `projectRoot` that does not exist both
+   * throw here. Degrading to the service's own root would hand an agent a
+   * snapshot of the primary checkout while it believed it was looking at the
+   * tree it named.
+   */
+  const getScreenSnapshot = async (snapshotArgs: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> => {
+    assertDarwin();
+    return captureScreenSnapshot(
+      snapshotArgs,
+      await resolveScopedRootForSession({
+        projectRoot: snapshotArgs.projectRoot,
+        laneId: snapshotArgs.laneId,
+      }),
+    );
   };
 
   /**
@@ -4135,20 +4119,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     assertDarwin();
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
-    // Resolve the lane ladder once and hand the resolved tree to the source
-    // matcher; passing the raw point.projectRoot let a lane-scoped inspect
-    // match the primary checkout's sources.
+    // Resolve the lane ladder once and hand the resolved tree to both the
+    // snapshot and the source matcher; passing the raw point.projectRoot let a
+    // lane-scoped inspect match the primary checkout's sources.
     const sourceRoot = await resolveScopedRootForSession({
       projectRoot: point.projectRoot ?? null,
       laneId: point.laneId ?? null,
     });
-    const screenSnapshot = await getScreenSnapshot({
-      deviceUdid: point.deviceUdid,
-      projectRoot: point.projectRoot,
-      laneId: point.laneId,
-      x,
-      y,
-    });
+    const screenSnapshot = await captureScreenSnapshot({ deviceUdid: point.deviceUdid, x, y }, sourceRoot);
     // Inspecting exists to show the user what was hit, so reveal the drawer
     // whichever host answered — including a miss, where the empty result is
     // itself the thing to show.
@@ -4420,13 +4398,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       projectRoot: point.projectRoot ?? null,
       laneId: point.laneId ?? null,
     });
-    const screenSnapshot = await getScreenSnapshot({
-      deviceUdid: point.deviceUdid ?? activeSession?.deviceUdid,
-      projectRoot: point.projectRoot,
-      laneId: point.laneId,
-      x,
-      y,
-    });
+    const screenSnapshot = await captureScreenSnapshot(
+      { deviceUdid: point.deviceUdid ?? activeSession?.deviceUdid, x, y },
+      sourceRoot,
+    );
     const element = screenSnapshot.hitElement;
     const item = element
       ? contextItemFromScreenElement(element, screenSnapshot, screenSnapshot.screenshot.dataUrl, sourceRoot)

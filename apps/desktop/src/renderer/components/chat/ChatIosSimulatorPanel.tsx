@@ -48,18 +48,18 @@ const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/givi
  * String-level only — never touches the filesystem, because this runs in the
  * renderer and only decides whether to show a chip.
  *
- * Drops a leading `/private`: macOS firmlinks mean the same directory is
- * spelled `/var/folders/...` by one resolver and `/private/var/folders/...` by
- * another, and reporting that as "built somewhere else" would be a false alarm
- * on every temp-dir build. Everything else — separators, trailing slashes,
- * `.`/`..` segments, and Windows drive-letter casing — is the canonical
- * comparison normalizer's job rather than a second, case-sensitive spelling of
- * it here.
+ * Normalizes first, then drops a leading `/private`: macOS firmlinks mean the
+ * same directory is spelled `/var/folders/...` by one resolver and
+ * `/private/var/folders/...` by another, and reporting that as "built somewhere
+ * else" would be a false alarm on every temp-dir build. Stripping before
+ * normalizing instead turned `/private//var/x` into `//var/x`, which reads as a
+ * UNC root and is returned verbatim, so it never matched `/var/x`. Everything
+ * else — separators, trailing slashes, `.`/`..` segments, and Windows
+ * drive-letter casing — is the canonical comparison normalizer's job rather
+ * than a second, case-sensitive spelling of it here.
  */
 function normalizeRootForCompare(value: string): string {
-  return normalizePathForComparison(
-    value.trim().replace(/[/\\]+$/u, "").replace(/^\/private(?=\/)/u, ""),
-  );
+  return normalizePathForComparison(value.trim()).replace(/^\/private(?=\/)/u, "");
 }
 
 function isOwnedByOtherSessionError(error: unknown): boolean {
