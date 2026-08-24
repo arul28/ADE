@@ -71,6 +71,12 @@ func workChatTranscriptFailureMessage(_ message: String) -> String {
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
 /// take, which was published from a per-frame `GeometryReader` riding the
 /// header row.
+///
+/// `hasError` scopes to the host page that failed, not to scroll-back as a
+/// whole. Buffered entries are already on the phone and cost no network, so a
+/// dropped history page must not strand the reader on top of history they
+/// already have — that combination is what turned one timed-out page into a
+/// transcript that would not scroll again.
 func workChatShouldRequestOlderHistory(
   distanceFromTop: CGFloat,
   triggerArmed: Bool,
@@ -79,13 +85,20 @@ func workChatShouldRequestOlderHistory(
   hasBufferedEntries: Bool,
   hasHostHistory: Bool
 ) -> Bool {
-  distanceFromTop <= workChatOlderHistoryTriggerDistance
-    && triggerArmed
-    && !loading
-    && !hasError
-    && (hasBufferedEntries || hasHostHistory)
+  guard distanceFromTop <= workChatOlderHistoryTriggerDistance,
+        triggerArmed,
+        !loading
+  else { return false }
+  if hasBufferedEntries { return true }
+  return !hasError && hasHostHistory
 }
 
+/// Keeps pulling while the transcript is still too short to scroll.
+///
+/// The buffered-entry bypass matters more here than at the scroll trigger: a
+/// transcript that fits the viewport cannot be scrolled, so the reader has no
+/// way to re-arm anything. Letting a failed host page block the local reveal
+/// there leaves buffered history unreachable by any gesture at all.
 func workChatShouldContinueAutomaticOlderHistory(
   distanceFromBottom: CGFloat,
   loading: Bool,
@@ -93,10 +106,9 @@ func workChatShouldContinueAutomaticOlderHistory(
   hasBufferedEntries: Bool,
   hasHostHistory: Bool
 ) -> Bool {
-  distanceFromBottom <= workChatOlderHistoryScrollableDistance
-    && !loading
-    && !hasError
-    && (hasBufferedEntries || hasHostHistory)
+  guard distanceFromBottom <= workChatOlderHistoryScrollableDistance, !loading else { return false }
+  if hasBufferedEntries { return true }
+  return !hasError && hasHostHistory
 }
 
 /// Scroll state a prepend has to preserve: which row led the list, where that
@@ -1727,6 +1739,16 @@ struct WorkChatSessionView: View {
     if distanceFromTop > workChatOlderHistoryRearmDistance {
       if !olderHistoryTriggerArmed {
         olderHistoryTriggerArmed = true
+      }
+      // Scrolling back down past the re-arm distance retires the previous
+      // failure. A dropped history page is almost always a transient host
+      // timeout, and latching it until someone finds the retry row means the
+      // next approach to the top does nothing at all — the transcript reads as
+      // frozen. Clearing it here keeps the retry gesture the same one the
+      // reader already makes, and cannot spin: a fresh attempt still costs a
+      // full round trip past `workChatOlderHistoryRearmDistance`.
+      if olderHistoryLoadError != nil {
+        olderHistoryLoadError = nil
       }
     }
     guard workChatShouldRequestOlderHistory(

@@ -15521,6 +15521,42 @@ final class ADETests: XCTestCase {
       hasBufferedEntries: false,
       hasHostHistory: true
     ))
+    // A dropped host page must not strand the reader on top of history the
+    // phone already holds: revealing buffered entries costs no network, and
+    // gating it on the failure is what froze scroll-back after one timeout.
+    XCTAssertTrue(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: true,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: true
+    ))
+    XCTAssertTrue(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: true,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    // A failure still cannot outrank the states that mean "not now".
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: true,
+      loading: true,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: false,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: true
+    ))
 
     XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
@@ -15549,6 +15585,22 @@ final class ADETests: XCTestCase {
       hasError: true,
       hasBufferedEntries: false,
       hasHostHistory: true
+    ))
+    // A transcript that fits the viewport cannot be scrolled, so there is no
+    // gesture that re-arms anything. Buffered rows have to stay reachable.
+    XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: true,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: false
     ))
     XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,

@@ -997,7 +997,7 @@ extension WorkChatSessionView {
   func continueAutomaticOlderHistoryIfNeeded() {
     guard olderHistoryAutomaticContinuationPending,
           !olderHistoryLoadInFlight,
-          olderHistoryLoadError == nil
+          olderHistoryLoadError == nil || hiddenTimelineCount > 0
     else { return }
     guard workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: scrollMetrics.distanceFromBottom,
