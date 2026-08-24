@@ -198,6 +198,11 @@ const FRAME_STALL_MS = 3_000;
  * a Simulator window can appear a beat after the app does.
  */
 const WINDOW_SOURCE_ATTEMPTS = 3;
+/**
+ * The "a start is wanted but none owns the live view yet" value of
+ * `captureStartRef` — see the ref's own comment for the three states.
+ */
+const WINDOW_CAPTURE_ARMED = Symbol("ios-simulator-capture-armed");
 /** Window-state poll cadence: fast while the state is moving, slow once settled. */
 const WINDOW_POLL_FAST_MS = 2_000;
 const WINDOW_POLL_SLOW_MS = 10_000;
@@ -823,10 +828,28 @@ export function ChatIosSimulatorPanel({
   // to hand back the holder *it* took and must never hand back a newer one that
   // the restart replacing it has since taken.
   const parkingHoldRef = useRef<symbol | null>(null);
-  // Set by the unmount cleanup below. A start still in flight when the drawer
-  // closes has to finish its own teardown, because React ran the cleanups while
-  // it was suspended and they found nothing of this start to clean up.
-  const panelUnmountedRef = useRef(false);
+  /**
+   * The one cancellation fact for window-capture starts. Three states:
+   *
+   * - `null` — no start is wanted. The drawer left Interact, lost its session,
+   *   or unmounted. A start that reads this on entry does not begin, and a start
+   *   already in flight learns two things at once: it has been cancelled, and
+   *   nobody has taken over the host stream it brought up, so stopping that
+   *   stream is its own job.
+   * - `WINDOW_CAPTURE_ARMED` — the live-view effect wants a start and is about
+   *   to make one. A start in flight reading this has been superseded, and must
+   *   *not* stop the host stream: its replacement stops the old stream itself,
+   *   and a stop issued from here could land on top of the new one.
+   * - any other symbol — the start that currently owns the live view.
+   *
+   * This replaced three per-call-site cancellation predicates, two of which only
+   * asked whether the panel had unmounted. A start superseded by a mode switch
+   * or a released session therefore kept running: it took a fresh parking hold,
+   * opened a getUserMedia stream nothing would tear down, and — because the host
+   * relaunches Simulator.app to capture it — left a live stream on record for a
+   * session that was already gone.
+   */
+  const captureStartRef = useRef<symbol | null>(null);
   const suppressNextSelectionEventRef = useRef(false);
   const dragStartRef = useRef<DragStart | null>(null);
   const snapshotRefreshInFlightRef = useRef(false);
@@ -1285,114 +1308,135 @@ export function ChatIosSimulatorPanel({
   }, []);
 
   /**
-   * `isCancelled` is checked after every await in here, and both of them are
-   * long: `startStream` is a daemon round-trip, and discovery runs for up to
-   * SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS plus the settling AppleScript. Closing
-   * the drawer while it says "Starting the live view" therefore lands React's
-   * cleanups *before* this resumes — they see no stream and no hold, and then
-   * this took both for a panel that no longer exists, permanently pinning the
-   * parking follow so every later ADE window move re-parked (and reopened)
+   * `captureStartRef` is checked on entry and after every await in here, and
+   * both awaits are long: `startStream` is a daemon round-trip, and discovery
+   * runs for up to SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS plus the settling
+   * AppleScript. Leaving Interact, losing the session, or closing the drawer
+   * while it says "Starting the live view" therefore lands React's cleanups
+   * *before* this resumes — they see no stream and no hold, and then this took
+   * both for a live view nobody is watching, permanently pinning the parking
+   * follow so every later ADE window move re-parked (and reopened)
    * Simulator.app with no drawer open. Anything taken past that point is given
-   * back here instead.
+   * back here instead, including the host stream when nothing replaced it.
+   *
+   * The entry check is what covers the callers that `await stopStream()` right
+   * before calling in: the drawer can already be gone by the time this body
+   * runs, and starting anyway spawns Simulator.app for a panel that no longer
+   * exists.
    */
-  const startWindowCaptureVisual = useCallback(async (
-    device: { udid: string; name: string },
-    isCancelled: () => boolean,
-  ) => {
+  const startWindowCaptureVisual = useCallback(async (device: { udid: string; name: string }) => {
+    if (captureStartRef.current === null) return;
+    const myStart = Symbol("ios-simulator-capture-start");
+    captureStartRef.current = myStart;
+    const superseded = (): boolean => captureStartRef.current !== myStart;
     let holdTakenByThisStart: symbol | null = null;
     const abandonStart = async (): Promise<void> => {
       if (holdTakenByThisStart) await releaseParkingHold(holdTakenByThisStart);
-      // Only a real unmount is owed the `stopStream` from here. A dependency
-      // change (a device switch) re-runs the effect, and that run stops the old
-      // stream itself — a stop issued from here could land after its
-      // replacement had already started.
-      if (panelUnmountedRef.current && streamStartedByPanelRef.current) {
+      // `null` means nothing took this start's place — the effect stopped the
+      // live view and returned, or the panel unmounted — so the host stream this
+      // start brought up is nobody else's to stop, and leaving it running would
+      // report a live capture (and a relaunched Simulator.app) to every other
+      // drawer and to the CLI. A successor start owns the token instead: it
+      // stops the old stream itself, and a stop issued from here could land on
+      // top of the replacement.
+      if (captureStartRef.current === null && streamStartedByPanelRef.current) {
         streamStartedByPanelRef.current = false;
         await window.ade.iosSimulator.stopStream().catch(() => {});
       }
     };
 
-    const status = await window.ade.iosSimulator.startStream({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
-    streamStartedByPanelRef.current = true;
-    if (isCancelled()) {
-      await abandonStart();
-      return;
-    }
-    setStreamStatus(status);
-    setLiveVisual({
-      kind: "window",
-      status: "starting",
-      sourceId: null,
-      sourceName: null,
-      width: null,
-      height: null,
-      error: null,
-    });
-    let source: IosSimulatorWindowSource | null = null;
-    let blockerMessage: string | null = null;
-    // The host answers with a `message` only when it has reached a verdict — a
-    // permission blocker, no session, or its own budget exhausted — so a message
-    // ends the poll. An empty sweep with no message is transient and worth
-    // re-asking: the Simulator window is sometimes a beat behind the app.
-    for (let attempt = 0; attempt < WINDOW_SOURCE_ATTEMPTS; attempt += 1) {
-      const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
-      // Take the parking hold here, once, and not where the stream starts.
-      // Discovery is what arms the host's claim, and a holder only counts
-      // against a claim that already exists — while `startStream` itself is
-      // answered by the brain daemon whenever a project is bound (which window
-      // capture requires), so it never reaches the Electron-main code that owns
-      // parking at all. Held from the first sweep on, so the give-up path below
-      // has something to give back.
-      if (!parkingHoldRef.current) {
-        // The host answers with whether it actually counted the holder — a
-        // window that lost the claim race is silently not counted — and the
-        // panel records the hold only then. Believing otherwise would make
-        // every later release decrement a holder this panel never took, which
-        // is another drawer's. A `false` costs nothing: the retain sits inside
-        // the sweep loop, so the next attempt asks again.
-        const held = await window.ade.iosSimulator.retainWindowParking();
-        if (held) {
-          holdTakenByThisStart = Symbol("ios-simulator-parking-hold");
-          parkingHoldRef.current = holdTakenByThisStart;
-        }
-      }
-      if (isCancelled()) {
+    try {
+      const status = await window.ade.iosSimulator.startStream({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
+      streamStartedByPanelRef.current = true;
+      if (superseded()) {
         await abandonStart();
         return;
       }
-      // The session passed above only tells the host whether to park and settle
-      // at all. Choosing among the windows it found is this call, right here,
-      // so a device switch re-picks instead of parking on the previous window.
-      source = pickSimulatorWindowSource(result.sources, device);
-      if (result.windowState) setSimulatorWindowState(result.windowState);
-      blockerMessage = result.message;
-      if (source || blockerMessage) break;
-      await wait(250);
-    }
-    if (!source) {
-      throw new Error(blockerMessage ?? `ADE could not find ${device.name}. Launch the simulator from ADE to start the live view.`);
-    }
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error("ADE cannot show the simulator in this window.");
-    const stream = await navigator.mediaDevices.getUserMedia(buildDesktopCaptureConstraints(source.id, 60));
-    if (isCancelled()) {
-      // `stopRendererLiveVisual` only ever stops the tracks it can see, and it
-      // ran before this stream existed.
-      stream.getTracks().forEach((track) => track.stop());
+      setStreamStatus(status);
+      setLiveVisual({
+        kind: "window",
+        status: "starting",
+        sourceId: null,
+        sourceName: null,
+        width: null,
+        height: null,
+        error: null,
+      });
+      let source: IosSimulatorWindowSource | null = null;
+      let blockerMessage: string | null = null;
+      // The host answers with a `message` only when it has reached a verdict — a
+      // permission blocker, no session, or its own budget exhausted — so a message
+      // ends the poll. An empty sweep with no message is transient and worth
+      // re-asking: the Simulator window is sometimes a beat behind the app.
+      for (let attempt = 0; attempt < WINDOW_SOURCE_ATTEMPTS; attempt += 1) {
+        const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
+        // Take the parking hold here, once, and not where the stream starts.
+        // Discovery is what arms the host's claim, and a holder only counts
+        // against a claim that already exists — while `startStream` itself is
+        // answered by the brain daemon whenever a project is bound (which window
+        // capture requires), so it never reaches the Electron-main code that owns
+        // parking at all. Held from the first sweep on, so the give-up path below
+        // has something to give back.
+        if (!parkingHoldRef.current) {
+          // The host answers with whether it actually counted the holder — a
+          // window that lost the claim race is silently not counted — and the
+          // panel records the hold only then. Believing otherwise would make
+          // every later release decrement a holder this panel never took, which
+          // is another drawer's. A `false` is not retried: it means another ADE
+          // window owns the parking claim, which stays true for the life of that
+          // claim, so this drawer simply captures without a hold until the claim
+          // is gone. It records nothing and therefore releases nothing.
+          const held = await window.ade.iosSimulator.retainWindowParking();
+          if (held) {
+            holdTakenByThisStart = Symbol("ios-simulator-parking-hold");
+            parkingHoldRef.current = holdTakenByThisStart;
+          }
+        }
+        if (superseded()) {
+          await abandonStart();
+          return;
+        }
+        // The session passed above only tells the host whether to park and settle
+        // at all. Choosing among the windows it found is this call, right here,
+        // so a device switch re-picks instead of parking on the previous window.
+        source = pickSimulatorWindowSource(result.sources, device);
+        if (result.windowState) setSimulatorWindowState(result.windowState);
+        blockerMessage = result.message;
+        if (source || blockerMessage) break;
+        await wait(250);
+      }
+      if (!source) {
+        throw new Error(blockerMessage ?? `ADE could not find ${device.name}. Launch the simulator from ADE to start the live view.`);
+      }
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("ADE cannot show the simulator in this window.");
+      const stream = await navigator.mediaDevices.getUserMedia(buildDesktopCaptureConstraints(source.id, 60));
+      if (superseded()) {
+        // `stopRendererLiveVisual` only ever stops the tracks it can see, and it
+        // ran before this stream existed.
+        stream.getTracks().forEach((track) => track.stop());
+        await abandonStart();
+        return;
+      }
+      liveStreamRef.current = stream;
+      liveActiveSinceRef.current = Date.now();
+      setFrameStalled(false);
+      setLiveVisual({
+        kind: "window",
+        status: "active",
+        sourceId: source.id,
+        sourceName: source.name,
+        width: null,
+        height: null,
+        error: null,
+      });
+    } catch (error) {
+      // A superseded start's failure is not this drawer's failure: the caller's
+      // catch would paint an error over a live view that has since moved on, and
+      // hand back a parking hold that now belongs to the start which replaced
+      // this one. Giving back only what this start took is `abandonStart`'s job.
+      if (!superseded()) throw error;
       await abandonStart();
-      return;
     }
-    liveStreamRef.current = stream;
-    liveActiveSinceRef.current = Date.now();
-    setFrameStalled(false);
-    setLiveVisual({
-      kind: "window",
-      status: "active",
-      sourceId: source.id,
-      sourceName: source.name,
-      width: null,
-      height: null,
-      error: null,
-    });
   }, [releaseParkingHold]);
 
   /**
@@ -1493,10 +1537,18 @@ export function ChatIosSimulatorPanel({
           stopRendererLiveVisual();
           await window.ade.iosSimulator.stopStream().catch(() => {});
           // A recovery restart outlives the drawer just as easily as the first
-          // start does, and it takes the same parking hold.
-          await startWindowCaptureVisual(activeDevice, () => panelUnmountedRef.current);
+          // start does, and it takes the same parking hold. It answers to the
+          // same cancellation token, so a drawer that closed or switched out of
+          // Interact during the stop above stops this run before it starts
+          // anything.
+          await startWindowCaptureVisual(activeDevice);
           void refreshSnapshot({ silent: true, priority: true });
         } catch (windowError) {
+          // Same dead end as the effect's give-up path: nothing retries a
+          // recovery that failed, the deps did not change so the effect will not
+          // re-run, and the hold this start took would otherwise keep the host
+          // re-parking Simulator.app while the drawer says the live view failed.
+          void releaseParkingHold();
           const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
           setLiveVisual({
             kind: "window",
@@ -1529,6 +1581,7 @@ export function ChatIosSimulatorPanel({
     liveVisualKind,
     mode,
     refreshSnapshot,
+    releaseParkingHold,
     startWindowCaptureVisual,
     stopRendererLiveVisual,
   ]);
@@ -1693,7 +1746,12 @@ export function ChatIosSimulatorPanel({
       streamStartedByPanelRef.current = false;
       return;
     }
-    let cancelled = false;
+    // Arm before the prelude below, not after it: the token is the whole
+    // cancellation story for a start, and arming synchronously here means no
+    // start can slip in between this run deciding to start one and the cleanup
+    // that cancels it. A start still in flight from a previous run reads this as
+    // "you have been replaced, and the replacement stops your stream".
+    captureStartRef.current = WINDOW_CAPTURE_ARMED;
     const device = { udid: activeDeviceUdid, name: activeDeviceName ?? "" };
     void (async () => {
       try {
@@ -1705,9 +1763,12 @@ export function ChatIosSimulatorPanel({
         // zero.
         await releaseParkingHold();
         streamStartedByPanelRef.current = false;
-        await startWindowCaptureVisual(device, () => cancelled);
+        await startWindowCaptureVisual(device);
       } catch (streamError) {
-        if (cancelled) return;
+        // No cancellation check here: a start that was superseded or torn down
+        // returns quietly and cleans up after itself, so reaching this catch
+        // means this run's own start failed while it still owned the live view.
+        //
         // Giving up here is terminal: nothing retries a stream that never
         // produced a frame. The panel took a parking hold on its first
         // discovery sweep, so without this release the host keeps re-parking
@@ -1731,7 +1792,12 @@ export function ChatIosSimulatorPanel({
       }
     })();
     return () => {
-      cancelled = true;
+      // Runs before every successor shape: the run that restarts the stream, the
+      // two early returns above that stop it and start nothing, and unmount. The
+      // successor that does start again re-arms above; the ones that do not
+      // leave this `null`, which is what tells a start still in flight that the
+      // host stream it brought up is its own to stop.
+      captureStartRef.current = null;
       stopRendererLiveVisual();
     };
   }, [
@@ -1754,9 +1820,12 @@ export function ChatIosSimulatorPanel({
   // `releaseParkingHold` is a stable callback, so this stays a mount/unmount
   // effect despite the dependency.
   useEffect(() => () => {
-    // Read by a start that is still in flight: the cleanups cannot clean up
-    // what it has not taken yet, so it has to finish the job itself.
-    panelUnmountedRef.current = true;
+    // Read by a start that is still in flight: the cleanups cannot clean up what
+    // it has not taken yet, so it has to finish the job itself. The live-view
+    // effect's own cleanup clears this too, but only when its last committed run
+    // was the one that starts a stream — a drawer sitting in Inspect registered
+    // no cleanup at all.
+    captureStartRef.current = null;
     if (streamStartedByPanelRef.current) {
       streamStartedByPanelRef.current = false;
       void window.ade.iosSimulator.stopStream().catch(() => {});
@@ -2726,9 +2795,13 @@ export function ChatIosSimulatorPanel({
     try {
       stopRendererLiveVisual();
       await window.ade.iosSimulator.stopStream().catch(() => {});
-      await startWindowCaptureVisual({ udid: device.udid, name: device.name }, () => panelUnmountedRef.current);
+      await startWindowCaptureVisual({ udid: device.udid, name: device.name });
       void refreshSnapshot({ silent: true, priority: true });
     } catch (error) {
+      // The same terminal give-up as the effect's catch: nothing retries a
+      // manual restart that failed, and the hold this start took has to go back
+      // or the host keeps re-parking Simulator.app behind a failed live view.
+      void releaseParkingHold();
       const detail = error instanceof Error ? error.message : String(error);
       setLiveVisual({
         kind: "window",
@@ -2740,7 +2813,7 @@ export function ChatIosSimulatorPanel({
         error: detail,
       });
     }
-  }, [activeDevice, refreshSnapshot, startWindowCaptureVisual, stopRendererLiveVisual]);
+  }, [activeDevice, refreshSnapshot, releaseParkingHold, startWindowCaptureVisual, stopRendererLiveVisual]);
 
   const handleBlockerAction = useCallback((action: IosSimBlockerAction) => {
     // A remote-bound project refuses this call outright. Swallowing that left

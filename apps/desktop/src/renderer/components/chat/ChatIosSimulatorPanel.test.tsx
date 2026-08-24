@@ -1814,4 +1814,113 @@ describe("ChatIosSimulatorPanel", () => {
     await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalledTimes(1));
     expect(api.retainWindowParking).toHaveBeenCalledTimes(1);
   });
+
+  // An agent runs `ade ios-sim shutdown` while the drawer is still starting the
+  // live view. The effect sees the released session, stops the stream and
+  // returns — it starts no replacement. The start in flight then resolves, and
+  // the host's window capture relaunches Simulator.app and reports a running
+  // stream to every other drawer and to the CLI, for a session that is gone.
+  // Only the start itself can stop that stream, because nothing replaced it.
+  it("stops the stream a superseded start brought up after the session was released", async () => {
+    const { api, emit } = installIosSimulatorApi();
+    let resolveStart: ((status: IosSimulatorStreamStatus) => void) | null = null;
+    api.startStream.mockImplementation(() => new Promise<IosSimulatorStreamStatus>((resolve) => {
+      resolveStart = resolve;
+    }));
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1));
+    api.getStatus.mockResolvedValue({ ...activeStatus, activeSession: null });
+
+    await act(async () => {
+      emit({ type: "session-released", previousSession: null } as never);
+      await Promise.resolve();
+    });
+
+    // The drawer's own teardown for the released session.
+    await waitFor(() => expect(api.stopStream.mock.calls.length).toBeGreaterThan(1));
+    const stopCallsBeforeTheStartResolves = api.stopStream.mock.calls.length;
+
+    await act(async () => {
+      resolveStart?.(streamStatus());
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(api.stopStream.mock.calls.length).toBeGreaterThan(stopCallsBeforeTheStartResolves);
+    });
+    // And it stopped instead of carrying on into discovery.
+    expect(api.listSimulatorWindowSources).not.toHaveBeenCalled();
+  });
+
+  // The no-frame recovery timer restarts the live view from a detached async
+  // body that outlives the mode it was scheduled in. Switching to Inspect stops
+  // the renderer view, stops the stream and hands back the parking hold — and
+  // the recovery start used to run on regardless, taking a fresh hold and
+  // opening a getUserMedia stream that nothing tears down until unmount.
+  it("drops a recovery start that a switch to Inspect superseded", async () => {
+    const { api, getUserMedia } = installIosSimulatorApi();
+
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.retainWindowParking).toHaveBeenCalledTimes(1));
+    const video = await waitFor(() => {
+      const element = document.querySelector("video");
+      expect(element).toBeTruthy();
+      return element as HTMLVideoElement;
+    });
+
+    // The recovery restart hangs on its `startStream`, which is where the drawer
+    // leaves Interact.
+    let resolveRecoveryStart: ((status: IosSimulatorStreamStatus) => void) | null = null;
+    api.startStream.mockImplementation(() => new Promise<IosSimulatorStreamStatus>((resolve) => {
+      resolveRecoveryStart = resolve;
+    }));
+
+    // Input that produces no frame is what arms recovery: 1.5s to notice the
+    // frame never landed, then the 250ms the restart is scheduled behind. Real
+    // timers, because faking them here would also fake `waitFor`'s own polling.
+    fireEvent.keyDown(video, { key: "a" });
+    await act(async () => {
+      await new Promise((resolve) => { setTimeout(resolve, 1_900); });
+    });
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
+
+    // Into Inspect while that start is still in flight. A restart blanks the
+    // live view first, so the in-view Inspect button is gone by now — this is
+    // the drawer-mode request every other surface switches modes with.
+    view.rerender(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        drawerModeRequest={{ mode: "inspect", nonce: 1 }}
+      />,
+    );
+    await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      resolveRecoveryStart?.(streamStatus());
+      await Promise.resolve();
+    });
+
+    // No second hold, no second capture stream, and nothing swept for a source
+    // the drawer has no live view for.
+    expect(api.retainWindowParking).toHaveBeenCalledTimes(1);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(api.listSimulatorWindowSources).toHaveBeenCalledTimes(1);
+  });
 });
