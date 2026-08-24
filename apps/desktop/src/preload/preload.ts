@@ -672,6 +672,7 @@ import type {
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
   IosSimulatorScreenshot,
+  IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorShutdownArgs,
@@ -768,8 +769,8 @@ import type {
   IosSimulatorPrivacyPane,
   IosSimulatorWindowCaptureSessionHint,
   IosSimulatorWindowSourcesResult,
-  IosSimulatorWindowStateEx,
-} from "../shared/types/iosSimulatorWindowCapture";
+  IosSimulatorWindowState,
+} from "../shared/types";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -7177,7 +7178,7 @@ contextBridge.exposeInMainWorld("ade", {
       }
     },
     screenshot: async (
-      args: { deviceUdid?: string | null } = {},
+      args: IosSimulatorScreenshotArgs = {},
     ): Promise<IosSimulatorScreenshot> =>
       callProjectRuntimeActionOr("ios_simulator", "screenshot", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
@@ -7304,23 +7305,18 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ios_simulator", "getStreamStatus", {}, () =>
         ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
       ),
-    getSimulatorWindowState: async (): Promise<IosSimulatorWindowStateEx> => {
+    getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> => {
       await assertLocalProjectHostAction("iOS Simulator window state");
       return ipcRenderer.invoke(IPC.iosSimulatorGetWindowState);
     },
     listSimulatorWindowSources: async (
       opts: {
-        projectRootPath?: string | null;
         session?: IosSimulatorWindowCaptureSessionHint | null;
       } = {},
     ): Promise<IosSimulatorWindowSourcesResult> => {
+      // The root is never the caller's to choose: window capture is always
+      // scoped to the window's own bound local project.
       const binding = await requireLocalProjectHostBinding("iOS Simulator window sources");
-      const requestedRoot = opts.projectRootPath?.trim() || null;
-      if (requestedRoot && requestedRoot !== binding.rootPath) {
-        throw new Error(
-          "iOS Simulator window sources are only available for the window's bound local project.",
-        );
-      }
       // Window parking runs in Electron main, whose simulator service never sees
       // a launch the brain daemon owns. Callers that already hold the runtime
       // session pass it here so parking keys off a session that exists.

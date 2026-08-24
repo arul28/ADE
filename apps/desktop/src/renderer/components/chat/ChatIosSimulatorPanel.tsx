@@ -35,12 +35,26 @@ import {
   listWindowSourcesForSession,
   openIosSimSettingsPane,
   readLaunchExtras,
-  readWindowState,
   revealSimulator,
   type IosSimLaunchExtras,
+  type IosSimSettingsPane,
 } from "./iosSimContracts";
+import { abbreviatePathTail } from "../../../shared/pathDisplay";
 
 const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode";
+
+/**
+ * String-level only — never touches the filesystem, because this runs in the
+ * renderer and only decides whether to show a chip.
+ *
+ * Drops a trailing separator, and drops a leading `/private`: macOS firmlinks
+ * mean the same directory is spelled `/var/folders/...` by one resolver and
+ * `/private/var/folders/...` by another, and reporting that as "built somewhere
+ * else" would be a false alarm on every temp-dir build.
+ */
+function normalizeRootForCompare(value: string): string {
+  return value.trim().replace(/[/\\]+$/u, "").replace(/^\/private(?=\/)/u, "");
+}
 
 function isOwnedByOtherSessionError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -803,6 +817,20 @@ export function ChatIosSimulatorPanel({
     return status?.activeDevice ?? devices[0] ?? null;
   }, [devices, selectedDeviceUdid, status?.activeDevice]);
   const activeSession = status?.activeSession ?? null;
+  /**
+   * Which tree every scoped iOS Simulator call means.
+   *
+   * An explicit `projectRoot` beats `laneId` service-side, so sending both is
+   * not belt-and-braces — it silently discards the lane. The pane's own
+   * `projectRoot` is resolved from the lane list and can trail a lane that was
+   * just created or moved, and the resulting build lands in the primary
+   * checkout while the drawer reports success. When a lane is scoped, name only
+   * the lane: the service resolves its worktree and fails loudly if it cannot.
+   */
+  const rootScope = useMemo(
+    (): { laneId: string } | { projectRoot: string | null } => (laneId ? { laneId } : { projectRoot }),
+    [laneId, projectRoot],
+  );
   const controlsDisabled = Boolean(controlDisabledReason);
   const controlsDisabledMessage = controlDisabledReason ?? "Read-only from this lane.";
 
@@ -883,15 +911,20 @@ export function ChatIosSimulatorPanel({
     : undefined;
   const mediaZoomLabel = `${Math.round(mediaZoom * 100)}%`;
 
-  const toolByName = useMemo(() => new Map((status?.tools ?? []).map((tool) => [tool.name, tool])), [status?.tools]);
-  const idbInputAvailable = (toolByName.get("idb")?.available ?? false)
-    && (toolByName.get("idb_companion")?.available ?? false);
-  const controlAvailable = idbInputAvailable;
-
+  // The chip builder is the single place tool status becomes a verdict, so the
+  // panel reads its answers rather than re-deriving them from the tool matrix.
   const toolChips = useMemo(() => buildIosSimToolChips(status), [status]);
   const toolChipsHealthy = toolChips.every((chip) => chip.state === "ok");
-  const setupBlocked = Boolean(status?.supported) && toolChips.some((chip) => chip.state === "missing");
-  const platformUnsupported = Boolean(status) && !status?.supported;
+  // idb + idb_companion, collapsed into the Controls chip: tap/type/drag need
+  // both, and "ok" is exactly that conjunction.
+  const controlAvailable = toolChips.some((chip) => chip.key === "controls" && chip.state === "ok");
+  // A missing chip is the whole story: off macOS the macOS chip is missing, and
+  // every way a mac can be unsupported (no xcrun/xcodebuild, no Simulator.app)
+  // shows up as a missing Xcode or Runtime chip. So "unsupported platform" and
+  // "incomplete setup" were always the same verdict rendered twice. Guarded on
+  // `status` because the chips read missing until the first status lands, and a
+  // loading drawer must not accuse the machine of anything.
+  const setupBlocked = Boolean(status) && toolChips.some((chip) => chip.state === "missing");
   const previewSetupSteps = previewCapability?.setupSteps ?? [];
   const previewIssue = useMemo(() => {
     if (!previewCapability) {
@@ -1065,7 +1098,7 @@ export function ChatIosSimulatorPanel({
   }, []);
 
   const refreshLaunchTargets = useCallback(async (deviceUdid?: string | null) => {
-    const nextTargets = await window.ade.iosSimulator.listLaunchTargets({ deviceUdid, projectRoot });
+    const nextTargets = await window.ade.iosSimulator.listLaunchTargets({ deviceUdid, ...rootScope });
     setLaunchTargets(nextTargets);
     setSelectedTargetId((current) => (
       current && nextTargets.some((target) => target.id === current)
@@ -1073,7 +1106,7 @@ export function ChatIosSimulatorPanel({
         : nextTargets[0]?.id ?? null
     ));
     setMessage((current) => (isLaunchTargetErrorMessage(current) ? null : current));
-  }, [projectRoot]);
+  }, [rootScope]);
 
   const refreshPreviewLab = useCallback(async () => {
     setPreviewRefreshing(true);
@@ -1085,10 +1118,10 @@ export function ChatIosSimulatorPanel({
       const selectedLabel = selectedElement ? elementLabel(selectedElement) : null;
       const selectedComponentId = selectedElement?.componentId ?? null;
       const [workspace, targets, match] = await Promise.all([
-        window.ade.iosSimulator.ensurePreviewWorkspace({ projectRoot, sourceFile, sourceLine, openIfNeeded: true }),
-        window.ade.iosSimulator.listPreviewTargets({ projectRoot, sourceFile, sourceLine }),
+        window.ade.iosSimulator.ensurePreviewWorkspace({ ...rootScope, sourceFile, sourceLine, openIfNeeded: true }),
+        window.ade.iosSimulator.listPreviewTargets({ ...rootScope, sourceFile, sourceLine }),
         window.ade.iosSimulator.resolvePreviewMatch({
-          projectRoot,
+          ...rootScope,
           sourceFile,
           sourceLine,
           elementLabel: selectedLabel,
@@ -1119,14 +1152,14 @@ export function ChatIosSimulatorPanel({
     } finally {
       setPreviewRefreshing(false);
     }
-  }, [projectRoot, selectedElement]);
+  }, [rootScope, selectedElement]);
 
   useEffect(() => {
     if (!selectedElement?.sourceFile) return;
     if (previewMatchBelongsToElement(previewMatch, selectedElement)) return;
     let cancelled = false;
     void window.ade.iosSimulator.resolvePreviewMatch({
-      projectRoot,
+      ...rootScope,
       sourceFile: selectedElement.sourceFile,
       sourceLine: selectedElement.sourceLine ?? null,
       elementLabel: elementLabel(selectedElement),
@@ -1148,7 +1181,7 @@ export function ChatIosSimulatorPanel({
     return () => {
       cancelled = true;
     };
-  }, [previewMatch, projectRoot, selectedElement]);
+  }, [previewMatch, rootScope, selectedElement]);
 
   const stopRendererLiveVisual = useCallback((options: { preserveVisual?: boolean } = {}) => {
     const preserveVisual = options.preserveVisual === true;
@@ -1226,8 +1259,9 @@ export function ChatIosSimulatorPanel({
     // polling past that only delays a reason we already have.
     for (let attempt = 0; attempt < WINDOW_SOURCE_ATTEMPTS; attempt += 1) {
       const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
-      // The host scores sources against the booted device, so a device switch
-      // re-picks instead of parking on the previous window.
+      // The session passed above only tells the host whether to park and settle
+      // at all. Choosing among the windows it found is this call, right here,
+      // so a device switch re-picks instead of parking on the previous window.
       source = pickSimulatorWindowSource(result.sources, device);
       if (result.windowState) setSimulatorWindowState(result.windowState);
       blockerMessage = result.message;
@@ -1289,7 +1323,7 @@ export function ChatIosSimulatorPanel({
     if (!options.silent) setBusy(true);
     setSnapshotRefreshing(true);
     try {
-      const next = await window.ade.iosSimulator.getScreenSnapshot({ deviceUdid, projectRoot });
+      const next = await window.ade.iosSimulator.getScreenSnapshot({ deviceUdid, ...rootScope });
       if (sequence !== snapshotRefreshSequenceRef.current) return;
       setSnapshot(next);
       setHoveredElement(null);
@@ -1306,7 +1340,7 @@ export function ChatIosSimulatorPanel({
         if (!options.silent) setBusy(false);
       }
     }
-  }, [activeDevice?.udid, projectRoot, selectedDeviceUdid]);
+  }, [activeDevice?.udid, rootScope, selectedDeviceUdid]);
 
   const scheduleWindowCaptureRecovery = useCallback((reason: string) => {
     if (
@@ -1473,6 +1507,18 @@ export function ChatIosSimulatorPanel({
   const activeSessionId = activeSession?.id ?? null;
   const activeSessionDeviceUdid = activeSession?.deviceUdid ?? null;
   const statusSupported = status?.supported ?? null;
+  // The drawer is not always the thing that launched. An agent launches, the
+  // user opens the drawer afterwards, and the session is then the only place
+  // the build root and the prebuilt flag exist — without this the "prebuilt —
+  // changes not included" warning never appeared on that path at all. A launch
+  // this panel ran stays authoritative: seed only into empty extras.
+  useEffect(() => {
+    if (!activeSession) return;
+    if (launchExtras.buildRoot || launchExtras.usedInstalledBinary) return;
+    const seeded = readLaunchExtras(activeSession);
+    if (!seeded.buildRoot && !seeded.usedInstalledBinary) return;
+    setLaunchExtras(seeded);
+  }, [activeSession, launchExtras.buildRoot, launchExtras.usedInstalledBinary]);
 
   useEffect(() => {
     // Keyed on primitives, not object identity, so a plain status refresh no
@@ -1674,8 +1720,7 @@ export function ChatIosSimulatorPanel({
     try {
       const session = await window.ade.iosSimulator.launch({
         deviceUdid: selectedDeviceUdid,
-        projectRoot,
-        laneId,
+        ...rootScope,
         targetId: activeTarget?.id ?? selectedTargetId,
         chatSessionId: sessionId,
         build: true,
@@ -1706,7 +1751,7 @@ export function ChatIosSimulatorPanel({
       setLaunchBusy(false);
       setBusy(false);
     }
-  }, [activeTarget?.id, inputBlockedMessage, laneId, projectRoot, refreshSnapshot, refreshStatus, selectedDeviceUdid, selectedTargetId, sessionId, simulatorMutationBlocked]);
+  }, [activeTarget?.id, inputBlockedMessage, refreshSnapshot, refreshStatus, rootScope, selectedDeviceUdid, selectedTargetId, sessionId, simulatorMutationBlocked]);
 
   useEffect(() => {
     launchRef.current = launch;
@@ -1722,7 +1767,7 @@ export function ChatIosSimulatorPanel({
     setMessage(`Rendering ${target.title} through Xcode Preview...`);
     try {
       const result = await window.ade.iosSimulator.renderPreview({
-        projectRoot,
+        ...rootScope,
         sourceFilePath: target.sourceFilePath,
         previewDefinitionIndexInFile: target.previewDefinitionIndexInFile,
         tabIdentifier: previewCapability?.selectedWindow?.tabIdentifier ?? null,
@@ -1738,16 +1783,16 @@ export function ChatIosSimulatorPanel({
     } finally {
       setPreviewRefreshing(false);
     }
-  }, [previewCapability?.selectedWindow?.tabIdentifier, projectRoot, selectedPreviewTarget]);
+  }, [previewCapability?.selectedWindow?.tabIdentifier, rootScope, selectedPreviewTarget]);
 
   const openPreviewWorkspace = useCallback(async () => {
     try {
-      await window.ade.iosSimulator.openPreviewWorkspace({ projectRoot });
+      await window.ade.iosSimulator.openPreviewWorkspace({ ...rootScope });
       setMessage("Opened the iOS project in Xcode. Click Allow if asked, then Retry.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [projectRoot]);
+  }, [rootScope]);
 
   const draftPreviewAgentHelpRef = useRef<((actionOverride?: PreviewAgentHelpAction, context?: PreviewAgentPromptContext) => Promise<void>) | null>(null);
   const openCurrentPageInPreview = useCallback(async () => {
@@ -1758,7 +1803,7 @@ export function ChatIosSimulatorPanel({
     setMessage("Opening the current simulator selection in Preview Lab...");
     try {
       const current = await window.ade.iosSimulator.renderCurrentPreview({
-        projectRoot,
+        ...rootScope,
         sourceFile: elementSource,
         sourceLine: elementSourceLine,
         elementLabel: element ? elementLabel(element) : null,
@@ -1807,7 +1852,7 @@ export function ChatIosSimulatorPanel({
     } finally {
       setPreviewRefreshing(false);
     }
-  }, [inspectBridgeElement, previewCapability?.selectedWindow?.tabIdentifier, projectRoot]);
+  }, [inspectBridgeElement, previewCapability?.selectedWindow?.tabIdentifier, rootScope]);
 
   const sendTypedText = useCallback(async () => {
     const text = typedText;
@@ -1873,7 +1918,7 @@ export function ChatIosSimulatorPanel({
     setBusy(true);
     try {
       suppressNextSelectionEventRef.current = true;
-      const result = await window.ade.iosSimulator.selectPoint({ deviceUdid: selectedDeviceUdid, projectRoot, x, y });
+      const result = await window.ade.iosSimulator.selectPoint({ deviceUdid: selectedDeviceUdid, ...rootScope, x, y });
       if (element) {
         setSelectedElement(element);
         const crop = await attachCrop(element);
@@ -1897,7 +1942,7 @@ export function ChatIosSimulatorPanel({
     } finally {
       setBusy(false);
     }
-  }, [attachCrop, onAddContext, projectRoot, selectedDeviceUdid]);
+  }, [attachCrop, onAddContext, rootScope, selectedDeviceUdid]);
 
   const attachPreviewSnapshot = useCallback(async (): Promise<string | null> => {
     if (!previewResult?.dataUrl || !onAddAttachment) return null;
@@ -1932,7 +1977,7 @@ export function ChatIosSimulatorPanel({
       try {
         const next = await window.ade.iosSimulator.getScreenSnapshot({
           deviceUdid: selectedDeviceUdid ?? activeDevice?.udid ?? undefined,
-          projectRoot,
+          ...rootScope,
         });
         sourceSnapshot = next;
         setSnapshot(next);
@@ -1949,7 +1994,7 @@ export function ChatIosSimulatorPanel({
     }, ...(runtimePin ? [runtimePin] as const : []));
     onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
     return path;
-  }, [activeDevice?.udid, onAddAttachment, projectRoot, runtimePin, selectedDeviceUdid, snapshot]);
+  }, [activeDevice?.udid, onAddAttachment, rootScope, runtimePin, selectedDeviceUdid, snapshot]);
 
   const attachSimulatorCapture = useCallback(async (frame: PreviewCrop["frame"]): Promise<({ path: string | null } & PreviewCrop) | null> => {
     const screenshot = snapshot?.screenshot;
@@ -2473,6 +2518,18 @@ export function ChatIosSimulatorPanel({
     return () => window.clearInterval(timer);
   }, [ownedByOtherChat, showLaunchProgress]);
 
+  /**
+   * The build root, but only when it is news. "Built the checkout you are
+   * looking at" is the expected case and deserves no chrome; a build root that
+   * is not this pane's project root is the failure that otherwise looks exactly
+   * like success.
+   */
+  const foreignBuildRoot = useMemo(() => {
+    const buildRoot = launchExtras.buildRoot;
+    if (!buildRoot || !projectRoot) return null;
+    return normalizeRootForCompare(buildRoot) === normalizeRootForCompare(projectRoot) ? null : buildRoot;
+  }, [launchExtras.buildRoot, projectRoot]);
+
   const canShowLiveVisual = mode === "interact" && liveVisual;
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
   const hasActiveSession = Boolean(activeSession);
@@ -2480,7 +2537,7 @@ export function ChatIosSimulatorPanel({
   const liveBlocker = useMemo(() => (
     mode === "interact" && liveVisual
       ? resolveIosSimBlocker({
-          windowState: readWindowState(simulatorWindowState),
+          windowState: simulatorWindowState,
           liveStatus: liveVisual.status,
           liveError: liveVisual.error,
           frameStalled,
@@ -2513,12 +2570,20 @@ export function ChatIosSimulatorPanel({
   }, [activeDevice, refreshSnapshot, startWindowCaptureVisual, stopRendererLiveVisual]);
 
   const handleBlockerAction = useCallback((action: IosSimBlockerAction) => {
+    // A remote-bound project refuses this call outright. Swallowing that left
+    // the button looking like it worked and the pane never opening, so say so
+    // the same way a refused Reveal does.
+    const openSettingsPane = (pane: IosSimSettingsPane) => {
+      void openIosSimSettingsPane(pane).catch((error: unknown) => {
+        setMessage(error instanceof Error ? error.message : String(error));
+      });
+    };
     if (action === "open-screen-recording") {
-      void openIosSimSettingsPane("screen-recording").catch(() => {});
+      openSettingsPane("screen-recording");
       return;
     }
     if (action === "open-automation") {
-      void openIosSimSettingsPane("automation").catch(() => {});
+      openSettingsPane("automation");
       return;
     }
     if (action === "relaunch") {
@@ -2666,6 +2731,14 @@ export function ChatIosSimulatorPanel({
                 title="This launch reused the installed app instead of building."
               >
                 prebuilt — changes not included
+              </div>
+            ) : null}
+            {activeSurface === "simulator" && foreignBuildRoot ? (
+              <div
+                className="inline-flex h-6 min-w-0 items-center rounded-full border border-amber-300/24 bg-amber-400/[0.09] px-2 font-mono text-[10px] font-medium text-amber-50/85"
+                title={`Built in ${foreignBuildRoot}, not this project's checkout.`}
+              >
+                <span className="truncate">{abbreviatePathTail(foreignBuildRoot)}</span>
               </div>
             ) : null}
             {activeSurface === "simulator" && hasActiveSession ? (
@@ -2875,12 +2948,12 @@ export function ChatIosSimulatorPanel({
         />
       ) : null}
 
-      {!mediaExpanded && !platformUnsupported && !toolChipsHealthy ? (
+      {!mediaExpanded && !setupBlocked && !toolChipsHealthy ? (
         <IosSimToolChips chips={toolChips} onCopy={(text) => void copyInstallHint(text)} className="shrink-0 px-0.5" />
       ) : null}
 
       <div className="relative min-h-0 flex-1 overflow-hidden rounded border border-white/[0.08] bg-white/[0.02]">
-        {(platformUnsupported || setupBlocked) && mode !== "preview" ? (
+        {setupBlocked && mode !== "preview" ? (
           <IosSimUnsupportedCard chips={toolChips} onCopy={(text) => void copyInstallHint(text)} />
         ) : mode === "preview" ? (
           <div className="relative h-full min-h-[300px]">

@@ -785,46 +785,6 @@ describe("preload OAuth bridge", () => {
     });
   });
 
-  it("rejects a window-source project root that is not the window's bound local project", async () => {
-    const binding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "Project",
-    };
-    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
-      }
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(
-      bridge.iosSimulator.listSimulatorWindowSources({ projectRootPath: "/other" }),
-    ).rejects.toThrow(/bound local project/i);
-
-    expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, expect.anything());
-  });
-
   it("routes local lane creation through the local runtime when a local project runtime is bound", async () => {
     const binding = {
       kind: "local",

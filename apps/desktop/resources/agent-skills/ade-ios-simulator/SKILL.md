@@ -71,7 +71,7 @@ Preview fixtures must not require live sync, keychain, network, push, sockets, o
 
 ## Ownership and recovery
 
-One chat owns a simulator session at a time. A second launch fails with `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`, naming the owning chat and lane, how long ago it claimed, and the `shutdown --force` hint.
+One chat owns a simulator session at a time. A second launch fails with `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`, naming the owning chat and lane and how long ago it claimed. Service errors state the fact and the code only; the CLI adds the command to run next.
 
 - Ownership auto-releases when the owning chat closes. Re-run `launch`.
 - If the owner is still live and the user wants it taken over: `ade --socket ios-sim shutdown --force --text`, or `launch --force`.
@@ -82,8 +82,9 @@ One chat owns a simulator session at a time. A second launch fails with `IOS_SIM
 
 - `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` means the target id came from a different build root than the one now resolved. Re-run `ade --socket ios-sim apps --text` and use a fresh id.
 - `IOS_SIMULATOR_NO_BUILDABLE_TARGET` means nothing buildable resolved under the root and you named no target, so the only candidates were preinstalled apps that would run stale code. The message lists the buildable targets when there are any. Pass `--target-id` / `--bundle-id` only if you deliberately want the installed app.
-- `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` means a launch is already running; the message carries its `launchId`. Wait for it — don't retry in a loop. `shutdown --force` is the escape hatch if it is genuinely wedged.
-- `screenshot --out` resolves relative paths against the build root — for a lane launch that is your lane worktree, not the primary checkout. The returned `filePath` is absolute either way, so Read that rather than reconstructing the path.
+- `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` means a launch is already running; the message carries its `launchId`. Wait for it — don't retry in a loop. `shutdown --force` is the escape hatch if it is genuinely wedged: it releases the launch lock as well as the session.
+- `IOS_SIMULATOR_LANE_NOT_RESOLVED` means the lane you named has no worktree on this machine. It is a hard failure on purpose — the alternative is silently building the primary checkout and reporting someone else's code as verified. Pass `--project-root` with the checkout you want.
+- `screenshot --out` resolves relative paths against the build root — for a lane launch that is your lane worktree, not the primary checkout. The path must stay inside that root; `../` tails and absolute paths elsewhere are rejected. The returned `filePath` is absolute either way, so Read that rather than reconstructing the path.
 - `apps` drives project/scheme detection. If it does not find your app, re-run it and report the selected project, scheme, and build output — do not work around it with symlink projects, fake schemes, or repo-layout shims.
 - `preview-current` / `preview-match` returning `no-context` means nothing on screen is source-backed. Run `snapshot`, `select` a source-backed element, or pass `--source` / `--line`.
 - On a remote Mac runtime, control and screenshots work; the drawer live view does not — it captures a local desktop window.

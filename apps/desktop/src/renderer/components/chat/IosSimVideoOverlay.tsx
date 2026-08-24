@@ -1,6 +1,6 @@
 import { Desktop, DeviceMobile, Lock, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import type { IosSimWindowStateEx } from "./iosSimContracts";
+import type { IosSimulatorWindowState } from "../../../shared/types";
 
 export type IosSimBlockerAction =
   | "open-screen-recording"
@@ -31,7 +31,7 @@ export type IosSimBlocker = {
 export type IosSimLiveStatus = "starting" | "reconnecting" | "active" | "error";
 
 export type ResolveIosSimBlockerInput = {
-  windowState: IosSimWindowStateEx | null;
+  windowState: IosSimulatorWindowState | null;
   liveStatus: IosSimLiveStatus | null;
   liveError: string | null;
   /** Stream claims active but no new frame arrived inside the watchdog window. */
@@ -50,12 +50,15 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
   const issue = windowState?.issue ?? null;
   const message = windowState?.message?.trim() || null;
 
+  // Every window issue already carries the host's own one-line reason. Use it
+  // verbatim rather than restating it here: two copies of the same sentence
+  // drift, and the host's is the one that knows what actually happened.
   if (issue === "screen-recording-permission") {
     return {
       kind: "screen-recording-permission",
       tone: "permission",
       label: "Screen Recording",
-      detail: message ?? "ADE can't see the simulator window.",
+      detail: message,
       action: "open-screen-recording",
       actionLabel: "Open Settings",
       spinner: false,
@@ -66,7 +69,7 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
       kind: "automation-denied",
       tone: "permission",
       label: "Automation",
-      detail: message ?? "ADE can't control Simulator.",
+      detail: message,
       action: "open-automation",
       actionLabel: "Open Settings",
       spinner: false,
@@ -77,7 +80,7 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
       kind: "not-running",
       tone: "warn",
       label: "Simulator not running",
-      detail: null,
+      detail: message,
       action: "relaunch",
       actionLabel: "Relaunch",
       spinner: false,
@@ -88,7 +91,7 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
       kind: "no-window",
       tone: "warn",
       label: "No simulator window",
-      detail: null,
+      detail: message,
       action: "relaunch",
       actionLabel: "Relaunch",
       spinner: false,
@@ -100,7 +103,8 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
       tone: "warn",
       label: issue === "minimized" ? "Simulator minimized" : "Simulator hidden",
       // A refused Reveal must say why; silence here reads as "nothing happened".
-      detail: revealError ?? null,
+      // Until one is refused, the host's own line explains the state.
+      detail: revealError ?? message,
       action: "reveal",
       actionLabel: "Reveal",
       spinner: false,

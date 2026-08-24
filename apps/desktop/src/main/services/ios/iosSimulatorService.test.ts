@@ -7,12 +7,16 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   __testSetIosSimulatorProcessHooks,
   createIosSimulatorService,
+  IDB_COMPANION_REGISTRY_PATH,
   IosSimulatorOwnedBySessionError,
   parseXcodePreviewWindows,
   resolveIosSimulatorStreamBackend,
   shouldOpenSimulatorAppForLaunch,
 } from "./iosSimulatorService";
-import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE } from "../../../shared/types/iosSimulator";
+import {
+  IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
+  IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
+} from "../../../shared/types/iosSimulator";
 import type { IosSimulatorEventPayload } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 
@@ -273,6 +277,10 @@ describe("iosSimulatorService single-owner lock contract", () => {
     const service = createIosSimulatorService({
       projectRoot: os.tmpdir(),
       logger: noopLogger,
+      // Every lane here resolves to the same root: this test is about claiming,
+      // not about build roots, but a named lane must always resolve to
+      // something or the launch is rejected outright.
+      resolveLaneWorktreePath: () => os.tmpdir(),
       onEvent: (payload) => events.push(payload),
     });
 
@@ -919,6 +927,42 @@ describe("iosSimulatorService lane-correct build root", () => {
     }
   });
 
+  it("refuses to fall back to the primary checkout when a named lane does not resolve", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-lane-unresolved-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run, builds } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: (laneId) => (laneId === "lane-known" ? projectRoot : null),
+    });
+
+    try {
+      // Silently building `projectRoot` here is the whole bug: the agent asked
+      // for lane-ghost's tree and would have been told its unrelated code built
+      // and launched fine.
+      const error = await service.launch({ laneId: "lane-ghost", build: true })
+        .then(() => null, (rejection: unknown) => rejection as Error);
+      expect(error?.message).toContain(IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE);
+      expect(error?.message).toContain("lane-ghost");
+      expect(error?.message).toContain("--project-root");
+      expect(builds).toHaveLength(0);
+
+      // An explicit root is the documented escape hatch and outranks the lane,
+      // so it still works even when the lane itself is unresolvable.
+      const rescued = await service.launch({ laneId: "lane-ghost", projectRoot, build: true });
+      expect(rescued.buildRoot).toBe(projectRoot);
+      expect(builds[0]?.cwd).toBe(projectRoot);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("prefers an explicit projectRoot over the caller's laneId", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-lane-override-`);
@@ -1075,20 +1119,78 @@ describe("iosSimulatorService launch concurrency and ownership", () => {
     }
   });
 
+  it("clears the launch lock on a force shutdown so the escape hatch actually works", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-force-unlock-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    let markBuildStarted!: () => void;
+    const buildStarted = new Promise<void>((resolve) => { markBuildStarted = resolve; });
+    let releaseBuild!: () => void;
+    const buildRelease = new Promise<void>((resolve) => { releaseBuild = resolve; });
+    let firstBuild = true;
+    const { run } = simulatorRunMock({
+      onBuild: async () => {
+        if (!firstBuild) return;
+        firstBuild = false;
+        markBuildStarted();
+        await buildRelease;
+      },
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      const wedged = service.launch({ projectRoot, build: true }).catch(() => null);
+      await buildStarted;
+      // `shutdown --force` is what every error message and doc points at for a
+      // wedged launch. Before this it cleared the session but not the launch
+      // lock, so the very next launch failed IOS_SIMULATOR_LAUNCH_IN_PROGRESS
+      // with no way out short of restarting ADE.
+      await service.shutdown({ force: true });
+      await expect(service.launch({ projectRoot, build: true })).resolves.toMatchObject({
+        bundleId: "com.prox.app",
+      });
+      releaseBuild();
+      // The superseded launch must not publish its session over the new one.
+      await wedged;
+      expect((await service.getStatus()).activeSession).toMatchObject({ bundleId: "com.prox.app" });
+    } finally {
+      releaseBuild();
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("makes an anonymous caller pass force before taking a chat-owned simulator", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-anon-takeover-`);
     writeMinimalXcodeProject(projectRoot, "Prox");
     const { run } = simulatorRunMock();
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
-    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => projectRoot,
+    });
 
     try {
-      await service.launch({ projectRoot, build: true, chatSessionId: "chat-A", laneId: "lane-A" });
-      await expect(service.launch({ projectRoot, build: true }))
-        .rejects.toThrow(new RegExp(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE));
-      await expect(service.launch({ projectRoot, build: true })).rejects.toThrow(/lane-A/);
-      await expect(service.launch({ projectRoot, build: true })).rejects.toThrow(/shutdown --force/);
+      await service.launch({
+        projectRoot,
+        build: true,
+        chatSessionId: "chat-A",
+        laneId: "lane-A",
+      });
+      const denied = await service.launch({ projectRoot, build: true })
+        .then(() => null, (error: unknown) => error as Error);
+      expect(denied?.message).toContain(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE);
+      // The owner facts stay in the service message; the "run this next" half
+      // belongs to the CLI's own hint, keyed off the code, because the drawer
+      // and the iOS app read this same string and cannot run a shell command.
+      expect(denied?.message).toContain("chat-A");
+      expect(denied?.message).toContain("lane-A");
+      expect(denied?.message).not.toContain("ade ios-sim");
       await expect(service.launch({ projectRoot, build: true, force: true })).resolves.toMatchObject({
         chatSessionId: null,
       });
@@ -1120,6 +1222,12 @@ describe("iosSimulatorService launch concurrency and ownership", () => {
       // takeOver never applies to detach: a third chat still cannot free it.
       expect(() => service.attachToChatSession(null, "chat-C", { takeOver: true }))
         .toThrow(new RegExp(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE));
+      // takeOver adopts ownership for the CALLER only. chat-C handing the
+      // simulator to chat-D is a transfer between two chats that neither owns
+      // it nor is asked for, so it falls back to the normal owner guard.
+      expect(() => service.attachToChatSession("chat-D", "chat-C", { takeOver: true }))
+        .toThrow(new RegExp(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE));
+      expect((await service.getStatus()).activeSession).toMatchObject({ chatSessionId: "chat-B" });
     } finally {
       service.dispose();
       fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -1151,6 +1259,88 @@ describe("iosSimulatorService launch concurrency and ownership", () => {
   });
 });
 
+describe("iosSimulatorService idb companion registry", () => {
+  const restoreRegistry = () => {
+    fs.rmSync(IDB_COMPANION_REGISTRY_PATH, { force: true });
+  };
+
+  it("sweeps only companions whose owning ADE process is gone", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    // A pid this test can be sure is dead: 2^22 is above every default
+    // pid_max, so nothing can be occupying it.
+    const deadOwnerPid = 4_194_304;
+    fs.writeFileSync(IDB_COMPANION_REGISTRY_PATH, JSON.stringify({
+      "901": { udid: "device-1", startedAt: new Date().toISOString(), ownerPid: process.pid },
+      "902": { udid: "device-2", startedAt: new Date().toISOString(), ownerPid: deadOwnerPid },
+      // Written by a build that predates ownerPid; treated as an orphan, which
+      // is the old behaviour and the safe reading for a since-dead writer.
+      "903": { udid: "device-3", startedAt: new Date().toISOString() },
+    }), "utf8");
+
+    const psCalls: string[][] = [];
+    let markSwept!: () => void;
+    const swept = new Promise<void>((resolve) => { markSwept = resolve; });
+    const run = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "ps") {
+        psCalls.push(commandArgs);
+        markSwept();
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      await swept;
+      // 901 belongs to this very process, which is very much alive: a second
+      // ADE (or the brain daemon beside the app) sweeping it killed the taps
+      // and typing of the process still driving that companion.
+      const pidArg = psCalls[0]?.[psCalls[0].length - 1] ?? "";
+      expect(pidArg.split(",").sort()).toEqual(["902", "903"]);
+      expect(pidArg).not.toContain("901");
+    } finally {
+      service.dispose();
+      restoreHooks();
+      restoreRegistry();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("rewrites the registry atomically and owner-readable only", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    fs.writeFileSync(IDB_COMPANION_REGISTRY_PATH, JSON.stringify({
+      "904": { udid: "device-4", startedAt: new Date().toISOString(), ownerPid: 4_194_305 },
+    }), "utf8");
+
+    let markSwept!: () => void;
+    const swept = new Promise<void>((resolve) => { markSwept = resolve; });
+    const run = vi.fn(async (command: string) => {
+      if (command === "ps") markSwept();
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      await swept;
+      // The sweep forgets what it reaped, which is the rewrite path.
+      await vi.waitFor(() => {
+        expect(JSON.parse(fs.readFileSync(IDB_COMPANION_REGISTRY_PATH, "utf8"))).toEqual({});
+      });
+      // tmpdir is world-writable and shared between accounts, so the file that
+      // names pids ADE will SIGKILL must not be readable or writable by others.
+      expect(fs.statSync(IDB_COMPANION_REGISTRY_PATH).mode & 0o777).toBe(0o600);
+      // No temp file survives the rename.
+      expect(fs.existsSync(`${IDB_COMPANION_REGISTRY_PATH}.${process.pid}.tmp`)).toBe(false);
+    } finally {
+      service.dispose();
+      restoreHooks();
+      restoreRegistry();
+      platformSpy.mockRestore();
+    }
+  });
+});
+
 describe("iosSimulatorService screenshots and platform guards", () => {
   it("writes the screenshot to a readable file under the build root", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
@@ -1169,6 +1359,76 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       const custom = await service.screenshot({ projectRoot, outPath: explicit });
       expect(custom.filePath).toBe(explicit);
       expect(fs.existsSync(explicit)).toBe(true);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("keeps --out inside the build root", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const parent = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-out-containment-`);
+    const projectRoot = path.join(parent, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      // `--out` arrives from agent tool calls and from the CLI, so a traversal
+      // tail or a bare absolute path would let a screenshot overwrite anything
+      // the ADE process can write.
+      const escape = path.join(parent, "outside.png");
+      await expect(service.screenshot({ projectRoot, outPath: "../outside.png" }))
+        .rejects.toThrow(/--out must stay within the build root/);
+      expect(fs.existsSync(escape)).toBe(false);
+      await expect(service.screenshot({ projectRoot, outPath: escape }))
+        .rejects.toThrow(/--out must stay within the build root/);
+      expect(fs.existsSync(escape)).toBe(false);
+
+      // An absolute path that genuinely is inside the root stays allowed.
+      const inside = path.join(projectRoot, "proof", "shot.png");
+      const captured = await service.screenshot({ projectRoot, outPath: inside });
+      expect(captured.filePath).toBe(inside);
+      expect(fs.existsSync(inside)).toBe(true);
+    } finally {
+      service.dispose();
+      fs.rmSync(parent, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("lets an explicit caller lane outrank the active session's root", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-scope-precedence-`);
+    const laneB = path.join(projectRoot, ".ade", "worktrees", "lane-B");
+    fs.mkdirSync(laneB, { recursive: true });
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: (laneId) => (laneId === "lane-B" ? laneB : null),
+    });
+
+    try {
+      // The running session is pinned to root A (it carries a projectRoot).
+      await service.launch({ projectRoot, build: true });
+      expect((await service.getStatus()).activeSession).toMatchObject({ projectRoot });
+
+      // Merging the session into the caller's scope let session.projectRoot win
+      // over an explicitly named lane, so `--lane B` captured root A's tree.
+      const shot = await service.screenshot({ laneId: "lane-B" });
+      expect(shot.filePath.startsWith(laneB)).toBe(true);
+
+      // With neither field supplied the session is still the fallback.
+      const fallback = await service.screenshot({});
+      expect(fallback.filePath.startsWith(projectRoot)).toBe(true);
+      expect(fallback.filePath.startsWith(laneB)).toBe(false);
     } finally {
       service.dispose();
       fs.rmSync(projectRoot, { recursive: true, force: true });

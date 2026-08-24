@@ -54,14 +54,17 @@ import type {
   IosSimulatorStatus,
 } from "../../../shared/types";
 import {
+  IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../../shared/types/iosSimulator";
+import { abbreviatePathTail } from "../../../shared/pathDisplay";
 import { commandExists } from "../ai/utils";
 import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
+import { isPathInside } from "../shared/pathCompare";
 import { isRecord } from "../shared/utils";
 
 const execFile = promisify(execFileCallback);
@@ -87,10 +90,29 @@ const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
 const MACOS_ONLY_MESSAGE = "iOS Simulator control is only available on macOS.";
 const SCREENSHOT_CACHE_SEGMENTS = [".ade", "cache", "ios-simulator", "screenshots"] as const;
 const SCREENSHOT_KEEP_COUNT = 20;
-// idb_companion processes ADE started, recorded across restarts so a crashed
-// ADE can still stop its own leftovers without touching companions started by
-// the user, XcodeBuildMCP, or Maestro.
-const IDB_COMPANION_REGISTRY_PATH = path.join(os.tmpdir(), "ade-ios-simulator-idb-companions.json");
+/**
+ * idb_companion processes ADE started, recorded across restarts so a crashed
+ * ADE can still stop its own leftovers without touching companions started by
+ * the user, XcodeBuildMCP, or Maestro.
+ *
+ * The filename carries the OS username because `os.tmpdir()` is world-writable
+ * and shared between accounts on a multi-user Mac: one shared file let user B's
+ * ADE read user A's pids, and a hostile local user could seed it with arbitrary
+ * pids to be SIGKILLed. Per-user naming plus the 0o600 mode on write closes
+ * both. (An ADE-owned state dir would be better still, but nothing on this
+ * service's args or imports reaches one.)
+ */
+export const IDB_COMPANION_REGISTRY_PATH = path.join(
+  os.tmpdir(),
+  `ade-ios-simulator-idb-companions-${(() => {
+    try {
+      return os.userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_") || "unknown";
+    } catch {
+      // userInfo throws when the uid has no passwd entry (some containers).
+      return "unknown";
+    }
+  })()}.json`,
+);
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
@@ -107,6 +129,15 @@ function describeClaimAge(claimedAt: string | null | undefined): string | null {
   return `${Math.round(minutes / 60)}h ago`;
 }
 
+/**
+ * Every error below states the FACT and the CODE and stops there.
+ *
+ * These messages are read by the drawer, the daemon action log, the iOS app,
+ * and the CLI, and only the CLI knows the reader is at a terminal — so the
+ * "now run `ade ios-sim ...`" half lives in `iosSimulatorErrorHint` in
+ * apps/ade-cli/src/cli.ts, keyed off the code. Embedding a command here made
+ * every other surface print a shell line its user could not run.
+ */
 export class IosSimulatorOwnedBySessionError extends Error {
   readonly code: typeof IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE = IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE;
   readonly currentChatSessionId: string | null;
@@ -120,7 +151,6 @@ export class IosSimulatorOwnedBySessionError extends Error {
       currentSession?.laneId ? ` on lane ${currentSession.laneId}` : "",
       age ? ` (claimed ${age})` : "",
       ".",
-      " Wait for that chat to finish, or take it over with `ade ios-sim shutdown --force` and launch again.",
     ].join(""));
     this.name = "IosSimulatorOwnedBySessionError";
     this.currentChatSessionId = owner;
@@ -133,7 +163,7 @@ export class IosSimulatorLaunchInProgressError extends Error {
   readonly launchId: string;
 
   constructor(launchId: string) {
-    super(`${IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE}: an iOS simulator launch (${launchId}) is already running. Wait for it to report ready, or run \`ade ios-sim shutdown --force\` first.`);
+    super(`${IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE}: an iOS simulator launch (${launchId}) is already running.`);
     this.name = "IosSimulatorLaunchInProgressError";
     this.launchId = launchId;
   }
@@ -143,8 +173,24 @@ export class IosSimulatorTargetRootMismatchError extends Error {
   readonly code: typeof IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE = IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE;
 
   constructor(detail: string) {
-    super(`${IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE}: ${detail} Re-run the launch target listing for this root and launch with an id from that list.`);
+    super(`${IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE}: ${detail}`);
     this.name = "IosSimulatorTargetRootMismatchError";
+  }
+}
+
+/**
+ * A lane was named but no worktree resolved for it. Falling back to the primary
+ * checkout builds and screenshots code the lane agent never wrote, and every
+ * assertion downstream passes against the wrong tree — so this is a hard stop.
+ */
+export class IosSimulatorLaneUnresolvedError extends Error {
+  readonly code: typeof IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE = IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE;
+  readonly laneId: string;
+
+  constructor(laneId: string) {
+    super(`${IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE}: no worktree resolved for lane ${laneId}, so there is no build root to use. Pass an explicit --project-root for the checkout you want.`);
+    this.name = "IosSimulatorLaneUnresolvedError";
+    this.laneId = laneId;
   }
 }
 
@@ -575,30 +621,88 @@ function objectFromMcpResult(result: unknown): Record<string, unknown> {
   return { message: text };
 }
 
-type IdbCompanionRegistry = Record<string, { udid: string | null; startedAt: string }>;
+type IdbCompanionRegistryEntry = {
+  udid: string | null;
+  startedAt: string;
+  /**
+   * The ADE process that started this companion. The startup sweep only reaps
+   * entries whose owner is gone: several ADE processes (the app, the brain
+   * daemon, a dev instance) share one registry file, and the old owner-less
+   * sweep meant every new process SIGKILLed the live companions of every other
+   * one, dropping their taps and typing mid-session.
+   */
+  ownerPid?: number | null;
+};
+
+type IdbCompanionRegistry = Record<string, IdbCompanionRegistryEntry>;
 
 function readIdbCompanionRegistry(): IdbCompanionRegistry {
   try {
     const parsed = JSON.parse(fs.readFileSync(IDB_COMPANION_REGISTRY_PATH, "utf8")) as unknown;
-    return isRecord(parsed) ? parsed as IdbCompanionRegistry : {};
+    if (!isRecord(parsed)) return {};
+    const registry: IdbCompanionRegistry = {};
+    for (const [pid, entry] of Object.entries(parsed)) {
+      if (!isRecord(entry)) continue;
+      registry[pid] = {
+        udid: typeof entry.udid === "string" ? entry.udid : null,
+        startedAt: typeof entry.startedAt === "string" ? entry.startedAt : nowIso(),
+        ownerPid: typeof entry.ownerPid === "number" && Number.isFinite(entry.ownerPid) ? entry.ownerPid : null,
+      };
+    }
+    return registry;
   } catch {
     return {};
   }
 }
 
 function writeIdbCompanionRegistry(registry: IdbCompanionRegistry): void {
+  // Write-then-rename: a plain writeFileSync leaves a truncated file behind if
+  // ADE is killed mid-write, and the next startup then parses nothing and
+  // forgets every companion it owns. The temp file carries the pid so two ADE
+  // processes racing here never share one.
+  const tempPath = `${IDB_COMPANION_REGISTRY_PATH}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(IDB_COMPANION_REGISTRY_PATH, JSON.stringify(registry), "utf8");
+    fs.writeFileSync(tempPath, JSON.stringify(registry), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tempPath, IDB_COMPANION_REGISTRY_PATH);
   } catch {
     // The registry is an optimisation for cross-restart cleanup, never a
     // correctness requirement.
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Nothing to clean up.
+    }
   }
+}
+
+/** True while the process exists and this user may signal it. */
+function processIsAlive(pid: number | null | undefined): boolean {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the pid exists but belongs to another user — still alive.
+    return (error as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+/**
+ * Companions from the registry whose owning ADE process is gone. Entries with
+ * no recorded owner predate this field and are treated as orphans, which is the
+ * old behaviour and the safe reading for a file written by a since-dead build.
+ */
+function readLeakedIdbCompanionPids(): number[] {
+  return Object.entries(readIdbCompanionRegistry())
+    .filter(([, entry]) => !processIsAlive(entry.ownerPid))
+    .map(([pid]) => Number(pid))
+    .filter((pid) => Number.isFinite(pid) && pid > 0);
 }
 
 function recordIdbCompanionPid(pid: number, udid: string | null): void {
   if (!Number.isFinite(pid) || pid <= 0) return;
   const registry = readIdbCompanionRegistry();
-  registry[String(pid)] = { udid, startedAt: nowIso() };
+  registry[String(pid)] = { udid, startedAt: nowIso(), ownerPid: process.pid };
   writeIdbCompanionRegistry(registry);
 }
 
@@ -1825,23 +1929,12 @@ async function discoverXcodeProjectPaths(projectRoot: string): Promise<string[]>
   return Array.from(projectPaths);
 }
 
-/** Last two path segments, so progress detail names the root without a full path. */
-function abbreviateRoot(root: string): string {
-  const segments = root.split(path.sep).filter(Boolean);
-  return segments.slice(-2).join(path.sep) || root;
-}
-
-function isPathWithinRoot(root: string, absolutePath: string): boolean {
-  const relative = path.relative(root, absolutePath);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 function targetPathWithinRoot(root: string, target: IosSimulatorLaunchTarget): boolean {
   if (target.kind === "project" && target.projectPath) {
-    return isPathWithinRoot(root, path.resolve(root, target.projectPath));
+    return isPathInside(path.resolve(root, target.projectPath), root);
   }
   if (target.kind === "built" && target.appBundlePath) {
-    return isPathWithinRoot(root, path.resolve(root, target.appBundlePath));
+    return isPathInside(path.resolve(root, target.appBundlePath), root);
   }
   return true;
 }
@@ -1885,12 +1978,12 @@ function assertTargetIdWithinRoot(targetIdValue: string, projectRoot: string): v
   const parts = decodeTargetId(targetIdValue);
   if (parts[0] === "project" && parts[1]) {
     const absolute = path.resolve(projectRoot, parts[1]);
-    if (!isPathWithinRoot(projectRoot, absolute)) {
+    if (!isPathInside(absolute, projectRoot)) {
       throw new IosSimulatorTargetRootMismatchError(`launch target project ${parts[1]} is outside the build root ${projectRoot}.`);
     }
     return;
   }
-  if (parts[0] === "built" && parts[1] && path.isAbsolute(parts[1]) && !isPathWithinRoot(projectRoot, parts[1])) {
+  if (parts[0] === "built" && parts[1] && path.isAbsolute(parts[1]) && !isPathInside(parts[1], projectRoot)) {
     throw new IosSimulatorTargetRootMismatchError(`launch target app bundle ${parts[1]} was built under a different root than ${projectRoot}.`);
   }
 }
@@ -1955,9 +2048,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   // One sweep at construction, for companions a previous ADE process left
-  // behind. It never runs on the status path: that path is hit every ~500ms
-  // while the drawer is open.
-  const leakedCompanionPids = Object.keys(readIdbCompanionRegistry()).map(Number);
+  // behind — only those whose owning process is gone, so a second ADE (or the
+  // brain daemon alongside the app) never kills a live companion out from under
+  // the process still using it. It never runs on the status path: that path is
+  // hit every ~500ms while the drawer is open.
+  const leakedCompanionPids = readLeakedIdbCompanionPids();
   if (leakedCompanionPids.length) {
     void stopTrackedIdbCompanions(leakedCompanionPids).then((stopped) => {
       if (stopped > 0) {
@@ -2104,7 +2199,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     status: IosSimulatorLaunchStepStatus,
     message: string,
     detail?: string | null,
-    extra: Partial<Pick<IosSimulatorLaunchProgress, "deviceUdid" | "targetId">> = {},
+    extra: Partial<Pick<IosSimulatorLaunchProgress, "deviceUdid" | "targetId" | "buildRoot">> = {},
   ): IosSimulatorLaunchProgress => {
     const progress: IosSimulatorLaunchProgress = {
       launchId,
@@ -2114,6 +2209,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       detail: detail ?? null,
       deviceUdid: extra.deviceUdid ?? null,
       targetId: extra.targetId ?? null,
+      buildRoot: extra.buildRoot ?? null,
       updatedAt: nowIso(),
     };
     emit({ type: "launch-progress", progress });
@@ -2131,21 +2227,30 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return resolved;
   };
 
+  /**
+   * Resolves a lane to its worktree, or throws. Returns null only for "no lane
+   * was named" — a named-but-unresolvable lane is an error, never a fallback:
+   * quietly returning the primary checkout is how a lane agent builds and
+   * screenshots code it never wrote and reports the result as verified.
+   */
   const resolveLaneRoot = async (laneId?: string | null): Promise<string | null> => {
     const trimmed = laneId?.trim();
-    if (!trimmed || !args.resolveLaneWorktreePath) return null;
+    if (!trimmed) return null;
+    if (!args.resolveLaneWorktreePath) throw new IosSimulatorLaneUnresolvedError(trimmed);
+    let worktreePath: string | undefined;
     try {
-      const worktreePath = (await args.resolveLaneWorktreePath(trimmed))?.trim();
-      if (!worktreePath) return null;
-      const resolved = path.resolve(worktreePath);
-      return fs.existsSync(resolved) ? resolved : null;
+      worktreePath = (await args.resolveLaneWorktreePath(trimmed))?.trim();
     } catch (error) {
       args.logger.debug("ios_simulator.lane_worktree_resolve_failed", {
         laneId: trimmed,
         error: error instanceof Error ? error.message : String(error),
       });
-      return null;
+      throw new IosSimulatorLaneUnresolvedError(trimmed);
     }
+    if (!worktreePath) throw new IosSimulatorLaneUnresolvedError(trimmed);
+    const resolved = path.resolve(worktreePath);
+    if (!fs.existsSync(resolved)) throw new IosSimulatorLaneUnresolvedError(trimmed);
+    return resolved;
   };
 
   /**
@@ -2159,6 +2264,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (explicit) return resolveProjectRoot(explicit);
     const laneRoot = await resolveLaneRoot(scope.laneId);
     return laneRoot ?? resolveProjectRoot(null);
+  };
+
+  /**
+   * Same precedence, plus the active session as the *last* resort.
+   *
+   * The session fallback belongs after the caller's own scope, not merged into
+   * it: `{ projectRoot: arg.projectRoot ?? session.projectRoot, laneId: ... }`
+   * lets a session that carries a projectRoot beat a caller who explicitly
+   * named a different lane, so `screenshot --lane B` captured lane A's build
+   * root. Either caller field present means the caller has said which tree they
+   * mean, and the session is ignored entirely.
+   */
+  const resolveScopedRootForSession = async (scope: RootScope = {}): Promise<string> => {
+    const callerScoped = Boolean(scope.projectRoot?.trim() || scope.laneId?.trim());
+    if (callerScoped) return resolveScopedRoot(scope);
+    return resolveScopedRoot({
+      projectRoot: activeSession?.projectRoot,
+      laneId: activeSession?.laneId,
+    });
   };
 
   const setStreamStopped = (error: string | null = null): IosSimulatorStreamStatus => {
@@ -3178,7 +3302,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           ? ` Buildable targets: ${buildable.map((candidate) => `${candidate.name} (${candidate.id})`).join(", ")}.`
           : " Add an application target to a root-level .xcodeproj or apps/*/*.xcodeproj project.",
         installedOnly.length
-          ? ` Only previously installed apps are available (${installedOnly.map((candidate) => candidate.name).join(", ")}); launching one would run code that predates your changes. Pass --target-id or --bundle-id to use one anyway.`
+          ? ` Only previously installed apps are available (${installedOnly.map((candidate) => candidate.name).join(", ")}); launching one would run code that predates your changes.`
           : "",
       ].join(""));
     }
@@ -3282,9 +3406,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // another chat's simulator binding. The caller's own chat id is supplied
     // via callerChatSessionId; for attach calls it is the same as the new
     // chatSessionId, for detach calls (chatSessionId === null) it identifies
-    // the chat requesting the detach. takeOver transfers ownership to a real
-    // chat without a shutdown/rebuild; it never applies to detach requests.
-    const takeOver = options.takeOver === true && Boolean(chatSessionId);
+    // the chat requesting the detach.
+    //
+    // takeOver lets a chat adopt a running session in place, skipping the
+    // shutdown/rebuild — but only FOR ITSELF. Without the identity check any
+    // caller could hand the simulator to a third chat it does not own, which is
+    // a full ownership transfer disguised as an attach. So the bypass needs
+    // both ids present and equal; it never applies to detach (chatSessionId
+    // null), and a takeOver naming someone else falls through to the normal
+    // owner guard below.
+    const takeOver = options.takeOver === true
+      && Boolean(chatSessionId)
+      && Boolean(callerChatSessionId)
+      && chatSessionId === callerChatSessionId;
     if (
       !takeOver
       && activeSession.chatSessionId
@@ -3355,12 +3489,36 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       let preflightTarget: ResolvedLaunchTarget | null = null;
       if (needsForceTakeover) {
         preflightDevice = await resolveDevice(launchArgs.deviceUdid);
-        preflightTarget = await resolveLaunchTarget(launchArgs, preflightDevice.udid, projectRoot);
+        try {
+          preflightTarget = await resolveLaunchTarget(launchArgs, preflightDevice.udid, projectRoot);
+        } catch (error) {
+          // Installed targets come from `simctl listapps`, which needs a booted
+          // device — so on a cold device the only preflight verdict available is
+          // "nothing buildable", which is exactly the case that can flip once the
+          // boot below finishes. Defer to the post-boot resolution rather than
+          // refusing a launch that would have worked. Any other failure, and any
+          // failure on an already-booted device, is real: rethrow it before the
+          // takeover evicts the running session.
+          const deferrable = error instanceof IosSimulatorNoBuildableTargetError
+            && preflightDevice.state !== "Booted";
+          if (!deferrable) throw error;
+          args.logger.debug("ios_simulator.force_launch_preflight_target_deferred", {
+            deviceUdid: preflightDevice.udid,
+            deviceState: preflightDevice.state,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         await shutdown({ force: true }).catch((error) => {
           args.logger.warn("ios_simulator.shutdown_during_force_launch_failed", {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+        // That shutdown releases the launch lock (its whole point as an escape
+        // hatch), but this launch is the one holding it and is still running —
+        // so it takes the lock straight back. Without this the supersede guard
+        // below sees a cleared id and rejects the very launch that asked for
+        // the takeover.
+        activeLaunchId = launchId;
       }
       emitLaunchProgress(launchId, "resolve-device", "running", "Finding installed simulator device...");
       const device = preflightDevice ?? await resolveDevice(launchArgs.deviceUdid);
@@ -3399,10 +3557,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // than the caller's edits. Say so instead of reporting a clean build.
       const usedInstalledBinary = !target.shouldBuild;
       const staleBinaryDetail = "previously installed build — current code changes are not included";
+      // buildRoot rides every build-app step as data. The stepper UI used to
+      // recover it by regexing "root <tail>" back out of this detail string,
+      // which broke the moment the copy changed.
+      const buildStepExtra = { deviceUdid: device.udid, targetId: target.target.id, buildRoot: projectRoot };
       if (target.shouldBuild) {
-        emitLaunchProgress(launchId, "build-app", "running", `Building iOS app in ${abbreviateRoot(projectRoot)}...`, target.target.detail, { deviceUdid: device.udid, targetId: target.target.id });
+        emitLaunchProgress(launchId, "build-app", "running", `Building iOS app in ${abbreviatePathTail(projectRoot)}...`, target.target.detail, buildStepExtra);
       } else {
-        emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", staleBinaryDetail, { deviceUdid: device.udid, targetId: target.target.id });
+        emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", staleBinaryDetail, buildStepExtra);
       }
       const appBundle = target.shouldBuild || target.shouldInstall
         ? await buildProjectApp(target, device, projectRoot)
@@ -3413,9 +3575,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         target.shouldBuild ? "complete" : "skipped",
         target.shouldBuild ? "Build complete." : "Using a previously built app.",
         target.shouldBuild
-          ? [relativeToRoot(projectRoot, appBundle ?? projectRoot), `root ${abbreviateRoot(projectRoot)}`].join(" · ")
+          ? [relativeToRoot(projectRoot, appBundle ?? projectRoot), `root ${abbreviatePathTail(projectRoot)}`].join(" · ")
           : staleBinaryDetail,
-        { deviceUdid: device.udid, targetId: target.target.id },
+        buildStepExtra,
       );
 
       const bundleId = target.bundleId
@@ -3454,6 +3616,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         bridgeUrl: null,
         startedAt,
         claimedAt: launchArgs.laneId || launchArgs.chatSessionId ? startedAt : null,
+        // Carried on the session, not just the launch result, so a later
+        // `getStatus()` or a `session-started` subscriber can still say which
+        // tree is running and whether it was actually compiled. Only the direct
+        // caller of `launch` ever saw those two facts before.
+        buildRoot: projectRoot,
+        usedInstalledBinary,
       };
       // A launch that was superseded (force takeover, dispose) must not publish
       // its session over the newer one.
@@ -3526,10 +3694,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const screenshot = async (arg: IosSimulatorScreenshotArgs = {}): Promise<IosSimulatorScreenshot> => {
     assertDarwin();
     const device = await resolveDevice(arg.deviceUdid ?? activeSession?.deviceUdid);
-    const root = await resolveScopedRoot({
-      projectRoot: arg.projectRoot ?? activeSession?.projectRoot,
-      laneId: arg.laneId ?? activeSession?.laneId,
-    });
+    const root = await resolveScopedRootForSession({ projectRoot: arg.projectRoot, laneId: arg.laneId });
     const requestedOutPath = arg.outPath?.trim();
     // Agents need a file they can read; the data URL alone forces them to
     // shuttle megabytes of base64 through the transcript.
@@ -3537,6 +3702,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const filePath = requestedOutPath
       ? path.resolve(root, requestedOutPath)
       : path.join(cacheDirectory, `shot-${nowIso().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.png`);
+    // `outPath` reaches here from an agent's tool call and from `ade ios-sim
+    // screenshot --out`, so an absolute path or a `../..` tail would otherwise
+    // let a capture write anywhere the ADE process can — over a source file, a
+    // dotfile, or another lane's worktree. Containment is checked after
+    // resolution so both spellings are caught by one test.
+    if (!isPathInside(filePath, root)) {
+      throw new Error(`--out must stay within the build root ${root}. ${filePath} is outside it.`);
+    }
     await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
     await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", filePath], { timeoutMs: 30_000 });
     const buffer = await fs.promises.readFile(filePath);
@@ -3695,9 +3868,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
 
-    const projectRoot = await resolveScopedRoot({
-      projectRoot: snapshotArgs.projectRoot ?? activeSession?.projectRoot,
-      laneId: snapshotArgs.laneId ?? activeSession?.laneId,
+    const projectRoot = await resolveScopedRootForSession({
+      projectRoot: snapshotArgs.projectRoot,
+      laneId: snapshotArgs.laneId,
     }).catch(() => args.projectRoot);
     const baseElements = mergeScreenElements(inspectorElements, accessibilityElements);
     const syntheticElements = synthesizeSwiftUITabBarElements(projectRoot, baseElements);
@@ -3880,6 +4053,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (shutdownArgs.force) {
       await stopTrackedIdbCompanions([...trackedCompanionPids]).catch(() => 0);
       trackedCompanionPids.clear();
+      // Force is the documented escape hatch for a wedged launch, so it has to
+      // release the launch lock too. Without this an in-flight launch that
+      // never returns left `activeLaunchId` set forever and every subsequent
+      // launch failed IOS_SIMULATOR_LAUNCH_IN_PROGRESS — the one error the
+      // user was told force would clear. The supersede guard inside `launch`
+      // stops the abandoned launch from publishing its session afterwards.
+      activeLaunchId = null;
     }
     const released = activeSession !== null;
     activeSession = null;
@@ -4116,7 +4296,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     launch,
     attachToChatSession,
     releaseIfOwnedBy,
-    getCapabilities: currentCapabilities,
     shutdown,
     screenshot,
     getScreenSnapshot,
@@ -4146,7 +4325,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       activeSession = null;
       activeLaunchId = null;
       activeBuildDataPaths.clear();
-        toolAvailabilityCache.clear();
+      toolAvailabilityCache.clear();
       if (xcodeMcpBridge) {
         const bridge = xcodeMcpBridge;
         xcodeMcpBridge = null;

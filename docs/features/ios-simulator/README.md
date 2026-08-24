@@ -22,7 +22,10 @@ the drawer live view, which is a local desktop-window capture.
 Each launched simulator session has one owner chat/lane. A second chat trying
 to launch against an active session receives
 `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`, whose message carries the owning chat
-id and lane, how long ago it claimed, and the `shutdown --force` hint.
+id and lane and how long ago it claimed. Service messages state the fact and
+the code and stop there — the drawer and the iOS app read the same string and
+cannot run a shell command, so the "now run this" half lives in the CLI's own
+hint (`iosSimulatorErrorHint`), keyed off the code.
 Ownership releases automatically when the owning chat closes. An anonymous
 caller cannot evict an owner silently; it must pass `--force`, and
 `launch --force` validates the new target before evicting.
@@ -34,7 +37,11 @@ the primary checkout, so a lane builds and launches its own code. An explicit
 `--project-root` still wins. Target ids are validated against the resolved
 root: an id minted under a different root fails with
 `IOS_SIMULATOR_TARGET_ROOT_MISMATCH`, and the caller re-runs `apps` for a fresh
-id. The resolved root comes back on the launch result as `buildRoot`.
+id. A `--lane` that resolves to no worktree is a hard failure
+(`IOS_SIMULATOR_LANE_NOT_RESOLVED`), never a quiet fall back to the primary
+checkout — that fallback is how a lane agent "verifies" code it never wrote.
+The resolved root comes back on the launch result and on the session as
+`buildRoot`, and on each `build-app` launch-progress step.
 
 ## Source file map
 
@@ -80,7 +87,9 @@ id. The resolved root comes back on the launch result as `buildRoot`.
 4. **Screenshot and proof.** `screenshot` writes a PNG and always returns an
    absolute `filePath` an agent can read (`dataUrl` remains for the renderer).
    `--out <path>` chooses where, resolving relative paths against the build
-   root; with no `--out` the file lands in
+   root. The resolved path must stay **inside** that root — a `../` tail or an
+   absolute path elsewhere is rejected, so a capture can never overwrite a file
+   outside the tree it is proving. With no `--out` the file lands in
    `<buildRoot>/.ade/cache/ios-simulator/screenshots/` and the newest 20 are
    kept. `proof [--caption <text>]` captures a screenshot and attaches it to
    the ADE proof drawer, mirroring `ade browser proof`.
@@ -179,6 +188,9 @@ A stream that reports active but delivers no new frame for ~3s shows a
   selects an installed app deliberately.
 - `IOS_SIMULATOR_LAUNCH_IN_PROGRESS`: a launch is already running; the message
   carries its `launchId`. Wait rather than retrying, or
-  `ade --socket ios-sim shutdown --force --text` if it is wedged.
+  `ade --socket ios-sim shutdown --force --text` if it is wedged — a force
+  shutdown releases the launch lock as well as the session.
+- `IOS_SIMULATOR_LANE_NOT_RESOLVED`: the named lane has no worktree on this
+  machine. Pass `--project-root` with the checkout you actually want built.
 - Target discovery wrong: run `ade --socket ios-sim apps --text` before creating
   schemes or project shims.

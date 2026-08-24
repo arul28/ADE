@@ -20,6 +20,12 @@ export const IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE = "IOS_SIMULATOR_TARGET_ROO
 export const IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE = "IOS_SIMULATOR_LAUNCH_IN_PROGRESS" as const;
 /** Only a previously installed app resolved, and the caller did not ask for it by name. */
 export const IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE = "IOS_SIMULATOR_NO_BUILDABLE_TARGET" as const;
+/**
+ * A laneId was supplied but no worktree could be resolved for it. Silently
+ * falling back to the primary checkout is how a lane agent builds, screenshots,
+ * and "verifies" code it never wrote.
+ */
+export const IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE = "IOS_SIMULATOR_LANE_NOT_RESOLVED" as const;
 
 export type IosSimulatorShutdownArgs = {
   force?: boolean | null;
@@ -134,13 +140,21 @@ export type IosSimulatorSession = {
   bridgeUrl: string | null;
   startedAt: string;
   claimedAt: string | null;
+  /**
+   * Absolute directory xcodebuild ran in. Equals the lane worktree for lane
+   * launches. Optional on the session because a session restored from an older
+   * shape (or observed before a launch completed) has never carried one; the
+   * launch result below narrows it to a required string.
+   */
+  buildRoot?: string | null;
+  /** True when nothing was rebuilt, so the running app can predate the caller's code changes. */
+  usedInstalledBinary?: boolean | null;
 };
 
 export type IosSimulatorLaunchResult = IosSimulatorSession & {
-  /** Absolute directory xcodebuild ran in. Equals the lane worktree for lane launches. */
   buildRoot: string;
-  /** True when nothing was rebuilt, so the running app can predate the caller's code changes. */
   usedInstalledBinary: boolean;
+  /** Launch-only: what the resolved input backend can drive right now. */
   capabilities: IosSimulatorCapabilities;
 };
 
@@ -211,6 +225,36 @@ export type IosSimulatorWindowIssue =
   | "automation-denied"
   | "unknown";
 
+/**
+ * Live-view capture of the real Simulator window depends on two macOS privacy
+ * grants that the app cannot see through `simctl`: Screen Recording (or
+ * `desktopCapturer` hands back black thumbnails) and Automation/System Events
+ * (or every window query and park silently no-ops). Both used to surface as
+ * `issue: "unknown"` with a null message, so the drawer showed a blank live
+ * view and named no blocker — hence the two dedicated `IosSimulatorWindowIssue`
+ * members above and the `permission` hint below.
+ */
+export type IosSimulatorPrivacyPane = "screen-recording" | "automation";
+
+export type IosSimulatorPermissionStatus =
+  | "not-determined"
+  | "granted"
+  | "denied"
+  | "restricted"
+  | "unknown";
+
+export type IosSimulatorWindowPermissionHint = {
+  kind: IosSimulatorPrivacyPane;
+  status: IosSimulatorPermissionStatus;
+  /**
+   * True only when macOS will still show a prompt. Screen Recording is never
+   * requestable from JS (the grant is Settings-only), while an undecided
+   * Automation grant prompts on the first Apple event.
+   */
+  canRequest: boolean;
+  settingsPane: IosSimulatorPrivacyPane;
+};
+
 export type IosSimulatorWindowState = {
   appRunning: boolean;
   visible: boolean | null;
@@ -218,6 +262,26 @@ export type IosSimulatorWindowState = {
   minimizedWindowCount: number | null;
   capturable: boolean | null;
   issue: IosSimulatorWindowIssue | null;
+  message: string | null;
+  /** Which privacy grant is blocking capture, when one is. */
+  permission: IosSimulatorWindowPermissionHint | null;
+};
+
+/**
+ * The window-parking path runs in Electron main, whose own iOS simulator
+ * service never sees a launch that the brain daemon owns — its `activeSession`
+ * is always null. Callers that already hold the runtime session pass it here so
+ * parking keys off the session that actually exists.
+ */
+export type IosSimulatorWindowCaptureSessionHint = {
+  deviceUdid: string;
+  deviceName: string | null;
+};
+
+export type IosSimulatorWindowSourcesResult = {
+  sources: IosSimulatorWindowSource[];
+  windowState: IosSimulatorWindowState | null;
+  /** Short, actionable blocker text. Null when `sources` is non-empty. */
   message: string | null;
 };
 
@@ -378,6 +442,11 @@ export type IosSimulatorLaunchProgress = {
   detail?: string | null;
   deviceUdid?: string | null;
   targetId?: string | null;
+  /**
+   * Absolute build root for the `build-app` step. Carried as data so the
+   * stepper UI never has to parse it back out of `message`/`detail` prose.
+   */
+  buildRoot?: string | null;
   updatedAt: string;
 };
 

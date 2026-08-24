@@ -263,6 +263,7 @@ function installIosSimulatorApi(options: {
       capturable: true,
       issue: null,
       message: null,
+      permission: null,
     }),
     listSimulatorWindowSources: vi.fn().mockResolvedValue({
       sources: options.windowSources ?? [simulatorWindowSource],
@@ -387,6 +388,73 @@ describe("ChatIosSimulatorPanel", () => {
 
     expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
     expect(api.listSimulatorWindowSources).toHaveBeenCalled();
+  });
+
+  // The agent launches, the user opens the drawer afterwards. The panel never
+  // saw the launch return, so the session is the only place the prebuilt flag
+  // exists — and a stale binary silently passing for a verified change is the
+  // exact failure this warning exists to prevent.
+  it("warns that an agent-launched session is running a prebuilt binary", async () => {
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: { ...activeStatus.activeSession!, usedInstalledBinary: true },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/prebuilt — changes not included/i)).toBeTruthy();
+    expect(api.launch).not.toHaveBeenCalled();
+  });
+
+  it("names the build root only when it is not this project's checkout", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: {
+          ...activeStatus.activeSession!,
+          buildRoot: "/Users/me/.ade/worktrees/other-lane",
+        },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("…/worktrees/other-lane")).toBeTruthy();
+  });
+
+  it("stays silent when the build root is this checkout under a /private alias", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        // macOS firmlinks: the same directory, spelled by a different resolver.
+        activeSession: { ...activeStatus.activeSession!, buildRoot: "/private/tmp/project/" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Live");
+    expect(screen.queryByText(/tmp\/project/)).toBeNull();
   });
 
   it("does not attach a live view without an active launch session", async () => {
@@ -565,8 +633,11 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    // A missing required tool takes over the media area; the chip carries the fix.
-    const xcodeChip = (await screen.findAllByRole("button", { name: /Xcode/ }))[0]!;
+    // A missing required tool takes over the media area, and the chip row moves
+    // into that card — so wait for the card before reaching for the chip, or the
+    // click lands on the pre-status row that is about to unmount.
+    await screen.findByText("Simulator unavailable");
+    const xcodeChip = screen.getAllByRole("button", { name: /Xcode/ })[0]!;
     await user.click(xcodeChip);
     const installHint = await screen.findByText("xcode-select --install");
     const copyButton = installHint.parentElement?.querySelector("button");
@@ -1241,6 +1312,7 @@ describe("ChatIosSimulatorPanel", () => {
         capturable: false,
         issue: "minimized",
         message: "The simulator is minimized. Restore it to refresh the live view.",
+        permission: null,
       },
     });
 
@@ -1334,6 +1406,7 @@ describe("ChatIosSimulatorPanel", () => {
         capturable: false,
         issue: "hidden",
         message: "The simulator window is hidden.",
+        permission: null,
       },
       revealResult: { ok: false, message: "Automation is off for ADE." },
     });

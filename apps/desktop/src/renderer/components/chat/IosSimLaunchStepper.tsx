@@ -1,7 +1,8 @@
 import { CheckCircle, Circle, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
 import type { IosSimulatorLaunchProgress } from "../../../shared/types";
+import { abbreviatePathTail } from "../../../shared/pathDisplay";
 import { cn } from "../ui/cn";
-import { formatElapsed, pathTail } from "./iosSimContracts";
+import { formatElapsed } from "./iosSimContracts";
 
 export const IOS_SIM_LAUNCH_STEP_ORDER: IosSimulatorLaunchProgress["step"][] = [
   "resolve-device",
@@ -24,20 +25,6 @@ const STEP_LABEL: Record<string, string> = {
   "launch-app": "Launch",
   ready: "Ready",
 };
-
-/**
- * The build root is only authoritative once the launch resolves, but the whole
- * point of showing it is to catch a wrong-checkout build *while it runs*. The
- * host already names the root in the build step's own copy, so fall back to
- * that mid-flight. Fail-soft: no match just means no chip.
- */
-function buildRootLabel(step: IosSimulatorLaunchProgress, buildRoot: string | null): string | null {
-  if (buildRoot) return pathTail(buildRoot);
-  const running = /Building iOS app in (.+?)\.\.\.\s*$/u.exec(step.message);
-  if (running?.[1]) return running[1];
-  const complete = /root (.+)$/u.exec(step.detail ?? "");
-  return complete?.[1] ?? null;
-}
 
 /** Newest progress row per step for the most recent launch, in canonical order. */
 export function selectLaunchSteps(progress: IosSimulatorLaunchProgress[]): IosSimulatorLaunchProgress[] {
@@ -80,7 +67,11 @@ export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now
           const done = step.status === "complete" || step.status === "skipped";
           const startedAt = Date.parse(step.updatedAt);
           const elapsed = running && Number.isFinite(startedAt) ? formatElapsed(now - startedAt) : null;
-          const buildRootTail = step.step === "build-app" ? buildRootLabel(step, buildRoot) : null;
+          // The build root matters *while the build runs* — a wrong-checkout
+          // build otherwise looks identical to a slow one — so the progress
+          // step carries it, and the resolved launch root is the fallback.
+          const stepBuildRoot = step.step === "build-app" ? step.buildRoot ?? buildRoot : null;
+          const buildRootTail = stepBuildRoot ? abbreviatePathTail(stepBuildRoot) : null;
           return (
             <div key={`${step.launchId}:${step.step}`} className="flex items-start gap-2">
               <div className="flex flex-col items-center self-stretch">
@@ -114,7 +105,7 @@ export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now
                   {buildRootTail ? (
                     <code
                       className="min-w-0 truncate font-mono text-[10px] text-muted-fg/55"
-                      title={buildRoot ?? step.message}
+                      title={stepBuildRoot ?? step.message}
                     >
                       {buildRootTail}
                     </code>

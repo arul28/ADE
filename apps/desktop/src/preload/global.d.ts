@@ -620,6 +620,7 @@ import type {
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
   IosSimulatorScreenshot,
+  IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorShutdownArgs,
@@ -712,8 +713,8 @@ import type {
   IosSimulatorPrivacyPane,
   IosSimulatorWindowCaptureSessionHint,
   IosSimulatorWindowSourcesResult,
-  IosSimulatorWindowStateEx,
-} from "../shared/types/iosSimulatorWindowCapture";
+  IosSimulatorWindowState,
+} from "../shared/types";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   MaintenanceRunReport,
@@ -2014,9 +2015,9 @@ declare global {
         shutdown: (
           args?: IosSimulatorShutdownArgs,
         ) => Promise<IosSimulatorShutdownResult>;
-        screenshot: (args?: {
-          deviceUdid?: string | null;
-        }) => Promise<IosSimulatorScreenshot>;
+        screenshot: (
+          args?: IosSimulatorScreenshotArgs,
+        ) => Promise<IosSimulatorScreenshot>;
         getScreenSnapshot: (
           args?: IosScreenSnapshotArgs,
         ) => Promise<IosScreenSnapshot>;
@@ -2052,9 +2053,8 @@ declare global {
         ) => Promise<IosSimulatorStreamStatus>;
         stopStream: () => Promise<IosSimulatorStreamStatus>;
         getStreamStatus: () => Promise<IosSimulatorStreamStatus>;
-        getSimulatorWindowState: () => Promise<IosSimulatorWindowStateEx>;
+        getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
         listSimulatorWindowSources: (opts?: {
-          projectRootPath?: string | null;
           session?: IosSimulatorWindowCaptureSessionHint | null;
         }) => Promise<IosSimulatorWindowSourcesResult>;
         openSystemSettings: (args: {

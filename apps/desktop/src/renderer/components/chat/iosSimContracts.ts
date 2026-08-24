@@ -5,20 +5,13 @@
  * never reach into `window.ade` shapes directly.
  */
 import type {
-  IosSimulatorCapabilities,
   IosSimulatorLaunchResult,
-  IosSimulatorWindowState,
-} from "../../../shared/types";
-import type {
   IosSimulatorPrivacyPane,
-  IosSimulatorWindowIssueEx,
+  IosSimulatorSession,
   IosSimulatorWindowSourcesResult,
-  IosSimulatorWindowStateEx,
-} from "../../../shared/types/iosSimulatorWindowCapture";
+} from "../../../shared/types";
 
 export type IosSimSettingsPane = IosSimulatorPrivacyPane;
-export type IosSimWindowIssue = IosSimulatorWindowIssueEx;
-export type IosSimWindowStateEx = IosSimulatorWindowStateEx;
 export type IosSimWindowSourcesResult = IosSimulatorWindowSourcesResult;
 
 /** Opens the macOS privacy pane the blocked capability lives in. */
@@ -42,23 +35,11 @@ export async function revealSimulator(): Promise<IosSimRevealResult> {
 }
 
 /**
- * The window-state poll and the window-sources call both return the widened
- * state; `simulatorWindowState` is held as the base type so the two sources
- * agree. Narrow at the point of use.
- */
-export function readWindowState(state: IosSimulatorWindowState | null | undefined): IosSimWindowStateEx | null {
-  return (state as IosSimWindowStateEx | null | undefined) ?? null;
-}
-
-export function readWindowIssue(state: IosSimulatorWindowState | null | undefined): IosSimWindowIssue | null {
-  return readWindowState(state)?.issue ?? null;
-}
-
-/**
- * Passes the runtime session down so the host scores window sources against the
- * device that is actually booted — Electron main's own service sees a null
- * `activeSession` for brain-owned launches, which is what used to park capture
- * on a stale simulator window after a device switch.
+ * Passes the runtime session down as a park/settle trigger: Electron main's own
+ * service sees a null `activeSession` for brain-owned launches, so without this
+ * hint the host never parks the window at all. Scoring the returned sources
+ * against the booted device happens here in the renderer, in
+ * `pickSimulatorWindowSource` — the host does not rank them.
  */
 export async function listWindowSourcesForSession(
   session: { deviceUdid: string; deviceName: string | null } | null,
@@ -66,32 +47,38 @@ export async function listWindowSourcesForSession(
   return window.ade.iosSimulator.listSimulatorWindowSources(session ? { session } : undefined);
 }
 
+/**
+ * What the drawer shows about *which* binary is running: the checkout it was
+ * built from, and whether it was built at all. Deliberately not the capability
+ * matrix — the renderer derives tap/type availability from the tool chips.
+ */
 export type IosSimLaunchExtras = {
   buildRoot: string | null;
-  capabilities: IosSimulatorCapabilities | null;
   usedInstalledBinary: boolean;
 };
 
 export const EMPTY_LAUNCH_EXTRAS: IosSimLaunchExtras = {
   buildRoot: null,
-  capabilities: null,
   usedInstalledBinary: false,
 };
 
-export function readLaunchExtras(result: IosSimulatorLaunchResult | null | undefined): IosSimLaunchExtras {
+/**
+ * Reads the extras off a launch return *or* off the active session.
+ *
+ * The drawer is not always the thing that launched: an agent can launch and the
+ * user opens the drawer afterwards, in which case the session is the only place
+ * these fields exist. Both shapes carry them optionally over the wire, so every
+ * read is defensive — a session from an older host simply reports nothing.
+ */
+export function readLaunchExtras(
+  result: IosSimulatorLaunchResult | IosSimulatorSession | null | undefined,
+): IosSimLaunchExtras {
   if (!result) return EMPTY_LAUNCH_EXTRAS;
+  const buildRoot = (result as { buildRoot?: unknown }).buildRoot;
   return {
-    buildRoot: result.buildRoot.trim() || null,
-    capabilities: result.capabilities,
-    usedInstalledBinary: result.usedInstalledBinary,
+    buildRoot: typeof buildRoot === "string" ? buildRoot.trim() || null : null,
+    usedInstalledBinary: (result as { usedInstalledBinary?: unknown }).usedInstalledBinary === true,
   };
-}
-
-/** `/Users/me/.ade/worktrees/my-lane` -> `…/worktrees/my-lane` */
-export function pathTail(value: string, segments = 2): string {
-  const parts = value.replace(/[\\/]+$/u, "").split(/[\\/]/u).filter(Boolean);
-  if (parts.length <= segments) return parts.join("/");
-  return `…/${parts.slice(-segments).join("/")}`;
 }
 
 /** `73_000` -> `1m 13s`. Compact, no prose. */

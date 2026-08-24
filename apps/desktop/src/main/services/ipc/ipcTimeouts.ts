@@ -29,9 +29,15 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     delete: IPC.lanesDelete,
   },
   ios_simulator: {
+    // A remote runtime builds with the same xcodebuild as a local one, so a
+    // cold launch or preview render needs the same budget whichever runtime
+    // answers it. Without these the remote path fell through to 30s and
+    // reported a timeout while the build was still running.
+    launch: IPC.iosSimulatorLaunch,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
+    renderPreview: IPC.iosSimulatorRenderPreview,
   },
   chat: {
     handoffSession: IPC.agentChatHandoff,
@@ -147,8 +153,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // the page — while the daemon kept scanning for another nine minutes.
     case IPC.usageRefreshHistory:
       return USAGE_REFRESH_HISTORY_TIMEOUT_MS;
+    // A cold iOS launch is a full xcodebuild plus boot, install and launch. The
+    // service's own inner budgets sum to roughly 930s in the worst case, so the
+    // IPC timer has to sit above that or the renderer reports a failure for a
+    // launch that is still compiling — including on the remote-runtime path,
+    // which routes back through this channel via RUNTIME_ACTION_CHANNEL.
     case IPC.iosSimulatorLaunch:
-      return 10 * 60_000;
+      return 17 * 60_000;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
     case IPC.iosSimulatorListLaunchTargets:

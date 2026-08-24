@@ -11252,14 +11252,27 @@ describe("ADE CLI", () => {
           "IOS_SIMULATOR_TARGET_ROOT_MISMATCH: launch target x is outside the build root /tmp/a.",
         ),
       ).toContain("ade ios-sim apps");
-      const busy = iosSimulatorErrorHint(
-        "IOS_SIMULATOR_LAUNCH_IN_PROGRESS: an iOS simulator launch (launch-7) is already running.",
-      );
-      expect(busy).toContain("launch-7");
-      expect(busy).toContain("ade ios-sim shutdown --force");
+      // The service message already carries the launch id; the hint adds only
+      // the command, so it no longer re-extracts the id with a regex over
+      // someone else's prose.
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_LAUNCH_IN_PROGRESS: an iOS simulator launch (launch-7) is already running.",
+        ),
+      ).toContain("ade ios-sim shutdown --force");
       expect(
         iosSimulatorErrorHint("IOS_SIMULATOR_NO_BUILDABLE_TARGET: none under /tmp/a."),
       ).toContain("--target-id");
+      // These two moved here from the service, which now states only the fact
+      // and the code — this layer is the one home for command advice.
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.",
+        ),
+      ).toContain("ade ios-sim shutdown --force");
+      expect(
+        iosSimulatorErrorHint("IOS_SIMULATOR_LANE_NOT_RESOLVED: no worktree resolved for lane lane-x."),
+      ).toContain("--project-root");
       expect(iosSimulatorErrorHint("something else went wrong")).toBeNull();
     });
 

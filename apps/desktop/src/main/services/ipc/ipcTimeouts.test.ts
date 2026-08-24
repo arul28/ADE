@@ -174,7 +174,7 @@ describe("ipcInvokeTimeoutMs", () => {
   });
 
   it("keeps iOS launch on its extended timeout", () => {
-    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorLaunch)).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorLaunch)).toBe(17 * 60_000);
   });
 
   // The brain daemon — not Electron main — owns `ios_simulator.launch` in
@@ -185,6 +185,17 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "launch", args: {} },
     }])).toBe(1_305_000);
+    // A remote runtime runs the same xcodebuild. Before `launch` was mapped in
+    // RUNTIME_ACTION_CHANNEL this fell through to the 30s remote default and
+    // reported a timeout while the build was still going. The service's own
+    // inner budgets sum to ~930s worst case, so the IPC timer must exceed it.
+    const remoteLaunchTimeoutMs = ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "launch", args: {} },
+    }]);
+    expect(remoteLaunchTimeoutMs).toBe(17 * 60_000);
+    expect(remoteLaunchTimeoutMs).toBeGreaterThan(930_000);
   });
 
   it("lets transcription run longer than the default invoke ceiling", () => {
@@ -208,6 +219,13 @@ describe("ipcInvokeTimeoutMs", () => {
       id: "target-1",
       projectId: "project-1",
       request: { domain: "ios_simulator", action: "resolvePreviewMatch", args: {} },
+    }])).toBe(2 * 60_000);
+    // renderPreview compiles the same target as renderCurrentPreview, so the
+    // remote path gets the same budget instead of the 30s default.
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "renderPreview", args: {} },
     }])).toBe(2 * 60_000);
   });
 

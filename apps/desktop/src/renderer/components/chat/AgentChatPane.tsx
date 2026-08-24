@@ -4168,8 +4168,12 @@ export function AgentChatPane({
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
     if (!scopedLaneId) return projectRoot;
-    const lane = lanes.find((entry) => entry.id === scopedLaneId);
-    return lane?.worktreePath ?? projectRoot;
+    // A lane whose worktree the roster has not caught up with must never fall
+    // back to the primary checkout: that is exactly how a lane chat builds,
+    // launches and screenshots code it never wrote, and reports it as verified.
+    // Null means "the lane decides" — the panel then sends the lane id on its
+    // own and the host resolves the worktree, or fails loudly saying so.
+    return lanes.find((entry) => entry.id === scopedLaneId)?.worktreePath ?? null;
   }, [laneId, lanes, projectRoot, selectedSession?.laneId]);
   // `selectedSessionId` is internal state synced from props in an effect, so it
   // trails the incoming selection by one render. Deriving the transcript from

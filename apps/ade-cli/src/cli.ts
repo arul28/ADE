@@ -46,6 +46,7 @@ import {
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
+import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import {
   accountMachineDisplayName,
@@ -54,8 +55,10 @@ import {
 } from "../../desktop/src/shared/accountDirectory";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import {
+  IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
+  IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
@@ -9212,21 +9215,29 @@ function iosSimulatorRootArgs(args: string[], laneId: string | null): JsonObject
 }
 
 /**
- * One actionable line for the iOS simulator failures whose service message
- * states the problem but not the next command. The daemon reports these as
- * plain action errors, so the code prefix in the message is the only thing the
- * CLI can key on.
+ * The one home for "what command do I run next" on iOS simulator failures.
+ *
+ * Service messages state the fact and the code and stop there — they are shared
+ * by the drawer, the daemon, and this CLI, and only this layer knows the user
+ * is at a terminal. The daemon reports these as plain action errors, so the code
+ * prefix in the message is the only thing the CLI can key on. The message
+ * already carries the launch id, owner, and lane; the hint does not restate them.
  */
 function iosSimulatorErrorHint(message: string): string | null {
   if (message.includes(IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE)) {
     return "This target belongs to a different checkout — re-run: ade ios-sim apps";
   }
   if (message.includes(IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE)) {
-    const launchId = /\(([^)]+)\)/.exec(message)?.[1];
-    return `A launch${launchId ? ` (${launchId})` : ""} is already running — wait for it, or run: ade ios-sim shutdown --force`;
+    return "A launch is already running — wait for it, or run: ade ios-sim shutdown --force";
   }
   if (message.includes(IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE)) {
     return "No buildable app under that root. The message above names the root and any targets found — check --project-root/--lane, or pass --target-id/--bundle-id to run an installed app.";
+  }
+  if (message.includes(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE)) {
+    return "Another chat owns the simulator — wait for it to finish, or take it over with: ade ios-sim shutdown --force";
+  }
+  if (message.includes(IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE)) {
+    return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
   }
   return null;
 }
@@ -19966,17 +19977,6 @@ function formatIosSimApps(value: unknown): string {
   );
 }
 
-/**
- * Keep the tail of a long absolute path. A build root is only useful here as
- * "which checkout was this", and the lane worktree segment lives at the end.
- */
-function abbreviatePathTail(value: string | null, segments = 4): string | null {
-  if (!value) return null;
-  const parts = value.split(/[/\\]/).filter(Boolean);
-  if (parts.length <= segments) return value;
-  return `…/${parts.slice(-segments).join("/")}`;
-}
-
 function formatIosSimLaunch(value: unknown): string {
   const session = isRecord(value) ? value : {};
   const capabilities = isRecord(session.capabilities) ? session.capabilities : {};
@@ -20011,7 +20011,12 @@ function formatIosSimLaunch(value: unknown): string {
         ].join("/"),
       ],
     ]),
-    `build root: ${abbreviatePathTail(asString(session.buildRoot)) ?? "unknown"}`,
+    // Four segments, not the shared default of two: a CLI status line has the
+    // width for it, and lane worktrees nest four deep (`<repo>/.ade/worktrees/<lane>`).
+    `build root: ${(() => {
+      const root = asString(session.buildRoot);
+      return root ? abbreviatePathTail(root, 4) : "unknown";
+    })()}`,
   ];
   if (session.usedInstalledBinary === true) {
     lines.push(
