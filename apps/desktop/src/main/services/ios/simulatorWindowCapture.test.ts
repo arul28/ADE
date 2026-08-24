@@ -119,8 +119,10 @@ describe("simulator window parking holders", () => {
     const claimant = fakeWindow();
     const loser = fakeWindow();
     followSimulatorWindowUnderAde(asBrowserWindow(claimant));
-    retainSimulatorParkingFollow(asBrowserWindow(claimant));
-    retainSimulatorParkingFollow(asBrowserWindow(loser));
+    expect(retainSimulatorParkingFollow(asBrowserWindow(claimant))).toBe(true);
+    // Reported, not silent: a surface told nothing would assume it held one and
+    // release it later, decrementing the claimant's only holder.
+    expect(retainSimulatorParkingFollow(asBrowserWindow(loser))).toBe(false);
 
     // The loser's holder was never counted, so the claimant's single release
     // still drops the follow.

@@ -269,7 +269,8 @@ function installIosSimulatorApi(options: {
       windowState: null,
       message: null,
     }),
-    retainWindowParking: vi.fn().mockResolvedValue(undefined),
+    // The host answers with whether it actually counted the holder.
+    retainWindowParking: vi.fn().mockResolvedValue(true),
     releaseWindowParking: vi.fn().mockResolvedValue(undefined),
     openSystemSettings: vi.fn().mockResolvedValue({ ok: true }),
     revealSimulator: vi.fn().mockResolvedValue(options.revealResult ?? { ok: true, message: null }),
@@ -1748,5 +1749,69 @@ describe("ChatIosSimulatorPanel", () => {
     // must not hand back a hold the give-up path already returned.
     await waitFor(() => expect(api.stopStream.mock.calls.length).toBeGreaterThan(stopCallsBeforeUnmount));
     expect(api.releaseWindowParking).toHaveBeenCalledTimes(1);
+  });
+
+  // The host refuses a holder from a window that does not own the parking claim
+  // — a second ADE window is capturing. The panel used to record the hold
+  // *before* asking, so it believed it held one either way and its teardown
+  // issued a real release: one that decrements the incumbent drawer's only
+  // holder and tears down a follow still in use.
+  it("does not hand back a parking hold the host refused", async () => {
+    const { api } = installIosSimulatorApi();
+    api.retainWindowParking.mockResolvedValue(false);
+
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.retainWindowParking).toHaveBeenCalled());
+    const stopCallsBeforeUnmount = api.stopStream.mock.calls.length;
+
+    view.unmount();
+
+    await waitFor(() => expect(api.stopStream.mock.calls.length).toBeGreaterThan(stopCallsBeforeUnmount));
+    expect(api.releaseWindowParking).not.toHaveBeenCalled();
+  });
+
+  // Discovery runs for as long as the host's budget plus the settling
+  // AppleScript, so closing the drawer while it still says "Starting the live
+  // view" lands React's cleanups first: they find no hold to release, and the
+  // start then takes one for a panel that no longer exists. Nothing gave it
+  // back, so every later move of that ADE window re-parked — and could reopen —
+  // Simulator.app with no drawer open at all, and the leaked count meant no
+  // later drawer could ever disarm the follow either.
+  it("hands back a parking hold taken after the drawer already unmounted", async () => {
+    const { api } = installIosSimulatorApi();
+    let resolveSources: ((result: unknown) => void) | null = null;
+    api.listSimulatorWindowSources.mockImplementation(() => new Promise((resolve) => {
+      resolveSources = resolve;
+    }));
+
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.listSimulatorWindowSources).toHaveBeenCalled());
+    // The hold is taken after this sweep answers, which is exactly the window
+    // the drawer closes in.
+    expect(api.retainWindowParking).not.toHaveBeenCalled();
+
+    view.unmount();
+
+    await act(async () => {
+      resolveSources?.({ sources: [simulatorWindowSource], windowState: null, message: null });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalledTimes(1));
+    expect(api.retainWindowParking).toHaveBeenCalledTimes(1);
   });
 });

@@ -2055,8 +2055,13 @@ declare global {
         listSimulatorWindowSources: (opts?: {
           session?: IosSimulatorWindowCaptureSessionHint | null;
         }) => Promise<IosSimulatorWindowSourcesResult>;
-        /** Registers one capture surface as depending on the parking claim. Never throws. */
-        retainWindowParking: () => Promise<void>;
+        /**
+         * Registers one capture surface as depending on the parking claim.
+         * Resolves whether the host counted the holder — it refuses one from a
+         * window that does not own the claim — so only a `true` may be paired
+         * with a later release. Never throws; a failure resolves `false`.
+         */
+        retainWindowParking: () => Promise<boolean>;
         /** Drops one holder of the window-parking follow. Never throws. */
         releaseWindowParking: () => Promise<void>;
         openSystemSettings: (args: {

@@ -8482,10 +8482,13 @@ export function registerIpc({
   // — the event that owes a release — is routed to the brain daemon whenever a
   // local project is bound, so its ipcMain handler never runs in the case that
   // window capture actually requires. A holder taken there would never exist.
-  ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: true }> => {
-    retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender));
-    return { ok: true };
-  });
+  //
+  // `ok` is the truth, not an acknowledgement: a sender that does not own the
+  // claim is silently not counted, and a renderer that believed otherwise would
+  // later release a holder it never took — the incumbent drawer's.
+  ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: boolean }> => ({
+    ok: retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender)),
+  }));
 
   ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (event): Promise<{ ok: true }> => {
     releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender));

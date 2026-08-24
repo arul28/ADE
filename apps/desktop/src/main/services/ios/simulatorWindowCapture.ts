@@ -458,10 +458,16 @@ export function releaseSimulatorParkingFollow(): void {
  *
  * Only the window that owns the claim can hold it: a window that lost the race
  * never parked anything, so it has nothing to release later either.
+ *
+ * Returns whether the holder was actually counted, and the answer travels all
+ * the way back to the caller. A surface that assumed it had been counted would
+ * later issue a release that decrements a holder it never took — someone
+ * else's — and tear down a follow that is still in use.
  */
-export function retainSimulatorParkingFollow(window: BrowserWindow | null): void {
-  if (!window || activeSimulatorParkingWindow() !== window) return;
+export function retainSimulatorParkingFollow(window: BrowserWindow | null): boolean {
+  if (!window || activeSimulatorParkingWindow() !== window) return false;
   simulatorParkingHolders += 1;
+  return true;
 }
 
 /**

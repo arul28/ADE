@@ -7328,13 +7328,19 @@ contextBridge.exposeInMainWorld("ade", {
     // with a local project bound — which window capture requires —
     // `startStream` is answered by the brain daemon, which has no BrowserWindow
     // and no parking concept, so nothing in Electron main ever runs for it.
-    // Same transport and same error handling as `releaseWindowParking` below,
-    // so the two always pair up.
-    retainWindowParking: async (): Promise<void> => {
+    // Same transport as `releaseWindowParking` below, so the two always pair up.
+    //
+    // Resolves whether the host actually counted the holder — it refuses one
+    // from a window that does not own the claim — so the caller only pairs a
+    // release with a retain that really happened. Never throws, and a failure
+    // is reported as "not held" for the same reason.
+    retainWindowParking: async (): Promise<boolean> => {
       try {
-        await ipcRenderer.invoke(IPC.iosSimulatorRetainWindowParking);
+        const result = await ipcRenderer.invoke(IPC.iosSimulatorRetainWindowParking) as { ok?: unknown } | null;
+        return result?.ok === true;
       } catch {
         /* parking is best-effort */
+        return false;
       }
     },
     // The mirror image of the call above: capture arms the window-parking

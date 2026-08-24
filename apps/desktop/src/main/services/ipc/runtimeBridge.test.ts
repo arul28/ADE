@@ -2023,6 +2023,53 @@ describe("registerIpc sync bridge", () => {
     expect(activeSimulatorParkingWindow()).toBeNull();
   });
 
+  // A second ADE window's drawer asks for a holder while the first window owns
+  // the claim. The host cannot count it, and used to answer `{ ok: true }`
+  // anyway — so that drawer believed it held one and its teardown issued a real
+  // release, stealing the incumbent's only holder and killing a follow it was
+  // still using. The refusal has to be in the answer.
+  it("tells a window that does not own the parking claim that its holder was refused", async () => {
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    registerIpc({
+      getCtx: () => ({ logger }) as any,
+      getSyncService: () => null,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const fakeWindow = (id: number) => ({
+      id,
+      isDestroyed: () => false,
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      getBounds: () => ({ x: 0, y: 0, width: 1_400, height: 900 }),
+    });
+    const claimant = fakeWindow(7);
+    const other = fakeWindow(8);
+    followSimulatorWindowUnderAde(claimant as any);
+
+    const retain = ipcHandlers.get(IPC.iosSimulatorRetainWindowParking);
+    const release = ipcHandlers.get(IPC.iosSimulatorReleaseWindowParking);
+
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await expect(retain?.(eventForSender())).resolves.toEqual({ ok: true });
+
+    browserWindowFromWebContents.mockReturnValue(other);
+    await expect(retain?.(eventForSender())).resolves.toEqual({ ok: false });
+    await release?.(eventForSender());
+
+    // The incumbent's drawer is still capturing, so its follow has to survive
+    // the other window's teardown.
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await release?.(eventForSender());
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
   it("sets the pairing code through the brain when no project sync service exists", async () => {
     const snapshot = { role: "host" } as any;
     const callSync = vi.fn()

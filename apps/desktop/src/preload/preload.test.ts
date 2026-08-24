@@ -830,7 +830,9 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBeUndefined();
+    // Retain reports whether the host counted the holder, so the renderer only
+    // pairs a release with a retain that really happened.
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(true);
     await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
 
     expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorRetainWindowParking);
@@ -868,8 +870,45 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBeUndefined();
+    // A retain that never reached the host counted nothing, so it has to read
+    // as "not held" — a caller that paired a release with it would decrement
+    // another drawer's holder.
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(false);
     await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
+  });
+
+  // The host refuses a holder from a window that does not own the parking
+  // claim. That refusal has to survive the bridge: the renderer records a hold
+  // only when one was really taken.
+  it("reports a refused iOS Simulator parking holder as not held", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.iosSimulatorRetainWindowParking) return { ok: false };
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(false);
   });
 
   it("routes local lane creation through the local runtime when a local project runtime is bound", async () => {
