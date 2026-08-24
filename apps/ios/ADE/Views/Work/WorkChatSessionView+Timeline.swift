@@ -51,7 +51,8 @@ extension WorkChatSessionView {
             controlsRowId: model.id,
             proxy: proxy
           )
-        }
+        },
+        onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
       )
       .equatable()
     }
@@ -83,6 +84,16 @@ extension WorkChatSessionView {
         proxy.scrollTo(controlsRowId, anchor: .bottom)
       }
     }
+  }
+
+  /// Second rung of the message-level ladder: the whole answer, on its own
+  /// screen, instead of another bounded step through it.
+  @MainActor
+  func openAssistantMessageFullOutput(messageId: String) {
+    guard let markdown = assistantMarkdown(messageId: messageId) else { return }
+    outputViewer.present(
+      WorkOutputViewerRequest(title: "Response", text: markdown, kind: .text)
+    )
   }
 
   func copyAssistantMarkdown(messageId: String) {
@@ -133,7 +144,10 @@ extension WorkChatSessionView {
               proxy: proxy
             )
           }
-          : nil
+          : nil,
+        // Only an explicit tap writes this map, so its presence *is* "already
+        // expanded once".
+        hasExpandedInPlace: assistantLineBudgets[message.id] != nil
       )
       .equatable()
     case .toolCard(let toolCard):
@@ -449,7 +463,11 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
   }
 
   var body: some View {
-    WorkMarkdownBlockView(block: model.block, isStreamingTail: model.isStreamingTail)
+    WorkMarkdownBlockView(
+      block: model.block,
+      isStreamingTail: model.isStreamingTail,
+      codeSource: model.codeSource
+    )
       .frame(maxWidth: .infinity, alignment: .leading)
       .contextMenu {
         Button(action: onCopyMessage) {
@@ -500,9 +518,18 @@ struct WorkAssistantMessageControlsView: View, Equatable {
   let controls: WorkAssistantMessageControlsModel
   let onCopyMessage: () -> Void
   let onShowMore: () -> Void
+  let onOpenFullOutput: () -> Void
 
   static func == (lhs: WorkAssistantMessageControlsView, rhs: WorkAssistantMessageControlsView) -> Bool {
     lhs.controls == rhs.controls
+  }
+
+  private var affordance: WorkTruncatedOutputAffordance {
+    workTruncatedOutputAffordance(
+      isTruncated: controls.canShowMore,
+      hasExpandedInPlace: controls.hasExpandedInPlace,
+      isClipped: false
+    )
   }
 
   var body: some View {
@@ -517,15 +544,32 @@ struct WorkAssistantMessageControlsView: View, Equatable {
         Label("Copy full", systemImage: "doc.on.doc")
           .labelStyle(.titleAndIcon)
           .font(.caption2.weight(.semibold))
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .foregroundStyle(ADEColor.textSecondary)
 
-      if controls.canShowMore {
+      switch affordance {
+      case .none:
+        EmptyView()
+      case .showMore:
         Button(action: onShowMore) {
           Label("Show more", systemImage: "chevron.down")
             .labelStyle(.titleAndIcon)
             .font(.caption2.weight(.semibold))
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(ADEColor.accent)
+      case .openFullOutput:
+        Button(action: onOpenFullOutput) {
+          Label("Open full output", systemImage: "arrow.up.left.and.arrow.down.right")
+            .labelStyle(.titleAndIcon)
+            .font(.caption2.weight(.semibold))
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(ADEColor.accent)

@@ -708,6 +708,9 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
   /// The one block still receiving deltas. Its renders are throwaway, so they
   /// are kept out of the shared inline-markdown cache.
   var isStreamingTail = false
+  /// Set on fenced code blocks of a message the transcript is only rendering a
+  /// slice of, so Copy and the viewer reach the whole block.
+  var codeSource: WorkCodeBlockSource? = nil
 
   static func == (lhs: WorkAssistantMarkdownBlockRenderModel, rhs: WorkAssistantMarkdownBlockRenderModel) -> Bool {
     lhs.id == rhs.id
@@ -715,6 +718,7 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
       && lhs.isStreamingTail == rhs.isStreamingTail
+      && lhs.codeSource == rhs.codeSource
       && lhs.block == rhs.block
   }
 }
@@ -749,6 +753,9 @@ struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
   let totalLineCount: Int
   let canShowMore: Bool
   let nextLineBudget: Int
+  /// The reader has already taken one "Show more" step on this message, so the
+  /// ladder's next rung is the full-screen viewer rather than another step.
+  var hasExpandedInPlace = false
 
   static func == (lhs: WorkAssistantMessageControlsModel, rhs: WorkAssistantMessageControlsModel) -> Bool {
     lhs.id == rhs.id
@@ -758,6 +765,7 @@ struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
       && lhs.totalLineCount == rhs.totalLineCount
       && lhs.canShowMore == rhs.canShowMore
       && lhs.nextLineBudget == rhs.nextLineBudget
+      && lhs.hasExpandedInPlace == rhs.hasExpandedInPlace
   }
 }
 

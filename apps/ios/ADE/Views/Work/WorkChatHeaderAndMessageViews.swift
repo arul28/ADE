@@ -299,6 +299,7 @@ struct WorkChatMessageBubble: View, Equatable {
     lhs.message == rhs.message
       && lhs.isStreaming == rhs.isStreaming
       && lhs.maxUserBubbleWidth == rhs.maxUserBubbleWidth
+      && lhs.hasExpandedInPlace == rhs.hasExpandedInPlace
       && (lhs.onShowMore == nil) == (rhs.onShowMore == nil)
   }
 
@@ -322,6 +323,9 @@ struct WorkChatMessageBubble: View, Equatable {
   /// shared budget map is now the only owner; the preview on `message` already
   /// reflects it.
   var onShowMore: (() -> Void)? = nil
+  /// The reader has already taken one "Show more" step here, so the next rung
+  /// of the ladder is the full-screen viewer instead of another step.
+  var hasExpandedInPlace = false
 
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
   /// Injected via `.environment(\.workChatProvider, ...)` by the session view.
@@ -410,7 +414,9 @@ struct WorkChatMessageBubble: View, Equatable {
         } else {
           WorkMarkdownRenderer(
             markdown: preview.text,
-            streamingCacheKey: isStreaming ? message.id : nil
+            streamingCacheKey: isStreaming ? message.id : nil,
+            fullMarkdown: message.markdown,
+            previewAnchor: preview.anchor
           )
             .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
         }
@@ -440,20 +446,32 @@ struct WorkChatMessageBubble: View, Equatable {
             Label("Copy full", systemImage: "doc.on.doc")
               .labelStyle(.titleAndIcon)
               .font(.caption2.weight(.semibold))
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           .foregroundStyle(ADEColor.textSecondary)
 
-          // Anything still truncated can still be expanded: one more step per
-          // tap, with no ceiling to strand the reader partway through.
-          if let onShowMore {
+          // Hybrid ladder: the first tap expands downward in place; anything
+          // still truncated after that goes to the full-screen viewer rather
+          // than paginating the reader through a thousand more lines.
+          if let onShowMore, !hasExpandedInPlace {
             Button(action: onShowMore) {
               Label("Show more", systemImage: "chevron.down")
                 .labelStyle(.titleAndIcon)
                 .font(.caption2.weight(.semibold))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(ADEColor.accent)
+          } else {
+            WorkOpenFullOutputButton(
+              title: "Response",
+              text: message.markdown,
+              label: "Open full output",
+              prominent: true
+            )
           }
         }
       }

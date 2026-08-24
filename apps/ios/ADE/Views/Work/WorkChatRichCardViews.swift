@@ -171,21 +171,15 @@ struct WorkToolCardView: View, Equatable {
             WorkStructuredOutputBlock(title: "Arguments", text: argsText)
           }
           if let resultText = toolCard.resultText, !resultText.isEmpty {
-            let truncated = workToolResultTruncate(resultText, expanded: resultExpanded)
-            WorkStructuredOutputBlock(title: "Result", text: truncated.text)
-            if truncated.didTruncate {
-              Button {
-                resultExpanded.toggle()
-              } label: {
-                Text(resultExpanded
-                  ? "Collapse"
-                  : "Show all (\(workToolResultByteLabel(resultText)))")
-                  .font(.caption2.weight(.semibold))
-                  .foregroundStyle(ADEColor.accent)
-              }
-              .buttonStyle(.plain)
-              .accessibilityLabel(resultExpanded ? "Collapse tool result" : "Show full tool result")
-            }
+            let result = workToolResultBlockText(resultText, expanded: resultExpanded)
+            // The block displays a slice; Copy and the viewer get the whole
+            // result.
+            WorkStructuredOutputBlock(title: "Result", text: result.displayed, copyText: result.copy)
+            toolResultAffordances(
+              resultText: result.copy,
+              displayedText: result.displayed,
+              didTruncate: result.didTruncate
+            )
           }
         }
       }
@@ -207,6 +201,68 @@ struct WorkToolCardView: View, Equatable {
         "status": toolCard.status.rawValue
       ]
     )
+  }
+
+  /// Hybrid ladder under the result box: one expansion in place, then the
+  /// full-screen viewer. A second in-place step would only add text the box
+  /// clips away.
+  @ViewBuilder
+  private func toolResultAffordances(
+    resultText: String,
+    displayedText: String,
+    didTruncate: Bool
+  ) -> some View {
+    let affordance = workTruncatedOutputAffordance(
+      isTruncated: didTruncate,
+      hasExpandedInPlace: resultExpanded,
+      isClipped: workOutputBoxOverflows(
+        displayedText,
+        lineCapacity: workStructuredOutputBoxLineCapacity,
+        columnCapacity: workStructuredOutputBoxColumnCapacity
+      )
+    )
+    HStack(spacing: 12) {
+      switch affordance {
+      case .none:
+        EmptyView()
+      case .showMore:
+        Button {
+          resultExpanded = true
+        } label: {
+          Text("Show all (\(workToolResultByteLabel(resultText)))")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show full tool result")
+      case .openFullOutput:
+        WorkOpenFullOutputButton(
+          title: toolDisplayName(toolCard.toolName),
+          subtitle: "Result",
+          text: resultText,
+          label: "Open full output",
+          prominent: true
+        )
+      }
+
+      if resultExpanded {
+        Button {
+          resultExpanded = false
+        } label: {
+          Text("Collapse")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Collapse tool result")
+      }
+
+      Spacer(minLength: 0)
+    }
   }
 
   /// Single-line compact row used once the tool completes — matches the
@@ -779,6 +835,20 @@ func workToolResultTruncate(_ text: String, expanded: Bool) -> (text: String, di
   return (String(text[..<end]) + "…", didTruncate: true)
 }
 
+/// What the result box shows versus what Copy and the viewer hand over.
+///
+/// These are deliberately two different strings: the box displays a bounded
+/// slice so a 200KB result cannot stall the transcript, but a clipboard that
+/// silently held a 500-character preview of the output was a data-loss bug
+/// wearing a Copy button.
+func workToolResultBlockText(
+  _ resultText: String,
+  expanded: Bool
+) -> (displayed: String, copy: String, didTruncate: Bool) {
+  let truncated = workToolResultTruncate(resultText, expanded: expanded)
+  return (displayed: truncated.text, copy: resultText, didTruncate: truncated.didTruncate)
+}
+
 /// Short "N chars" label used in the "Show all" affordance. Uses the raw
 /// character count — this is display copy, not a byte-precise measurement.
 func workToolResultByteLabel(_ text: String) -> String {
@@ -791,15 +861,30 @@ func workToolResultByteLabel(_ text: String) -> String {
 struct WorkStructuredOutputBlock: View {
   let title: String
   let text: String
+  /// Authoritative text for Copy and the viewer. Defaults to what is displayed;
+  /// call sites that show a truncated slice pass the whole thing, so the
+  /// clipboard is never a preview of the output.
+  var copyText: String? = nil
+
+  private var fullText: String { copyText ?? text }
+
+  private var isClipped: Bool {
+    fullText.utf8.count > text.utf8.count
+      || workOutputBoxOverflows(
+        text,
+        lineCapacity: workStructuredOutputBoxLineCapacity,
+        columnCapacity: workStructuredOutputBoxColumnCapacity
+      )
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      WorkOutputBlockHeader(title: title, copyText: text)
+      WorkOutputBlockHeader(title: title, copyText: fullText, showsOpen: isClipped)
       // Clipped, not scrollable. A vertical scroll view nested inside the
       // transcript's own vertical scroll view competes for every drag that
       // starts on it, and it only ever clipped: there was no way to reach past
-      // its 180pt from inside the box anyway. The card-level "Show all" control
-      // is still how the full text is reached.
+      // its 180pt from inside the box anyway. What is cut off is reached
+      // through the full-screen viewer — from the header, or by tapping here.
       Text(text)
         .frame(maxWidth: .infinity, alignment: .leading)
         .font(.system(.caption, design: .monospaced))
@@ -809,6 +894,7 @@ struct WorkStructuredOutputBlock: View {
         .clipped()
         .padding(10)
       .background(ADEColor.recessedBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .workOpensFullOutput(isClipped, title: title, text: fullText)
     }
   }
 }
@@ -819,7 +905,15 @@ struct WorkANSIOutputBlock: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      WorkOutputBlockHeader(title: title, copyText: text)
+      WorkOutputBlockHeader(
+        title: title,
+        copyText: text,
+        showsOpen: workOutputBoxOverflows(
+          text,
+          lineCapacity: workStructuredOutputBoxLineCapacity,
+          columnCapacity: nil
+        )
+      )
       ScrollView([.horizontal, .vertical]) {
         Text(ansiAttributedString(text))
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -835,7 +929,13 @@ struct WorkANSIOutputBlock: View {
 
 struct WorkOutputBlockHeader: View {
   let title: String
+  /// Always the whole output, never the slice the box happens to be showing.
   let copyText: String
+  /// Set when the box clips its content: the header then offers the viewer
+  /// beside Copy.
+  var showsOpen = false
+  var viewerKind: WorkOutputViewerRequest.Kind = .text
+  var viewerSubtitle: String? = nil
   @State var copied = false
 
   var body: some View {
@@ -844,6 +944,14 @@ struct WorkOutputBlockHeader: View {
         .font(.caption2.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
       Spacer(minLength: 0)
+      if showsOpen {
+        WorkOpenFullOutputButton(
+          title: title,
+          subtitle: viewerSubtitle,
+          text: copyText,
+          kind: viewerKind
+        )
+      }
       Button {
         UIPasteboard.general.string = copyText
         copied = true
@@ -858,10 +966,41 @@ struct WorkOutputBlockHeader: View {
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(copied ? ADEColor.success : ADEColor.textSecondary)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .accessibilityLabel(copied ? "Copied to clipboard" : "Copy \(title.lowercased())")
     }
+  }
+}
+
+/// Copy control for the diff boxes, which carry no header row of their own.
+struct WorkDiffCopyButton: View {
+  let diff: String
+  let label: String
+  @State private var copied = false
+
+  var body: some View {
+    Button {
+      UIPasteboard.general.string = diff
+      copied = true
+      Task { @MainActor in
+        try? await Task.sleep(nanoseconds: 1_400_000_000)
+        copied = false
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+        Text(copied ? "Copied" : "Copy")
+      }
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(copied ? ADEColor.success : ADEColor.textSecondary)
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(copied ? "Copied to clipboard" : "Copy diff for \(label)")
   }
 }
 
@@ -958,11 +1097,18 @@ struct WorkDiffOutputBlock: View {
   let title: String
   let diff: String
 
+  private var isClipped: Bool {
+    workOutputBoxOverflows(diff, lineCapacity: workDiffOutputBoxLineCapacity, columnCapacity: nil)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(title)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
+      WorkOutputBlockHeader(
+        title: title,
+        copyText: diff,
+        showsOpen: isClipped,
+        viewerKind: .diff
+      )
       // Horizontal only: the vertical axis competed with the transcript's own
       // scroll view for drags that started on the diff, and only clipped.
       ScrollView(.horizontal) {
@@ -984,14 +1130,47 @@ struct WorkDiffOutputBlock: View {
       .clipped()
       .padding(10)
       .background(ADEColor.recessedBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .workOpensFullOutput(isClipped, title: title, text: diff, kind: .diff)
     }
   }
 }
 
 struct WorkInlineDiffPreview: View {
+  /// File path this diff belongs to. Titles the viewer.
+  var path: String? = nil
   let diff: String
 
+  private var isClipped: Bool {
+    workOutputBoxOverflows(diff, lineCapacity: workInlineDiffPreviewLineCapacity, columnCapacity: nil)
+  }
+
+  private var viewerTitle: String {
+    guard let path, !path.isEmpty else { return "Diff" }
+    return (path as NSString).lastPathComponent
+  }
+
   var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 6) {
+        Spacer(minLength: 0)
+        if isClipped {
+          WorkOpenFullOutputButton(
+            title: viewerTitle,
+            subtitle: path,
+            text: diff,
+            kind: .diff
+          )
+        }
+        WorkDiffCopyButton(diff: diff, label: viewerTitle)
+      }
+      .padding(.leading, 18)
+
+      diffBody
+        .workOpensFullOutput(isClipped, title: viewerTitle, subtitle: path, text: diff, kind: .diff)
+    }
+  }
+
+  private var diffBody: some View {
     ScrollView(.horizontal) {
       LazyVStack(alignment: .leading, spacing: 2) {
         ForEach(Array(diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
@@ -1101,7 +1280,7 @@ struct WorkFileChangeCardView: View, Equatable {
 
       if isExpanded {
         if hasDiff {
-          WorkInlineDiffPreview(diff: card.diff)
+          WorkInlineDiffPreview(path: card.path, diff: card.diff)
         } else {
           Text("No diff payload available.")
             .font(.caption.monospaced())

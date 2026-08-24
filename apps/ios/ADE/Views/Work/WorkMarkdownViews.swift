@@ -25,6 +25,13 @@ struct WorkMarkdownRenderer: View {
   /// cache, which misses on every delta because the text keeps growing.
   /// Completed messages keep the default whole-text cache path.
   var streamingCacheKey: String? = nil
+  /// The whole message this markdown was sliced from, when `markdown` is a
+  /// bounded preview of it. Copying a fenced block resolves against this, so a
+  /// truncated block still copies whole.
+  var fullMarkdown: String? = nil
+  /// Which end of `fullMarkdown` the slice was taken from. Decides whether code
+  /// blocks are numbered from the front or the back.
+  var previewAnchor: WorkAssistantMessagePreviewAnchor = .head
 
   private var blocks: [WorkMarkdownBlock] {
     if let streamingCacheKey {
@@ -38,17 +45,38 @@ struct WorkMarkdownRenderer: View {
     // Only the last block of a streaming message is still growing; everything
     // above it is final and belongs in the shared caches.
     let streamingTailId = streamingCacheKey == nil ? nil : blocks.last?.id
+    let ordinals = fullMarkdown == nil
+      ? [:]
+      : workCodeBlockOrdinals(blocks, countsFromEnd: previewAnchor == .tail)
     VStack(alignment: .leading, spacing: 10) {
       ForEach(blocks) { block in
-        WorkMarkdownBlockView(block: block, isStreamingTail: block.id == streamingTailId)
+        WorkMarkdownBlockView(
+          block: block,
+          isStreamingTail: block.id == streamingTailId,
+          codeSource: codeSource(for: block, ordinals: ordinals)
+        )
       }
     }
+  }
+
+  private func codeSource(
+    for block: WorkMarkdownBlock,
+    ordinals: [String: Int]
+  ) -> WorkCodeBlockSource? {
+    guard let fullMarkdown, let ordinal = ordinals[block.id] else { return nil }
+    return WorkCodeBlockSource(
+      markdown: fullMarkdown,
+      ordinal: ordinal,
+      countsFromEnd: previewAnchor == .tail
+    )
   }
 }
 
 struct WorkMarkdownBlockView: View {
   let block: WorkMarkdownBlock
   var isStreamingTail = false
+  /// Set when this block was parsed from a bounded slice of a longer message.
+  var codeSource: WorkCodeBlockSource? = nil
 
   var body: some View {
     switch block.kind {
@@ -93,7 +121,7 @@ struct WorkMarkdownBlockView: View {
     case .table(let headers, let rows):
       WorkMarkdownTable(headers: headers, rows: rows, isStreamingTail: isStreamingTail)
     case .code(let language, let code):
-      WorkCodeBlockView(language: language, code: code)
+      WorkCodeBlockView(language: language, code: code, source: codeSource)
     case .rule:
       Divider()
     }
@@ -148,22 +176,53 @@ struct WorkMarkdownTable: View {
 struct WorkCodeBlockView: View {
   let language: String?
   let code: String
+  /// Non-nil when `code` is the slice of a block from a longer message. Copy
+  /// and the viewer resolve the whole block through it, at tap time — resolving
+  /// on every render pass would reparse the message behind every frame.
+  var source: WorkCodeBlockSource? = nil
+
+  @State private var copied = false
 
   var detectedLanguage: FilesLanguage {
     FilesLanguage.detect(languageId: language, filePath: "snippet.\(language ?? "txt")")
   }
 
+  private var label: String {
+    (language?.isEmpty == false ? language : detectedLanguage.displayName)
+      .map { $0.uppercased() } ?? detectedLanguage.displayName.uppercased()
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
-        Text((language?.isEmpty == false ? language : detectedLanguage.displayName).map { $0.uppercased() } ?? detectedLanguage.displayName.uppercased())
+        Text(label)
           .font(.caption2.weight(.semibold))
           .foregroundStyle(ADEColor.textMuted)
         Spacer()
-        Button("Copy") {
-          UIPasteboard.general.string = code
+        WorkOpenFullOutputButton(
+          title: "Code · \(label.lowercased())",
+          text: code,
+          kind: .code,
+          languageId: language,
+          codeSource: source
+        )
+        Button {
+          // The rendered block can be a slice; the clipboard never is.
+          UIPasteboard.general.string = source?.resolvedCode(fallback: code) ?? code
+          copied = true
+          Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            copied = false
+          }
+        } label: {
+          Text(copied ? "Copied" : "Copy")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(copied ? ADEColor.success : ADEColor.accent)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
-        .font(.caption2.weight(.semibold))
+        .buttonStyle(.plain)
+        .accessibilityLabel(copied ? "Copied to clipboard" : "Copy code")
       }
       ScrollView(.horizontal, showsIndicators: false) {
         Text(SyntaxHighlighter.highlightedAttributedString(code, as: detectedLanguage))

@@ -497,6 +497,9 @@ struct WorkChatSessionView: View {
   /// Messages the reader expanded. They read from the top from then on, so a
   /// tap does not swap the visible slice for the other end of the message.
   @State var assistantHeadAnchorOverrides: Set<String> = []
+  /// One presentation host for every box in this transcript. Boxes reach it
+  /// through `\.workOutputViewer` rather than each carrying its own cover.
+  @StateObject var outputViewer = WorkOutputViewerModel()
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
@@ -1887,6 +1890,10 @@ struct WorkChatSessionView: View {
     content
         .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
         .sensoryFeedback(.impact(weight: .light), trigger: quotaCardHapticToken)
+        .environment(\.workOutputViewer, outputViewer)
+        .fullScreenCover(item: $outputViewer.request) { request in
+          WorkOutputViewerScreen(request: request)
+        }
         .sheet(isPresented: $artifactDrawerPresented) {
           WorkArtifactDrawerSheet(
             artifacts: artifacts,
@@ -2604,6 +2611,11 @@ func workTimelineRenderEntries(
         : parseMarkdownBlocks(preview.text)
       rendered.reserveCapacity(rendered.count + blocks.count + (preview.isTruncated ? 1 : 0))
       let streamingTailBlockId = message.id == streamingAssistantMessageId ? blocks.last?.id : nil
+      // Only a bounded slice needs resolving; a whole message already holds its
+      // own blocks, and numbering them would be work for nothing.
+      let codeOrdinals = preview.isTruncated
+        ? workCodeBlockOrdinals(blocks, countsFromEnd: preview.anchor == .tail)
+        : [:]
       for block in blocks {
         let model = WorkAssistantMarkdownBlockRenderModel(
           id: "\(entry.id)-\(block.id)",
@@ -2611,7 +2623,14 @@ func workTimelineRenderEntries(
           turnId: message.turnId,
           itemId: message.itemId,
           block: block,
-          isStreamingTail: block.id == streamingTailBlockId
+          isStreamingTail: block.id == streamingTailBlockId,
+          codeSource: codeOrdinals[block.id].map { ordinal in
+            WorkCodeBlockSource(
+              markdown: message.markdown,
+              ordinal: ordinal,
+              countsFromEnd: preview.anchor == .tail
+            )
+          }
         )
         rendered.append(WorkTimelineRenderEntry(
           id: model.id,
@@ -2633,7 +2652,10 @@ func workTimelineRenderEntries(
         // step that shows it — the control only disappears once the whole
         // message is rendered and this branch stops running.
         canShowMore: true,
-        nextLineBudget: nextLineBudget
+        nextLineBudget: nextLineBudget,
+        // Only an explicit tap writes this map, so its presence *is* "the
+        // reader already expanded this message once".
+        hasExpandedInPlace: assistantLineBudgets[message.id] != nil
       )
       rendered.append(WorkTimelineRenderEntry(
         id: controls.id,
