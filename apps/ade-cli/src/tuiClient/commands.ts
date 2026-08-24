@@ -111,6 +111,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/activity", description: "Show account-wide Activity across machines", placement: "right", category: "Nav" },
   { name: "/project", description: "Switch project on this machine", placement: "right", argumentHint: "[name|path]", category: "Nav" },
   { name: "/machines", description: "Hop to another paired ADE machine", placement: "right", argumentHint: "[name]", category: "Nav" },
+  { name: "/cloud", description: "List Cursor Cloud agents for this project", placement: "right", category: "Nav" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },
   { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/info", description: "Open active chat info, plan, goal, and agents", placement: "right", category: "Nav" },

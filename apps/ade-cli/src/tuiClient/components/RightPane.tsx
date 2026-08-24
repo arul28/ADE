@@ -2461,6 +2461,13 @@ function RightPaneComponent({
                   : "arrows move · enter opens"}
             </Text>
           ) : null}
+          {content.footnote ? (
+            <Box marginTop={content.rows.length ? 0 : 1}>
+              <Text color={theme.color.t4} dimColor wrap="truncate-end">
+                {endTruncate(content.footnote, Math.max(8, paneWidth - 4))}
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       ) : null}
 

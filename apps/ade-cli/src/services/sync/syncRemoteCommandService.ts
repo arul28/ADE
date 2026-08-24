@@ -241,6 +241,7 @@ import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAtta
 import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } from "../../../../desktop/src/main/services/ai/aiSettingsStatus";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import {
   createPromptStash,
@@ -334,6 +335,7 @@ type SyncRemoteCommandServiceArgs = {
   operationService?: ReturnType<typeof createOperationService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -5432,6 +5434,34 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       sessionId: requireString(payload.sessionId, "ai.watchCursorCloudMirror requires sessionId."),
       watching: payload.watching,
     });
+  });
+  register("ai.cursorCloudFleet", { viewerAllowed: true }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.getFleet({
+      includeArchived: payload.includeArchived !== false,
+      limit: typeof payload.limit === "number" ? payload.limit : undefined,
+    });
+  });
+  register("ai.cursorCloudResolveLane", { viewerAllowed: true }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.resolveLaneForAgent(
+      requireString(payload.agentId, "ai.cursorCloudResolveLane requires agentId."),
+    );
+  });
+  // Pull mutates host lane worktrees (fetch + merge), so like chat.launchCli
+  // it is refused for read-only viewers and never queued — it must run now,
+  // against lane state as it exists at request time.
+  register("ai.cursorCloudPullIntoLane", { viewerAllowed: false }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.pullIntoLane(
+      requireString(payload.agentId, "ai.cursorCloudPullIntoLane requires agentId."),
+    );
+  });
+  register("ai.cursorCloudStopRun", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.stopAgentRun(
+      requireString(payload.agentId, "ai.cursorCloudStopRun requires agentId."),
+    );
   });
   register("orchestration.runCreate", { viewerAllowed: true }, async (payload) => {
     const orchestrationService = requireService(args.orchestrationService, "Orchestration service not available.");

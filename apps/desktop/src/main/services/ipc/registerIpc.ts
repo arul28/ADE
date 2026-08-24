@@ -628,6 +628,9 @@ import type {
   CursorCloudOpenChatResult,
   CursorCloudWatchMirrorRequest,
   CursorCloudStreamRunResult,
+  CursorCloudFleetResult,
+  CursorCloudFleetEvent,
+  CursorCloudPullIntoLaneResult,
   CursorAgentUsage,
   CursorAgentUsageRequest,
   AgentToolsCacheSnapshot,
@@ -751,6 +754,7 @@ import type { createAutomationPlannerService } from "../automations/automationPl
 import type { createAutomationIngressService } from "../automations/automationIngressService";
 import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
 import type { CursorCloudIngressService } from "../automations/cursorCloudIngressService";
+import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -1047,6 +1051,7 @@ export type AppContext = {
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: LinearIngressService | null;
   cursorCloudIngressService?: CursorCloudIngressService | null;
+  cursorCloudFleetService?: CursorCloudFleetService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
@@ -5518,6 +5523,42 @@ export function registerIpc({
         sessionId: arg.sessionId,
         watching: arg.watching,
       });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudFleet,
+    async (_event, arg?: { includeArchived?: boolean; limit?: number }): Promise<CursorCloudFleetResult> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.getFleet(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudPullIntoLane,
+    async (_event, arg: { agentId: string }): Promise<CursorCloudPullIntoLaneResult> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.pullIntoLane(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudResolveLane,
+    async (_event, arg: { agentId: string }): Promise<{ laneId: string; laneName: string; created: boolean }> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.resolveLaneForAgent(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudStopRun,
+    async (_event, arg: { agentId: string }): Promise<{ stopped: boolean }> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.stopAgentRun(arg.agentId);
     },
   );
 

@@ -148,6 +148,9 @@ import type {
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
   CursorCloudWatchMirrorRequest,
+  CursorCloudFleetResult,
+  CursorCloudFleetEvent,
+  CursorCloudPullIntoLaneResult,
   CursorAgentUsage,
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
@@ -4757,6 +4760,49 @@ const adeBridge = {
       callProjectRuntimeActionOr("ai", "watchCursorCloudMirror", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudWatchMirror, args),
       ),
+    cursorCloudFleet: async (
+      args?: { includeArchived?: boolean; limit?: number },
+    ): Promise<CursorCloudFleetResult> =>
+      callProjectRuntimeActionOr("ai", "getCursorCloudFleet", { args: args ?? {} }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudFleet, args ?? {}),
+      ),
+    cursorCloudPullIntoLane: async (
+      agentId: string,
+    ): Promise<CursorCloudPullIntoLaneResult> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "pullCursorCloudAgentIntoLane",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudPullIntoLane, { agentId }),
+      ),
+    cursorCloudResolveLane: async (
+      agentId: string,
+    ): Promise<{ laneId: string; laneName: string; created: boolean }> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "resolveCursorCloudAgentLane",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudResolveLane, { agentId }),
+      ),
+    cursorCloudStopRun: async (
+      agentId: string,
+    ): Promise<{ stopped: boolean }> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "stopCursorCloudAgentRun",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudStopRun, { agentId }),
+      ),
+    onCursorCloudFleetEvent: (cb: (event: CursorCloudFleetEvent) => void): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: CursorCloudFleetEvent,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.aiCursorCloudFleetEvent, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC.aiCursorCloudFleetEvent, listener);
+      };
+    },
   },
   transcription: {
     // Hand the captured 16 kHz mono PCM to the main process as a transferable

@@ -228,6 +228,17 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /cloud to the ADE Code right pane", () => {
+    const parsed = parseCommand("/cloud");
+    expect(parsed?.spec?.name).toBe("/cloud");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/clo")).toContainEqual(expect.objectContaining({
+      name: "/cloud",
+      source: "ade",
+      description: "List Cursor Cloud agents for this project",
+    }));
+  });
+
   it("routes runtime commands to chat", () => {
     const parsed = parseCommand("/ship now", [
       { name: "/ship", description: "Ship it", source: "sdk" },

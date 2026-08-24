@@ -119,6 +119,10 @@ struct ContentView: View {
         LinearPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
+      .sheet(isPresented: $syncService.cursorCloudPanePresented) {
+        CursorCloudPaneSheet(syncService: syncService)
+          .environmentObject(syncService)
+      }
       // Presented rather than bound to the request itself: the card's stage
       // changes under a stable id as the wake runs, and `sheet(item:)` would
       // keep rendering the state the card was opened with.

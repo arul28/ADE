@@ -265,6 +265,9 @@ import type {
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
   CursorCloudWatchMirrorRequest,
+  CursorCloudFleetResult,
+  CursorCloudFleetEvent,
+  CursorCloudPullIntoLaneResult,
   CursorAgentUsage,
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
@@ -1157,6 +1160,22 @@ declare global {
         cursorCloudWatchMirror: (
           args: CursorCloudWatchMirrorRequest,
         ) => Promise<void>;
+        cursorCloudFleet: (args?: {
+          includeArchived?: boolean;
+          limit?: number;
+        }) => Promise<CursorCloudFleetResult>;
+        cursorCloudPullIntoLane: (
+          agentId: string,
+        ) => Promise<CursorCloudPullIntoLaneResult>;
+        cursorCloudResolveLane: (
+          agentId: string,
+        ) => Promise<{ laneId: string; laneName: string; created: boolean }>;
+        cursorCloudStopRun: (
+          agentId: string,
+        ) => Promise<{ stopped: boolean }>;
+        onCursorCloudFleetEvent: (
+          cb: (event: CursorCloudFleetEvent) => void,
+        ) => () => void;
       };
       transcription: {
         transcribe: (

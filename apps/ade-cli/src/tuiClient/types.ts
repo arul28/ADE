@@ -317,6 +317,9 @@ export type RightPaneContent =
       title: string;
       rows: string[];
       emptyText?: string;
+      // Dim trailing line under the rows — for notes that outlive a selection
+      // (e.g. pointing at where the real management surface lives).
+      footnote?: string;
       action?: {
         // "snooze-duration" rows are duration choices, not sessions: the ids are
         // SnoozeDurationKey values and the target session is held alongside the

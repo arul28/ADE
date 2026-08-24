@@ -1109,6 +1109,71 @@ export type CursorCloudArtifactDownload = {
   sizeBytes: number;
 };
 
+/**
+ * Precise run-level status for a fleet row. The agent list only reports
+ * running/finished/error; creating/cancelled/expired come from the latest run.
+ */
+export type CursorCloudFleetRunStatus =
+  | "creating"
+  | "running"
+  | "finished"
+  | "error"
+  | "cancelled"
+  | "expired";
+
+export type CursorCloudFleetOwnership = {
+  sessionId: string | null;
+  sessionTitle: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  /** Linear identifier such as ADE-12, from the owning lane. */
+  linearIssueId: string | null;
+};
+
+export type CursorCloudFleetEntry = {
+  agent: CursorCloudAgentSummary;
+  /** Latest-run status when known; falls back to the agent list status. */
+  runStatus?: CursorCloudFleetRunStatus;
+  latestRunId: string | null;
+  branch: string | null;
+  prUrl: string | null;
+  modelId: string | null;
+  ownership: CursorCloudFleetOwnership;
+  /**
+   * Why this entry is in the open project's fleet: a linked ADE session
+   * ("session"), a repo match against the project origin ("repo"), or both.
+   */
+  matchedBy: "session" | "repo" | "both";
+};
+
+export type CursorCloudFleetRelayState = "unconfigured" | "ready" | "error";
+
+export type CursorCloudFleetResult = {
+  items: CursorCloudFleetEntry[];
+  relayState: CursorCloudFleetRelayState;
+  lastEventAt: string | null;
+  fetchedAt: string;
+};
+
+export type CursorCloudPullIntoLaneResult = {
+  status: "pulled" | "created_lane";
+  laneId: string;
+  laneName: string;
+  sessionId: string | null;
+  mergedBranch: string;
+};
+
+/** Relay wake for the fleet view; also drives the top-bar finish badge. */
+export type CursorCloudFleetEvent = {
+  agentId: string;
+  status: string;
+  summary: string;
+  branchName: string | null;
+  prUrl: string | null;
+  eventId: string;
+  createdAt: string;
+};
+
 export type CursorCloudOpenChatRequest = {
   cloudAgentId: string;
   laneId: string;

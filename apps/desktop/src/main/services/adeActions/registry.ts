@@ -681,6 +681,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cursorCloudFollowUp",
     "openCursorCloudChat",
     "watchCursorCloudMirror",
+    "getCursorCloudFleet",
+    "resolveCursorCloudAgentLane",
+    "pullCursorCloudAgentIntoLane",
+    "stopCursorCloudAgentRun",
   ],
   onboarding: [
     "complete",
@@ -2992,6 +2996,23 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         watching: args.watching,
       });
     },
+    getCursorCloudFleet: (args?: { includeArchived?: boolean; limit?: number }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").getFleet({
+        includeArchived: args?.includeArchived !== false,
+        ...(args?.limit !== undefined ? { limit: args.limit } : {}),
+      }),
+    resolveCursorCloudAgentLane: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").resolveLaneForAgent(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
+    pullCursorCloudAgentIntoLane: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").pullIntoLane(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
+    stopCursorCloudAgentRun: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").stopAgentRun(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
   };
 }
 
