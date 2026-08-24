@@ -41,8 +41,8 @@ function readCursorVisibilityCached(
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) return Promise.resolve(entry.value);
 
-  entry.inFlight = window.ade.ai
-    .getStatus()
+  entry.inFlight = Promise.resolve()
+    .then(() => window.ade.ai.getStatus())
     .then((status) => {
       const nextValue = status.providerConnections?.cursor?.authAvailable === true
         || status.availableProviders.cursor === true;

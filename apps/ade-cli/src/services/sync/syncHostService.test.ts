@@ -5962,6 +5962,10 @@ describe("CTO-gated Linear sync commands", () => {
         "prs.unstackGithubStack",
         "ai.openCursorCloudChat",
         "ai.watchCursorCloudMirror",
+        "ai.cursorCloudFleet",
+        "ai.cursorCloudResolveLane",
+        "ai.cursorCloudPullIntoLane",
+        "ai.cursorCloudStopRun",
         "chat.listPromptStashes",
         "chat.createPromptStash",
         "chat.deletePromptStash",
@@ -5976,6 +5980,9 @@ describe("CTO-gated Linear sync commands", () => {
       const viewerBlockedActions = new Set<string>([
         "cto.setLinearToken",
         "cto.clearLinearToken",
+        // Pull mutates host lane worktrees (fetch + merge), so like
+        // chat.launchCli it is refused for read-only viewers.
+        "ai.cursorCloudPullIntoLane",
       ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
