@@ -2404,11 +2404,6 @@ private func workTimelinePresentationSignature(
   return hasher.finalize()
 }
 
-private func workTimelineCombineTextSignature(_ text: String, into hasher: inout Hasher) {
-  hasher.combine(text.utf8.count)
-  hasher.combine(text.hashValue)
-}
-
 /// Prefers the digest the snapshot fold stamped on the message; only messages
 /// built outside the fold pay to hash their text here.
 private func workTimelineCombineMessageTextSignature(_ message: WorkChatMessage, into hasher: inout Hasher) {
