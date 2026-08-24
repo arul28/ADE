@@ -118,6 +118,8 @@ import {
   readSimulatorSessionHint,
   reattachSimulatorWindowForCapture,
   releaseSimulatorParkingFollow,
+  releaseSimulatorParkingHolder,
+  retainSimulatorParkingFollow,
   revealSimulatorWindow,
   SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS,
 } from "../ios/simulatorWindowCapture";
@@ -8395,6 +8397,12 @@ export function registerIpc({
     if (result.backend === "simulator-window-capture") {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       const parkingWindow = claimSimulatorParkingWindow(browserWindow);
+      // A started stream is the one thing that owes a matching
+      // `releaseWindowParking`, so it is the only claim that takes a holder.
+      // The discovery sweep below and the launch handler above claim without
+      // holding: they are polled or fire-and-forget, and counting them would
+      // mean the count never came back down.
+      retainSimulatorParkingFollow(browserWindow);
       // A stream starting is the capture session attaching: place the window
       // once here, then leave it to the user.
       await attachSimulatorWindowForCapture(parkingWindow);
@@ -8463,8 +8471,12 @@ export function registerIpc({
   // enough on its own: with a runtime bound, `shutdown` goes to the runtime
   // action and this process never sees it, so a stale follow kept nudging (and
   // relaunching) Simulator.app on every ADE window move.
-  ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (): Promise<{ ok: true }> => {
-    releaseSimulatorParkingFollow();
+  //
+  // Scoped to the claimant, and refcounted within it: two drawers can be open
+  // in one window (a chat pane plus the Work sidebar's iOS tab), and the first
+  // to close must not drop a claim the other still depends on.
+  ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (event): Promise<{ ok: true }> => {
+    releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender));
     return { ok: true };
   });
 

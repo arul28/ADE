@@ -1539,6 +1539,60 @@ describe("ChatIosSimulatorPanel", () => {
     expect(await screen.findByText("Build")).toBeTruthy();
   });
 
+  // The Work sidebar's iOS tab is lane-scoped but still carries a sessionId to
+  // route its own actions. Reading that id here left it with a blank stepper
+  // for the whole of any launch another chat in the lane started.
+  it("accepts another chat's launch progress when chat ownership is ignored", async () => {
+    const { emit } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        laneId="lane-1"
+        projectRoot="/tmp/project"
+        ignoreChatOwnership
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      emit({
+        type: "launch-progress",
+        progress: {
+          launchId: "launch-chat-2",
+          step: "build-app",
+          status: "running",
+          message: "Building the lane's app",
+          detail: null,
+          chatSessionId: "chat-2",
+          laneId: "lane-1",
+          updatedAt: new Date().toISOString(),
+        },
+      } as never);
+    });
+
+    expect(await screen.findByText("Build")).toBeTruthy();
+
+    // Lane scoping is the only scoping this surface wants, and it still applies.
+    act(() => {
+      emit({
+        type: "launch-progress",
+        progress: {
+          launchId: "launch-other-lane",
+          step: "install-app",
+          status: "running",
+          message: "Installing another lane's app",
+          detail: null,
+          chatSessionId: "chat-3",
+          laneId: "lane-2",
+          updatedAt: new Date().toISOString(),
+        },
+      } as never);
+    });
+
+    await waitFor(() => expect(screen.queryByText("Install")).toBeNull());
+  });
+
   // buildIosSimToolChips(null) reads "Xcode missing / Runtime missing", so an
   // unguarded row accused a healthy Mac on every drawer open.
   it("does not show tool chips before the first status lands", async () => {
@@ -1615,5 +1669,30 @@ describe("ChatIosSimulatorPanel", () => {
     view.unmount();
 
     await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalled());
+  });
+
+  // Starting the stream arms the parking follow before discovery runs, and a
+  // discovery that fails is terminal — recovery needs a live stream. Without a
+  // release the follow kept re-parking Simulator.app on every ADE window move
+  // while the drawer said the live view had failed.
+  it("releases the host window-parking follow when the live view cannot start", async () => {
+    const { api } = installIosSimulatorApi();
+    api.listSimulatorWindowSources.mockResolvedValue({
+      sources: [],
+      windowState: null,
+      message: "Screen recording is off for ADE.",
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalled());
+    expect(await screen.findByText(/Could not start the live view/)).toBeTruthy();
   });
 });

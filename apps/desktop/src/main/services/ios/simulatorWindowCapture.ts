@@ -390,6 +390,11 @@ async function prepareSimulatorWindowForCapture(
 let simulatorParkingWindow: BrowserWindow | null = null;
 let simulatorParkingTimer: NodeJS.Timeout | null = null;
 let cleanupSimulatorParkingFollow: (() => void) | null = null;
+// How many live capture surfaces in the claiming window depend on the follow.
+// Two are reachable at once — a chat pane's drawer and the Work sidebar's iOS
+// tab — and the first of them to close used to drop the claim out from under
+// the other, which then re-attached and re-sized a window the user had sized.
+let simulatorParkingHolders = 0;
 
 function scheduleSimulatorParking(window: BrowserWindow) {
   // Nothing to follow until a capture session has parked the window once, and
@@ -428,6 +433,10 @@ export function followSimulatorWindowUnderAde(window: BrowserWindow | null) {
       window.off("closed", onClosed);
     }
     if (simulatorParkingWindow === window) simulatorParkingWindow = null;
+    // The claim is gone, so its holders are too: a closed window must not leave
+    // a positive count that the next claimant would have to release its way out
+    // of.
+    simulatorParkingHolders = 0;
     simulatorAdeSetFrame = null;
     simulatorFollowSuspended = false;
     cleanupSimulatorParkingFollow = null;
@@ -442,6 +451,37 @@ export function activeSimulatorParkingWindow(): BrowserWindow | null {
 /** Drops the follow listeners and forgets the parked frame. Safe to call unparked. */
 export function releaseSimulatorParkingFollow(): void {
   cleanupSimulatorParkingFollow?.();
+}
+
+/**
+ * Registers one capture surface as depending on the current claim.
+ *
+ * Only the window that owns the claim can hold it: a window that lost the race
+ * never parked anything, so it has nothing to release later either.
+ */
+export function retainSimulatorParkingFollow(window: BrowserWindow | null): void {
+  if (!window || activeSimulatorParkingWindow() !== window) return;
+  simulatorParkingHolders += 1;
+}
+
+/**
+ * Drops one holder and, at zero, the follow itself.
+ *
+ * Release is scoped to the claimant: a second window's drawer closing must not
+ * tear down a follow it never owned. Within the claimant, the last holder out
+ * turns off the lights — an earlier one leaving keeps the parked frame, so the
+ * surviving surface is not re-attached (which would re-position *and* re-size
+ * the Simulator window the user had since sized themselves).
+ *
+ * Returns whether the follow was actually dropped. Never goes negative: a
+ * double release from one surface finds no claim to release the second time.
+ */
+export function releaseSimulatorParkingHolder(window: BrowserWindow | null): boolean {
+  if (!window || activeSimulatorParkingWindow() !== window) return false;
+  if (simulatorParkingHolders > 0) simulatorParkingHolders -= 1;
+  if (simulatorParkingHolders > 0) return false;
+  releaseSimulatorParkingFollow();
+  return true;
 }
 
 /**

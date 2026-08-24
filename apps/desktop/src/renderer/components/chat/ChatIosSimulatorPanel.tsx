@@ -1460,8 +1460,14 @@ export function ChatIosSimulatorPanel({
         // names an owner is only ours if the name matches. Unstamped progress
         // is still accepted: an older host sends none, and dropping it would
         // leave the stepper permanently blank.
+        //
+        // `ignoreChatOwnership` is the lane-scoped surface (the Work sidebar's
+        // iOS tab). It still carries a sessionId to route its own actions, so
+        // reading that id here would drop every step of a launch another chat
+        // in the same lane started — a blank stepper for the whole build. The
+        // lane check below is the only scoping that surface wants.
         const owningChatSessionId = trimmedOrNull(event.progress.chatSessionId);
-        if (owningChatSessionId && sessionId && owningChatSessionId !== sessionId) return;
+        if (!ignoreChatOwnership && owningChatSessionId && sessionId && owningChatSessionId !== sessionId) return;
         const owningLaneId = trimmedOrNull(event.progress.laneId);
         if (owningLaneId && laneId && owningLaneId !== laneId) return;
         setLaunchProgress((current) => {
@@ -1508,7 +1514,7 @@ export function ChatIosSimulatorPanel({
     return () => {
       unsubscribe();
     };
-  }, [laneId, onAddContext, refreshStatus, sessionId]);
+  }, [ignoreChatOwnership, laneId, onAddContext, refreshStatus, sessionId]);
 
   useEffect(() => {
     void refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined).catch((error) => {
@@ -1592,12 +1598,30 @@ export function ChatIosSimulatorPanel({
       try {
         stopRendererLiveVisual();
         await window.ade.iosSimulator.stopStream().catch(() => {});
+        // Starting the stream arms one parking hold on the host, so a restart
+        // (a device switch) must drop the previous one first. Otherwise this
+        // panel holds two and its single release on unmount never reaches zero.
+        if (streamStartedByPanelRef.current) {
+          streamStartedByPanelRef.current = false;
+          await window.ade.iosSimulator.releaseWindowParking().catch(() => {});
+        }
         await startWindowCaptureVisual(device);
         if (cancelled) {
           stopRendererLiveVisual();
         }
       } catch (streamError) {
         if (cancelled) return;
+        // Giving up here is terminal: nothing retries a stream that never
+        // produced a frame. The host already armed the parking follow when
+        // `startStream` succeeded, so without this release it keeps re-parking
+        // Simulator.app on every ADE window move while the drawer says the live
+        // view failed. `streamStartedByPanelRef` deliberately stays set — the
+        // stream itself did start, so unmount still has to reach `stopStream`;
+        // the host makes the second release a no-op. A failure before
+        // `startStream` returned armed nothing, so it releases nothing.
+        if (streamStartedByPanelRef.current) {
+          void window.ade.iosSimulator.releaseWindowParking().catch(() => {});
+        }
         const message = streamError instanceof Error ? streamError.message : String(streamError);
         setLiveVisual({
           kind: "window",
