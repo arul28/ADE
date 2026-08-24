@@ -108,6 +108,80 @@ struct WorkMarkdownBlock: Identifiable, Equatable {
   }
 }
 
+/// Where a rendered fenced code block sits inside the message it was sliced
+/// from, so Copy and the full-screen viewer can reach the whole block.
+///
+/// The transcript renders a *bounded slice* of a long message, so the code a
+/// block view holds may be a prefix (head-anchored preview) or a suffix
+/// (tail-anchored preview, which also gets a synthetic opening fence so the
+/// slice parses at all) of the real thing. The slice's code blocks are matched
+/// to the full message's by ordinal — from the front for a head slice, from the
+/// back for a tail slice. Every block on the anchored side of the cut parses
+/// identically in both texts, so those ordinals line up; the only partial block
+/// is the one the cut runs through, which is the last (head) or first (tail).
+struct WorkCodeBlockSource {
+  let markdown: String
+  let ordinal: Int
+  let countsFromEnd: Bool
+
+  /// The whole block, or `fallback` when the slice cannot be located (a message
+  /// edited between render and tap, or a slice that parsed to more code blocks
+  /// than the source has).
+  func resolvedCode(fallback: String) -> String {
+    workFullCodeBlockText(
+      in: markdown,
+      ordinal: ordinal,
+      countsFromEnd: countsFromEnd,
+      fallback: fallback
+    )
+  }
+}
+
+extension WorkCodeBlockSource: Equatable {
+  /// `markdown` is compared by length, not content. It only feeds tap-time
+  /// resolution, and every edit that can reach a rendered block also changes
+  /// the block itself — which the owning row already compares.
+  static func == (lhs: WorkCodeBlockSource, rhs: WorkCodeBlockSource) -> Bool {
+    lhs.ordinal == rhs.ordinal
+      && lhs.countsFromEnd == rhs.countsFromEnd
+      && lhs.markdown.utf8.count == rhs.markdown.utf8.count
+  }
+}
+
+/// The authoritative text of the `ordinal`-th fenced code block of `markdown`.
+func workFullCodeBlockText(
+  in markdown: String,
+  ordinal: Int,
+  countsFromEnd: Bool,
+  fallback: String
+) -> String {
+  guard ordinal >= 0 else { return fallback }
+  var codeBlocks: [String] = []
+  for block in parseMarkdownBlocks(markdown) {
+    guard case .code(_, let code) = block.kind else { continue }
+    codeBlocks.append(code)
+  }
+  let index = countsFromEnd ? codeBlocks.count - 1 - ordinal : ordinal
+  guard codeBlocks.indices.contains(index) else { return fallback }
+  return codeBlocks[index]
+}
+
+/// Code-block ordinals for the blocks of one rendered slice, keyed by block id.
+/// A tail-anchored slice numbers from the end so its ordinals match the full
+/// message's.
+func workCodeBlockOrdinals(_ blocks: [WorkMarkdownBlock], countsFromEnd: Bool) -> [String: Int] {
+  var ordinals: [String: Int] = [:]
+  var forward = 0
+  for block in blocks {
+    guard case .code = block.kind else { continue }
+    ordinals[block.id] = forward
+    forward += 1
+  }
+  guard countsFromEnd else { return ordinals }
+  let total = forward
+  return ordinals.mapValues { total - 1 - $0 }
+}
+
 func parseMarkdownBlocks(_ markdown: String) -> [WorkMarkdownBlock] {
   let key = workStableDigest(markdown) as NSString
   if let cached = workMarkdownBlocksCache.object(forKey: key) {
