@@ -15,6 +15,7 @@ import {
 } from "./iosSimulatorService";
 import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
+  IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
 } from "../../../shared/types/iosSimulator";
 import type { IosSimulatorEventPayload } from "../../../shared/types";
@@ -1382,10 +1383,10 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       // the ADE process can write.
       const escape = path.join(parent, "outside.png");
       await expect(service.screenshot({ projectRoot, outPath: "../outside.png" }))
-        .rejects.toThrow(/--out must stay within the build root/);
+        .rejects.toThrow(new RegExp(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE));
       expect(fs.existsSync(escape)).toBe(false);
       await expect(service.screenshot({ projectRoot, outPath: escape }))
-        .rejects.toThrow(/--out must stay within the build root/);
+        .rejects.toThrow(new RegExp(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE));
       expect(fs.existsSync(escape)).toBe(false);
 
       // An absolute path that genuinely is inside the root stays allowed.

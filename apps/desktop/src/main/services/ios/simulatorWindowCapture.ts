@@ -80,7 +80,7 @@ async function runMacUtility(
 // osascript reports a refused Automation (Apple events) grant as -1743, and a
 // missing Accessibility grant as -1719/-25211. Either way ADE cannot drive the
 // Simulator window, and the fix is the same Settings pane.
-export const AUTOMATION_DENIED_PATTERN =
+const AUTOMATION_DENIED_PATTERN =
   /-1743|-25211|-10004|not authoriz|not allowed assistive access|is not allowed to send keystrokes/i;
 
 function isAutomationDenied(result: MacUtilityResult): boolean {
@@ -89,7 +89,7 @@ function isAutomationDenied(result: MacUtilityResult): boolean {
 
 // desktopCapturer hands back black thumbnails without the Screen Recording
 // grant, and macOS gives no error — the drawer just showed an empty live view.
-export function screenCaptureAccessStatus(): IosSimulatorPermissionStatus {
+function screenCaptureAccessStatus(): IosSimulatorPermissionStatus {
   if (process.platform !== "darwin") return "granted";
   try {
     return systemPreferences.getMediaAccessStatus("screen") as IosSimulatorPermissionStatus;
@@ -98,7 +98,7 @@ export function screenCaptureAccessStatus(): IosSimulatorPermissionStatus {
   }
 }
 
-export function permissionHint(
+function permissionHint(
   kind: IosSimulatorPrivacyPane,
   status: IosSimulatorPermissionStatus,
 ): IosSimulatorWindowPermissionHint {
@@ -113,7 +113,7 @@ export function permissionHint(
   };
 }
 
-export function windowIssueMessage(issue: IosSimulatorWindowState["issue"]): string | null {
+function windowIssueMessage(issue: IosSimulatorWindowState["issue"]): string | null {
   switch (issue) {
     case "not-running":
       return "The simulator is not running. Launch it from ADE again.";
@@ -243,7 +243,7 @@ type SimulatorWindowFrame = { x: number; y: number; width: number; height: numbe
 let simulatorAdeSetFrame: SimulatorWindowFrame | null = null;
 let simulatorFollowSuspended = false;
 
-export function simulatorHasBeenParked(): boolean {
+function simulatorHasBeenParked(): boolean {
   return simulatorAdeSetFrame !== null;
 }
 
@@ -291,7 +291,7 @@ function simulatorWorkArea(adeBounds: SimulatorWindowFrame | null) {
  * the user has not taken the window over, keeps its position following ADE.
  * It never resizes a window the user chose and never focuses ADE.
  */
-export async function prepareSimulatorWindowForCapture(
+async function prepareSimulatorWindowForCapture(
   window: BrowserWindow | null,
   options: { attach?: boolean } = {},
 ): Promise<void> {
@@ -574,4 +574,16 @@ export async function reattachSimulatorWindowForCapture(
 ): Promise<void> {
   await prepareSimulatorWindowForCapture(parkingWindow, { attach: true });
   await settleWithin(600, options.remainingMs);
+}
+
+/**
+ * The one-time placement that starts a capture session: positions AND sizes the
+ * Simulator window beside ADE. This is the only attach spelling callers outside
+ * this module get — `prepareSimulatorWindowForCapture` also serves the polite
+ * follow-up nudges, and every external caller has always wanted the attach.
+ */
+export function attachSimulatorWindowForCapture(
+  window: BrowserWindow | null,
+): Promise<void> {
+  return prepareSimulatorWindowForCapture(window, { attach: true });
 }

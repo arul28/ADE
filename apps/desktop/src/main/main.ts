@@ -196,7 +196,6 @@ import type {
   SyncProjectSwitchResultPayload,
   UpdateInstallImpact,
 } from "../shared/types";
-import type { IosSimulatorDrawerMode } from "../shared/types/iosSimulator";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -4023,58 +4022,11 @@ app.whenReady().then(async () => {
         });
       });
     });
-    // Only the two actions whose whole point is showing the user something on
-    // screen open the drawer. Launch, input, streaming, and preview rendering
-    // are routine agent work; stealing the screen for them made the drawer feel
-    // like a popup. The renderer builds its own affordance from `session-started`.
-    const iosSimulatorDrawerActionModes: Partial<Record<string, IosSimulatorDrawerMode>> = {
-      inspectPoint: "inspect",
-      selectPoint: "inspect",
-      launch: "interact",
-    };
-    const requestIosSimulatorDrawerOpen = (
-      action: keyof typeof iosSimulatorDrawerActionModes,
-      rawArgs: unknown,
-      result?: unknown,
-    ): void => {
-      const mode = iosSimulatorDrawerActionModes[action];
-      if (!mode) return;
-      const argRecord = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
-        ? rawArgs as Record<string, unknown>
-        : null;
-      const resultRecord = result && typeof result === "object" && !Array.isArray(result)
-        ? result as Record<string, unknown>
-        : null;
-      const chatSessionId = readString(argRecord, "chatSessionId") ?? readString(resultRecord, "chatSessionId") ?? null;
-      const laneId = readString(argRecord, "laneId") ?? readString(resultRecord, "laneId") ?? null;
-      emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, {
-        type: "drawer-open-requested",
-        action,
-        mode,
-        chatSessionId,
-        laneId,
-      });
-    };
-    const iosSimulatorRpcService = {
-      ...iosSimulatorService,
-      inspectPoint: async (arg: Parameters<typeof iosSimulatorService.inspectPoint>[0]) => {
-        const result = await iosSimulatorService.inspectPoint(arg);
-        requestIosSimulatorDrawerOpen("inspectPoint", arg, result);
-        return result;
-      },
-      launch: async (arg?: Parameters<typeof iosSimulatorService.launch>[0]) => {
-        const result = await iosSimulatorService.launch(arg);
-        // Opt-in only: the drawer passes openDrawer when the user pressed its
-        // own launch button.
-        if (arg?.openDrawer === true) requestIosSimulatorDrawerOpen("launch", arg, result);
-        return result;
-      },
-      selectPoint: async (arg: Parameters<typeof iosSimulatorService.selectPoint>[0]) => {
-        const result = await iosSimulatorService.selectPoint(arg);
-        requestIosSimulatorDrawerOpen("selectPoint", arg, result);
-        return result;
-      },
-    };
+    // `drawer-open-requested` is emitted by the service itself, not wrapped on
+    // here: production launches go to the brain daemon, which has no wrapper, so
+    // a wrapper-only emitter made `--open-drawer` and an agent's inspect/select
+    // reveal inert on the path agents actually use. Both hosts feed the same
+    // renderer subscriber, so wrapping here as well would double-open.
     const appControlService = createAppControlService({
       projectRoot,
       logger,
@@ -4600,7 +4552,7 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       computerUseArtifactBrokerService,
-      iosSimulatorService: iosSimulatorRpcService,
+      iosSimulatorService,
       appControlService,
       builtInBrowserService,
       syncHostService: syncService.getHostService(),

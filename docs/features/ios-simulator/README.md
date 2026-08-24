@@ -97,8 +97,9 @@ The resolved root comes back on the launch result and on the session as
 5. **Live view.** `startStream()` starts the Simulator.app window stream; the
    compatibility `backend: "auto"` input normalizes to
    `simulator-window-capture` and there is no separate ADE-managed backend. The
-   renderer asks IPC for capturable Simulator window sources, passing the bound
-   local project root, then attaches a desktop-capture stream to a `<video>`.
+   renderer asks IPC for capturable Simulator window sources — the preload
+   derives the binding itself — then attaches a desktop-capture stream to a
+   `<video>`.
    `prepareSimulatorWindowForCapture()` unhides, sizes, and parks the simulator
    window under the owning ADE window; `followSimulatorWindowUnderAde()`
    re-parks on ADE move/resize.

@@ -708,8 +708,6 @@ import type {
   SearchQueryArgs,
   SearchQueryResult,
   SearchRebuildResult,
-} from "../shared/types";
-import type {
   IosSimulatorPrivacyPane,
   IosSimulatorWindowCaptureSessionHint,
   IosSimulatorWindowSourcesResult,
@@ -2061,22 +2059,25 @@ declare global {
           pane: IosSimulatorPrivacyPane;
         }) => Promise<{ ok: boolean }>;
         revealSimulator: () => Promise<{ ok: boolean; message: string | null }>;
+        // No projectRoot: tapping drives the booted device, and the service
+        // never resolves a build root for it.
         tap: (args: {
           deviceUdid?: string | null;
-          projectRoot?: string | null;
           x: number;
           y: number;
         }) => Promise<{ ok: true }>;
         typeText: (args: {
           deviceUdid?: string | null;
-          projectRoot?: string | null;
           text: string;
         }) => Promise<{ ok: true }>;
         drag: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
         swipe: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
+        // Mirrors the shared IosSimulatorPoint: selection matches source
+        // against the caller's tree, so the lane has to ride the wire.
         selectPoint: (args: {
           deviceUdid?: string | null;
           projectRoot?: string | null;
+          laneId?: string | null;
           x: number;
           y: number;
         }) => Promise<IosSimulatorSelectResult>;

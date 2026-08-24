@@ -104,24 +104,21 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
-} from "../../../shared/types";
-import type {
   IosSimulatorPrivacyPane,
   IosSimulatorWindowSourcesResult,
 } from "../../../shared/types";
 import {
   activeSimulatorParkingWindow,
+  attachSimulatorWindowForCapture,
   ensureSimulatorWindowCapturable,
   followSimulatorWindowUnderAde,
   getSimulatorWindowState,
   listSimulatorWindowSources,
   openSimulatorPrivacyPane,
-  prepareSimulatorWindowForCapture,
   readSimulatorSessionHint,
   reattachSimulatorWindowForCapture,
   releaseSimulatorParkingFollow,
   revealSimulatorWindow,
-  simulatorHasBeenParked,
   SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS,
 } from "../ios/simulatorWindowCapture";
 import {
@@ -8335,7 +8332,7 @@ export function registerIpc({
     if (!keepSimulatorInBackground) {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       const parkingWindow = claimSimulatorParkingWindow(browserWindow, { force: true });
-      await prepareSimulatorWindowForCapture(parkingWindow, { attach: true });
+      await attachSimulatorWindowForCapture(parkingWindow);
     }
     return result;
   });
@@ -8400,7 +8397,7 @@ export function registerIpc({
       const parkingWindow = claimSimulatorParkingWindow(browserWindow);
       // A stream starting is the capture session attaching: place the window
       // once here, then leave it to the user.
-      await prepareSimulatorWindowForCapture(parkingWindow, { attach: true });
+      await attachSimulatorWindowForCapture(parkingWindow);
     }
     return result;
   });

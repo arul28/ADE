@@ -764,8 +764,6 @@ import type {
   SearchQueryArgs,
   SearchQueryResult,
   SearchRebuildResult,
-} from "../shared/types";
-import type {
   IosSimulatorPrivacyPane,
   IosSimulatorWindowCaptureSessionHint,
   IosSimulatorWindowSourcesResult,
@@ -7337,7 +7335,6 @@ contextBridge.exposeInMainWorld("ade", {
     },
     tap: async (args: {
       deviceUdid?: string | null;
-      projectRoot?: string | null;
       x: number;
       y: number;
     }): Promise<{ ok: true }> =>
@@ -7346,7 +7343,6 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     typeText: async (args: {
       deviceUdid?: string | null;
-      projectRoot?: string | null;
       text: string;
     }): Promise<{ ok: true }> =>
       callProjectRuntimeActionOr("ios_simulator", "typeText", { args }, () =>
@@ -7363,6 +7359,7 @@ contextBridge.exposeInMainWorld("ade", {
     selectPoint: async (args: {
       deviceUdid?: string | null;
       projectRoot?: string | null;
+      laneId?: string | null;
       x: number;
       y: number;
     }): Promise<IosSimulatorSelectResult> =>

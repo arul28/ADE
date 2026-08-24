@@ -204,8 +204,12 @@ describe("ipcInvokeTimeoutMs", () => {
 
   it("extends iOS Preview Lab matching and workspace readiness timeouts", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorResolvePreviewMatch)).toBe(2 * 60_000);
-    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(2 * 60_000);
-    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderCurrentPreview)).toBe(2 * 60_000);
+    // The three compiling channels carry the same 10 minute budget the local
+    // runtime map gives them, so the remote path that routes through them via
+    // RUNTIME_ACTION_CHANNEL no longer cuts a build short.
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderCurrentPreview)).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderPreview)).toBe(10 * 60_000);
     // Preview Lab compiles the target before it can render a frame, so the
     // runtime-backed path composes project-setup margin with a 10 minute
     // action budget rather than the 30s default it used to fall through to.
@@ -226,7 +230,17 @@ describe("ipcInvokeTimeoutMs", () => {
       id: "target-1",
       projectId: "project-1",
       request: { domain: "ios_simulator", action: "renderPreview", args: {} },
-    }])).toBe(2 * 60_000);
+    }])).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "ensurePreviewWorkspace", args: {} },
+    }])).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "renderCurrentPreview", args: {} },
+    }])).toBe(10 * 60_000);
   });
 
   // ADE-122 regression: a handoff (AI brief + session creation + first-message

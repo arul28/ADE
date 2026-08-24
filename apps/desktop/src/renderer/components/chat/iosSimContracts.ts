@@ -11,15 +11,10 @@ import type {
   IosSimulatorWindowSourcesResult,
 } from "../../../shared/types";
 
-export type IosSimSettingsPane = IosSimulatorPrivacyPane;
-export type IosSimWindowSourcesResult = IosSimulatorWindowSourcesResult;
-
 /** Opens the macOS privacy pane the blocked capability lives in. */
-export async function openIosSimSettingsPane(pane: IosSimSettingsPane): Promise<void> {
+export async function openIosSimSettingsPane(pane: IosSimulatorPrivacyPane): Promise<void> {
   await window.ade.iosSimulator.openSystemSettings({ pane });
 }
-
-export type IosSimRevealResult = { ok: boolean; message: string | null };
 
 /**
  * Un-hides, un-minimizes and activates Simulator.app — the one place ADE
@@ -30,7 +25,7 @@ export type IosSimRevealResult = { ok: boolean; message: string | null };
  * `ok`: reporting a refused reveal as a success is the exact silent failure the
  * blocker overlay exists to kill.
  */
-export async function revealSimulator(): Promise<IosSimRevealResult> {
+export async function revealSimulator(): Promise<{ ok: boolean; message: string | null }> {
   return window.ade.iosSimulator.revealSimulator();
 }
 
@@ -43,7 +38,7 @@ export async function revealSimulator(): Promise<IosSimRevealResult> {
  */
 export async function listWindowSourcesForSession(
   session: { deviceUdid: string; deviceName: string | null } | null,
-): Promise<IosSimWindowSourcesResult> {
+): Promise<IosSimulatorWindowSourcesResult> {
   return window.ade.iosSimulator.listSimulatorWindowSources(session ? { session } : undefined);
 }
 
@@ -74,10 +69,12 @@ export function readLaunchExtras(
   result: IosSimulatorLaunchResult | IosSimulatorSession | null | undefined,
 ): IosSimLaunchExtras {
   if (!result) return EMPTY_LAUNCH_EXTRAS;
-  const buildRoot = (result as { buildRoot?: unknown }).buildRoot;
+  // Both shapes declare these, so no cast is needed — only the runtime guards,
+  // because a session from an older host carries neither.
+  const { buildRoot, usedInstalledBinary } = result;
   return {
     buildRoot: typeof buildRoot === "string" ? buildRoot.trim() || null : null,
-    usedInstalledBinary: (result as { usedInstalledBinary?: unknown }).usedInstalledBinary === true,
+    usedInstalledBinary: usedInstalledBinary === true,
   };
 }
 

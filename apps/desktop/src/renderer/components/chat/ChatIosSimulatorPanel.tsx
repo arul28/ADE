@@ -13,6 +13,7 @@ import type {
   IosSimulatorLaunchProgress,
   IosSimulatorLaunchTarget,
   IosSimulatorDrawerMode,
+  IosSimulatorPrivacyPane,
   IosSimulatorStreamStatus,
   IosSimulatorStatus,
   IosSimulatorWindowState,
@@ -37,9 +38,9 @@ import {
   readLaunchExtras,
   revealSimulator,
   type IosSimLaunchExtras,
-  type IosSimSettingsPane,
 } from "./iosSimContracts";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
+import { normalizePathForComparison } from "../../lib/pathUtils";
 
 const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode";
 
@@ -47,13 +48,18 @@ const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/givi
  * String-level only — never touches the filesystem, because this runs in the
  * renderer and only decides whether to show a chip.
  *
- * Drops a trailing separator, and drops a leading `/private`: macOS firmlinks
- * mean the same directory is spelled `/var/folders/...` by one resolver and
- * `/private/var/folders/...` by another, and reporting that as "built somewhere
- * else" would be a false alarm on every temp-dir build.
+ * Drops a leading `/private`: macOS firmlinks mean the same directory is
+ * spelled `/var/folders/...` by one resolver and `/private/var/folders/...` by
+ * another, and reporting that as "built somewhere else" would be a false alarm
+ * on every temp-dir build. Everything else — separators, trailing slashes,
+ * `.`/`..` segments, and Windows drive-letter casing — is the canonical
+ * comparison normalizer's job rather than a second, case-sensitive spelling of
+ * it here.
  */
 function normalizeRootForCompare(value: string): string {
-  return value.trim().replace(/[/\\]+$/u, "").replace(/^\/private(?=\/)/u, "");
+  return normalizePathForComparison(
+    value.trim().replace(/[/\\]+$/u, "").replace(/^\/private(?=\/)/u, ""),
+  );
 }
 
 function isOwnedByOtherSessionError(error: unknown): boolean {
@@ -206,15 +212,6 @@ function deviceLabel(device: IosSimulatorDevice | null | undefined): string {
 function targetLabel(target: IosSimulatorLaunchTarget | null | undefined): string {
   if (!target) return "Choose app";
   return `${target.name}${target.bundleId ? ` - ${target.bundleId}` : ""}`;
-}
-
-function liveViewMessage(message: string): string {
-  return message
-    .replaceAll("Simulator.app", "Simulator")
-    .replace(/Simulator window capture/gi, "Live view")
-    .replace(/window capture/gi, "live view")
-    .replace(/visual stream/gi, "live view")
-    .replace(/live window stream/gi, "live view");
 }
 
 function pickSimulatorWindowSource(
@@ -778,7 +775,7 @@ export function ChatIosSimulatorPanel({
   const [simulatorWindowState, setSimulatorWindowState] = useState<IosSimulatorWindowState | null>(null);
   const [streamStatus, setStreamStatus] = useState<IosSimulatorStreamStatus | null>(null);
   const [launchProgress, setLaunchProgress] = useState<IosSimulatorLaunchProgress[]>([]);
-  const [launchExtras, setLaunchExtras] = useState<IosSimLaunchExtras>(EMPTY_LAUNCH_EXTRAS);
+  const [panelLaunchExtras, setPanelLaunchExtras] = useState<IosSimLaunchExtras>(EMPTY_LAUNCH_EXTRAS);
   const [frameStalled, setFrameStalled] = useState(false);
   const [revealError, setRevealError] = useState<string | null>(null);
   const [windowPollNonce, setWindowPollNonce] = useState(0);
@@ -1366,7 +1363,7 @@ export function ChatIosSimulatorPanel({
           await startWindowCaptureVisual(activeDevice);
           void refreshSnapshot({ silent: true, priority: true });
         } catch (windowError) {
-          const windowMessage = liveViewMessage(windowError instanceof Error ? windowError.message : String(windowError));
+          const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
           setLiveVisual({
             kind: "window",
             status: "error",
@@ -1447,7 +1444,7 @@ export function ChatIosSimulatorPanel({
       if (event.type === "stream-started" || event.type === "stream-status" || event.type === "stream-stopped" || event.type === "stream-error") {
         setStreamStatus(event.status);
         if (event.type === "stream-error") {
-          const errorMessage = event.status.lastError ? liveViewMessage(event.status.lastError) : null;
+          const errorMessage = event.status.lastError ?? null;
           setLiveVisual((current) => current ? { ...current, status: "error", error: errorMessage ?? current.error } : current);
           if (errorMessage) setMessage(errorMessage);
         }
@@ -1509,16 +1506,18 @@ export function ChatIosSimulatorPanel({
   const statusSupported = status?.supported ?? null;
   // The drawer is not always the thing that launched. An agent launches, the
   // user opens the drawer afterwards, and the session is then the only place
-  // the build root and the prebuilt flag exist — without this the "prebuilt —
-  // changes not included" warning never appeared on that path at all. A launch
-  // this panel ran stays authoritative: seed only into empty extras.
-  useEffect(() => {
-    if (!activeSession) return;
-    if (launchExtras.buildRoot || launchExtras.usedInstalledBinary) return;
-    const seeded = readLaunchExtras(activeSession);
-    if (!seeded.buildRoot && !seeded.usedInstalledBinary) return;
-    setLaunchExtras(seeded);
-  }, [activeSession, launchExtras.buildRoot, launchExtras.usedInstalledBinary]);
+  // the build root and the prebuilt flag exist — without this fallback the
+  // "prebuilt — changes not included" warning never appeared on that path at
+  // all. A launch this panel ran stays authoritative.
+  //
+  // Derived, not an effect that seeds its own state: the old version listed the
+  // state it wrote in its own dependency array, so it re-ran on every value it
+  // produced and the "is it already populated" guard was load-bearing rather
+  // than an optimisation.
+  const launchExtras = useMemo<IosSimLaunchExtras>(() => {
+    if (panelLaunchExtras.buildRoot || panelLaunchExtras.usedInstalledBinary) return panelLaunchExtras;
+    return readLaunchExtras(activeSession);
+  }, [activeSession, panelLaunchExtras]);
 
   useEffect(() => {
     // Keyed on primitives, not object identity, so a plain status refresh no
@@ -1554,7 +1553,7 @@ export function ChatIosSimulatorPanel({
         }
       } catch (streamError) {
         if (cancelled) return;
-        const message = liveViewMessage(streamError instanceof Error ? streamError.message : String(streamError));
+        const message = streamError instanceof Error ? streamError.message : String(streamError);
         setLiveVisual({
           kind: "window",
           status: "error",
@@ -1715,7 +1714,7 @@ export function ChatIosSimulatorPanel({
     setBusy(true);
     setLaunchBusy(true);
     setLaunchProgress([]);
-    setLaunchExtras(EMPTY_LAUNCH_EXTRAS);
+    setPanelLaunchExtras(EMPTY_LAUNCH_EXTRAS);
     setMessage(null);
     try {
       const session = await window.ade.iosSimulator.launch({
@@ -1731,7 +1730,7 @@ export function ChatIosSimulatorPanel({
         // own click on Launch, so it opts in.
         openDrawer: true,
       });
-      setLaunchExtras(readLaunchExtras(session));
+      setPanelLaunchExtras(readLaunchExtras(session));
       setSelectedDeviceUdid(session.deviceUdid);
       await refreshStatus();
       setMode("interact");
@@ -1864,11 +1863,11 @@ export function ChatIosSimulatorPanel({
     setTypedText("");
     armWindowCaptureRecoveryAfterInput();
     try {
-      await window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text });
+      await window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, text });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, projectRoot, selectedDeviceUdid, typedText]);
+  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, selectedDeviceUdid, typedText]);
 
   const updateInspectBounds = useCallback(() => {
     const image = imageRef.current;
@@ -2432,11 +2431,10 @@ export function ChatIosSimulatorPanel({
           : 1;
         armWindowCaptureRecoveryAfterInput();
         if (moved < 8) {
-          await window.ade.iosSimulator.tap({ deviceUdid: selectedDeviceUdid, projectRoot, x: point.x / controlScale, y: point.y / controlScale });
+          await window.ade.iosSimulator.tap({ deviceUdid: selectedDeviceUdid, x: point.x / controlScale, y: point.y / controlScale });
         } else {
           await window.ade.iosSimulator.drag({
             deviceUdid: selectedDeviceUdid,
-            projectRoot,
             startX: start.x / controlScale,
             startY: start.y / controlScale,
             endX: point.x / controlScale,
@@ -2448,7 +2446,7 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
+  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, liveSimulatorPointFromPointer, selectedDeviceUdid, snapshot?.screen.scale]);
 
   const handleVideoKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -2459,7 +2457,7 @@ export function ChatIosSimulatorPanel({
     if (event.key === "Enter") {
       event.preventDefault();
       armWindowCaptureRecoveryAfterInput();
-      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: "\n" }).catch((error) => {
+      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, text: "\n" }).catch((error) => {
         setMessage(error instanceof Error ? error.message : String(error));
       });
       return;
@@ -2467,11 +2465,11 @@ export function ChatIosSimulatorPanel({
     if (event.key.length === 1) {
       event.preventDefault();
       armWindowCaptureRecoveryAfterInput();
-      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: event.key }).catch((error) => {
+      void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, text: event.key }).catch((error) => {
         setMessage(error instanceof Error ? error.message : String(error));
       });
     }
-  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, projectRoot, selectedDeviceUdid]);
+  }, [armWindowCaptureRecoveryAfterInput, liveInputBlocked, liveInputBlockedMessage, selectedDeviceUdid]);
 
   const activeInspectElement = hoveredElement ?? selectedElement;
   const activeInspectSource = activeInspectElement?.source ?? null;
@@ -2556,7 +2554,7 @@ export function ChatIosSimulatorPanel({
       await startWindowCaptureVisual({ udid: device.udid, name: device.name });
       void refreshSnapshot({ silent: true, priority: true });
     } catch (error) {
-      const detail = liveViewMessage(error instanceof Error ? error.message : String(error));
+      const detail = error instanceof Error ? error.message : String(error);
       setLiveVisual({
         kind: "window",
         status: "error",
@@ -2573,7 +2571,7 @@ export function ChatIosSimulatorPanel({
     // A remote-bound project refuses this call outright. Swallowing that left
     // the button looking like it worked and the pane never opening, so say so
     // the same way a refused Reveal does.
-    const openSettingsPane = (pane: IosSimSettingsPane) => {
+    const openSettingsPane = (pane: IosSimulatorPrivacyPane) => {
       void openIosSimSettingsPane(pane).catch((error: unknown) => {
         setMessage(error instanceof Error ? error.message : String(error));
       });

@@ -27,6 +27,7 @@ import type {
   IosSimulatorRenderCurrentPreviewResult,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
+  IosSimulatorDrawerMode,
   IosSimulatorEventPayload,
   IosSimulatorDragArgs,
   IosSimulatorInspectPointArgs,
@@ -57,6 +58,7 @@ import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
+  IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../../shared/types/iosSimulator";
@@ -102,16 +104,29 @@ const SCREENSHOT_KEEP_COUNT = 20;
  * both. (An ADE-owned state dir would be better still, but nothing on this
  * service's args or imports reaches one.)
  */
+const IDB_COMPANION_REGISTRY_OWNER = ((): string => {
+  try {
+    return os.userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_") || "unknown";
+  } catch {
+    // userInfo throws when the uid has no passwd entry (some containers).
+    return "unknown";
+  }
+})();
+
 export const IDB_COMPANION_REGISTRY_PATH = path.join(
   os.tmpdir(),
-  `ade-ios-simulator-idb-companions-${(() => {
-    try {
-      return os.userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_") || "unknown";
-    } catch {
-      // userInfo throws when the uid has no passwd entry (some containers).
-      return "unknown";
-    }
-  })()}.json`,
+  `ade-ios-simulator-idb-companions-${IDB_COMPANION_REGISTRY_OWNER}.json`,
+);
+
+/**
+ * The pre-per-user registry path. An ADE that ran before the rename left its
+ * companions recorded only here, so without folding this file in once those
+ * processes leak forever. Entries predate `ownerPid`, so they read as orphans —
+ * the correct verdict for a file no current process claims.
+ */
+export const LEGACY_IDB_COMPANION_REGISTRY_PATH = path.join(
+  os.tmpdir(),
+  "ade-ios-simulator-idb-companions.json",
 );
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
@@ -191,6 +206,19 @@ export class IosSimulatorLaneUnresolvedError extends Error {
     super(`${IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE}: no worktree resolved for lane ${laneId}, so there is no build root to use. Pass an explicit --project-root for the checkout you want.`);
     this.name = "IosSimulatorLaneUnresolvedError";
     this.laneId = laneId;
+  }
+}
+
+/**
+ * An `--out` path resolved outside the build root. Fact and code only — the CLI
+ * layer owns the "run this instead" advice.
+ */
+export class IosSimulatorOutPathOutsideRootError extends Error {
+  readonly code: typeof IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE = IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE;
+
+  constructor(outPath: string, root: string) {
+    super(`${IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE}: ${outPath} is outside the build root ${root}.`);
+    this.name = "IosSimulatorOutPathOutsideRootError";
   }
 }
 
@@ -636,9 +664,9 @@ type IdbCompanionRegistryEntry = {
 
 type IdbCompanionRegistry = Record<string, IdbCompanionRegistryEntry>;
 
-function readIdbCompanionRegistry(): IdbCompanionRegistry {
+function readIdbCompanionRegistryAt(registryPath: string): IdbCompanionRegistry {
   try {
-    const parsed = JSON.parse(fs.readFileSync(IDB_COMPANION_REGISTRY_PATH, "utf8")) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as unknown;
     if (!isRecord(parsed)) return {};
     const registry: IdbCompanionRegistry = {};
     for (const [pid, entry] of Object.entries(parsed)) {
@@ -653,6 +681,10 @@ function readIdbCompanionRegistry(): IdbCompanionRegistry {
   } catch {
     return {};
   }
+}
+
+function readIdbCompanionRegistry(): IdbCompanionRegistry {
+  return readIdbCompanionRegistryAt(IDB_COMPANION_REGISTRY_PATH);
 }
 
 function writeIdbCompanionRegistry(registry: IdbCompanionRegistry): void {
@@ -697,6 +729,39 @@ function readLeakedIdbCompanionPids(): number[] {
     .filter(([, entry]) => !processIsAlive(entry.ownerPid))
     .map(([pid]) => Number(pid))
     .filter((pid) => Number.isFinite(pid) && pid > 0);
+}
+
+/**
+ * Folds the pre-rename registry into the per-user one, once. Legacy entries
+ * carry no ownerPid, so they land as orphans and the construction sweep reaps
+ * them. The legacy file is unlinked afterwards so this runs exactly once per
+ * machine; failure to unlink is harmless (the entries are already merged and
+ * re-merging is idempotent).
+ */
+function migrateLegacyIdbCompanionRegistry(): void {
+  let legacy: IdbCompanionRegistry;
+  try {
+    if (!fs.existsSync(LEGACY_IDB_COMPANION_REGISTRY_PATH)) return;
+    legacy = readIdbCompanionRegistryAt(LEGACY_IDB_COMPANION_REGISTRY_PATH);
+  } catch {
+    return;
+  }
+  const legacyPids = Object.keys(legacy);
+  if (legacyPids.length) {
+    const merged = readIdbCompanionRegistry();
+    for (const pid of legacyPids) {
+      // The current file wins: a live companion recorded there must keep its
+      // ownerPid, or the sweep below would kill a companion still in use.
+      if (merged[pid]) continue;
+      merged[pid] = { ...legacy[pid], ownerPid: null };
+    }
+    writeIdbCompanionRegistry(merged);
+  }
+  try {
+    fs.unlinkSync(LEGACY_IDB_COMPANION_REGISTRY_PATH);
+  } catch {
+    // Nothing to clean up.
+  }
 }
 
 function recordIdbCompanionPid(pid: number, udid: string | null): void {
@@ -2052,6 +2117,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   // brain daemon alongside the app) never kills a live companion out from under
   // the process still using it. It never runs on the status path: that path is
   // hit every ~500ms while the drawer is open.
+  migrateLegacyIdbCompanionRegistry();
   const leakedCompanionPids = readLeakedIdbCompanionPids();
   if (leakedCompanionPids.length) {
     void stopTrackedIdbCompanions(leakedCompanionPids).then((stopped) => {
@@ -2067,6 +2133,36 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const emit = (payload: IosSimulatorEventPayload) => {
     args.onEvent?.(payload);
+  };
+
+  /**
+   * Ask the desktop shell to reveal the iOS drawer.
+   *
+   * This lives in the service, not in an Electron-main wrapper: production
+   * launches go to the brain daemon, which has no wrapper, so a wrapper-only
+   * emitter made `--open-drawer` (and an agent's inspect/select reveal) inert
+   * on the path agents actually use. Both hosts hand `onEvent` to the same
+   * renderer subscriber — Electron main via `IPC.iosSimulatorEvent`, the daemon
+   * via the `ios_simulator_event` runtime stream, merged in preload's
+   * `subscribeIosSimulatorEvents` — so one emit here reaches
+   * AgentChatPane's `drawer-open-requested` handler either way.
+   *
+   * Only actions whose whole point is showing the user something on screen call
+   * this. Input, streaming, and preview rendering are routine agent work, and
+   * stealing the screen for them made the drawer feel like a popup.
+   */
+  const requestDrawerOpen = (
+    action: string,
+    mode: IosSimulatorDrawerMode,
+    scope: { chatSessionId?: string | null; laneId?: string | null },
+  ): void => {
+    emit({
+      type: "drawer-open-requested",
+      action,
+      mode,
+      chatSessionId: scope.chatSessionId?.trim() || null,
+      laneId: scope.laneId?.trim() || null,
+    });
   };
 
   const cachedCommandExists = (command: string, ttlMs = TOOL_STATUS_CACHE_MS): boolean => {
@@ -3517,7 +3613,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // hatch), but this launch is the one holding it and is still running —
         // so it takes the lock straight back. Without this the supersede guard
         // below sees a cleared id and rejects the very launch that asked for
-        // the takeover.
+        // the takeover. Reclaim only if the lock is still free: the shutdown
+        // await is a window in which another launch can pass the entry guard
+        // and claim it, and clobbering that id would let two launches race for
+        // one DerivedData directory — exactly what the entry guard prevents.
+        if (disposed) {
+          throw new Error("iOS simulator service has been disposed.");
+        }
+        if (activeLaunchId !== null && activeLaunchId !== launchId) {
+          throw new Error("This iOS simulator launch was superseded before it finished.");
+        }
         activeLaunchId = launchId;
       }
       emitLaunchProgress(launchId, "resolve-device", "running", "Finding installed simulator device...");
@@ -3655,6 +3760,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       emitLaunchProgress(launchId, "launch-app", "complete", "App launched.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
       emitLaunchProgress(launchId, "ready", "complete", "iOS simulator drawer is ready.", device.name, { deviceUdid: device.udid, targetId: target.target.id });
       emit({ type: "session-started", session });
+      // Opt-in only, and only after the session publishes: an agent launch must
+      // not steal the user's screen, and a drawer opened before `session-started`
+      // lands would render an empty pane.
+      if (launchArgs.openDrawer === true) {
+        requestDrawerOpen("launch", "interact", {
+          chatSessionId: launchArgs.chatSessionId ?? session.chatSessionId,
+          laneId: launchArgs.laneId ?? session.laneId,
+        });
+      }
       return {
         ...session,
         buildRoot: projectRoot,
@@ -3708,7 +3822,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // dotfile, or another lane's worktree. Containment is checked after
     // resolution so both spellings are caught by one test.
     if (!isPathInside(filePath, root)) {
-      throw new Error(`--out must stay within the build root ${root}. ${filePath} is outside it.`);
+      throw new IosSimulatorOutPathOutsideRootError(filePath, root);
     }
     await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
     await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", filePath], { timeoutMs: 30_000 });
@@ -3868,10 +3982,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
 
+    // A named-but-unresolvable lane is an error, never a fallback: swallowing
+    // it here reinstates the silent primary-checkout fallback and an agent
+    // screenshots source it never wrote. Other failures (a missing explicit
+    // root, say) still degrade to the service's own root.
     const projectRoot = await resolveScopedRootForSession({
       projectRoot: snapshotArgs.projectRoot,
       laneId: snapshotArgs.laneId,
-    }).catch(() => args.projectRoot);
+    }).catch((error) => {
+      if (error instanceof IosSimulatorLaneUnresolvedError) throw error;
+      return args.projectRoot;
+    });
     const baseElements = mergeScreenElements(inspectorElements, accessibilityElements);
     const syntheticElements = synthesizeSwiftUITabBarElements(projectRoot, baseElements);
     const elements = syntheticElements.length
@@ -3897,13 +4018,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
+  /**
+   * `resolvedProjectRoot` is the tree to match source against, already run
+   * through the lane ladder by the caller. It is not a raw caller-supplied
+   * projectRoot: the old `?? activeSession?.projectRoot ?? args.projectRoot`
+   * tail never resolved lanes, so a lane-scoped inspect matched the primary
+   * checkout's sources against the lane's running app.
+   */
   const contextItemFromScreenElement = (
     element: IosScreenElement,
     snapshot: IosScreenSnapshot,
     screenshotDataUrl?: string | null,
-    projectRootOverride?: string | null,
+    resolvedProjectRoot?: string | null,
   ): IosElementContextItem => {
-    const projectRoot = projectRootOverride ?? activeSession?.projectRoot ?? args.projectRoot ?? null;
+    const projectRoot = resolvedProjectRoot ?? null;
     const inspectedSnippet = projectRoot
       ? readSourceSnippet(projectRoot, element.sourceFile, element.sourceLine)
       : null;
@@ -4007,12 +4135,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     assertDarwin();
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
+    // Resolve the lane ladder once and hand the resolved tree to the source
+    // matcher; passing the raw point.projectRoot let a lane-scoped inspect
+    // match the primary checkout's sources.
+    const sourceRoot = await resolveScopedRootForSession({
+      projectRoot: point.projectRoot ?? null,
+      laneId: point.laneId ?? null,
+    });
     const screenSnapshot = await getScreenSnapshot({
       deviceUdid: point.deviceUdid,
       projectRoot: point.projectRoot,
       laneId: point.laneId,
       x,
       y,
+    });
+    // Inspecting exists to show the user what was hit, so reveal the drawer
+    // whichever host answered — including a miss, where the empty result is
+    // itself the thing to show.
+    requestDrawerOpen("inspectPoint", "inspect", {
+      chatSessionId: activeSession?.chatSessionId,
+      laneId: point.laneId ?? activeSession?.laneId,
     });
     const element = screenSnapshot.hitElement;
     if (!element) {
@@ -4024,7 +4166,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       };
     }
     return {
-      item: contextItemFromScreenElement(element, screenSnapshot, point.includeScreenshot ? screenSnapshot.screenshot.dataUrl : null, point.projectRoot),
+      item: contextItemFromScreenElement(element, screenSnapshot, point.includeScreenshot ? screenSnapshot.screenshot.dataUrl : null, sourceRoot),
       source: element.source,
       snapshot: screenSnapshot.inspectorSnapshot,
       screenSnapshot,
@@ -4272,6 +4414,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     assertDarwin();
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
+    // Same lane ladder as inspectPoint: resolve once, then match source
+    // against the resolved tree rather than the caller's raw projectRoot.
+    const sourceRoot = await resolveScopedRootForSession({
+      projectRoot: point.projectRoot ?? null,
+      laneId: point.laneId ?? null,
+    });
     const screenSnapshot = await getScreenSnapshot({
       deviceUdid: point.deviceUdid ?? activeSession?.deviceUdid,
       projectRoot: point.projectRoot,
@@ -4281,9 +4429,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
     const element = screenSnapshot.hitElement;
     const item = element
-      ? contextItemFromScreenElement(element, screenSnapshot, screenSnapshot.screenshot.dataUrl, point.projectRoot)
+      ? contextItemFromScreenElement(element, screenSnapshot, screenSnapshot.screenshot.dataUrl, sourceRoot)
       : coordinateFallbackItem({ x, y }, screenSnapshot.deviceUdid, screenSnapshot.screenshot.dataUrl);
     lastSelectedItem = item;
+    // Selecting exists to show the user what they picked, so reveal the drawer
+    // whichever host answered.
+    requestDrawerOpen("selectPoint", "inspect", {
+      chatSessionId: activeSession?.chatSessionId,
+      laneId: point.laneId ?? activeSession?.laneId,
+    });
     emit({ type: "selection", item });
     return { item, source: element?.source ?? "coordinate-fallback" };
   };

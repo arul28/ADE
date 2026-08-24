@@ -457,6 +457,28 @@ describe("ChatIosSimulatorPanel", () => {
     expect(screen.queryByText(/tmp\/project/)).toBeNull();
   });
 
+  it("stays silent when the build root differs only by Windows drive casing", async () => {
+    installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        // Windows paths are case-insensitive, so `C:\` and `c:\` are the same
+        // checkout. A raw case-sensitive compare called this a foreign root.
+        activeSession: { ...activeStatus.activeSession!, buildRoot: "c:\\Users\\Me\\Project\\" },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="C:\\Users\\me\\project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Live");
+    expect(screen.queryByText(/Users\/me\/project/i)).toBeNull();
+  });
+
   it("does not attach a live view without an active launch session", async () => {
     const { api } = installIosSimulatorApi({
       status: {

@@ -4,7 +4,7 @@ import { abbreviatePathTail } from "../../../shared/pathDisplay";
 import { cn } from "../ui/cn";
 import { formatElapsed } from "./iosSimContracts";
 
-export const IOS_SIM_LAUNCH_STEP_ORDER: IosSimulatorLaunchProgress["step"][] = [
+const IOS_SIM_LAUNCH_STEP_ORDER: IosSimulatorLaunchProgress["step"][] = [
   "resolve-device",
   "boot-simulator",
   "open-simulator",
@@ -15,7 +15,7 @@ export const IOS_SIM_LAUNCH_STEP_ORDER: IosSimulatorLaunchProgress["step"][] = [
   "ready",
 ];
 
-const STEP_LABEL: Record<string, string> = {
+const STEP_LABEL: Record<IosSimulatorLaunchProgress["step"], string> = {
   "resolve-device": "Device",
   "boot-simulator": "Boot",
   "open-simulator": "Open Simulator",

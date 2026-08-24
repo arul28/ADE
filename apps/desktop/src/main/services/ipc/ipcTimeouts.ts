@@ -162,6 +162,15 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 17 * 60_000;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
+    // Preview Lab compiles the target before it can render a frame, so these
+    // three carry the same 10 minute budget the local runtime map gives them.
+    // The remote-runtime path routes through these same channels via
+    // RUNTIME_ACTION_CHANNEL, so a shorter budget here reported a timeout for
+    // a preview that was still compiling.
+    case IPC.iosSimulatorEnsurePreviewWorkspace:
+    case IPC.iosSimulatorRenderCurrentPreview:
+    case IPC.iosSimulatorRenderPreview:
+      return 10 * 60_000;
     case IPC.iosSimulatorListLaunchTargets:
     case IPC.iosSimulatorGetScreenSnapshot:
     case IPC.iosSimulatorInspectPoint:
@@ -169,9 +178,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorGetPreviewCapability:
     case IPC.iosSimulatorListPreviewTargets:
     case IPC.iosSimulatorResolvePreviewMatch:
-    case IPC.iosSimulatorEnsurePreviewWorkspace:
-    case IPC.iosSimulatorRenderCurrentPreview:
-    case IPC.iosSimulatorRenderPreview:
       return 2 * 60_000;
     case IPC.iosSimulatorOpenPreviewWorkspace:
     case IPC.iosSimulatorScreenshot:

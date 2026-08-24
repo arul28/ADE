@@ -58,6 +58,7 @@ import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
+  IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../desktop/src/shared/types/iosSimulator";
@@ -9238,6 +9239,9 @@ function iosSimulatorErrorHint(message: string): string | null {
   }
   if (message.includes(IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE)) {
     return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
+  }
+  if (message.includes(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE)) {
+    return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a path under that root.";
   }
   return null;
 }
@@ -19982,6 +19986,12 @@ function formatIosSimLaunch(value: unknown): string {
   const capabilities = isRecord(session.capabilities) ? session.capabilities : {};
   const capabilityLabel = (key: string): string =>
     capabilities[key] === true ? "yes" : "no";
+  // Four segments, not the shared default of two: a CLI status line has the
+  // width for it, and lane worktrees nest four deep (`<repo>/.ade/worktrees/<lane>`).
+  const buildRootPath = asString(session.buildRoot);
+  const buildRootLabel = buildRootPath
+    ? abbreviatePathTail(buildRootPath, 4)
+    : "unknown";
   const lines = [
     renderKeyValues("ADE iOS simulator launch", [
       ["app", session.appName ?? session.bundleId],
@@ -20011,12 +20021,7 @@ function formatIosSimLaunch(value: unknown): string {
         ].join("/"),
       ],
     ]),
-    // Four segments, not the shared default of two: a CLI status line has the
-    // width for it, and lane worktrees nest four deep (`<repo>/.ade/worktrees/<lane>`).
-    `build root: ${(() => {
-      const root = asString(session.buildRoot);
-      return root ? abbreviatePathTail(root, 4) : "unknown";
-    })()}`,
+    `build root: ${buildRootLabel}`,
   ];
   if (session.usedInstalledBinary === true) {
     lines.push(

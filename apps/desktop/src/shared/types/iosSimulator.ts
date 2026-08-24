@@ -26,6 +26,8 @@ export const IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE = "IOS_SIMULATOR_NO_BUILDABL
  * and "verifies" code it never wrote.
  */
 export const IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE = "IOS_SIMULATOR_LANE_NOT_RESOLVED" as const;
+/** An `--out` path escaped the resolved build root. */
+export const IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE = "IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT" as const;
 
 export type IosSimulatorShutdownArgs = {
   force?: boolean | null;
