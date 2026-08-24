@@ -39,6 +39,8 @@ ade --socket ios-sim select --x <x> --y <y> --text
 
 `snapshot` returns the screenshot plus selectable elements. `select` also emits a drawer selection and feeds Preview Lab.
 
+A drag takes 180ms unless you pass `--duration-ms`. Raise it for a slow scroll; an instant swipe reads as a flick and often does nothing.
+
 ## Drawer and live view
 
 Only when the user should watch the app run:

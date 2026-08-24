@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -1432,6 +1433,55 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       expect(fallback.filePath.startsWith(laneB)).toBe(false);
     } finally {
       service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("gives a drag a duration so idb does not issue a flick", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-drag-duration-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    // idb input needs a companion listening on the grpc port, so stand a real
+    // listener up on whatever port the service picked and hand back a stub
+    // process. Without this the drag blocks in waitForTcpPort.
+    const listeners: net.Server[] = [];
+    const spawn = ((command: string, commandArgs: string[]) => {
+      const portIndex = commandArgs.indexOf("--grpc-port");
+      if (portIndex >= 0) {
+        const server = net.createServer();
+        server.listen(Number(commandArgs[portIndex + 1]), "127.0.0.1");
+        listeners.push(server);
+      }
+      const child = new EventEmitter() as unknown as ChildProcess;
+      Object.assign(child, { pid: undefined, stdout: null, stderr: null, exitCode: null, kill: () => true, unref: () => child });
+      return child;
+    }) as unknown as typeof nodeSpawn;
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, spawn, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await service.launch({ projectRoot, build: true });
+      // Without --duration idb performs an instantaneous swipe, which iOS reads
+      // as a flick: scrolls and slider drags silently do nothing.
+      await service.drag({ startX: 10, startY: 200, endX: 10, endY: 40 });
+      const swipeArgs = () => (run.mock.calls
+        .map((call) => call[1] as string[])
+        .filter((args) => args.includes("swipe"))
+        .at(-1) ?? []);
+      const defaulted = swipeArgs();
+      expect(defaulted).toContain("--duration");
+      expect(defaulted[defaulted.indexOf("--duration") + 1]).toBe("0.18");
+
+      // An explicit duration still wins.
+      await service.drag({ startX: 10, startY: 200, endX: 10, endY: 40, durationMs: 500 });
+      const explicit = swipeArgs();
+      expect(explicit[explicit.indexOf("--duration") + 1]).toBe("0.5");
+    } finally {
+      service.dispose();
+      for (const server of listeners) server.close();
       fs.rmSync(projectRoot, { recursive: true, force: true });
       restoreHooks();
       platformSpy.mockRestore();

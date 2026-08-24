@@ -83,6 +83,8 @@ const STATUS_THROTTLE_MS = 500;
 const DEVICE_LIST_THROTTLE_MS = 500;
 const SIMCTL_BOOTSTATUS_TIMEOUT_MS = 90_000;
 const SIMCTL_INSTALL_TIMEOUT_MS = 180_000;
+// A swipe with no duration reads as a flick and does not scroll or drag.
+const DEFAULT_SWIPE_DURATION_MS = 180;
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
 const INSTALL_HINT_IDB = "Install Facebook idb: brew tap facebook/fb && brew install idb-companion && pipx install fb-idb.";
@@ -653,9 +655,9 @@ type IdbCompanionRegistryEntry = {
 
 type IdbCompanionRegistry = Record<string, IdbCompanionRegistryEntry>;
 
-function readIdbCompanionRegistryAt(registryPath: string): IdbCompanionRegistry {
+function readIdbCompanionRegistry(): IdbCompanionRegistry {
   try {
-    const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(IDB_COMPANION_REGISTRY_PATH, "utf8")) as unknown;
     if (!isRecord(parsed)) return {};
     const registry: IdbCompanionRegistry = {};
     for (const [pid, entry] of Object.entries(parsed)) {
@@ -670,10 +672,6 @@ function readIdbCompanionRegistryAt(registryPath: string): IdbCompanionRegistry 
   } catch {
     return {};
   }
-}
-
-function readIdbCompanionRegistry(): IdbCompanionRegistry {
-  return readIdbCompanionRegistryAt(IDB_COMPANION_REGISTRY_PATH);
 }
 
 function writeIdbCompanionRegistry(registry: IdbCompanionRegistry): void {
@@ -3767,7 +3765,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * hands the result down, so one filesystem-backed resolution serves the whole
    * request instead of each layer re-deriving — and re-deciding — the same root.
    */
-  const captureScreenshot = async (arg: IosSimulatorScreenshotArgs, root: string): Promise<IosSimulatorScreenshot> => {
+  // The scope fields are deliberately absent: the caller resolved the root and
+  // passes it in, so this layer can never re-derive a different one.
+  const captureScreenshot = async (arg: Omit<IosSimulatorScreenshotArgs, "projectRoot" | "laneId">, root: string): Promise<IosSimulatorScreenshot> => {
     const device = await resolveDevice(arg.deviceUdid ?? activeSession?.deviceUdid);
     const requestedOutPath = arg.outPath?.trim();
     // Agents need a file they can read; the data URL alone forces them to
@@ -3899,7 +3899,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * caller resolved — resolving again per layer is how a lane-scoped inspect
    * ended up matching the primary checkout's sources.
    */
-  const captureScreenSnapshot = async (snapshotArgs: IosScreenSnapshotArgs, projectRoot: string): Promise<IosScreenSnapshot> => {
+  // Scope fields omitted for the same reason as captureScreenshot.
+  const captureScreenSnapshot = async (snapshotArgs: Omit<IosScreenSnapshotArgs, "projectRoot" | "laneId">, projectRoot: string): Promise<IosScreenSnapshot> => {
     const hitX = snapshotArgs.x == null ? null : normalizeCoordinate(snapshotArgs.x, "x");
     const hitY = snapshotArgs.y == null ? null : normalizeCoordinate(snapshotArgs.y, "y");
     const shot = await captureScreenshot(
@@ -4326,10 +4327,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       "--udid",
       deviceUdid,
     ];
-    if (input.durationMs != null) {
-      if (!Number.isFinite(input.durationMs)) throw new Error("durationMs must be a number.");
-      idbArgs.push("--duration", String(Math.max(0.01, input.durationMs / 1000)));
-    }
+    // idb issues an instantaneous swipe without --duration, and iOS reads that
+    // as a flick rather than a drag, so a scroll or a slider drag does nothing.
+    // The drawer always sent 180ms; agents calling the CLI got no default and
+    // hit the silent no-op, so the default lives here for every caller.
+    const swipeDurationMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
+    if (!Number.isFinite(swipeDurationMs)) throw new Error("durationMs must be a number.");
+    idbArgs.push("--duration", String(Math.max(0.01, swipeDurationMs / 1000)));
     if (input.delta != null) {
       if (!Number.isFinite(input.delta) || input.delta <= 0) throw new Error("delta must be a positive number.");
       idbArgs.push("--delta", String(input.delta));
