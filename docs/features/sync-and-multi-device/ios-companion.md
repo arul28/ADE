@@ -430,8 +430,8 @@ apps/ios/
 │   │   │                            # WorkPromptStash (composer overflow +
 │   │   │                            #   per-project stash host),
 │   │   │                            # WorkContextUsageViews (turn-end meter),
-│   │   │                            # WorkChatComposerAndInputViews (compacted
-│   │   │                            #   icon-only staged-steer strip + the
+│   │   │                            # WorkChatComposerAndInputViews (always-open
+│   │   │                            #   icon-only queued-steer strip + the
 │   │   │                            #   structured-question card: pinned provider
 │   │   │                            #   row / tab strip above and freeform +
 │   │   │                            #   Send/Decline footer below a
@@ -3135,17 +3135,46 @@ the stats and shows update guidance.
   strings comes from the capability's `agentLabel` rather than hard-coded
   "Claude". The primary button's icon/label communicates the selected behavior,
   the chevron opens a custom SwiftUI popover, and selection dismisses it
-  immediately. The effective mode is derived from the pick rather than stored, so
-  switching providers mid-chat can never leave a mode selected that the new
-  provider cannot honor; queue-only providers (a single mode is not a choice)
-  keep the plain stage-behind-turn button, matching the desktop composer. When the host advertises
-  additive `chat.interruptWithQueueMode`, Claude Stop likewise becomes a split
-  control for **Stop & clear queue**
+  immediately. The pick is remembered per chat in `WorkActiveSendModeStore`
+  (App Group defaults, same bounded JSON-map mechanism as the composer drafts),
+  so a working habit survives backgrounding and relaunch; a turn starting or
+  ending does not reset it, and a provider change snaps back to that provider's
+  default only when the new provider cannot honor the remembered mode.
+  Queue-only providers (a single mode is not a choice) keep the plain
+  stage-behind-turn button, matching the desktop composer. When the host
+  advertises additive `chat.interruptWithQueueMode`, Claude Stop likewise
+  becomes a split control for **Stop & clear queue**
   and **Stop only**; the per-chat choice is stored in `UserDefaults`, carries
   VoiceOver labels and haptics, and falls back to legacy Stop against older
-  brains. Immediate send still stages once on the host before
-  `chat.dispatchSteer`; if dispatch fails, the one queued message remains and
-  the draft is not restored as a duplicate.
+  brains.
+- **Active-turn sends are atomic, so nothing flashes through the staged strip.**
+  `AgentChatSteerRequest` carries the desktop's `dispatchMode` field
+  (`"inline"` / `"interrupt"`, spelled exactly as the host validates it), and
+  `SyncService.steerChatSession` sends it with the steer itself. A host that can
+  honor it dispatches in the same round-trip and answers `queued: false`, so no
+  queued transcript row is written and no optimistic staged entry is created.
+  The mode is resolved once, before the send, so the branch that resends as a
+  steer after a "turn already active" rejection carries the same mode — losing
+  it there used to downgrade a *Send now* tap into a silently staged message.
+  `workChatAtomicSteerDispatchMode` returns nil for **Send after turn**, for a
+  provider with no such channel, and for a brain that does not advertise
+  `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
+  composer can never request a promotion the strip is hiding the recovery for.
+  A host old enough to advertise `chat.dispatchSteer` but too old to accept
+  `dispatchMode` on `chat.steer` answers `queued: true`; that one case falls
+  back to the legacy two-step promotion rather than dropping the user's choice,
+  and if the promotion fails the single queued message remains and the draft is
+  not restored as a duplicate.
+- **The staged strip is only ever "you queued this".** With active-turn sends
+  atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
+  queue, so it no longer hides behind an accordion: one queued message is a
+  single compact card — waiting glyph, one truncated line of the message, its
+  disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
+  as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
+  a slim `N queued` count above the rows. While a turn is running the clock
+  glyph breathes and the disposition reads "sends when turn ends"; on an idle
+  session it sits still and reads "after turn". The pulse goes through
+  `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full strength.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
   retain `context_compact.postTokens` plus the automatic `context_usage.state`.

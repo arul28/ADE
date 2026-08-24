@@ -1396,6 +1396,7 @@ struct WorkChatSessionView: View {
           drafts: $steerEditDrafts,
           busy: actionInFlight,
           isLive: isLive,
+          turnActive: sessionStatus == "active",
           onCancel: { steerId in
             await runSessionAction {
               await onCancelSteer(steerId)
@@ -2849,6 +2850,22 @@ private struct WorkChatComposerDraftInput: View {
     activeSendModesAvailable && activeSendCapability.modes.count > 1
   }
 
+  /// Where this chat's remembered send mode lives. Blank for the projectless
+  /// "new chat" composers, which have no session to remember against.
+  private var activeSendModeStorageKey: String {
+    WorkActiveSendModeStore.chatKey(sessionId: sessionId)
+  }
+
+  /// Restores the remembered mode for this chat, falling back to the provider
+  /// default when nothing is stored or the stored mode is one this provider
+  /// cannot honor.
+  private func restoreActiveSendMode() {
+    let remembered = WorkActiveSendModeStore.load(activeSendModeStorageKey)
+    activeSendMode = remembered.flatMap { mode in
+      activeSendCapability.modes.contains(mode) ? mode : nil
+    } ?? activeSendCapability.defaultMode
+  }
+
   private var activeSendAgentLabel: String { activeSendCapability.agentLabel }
 
   private var activeSendInterruptContinues: Bool { activeSendCapability.interruptContinues }
@@ -2972,7 +2989,7 @@ private struct WorkChatComposerDraftInput: View {
       stopMode = UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") == AgentChatStopMode.stopOnly.rawValue
         ? .stopOnly
         : .stopAndClear
-      activeSendMode = activeSendCapability.defaultMode
+      restoreActiveSendMode()
       sendOptionsPresented = false
       stopOptionsPresented = false
       draftState.bind(persistenceKey: draftPersistenceKey)
@@ -2983,13 +3000,18 @@ private struct WorkChatComposerDraftInput: View {
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
+    // A turn starting or ending is not a change of intent: the mode the user
+    // picked survives it, and only the transient popovers close.
     .onChange(of: showInterrupt) { _, _ in
-      activeSendMode = activeSendCapability.defaultMode
       sendOptionsPresented = false
       stopOptionsPresented = false
     }
+    // A provider change is: the new runtime may have no inline channel at all,
+    // so anything it cannot honor snaps back to that provider's default.
     .onChange(of: chatSummary.provider) { _, _ in
-      activeSendMode = activeSendCapability.defaultMode
+      if !activeSendCapability.modes.contains(activeSendMode) {
+        activeSendMode = activeSendCapability.defaultMode
+      }
       sendOptionsPresented = false
       stopOptionsPresented = false
       configureSuggestionController()
@@ -3134,6 +3156,7 @@ private struct WorkChatComposerDraftInput: View {
   private func activeSendOption(mode: WorkActiveSendMode, title: String, detail: String, systemImage: String) -> some View {
     Button {
       activeSendMode = mode
+      WorkActiveSendModeStore.save(mode, for: activeSendModeStorageKey)
       sendOptionsPresented = false
     } label: {
       HStack(alignment: .top, spacing: 10) {
