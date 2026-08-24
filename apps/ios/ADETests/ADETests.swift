@@ -13356,6 +13356,63 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
   }
 
+  /// The mode the user picked has to ride `chat.steer` itself. When it did not,
+  /// the message was staged first and promoted by a second round-trip — and the
+  /// branch that resends after a "turn already active" rejection never made that
+  /// second call, so a Send-now tap silently became a queued message.
+  func testWorkChatAtomicSteerDispatchModeMatchesDesktopValues() {
+    let claudeModes = WorkActiveSendCapability.forProvider("claude").atomicDispatchModes
+
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: claudeModes),
+      "inline"
+    )
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: claudeModes),
+      "interrupt"
+    )
+    // Queue is the absence of an atomic dispatch, not a third wire value.
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .queue, dispatchModes: claudeModes))
+
+    // Cursor has no inline channel; asking for one must not put a value the host
+    // would reject on the wire.
+    let cursorModes = WorkActiveSendCapability.forProvider("cursor").atomicDispatchModes
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: cursorModes),
+      "interrupt"
+    )
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursorModes))
+
+    // Codex has neither, and an empty list is also what a host that predates
+    // `chat.dispatchSteer` resolves to — the gate the composer and the staged
+    // strip share. Either way the steer goes out plain.
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: []))
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: []))
+  }
+
+  /// The host validates `dispatchMode` as a string literal, so the field has to
+  /// be absent — not null, not "queue" — for a plain staged steer.
+  func testAgentChatSteerRequestEncodesDispatchModeOnlyWhenSet() throws {
+    let encoder = JSONEncoder()
+
+    let plain = try XCTUnwrap(
+      try JSONSerialization.jsonObject(
+        with: encoder.encode(AgentChatSteerRequest(sessionId: "chat-1", text: "hi"))
+      ) as? [String: Any]
+    )
+    XCTAssertNil(plain["dispatchMode"], "A staged steer must not carry the field at all")
+    XCTAssertEqual(plain["sessionId"] as? String, "chat-1")
+
+    let atomic = try XCTUnwrap(
+      try JSONSerialization.jsonObject(
+        with: encoder.encode(
+          AgentChatSteerRequest(sessionId: "chat-1", text: "hi", dispatchMode: "interrupt")
+        )
+      ) as? [String: Any]
+    )
+    XCTAssertEqual(atomic["dispatchMode"] as? String, "interrupt")
+  }
+
   /// Guards the hand mirror of the desktop's `ACTIVE_TURN_DISPATCH_MODES` table
   /// in `shared/types/chat.ts`. Menu order is load-bearing: the first entry is
   /// the provider's default, and a queue-only provider hides the picker.
@@ -18970,6 +19027,47 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(steers.isEmpty)
   }
 
+  /// The staged strip is now the "you queued this" surface and nothing else. An
+  /// atomically dispatched send writes a user message with an immediate
+  /// delivery state (or none at all) and must never produce a strip entry —
+  /// that was the visible symptom of the old two-step send, where every
+  /// active-turn message flashed through the strip on its way out.
+  func testDerivePendingWorkSteersIgnoresNonQueuedDeliveries() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "folded into the turn", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "inline", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "plain send", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .userMessage(text: "interrupted with this", attachments: nil, turnId: "turn-2", steerId: "steer-2", deliveryState: "delivered", processed: nil)
+      ),
+    ]
+
+    XCTAssertTrue(derivePendingWorkSteers(from: transcript).isEmpty)
+
+    // ...and one the user actually queued still shows up.
+    let queued = transcript + [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 4,
+        event: .userMessage(text: "wait for the turn", attachments: nil, turnId: "turn-2", steerId: "steer-3", deliveryState: "queued", processed: nil)
+      ),
+    ]
+    XCTAssertEqual(derivePendingWorkSteers(from: queued).map(\.id), ["steer-3"])
+  }
+
   func testMergeWorkChatTranscriptsReplacesQueuedSteerEditInPlace() {
     let base = [
       WorkChatEnvelope(
@@ -23943,6 +24041,55 @@ final class ADETests: XCTestCase {
     // And switching back restores A's draft rather than B's empty box.
     state.bind(persistenceKey: keyA)
     XCTAssertEqual(state.text, "half-written message for chat A")
+  }
+
+  /// The active-turn send mode is a working habit, not a per-turn decision, so
+  /// it is remembered per chat across launches. Scoped per chat: a user who
+  /// always interrupts one agent must not have that applied to a chat where
+  /// they always queue.
+  func testActiveSendModeIsRememberedPerChat() {
+    let keyA = WorkActiveSendModeStore.chatKey(sessionId: "sess-A-\(UUID().uuidString)")
+    let keyB = WorkActiveSendModeStore.chatKey(sessionId: "sess-B-\(UUID().uuidString)")
+    defer {
+      WorkActiveSendModeStore.clear(keyA)
+      WorkActiveSendModeStore.clear(keyB)
+    }
+
+    XCTAssertNil(WorkActiveSendModeStore.load(keyA), "An untouched chat has no preference")
+
+    WorkActiveSendModeStore.save(.interrupt, for: keyA)
+    XCTAssertEqual(WorkActiveSendModeStore.load(keyA), .interrupt)
+    XCTAssertNil(WorkActiveSendModeStore.load(keyB), "Preferences must not leak between chats")
+
+    WorkActiveSendModeStore.save(.queue, for: keyA)
+    XCTAssertEqual(WorkActiveSendModeStore.load(keyA), .queue, "The latest pick wins")
+
+    // A composer that renders before its session id resolves must not write
+    // every chat's preference into one shared bucket.
+    XCTAssertEqual(WorkActiveSendModeStore.chatKey(sessionId: "   "), "")
+    WorkActiveSendModeStore.save(.inline, for: "")
+    XCTAssertNil(WorkActiveSendModeStore.load(""))
+  }
+
+  /// A remembered mode is only restorable when the chat's current provider can
+  /// honor it — Cursor has no inline channel, so a mode carried over from a
+  /// Claude chat has to fall back to that provider's default rather than being
+  /// sent and rejected by the host.
+  func testRememberedSendModeFallsBackWhenProviderCannotHonorIt() {
+    let cursor = WorkActiveSendCapability.forProvider("cursor")
+    XCTAssertFalse(cursor.modes.contains(.inline))
+    XCTAssertEqual(cursor.defaultMode, .interrupt)
+
+    let codex = WorkActiveSendCapability.forProvider("codex")
+    XCTAssertEqual(codex.modes, [.queue])
+    XCTAssertFalse(codex.modes.contains(.interrupt))
+    XCTAssertEqual(codex.defaultMode, .queue)
+
+    // And the wire value for an unhonorable mode is always nil, so nothing the
+    // fallback misses can still reach the host.
+    XCTAssertNil(
+      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursor.atomicDispatchModes)
+    )
   }
 
   /// A question marked `isSecret` renders its freeform in a `SecureField`, and
