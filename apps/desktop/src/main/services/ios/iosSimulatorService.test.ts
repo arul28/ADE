@@ -29,12 +29,14 @@ const noopLogger: Logger = {
   error: () => {},
 };
 
-function mockChildProcess(): ChildProcess {
+// exitCode is load-bearing: ensureCompanion reads `exitCode !== null` as "the
+// companion already died", so a companion stub must pass exitCode: null.
+function mockChildProcess(options: { exitCode?: number | null } = {}): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
   child.stdout = new EventEmitter() as ChildProcess["stdout"];
   child.stderr = new EventEmitter() as ChildProcess["stderr"];
   child.stdin = new EventEmitter() as ChildProcess["stdin"];
-  Object.defineProperty(child, "exitCode", { configurable: true, value: 0 });
+  Object.defineProperty(child, "exitCode", { configurable: true, value: "exitCode" in options ? options.exitCode : 0 });
   Object.defineProperty(child, "signalCode", { configurable: true, value: null });
   child.kill = vi.fn(() => true) as unknown as ChildProcess["kill"];
   child.unref = vi.fn(() => child) as unknown as ChildProcess["unref"];
@@ -1452,12 +1454,16 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       const portIndex = commandArgs.indexOf("--grpc-port");
       if (portIndex >= 0) {
         const server = net.createServer();
+        // getFreePort closes the port before handing it back, so another
+        // worker can take it first. Without a handler that bind error is an
+        // uncaught exception that fails the whole file instead of this test.
+        server.on("error", () => {});
         server.listen(Number(commandArgs[portIndex + 1]), "127.0.0.1");
         listeners.push(server);
       }
-      const child = new EventEmitter() as unknown as ChildProcess;
-      Object.assign(child, { pid: undefined, stdout: null, stderr: null, exitCode: null, kill: () => true, unref: () => child });
-      return child;
+      // No pid: the registry is shared with the developer's running ADE, so the
+      // test must not record one.
+      return mockChildProcess({ exitCode: null });
     }) as unknown as typeof nodeSpawn;
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, spawn, commandExists: () => true });
     const service = createIosSimulatorService({ projectRoot, logger: noopLogger });

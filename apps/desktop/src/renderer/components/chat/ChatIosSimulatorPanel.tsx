@@ -2439,7 +2439,6 @@ export function ChatIosSimulatorPanel({
             startY: start.y / controlScale,
             endX: point.x / controlScale,
             endY: point.y / controlScale,
-            durationMs: 180,
           });
         }
       } catch (error) {

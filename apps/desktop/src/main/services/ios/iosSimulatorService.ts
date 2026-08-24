@@ -3765,8 +3765,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * hands the result down, so one filesystem-backed resolution serves the whole
    * request instead of each layer re-deriving — and re-deciding — the same root.
    */
-  // The scope fields are deliberately absent: the caller resolved the root and
-  // passes it in, so this layer can never re-derive a different one.
+  // The scope fields are omitted so a fresh literal cannot smuggle a scope past
+  // the resolved root. Omit is structural, so an existing args object still
+  // type-checks here; the root always arrives out of band from the caller.
   const captureScreenshot = async (arg: Omit<IosSimulatorScreenshotArgs, "projectRoot" | "laneId">, root: string): Promise<IosSimulatorScreenshot> => {
     const device = await resolveDevice(arg.deviceUdid ?? activeSession?.deviceUdid);
     const requestedOutPath = arg.outPath?.trim();
@@ -3899,7 +3900,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * caller resolved — resolving again per layer is how a lane-scoped inspect
    * ended up matching the primary checkout's sources.
    */
-  // Scope fields omitted for the same reason as captureScreenshot.
+  // Scope fields omitted for the same reason as captureScreenshot: the caller
+  // resolved the root and passes it in.
   const captureScreenSnapshot = async (snapshotArgs: Omit<IosScreenSnapshotArgs, "projectRoot" | "laneId">, projectRoot: string): Promise<IosScreenSnapshot> => {
     const hitX = snapshotArgs.x == null ? null : normalizeCoordinate(snapshotArgs.x, "x");
     const hitY = snapshotArgs.y == null ? null : normalizeCoordinate(snapshotArgs.y, "y");
