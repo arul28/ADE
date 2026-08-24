@@ -4,6 +4,7 @@ import SwiftUI
 /// with the grouped fleet list, mirroring the Linear pane's presentation.
 struct CursorCloudPaneSheet: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.dismiss) private var dismiss
   @StateObject private var store: CursorCloudPaneStore
   @State private var path: [CursorCloudRoute] = []
 

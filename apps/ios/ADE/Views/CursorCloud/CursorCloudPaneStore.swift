@@ -127,7 +127,7 @@ final class CursorCloudPaneStore: ObservableObject {
     }
 
     var active: [CursorCloudFleetEntry] = []
-    var byLane: [String: CursorCloudAgentGroup] = []
+    var byLane: [String: CursorCloudAgentGroup] = [:]
     var unlinkedOrder: [String] = []
     var unlinked: [String: CursorCloudAgentGroup] = [:]
 
