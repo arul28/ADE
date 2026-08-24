@@ -15309,7 +15309,7 @@ final class ADETests: XCTestCase {
 
   func testMobileChatHistoryTriggerAndRenderCapStayBounded() {
     XCTAssertTrue(workChatShouldRequestOlderHistory(
-      topY: -120,
+      distanceFromTop: 120,
       triggerArmed: true,
       loading: false,
       hasError: false,
@@ -15317,7 +15317,7 @@ final class ADETests: XCTestCase {
       hasHostHistory: true
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: -500,
+      distanceFromTop: 500,
       triggerArmed: true,
       loading: false,
       hasError: false,
@@ -15325,7 +15325,7 @@ final class ADETests: XCTestCase {
       hasHostHistory: false
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: 0,
+      distanceFromTop: 0,
       triggerArmed: false,
       loading: false,
       hasError: false,
@@ -15333,7 +15333,7 @@ final class ADETests: XCTestCase {
       hasHostHistory: false
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: 0,
+      distanceFromTop: 0,
       triggerArmed: true,
       loading: true,
       hasError: false,
@@ -15341,7 +15341,7 @@ final class ADETests: XCTestCase {
       hasHostHistory: true
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: 0,
+      distanceFromTop: 0,
       triggerArmed: true,
       loading: false,
       hasError: true,

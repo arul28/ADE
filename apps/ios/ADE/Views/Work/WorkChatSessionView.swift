@@ -67,15 +67,19 @@ func workChatTranscriptFailureMessage(_ message: String) -> String {
   return trimmed
 }
 
+/// `distanceFromTop` is how far the reader has scrolled from the first row, so
+/// it grows downward — the inverse of the geometry-probe `topY` this used to
+/// take, which was published from a per-frame `GeometryReader` riding the
+/// header row.
 func workChatShouldRequestOlderHistory(
-  topY: CGFloat,
+  distanceFromTop: CGFloat,
   triggerArmed: Bool,
   loading: Bool,
   hasError: Bool,
   hasBufferedEntries: Bool,
   hasHostHistory: Bool
 ) -> Bool {
-  topY >= -workChatOlderHistoryTriggerDistance
+  distanceFromTop <= workChatOlderHistoryTriggerDistance
     && triggerArmed
     && !loading
     && !hasError
@@ -130,13 +134,48 @@ final class WorkChatScrollMetrics {
 
 /// The scroll geometry the transcript reacts to, rounded so sub-pixel jitter
 /// doesn't wake the observer.
+///
+/// Everything the transcript needs about its position is derived here, from the
+/// one sample the scroll view already produces. The content-top and
+/// content-bottom `GeometryReader` + `PreferenceKey` probes this replaced
+/// measured the same two numbers by laying out two extra views and running the
+/// preference reduce/observe machinery on every frame of every scroll.
 struct WorkChatScrollGeometrySample: Equatable {
   let offsetY: CGFloat
   /// Largest in-range content offset, used only to clamp a restore.
   let scrollableHeight: CGFloat
+  /// Distance scrolled past the first row. 0 at the very top.
+  let distanceFromTop: CGFloat
+  /// Distance still to scroll to reach the last row. 0 at the very bottom.
+  let distanceFromBottom: CGFloat
+  let containerHeight: CGFloat
 
   init(_ geometry: ScrollGeometry) {
     self.offsetY = (geometry.contentOffset.y * 2).rounded() / 2
+    let scrollable = geometry.contentSize.height - geometry.containerSize.height
+      + geometry.contentInsets.top + geometry.contentInsets.bottom
+    self.scrollableHeight = max(0, (scrollable * 2).rounded() / 2)
+    // Content insets shift `contentOffset` so that resting at the top reads as
+    // `-contentInsets.top`; adding it back puts both distances on the same
+    // inset-free 0…scrollableHeight range.
+    let position = geometry.contentOffset.y + geometry.contentInsets.top
+    self.distanceFromTop = max(0, (position * 2).rounded() / 2)
+    self.distanceFromBottom = max(0, self.scrollableHeight - self.distanceFromTop)
+    self.containerHeight = geometry.containerSize.height
+  }
+}
+
+/// The transcript's content size, sampled separately from the per-frame scroll
+/// position so layout-driven work (the opening pin, the short-transcript
+/// alignment) runs on content changes instead of on every scroll frame.
+struct WorkChatContentSizeSample: Equatable {
+  let contentHeight: CGFloat
+  let scrollableHeight: CGFloat
+
+  var contentFitsViewport: Bool { scrollableHeight <= 0.5 }
+
+  init(_ geometry: ScrollGeometry) {
+    self.contentHeight = (geometry.contentSize.height * 2).rounded() / 2
     let scrollable = geometry.contentSize.height - geometry.containerSize.height
       + geometry.contentInsets.top + geometry.contentInsets.bottom
     self.scrollableHeight = max(0, (scrollable * 2).rounded() / 2)
@@ -1092,14 +1131,6 @@ struct WorkChatSessionView: View {
         }
       }
       .font(.footnote.weight(.semibold))
-      .background(
-        GeometryReader { geometry in
-          Color.clear.preference(
-            key: WorkChatContentTopPreferenceKey.self,
-            value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).minY
-          )
-        }
-      )
     }
 
     if timeline.isEmpty {
@@ -1430,14 +1461,6 @@ struct WorkChatSessionView: View {
               .transaction { transaction in
                 transaction.animation = nil
               }
-              .background(
-                GeometryReader { geometry in
-                  Color.clear.preference(
-                    key: WorkChatContentBottomPreferenceKey.self,
-                    value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).maxY
-                  )
-                }
-              )
           }
           .padding(16)
           .frame(
@@ -1479,10 +1502,26 @@ struct WorkChatSessionView: View {
           .onScrollGeometryChange(for: WorkChatScrollGeometrySample.self) { geometry in
             WorkChatScrollGeometrySample(geometry)
           } action: { _, sample in
-            // Recorded into a reference box, not @State: this fires per scroll
-            // frame and must not invalidate the transcript.
+            // Fires per scroll frame. Everything here is O(1) and writes to a
+            // reference box or to state that only changes at a threshold — no
+            // list scans, and nothing that invalidates the transcript per frame.
             scrollMetrics.offsetY = sample.offsetY
             scrollMetrics.scrollableHeight = sample.scrollableHeight
+            guard sample.containerHeight > 1 else { return }
+            updateBottomStickiness(distanceFromBottom: sample.distanceFromBottom, proxy: proxy)
+            continueAutomaticOlderHistoryIfNeeded()
+            requestOlderHistoryIfScrolledNearTop(distanceFromTop: sample.distanceFromTop)
+          }
+          // Content SIZE changes only — this observer never fires while the
+          // reader is merely scrolling, which is what keeps the tail scan in
+          // `resolvePendingInitialBottomPinAfterLayout` off the scroll path.
+          .onScrollGeometryChange(for: WorkChatContentSizeSample.self) { geometry in
+            WorkChatContentSizeSample(geometry)
+          } action: { _, sample in
+            if transcriptContentFitsViewport != sample.contentFitsViewport {
+              transcriptContentFitsViewport = sample.contentFitsViewport
+            }
+            resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-size")
           }
           .coordinateSpace(name: workChatScrollCoordinateSpace)
           .background(
@@ -1595,30 +1634,26 @@ struct WorkChatSessionView: View {
           guard isNearBottom else { return }
           pinToLatestAfterLayout(proxy, reason: "composer-height")
         }
-        .onPreferenceChange(WorkChatContentBottomPreferenceKey.self) { bottomY in
-          guard scrollViewportHeight > 1 else { return }
-          updateBottomStickiness(
-            distanceFromBottom: max(0, bottomY - scrollViewportHeight),
-            proxy: proxy
-          )
-          continueAutomaticOlderHistoryIfNeeded()
-          resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-bottom")
-        }
-        .onPreferenceChange(WorkChatContentTopPreferenceKey.self) { topY in
-          if topY < -workChatOlderHistoryRearmDistance {
-            olderHistoryTriggerArmed = true
-          }
-          guard workChatShouldRequestOlderHistory(
-            topY: topY,
-            triggerArmed: olderHistoryTriggerArmed,
-            loading: olderHistoryLoadInFlight,
-            hasError: olderHistoryLoadError != nil,
-            hasBufferedEntries: hiddenTimelineCount > 0,
-            hasHostHistory: canRequestOlderTranscriptHistory
-          ) else { return }
-          olderHistoryTriggerArmed = false
-          requestEarlierTimelineEntries(automatically: true)
-        }
+  }
+
+  /// Older-history scroll-back trigger, driven by the shared scroll sample.
+  @MainActor
+  private func requestOlderHistoryIfScrolledNearTop(distanceFromTop: CGFloat) {
+    if distanceFromTop > workChatOlderHistoryRearmDistance {
+      if !olderHistoryTriggerArmed {
+        olderHistoryTriggerArmed = true
+      }
+    }
+    guard workChatShouldRequestOlderHistory(
+      distanceFromTop: distanceFromTop,
+      triggerArmed: olderHistoryTriggerArmed,
+      loading: olderHistoryLoadInFlight,
+      hasError: olderHistoryLoadError != nil,
+      hasBufferedEntries: hiddenTimelineCount > 0,
+      hasHostHistory: canRequestOlderTranscriptHistory
+    ) else { return }
+    olderHistoryTriggerArmed = false
+    requestEarlierTimelineEntries(automatically: true)
   }
 
   /// Timeline/scroll change handlers, split from `body` for type-checker budget.
@@ -2074,22 +2109,6 @@ private struct WorkChatComposerLayoutHeightPreferenceKey: PreferenceKey {
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
     let next = nextValue()
     if next > 0 { value = next }
-  }
-}
-
-private struct WorkChatContentBottomPreferenceKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = nextValue()
-  }
-}
-
-private struct WorkChatContentTopPreferenceKey: PreferenceKey {
-  static var defaultValue: CGFloat = -CGFloat.greatestFiniteMagnitude
-
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = max(value, nextValue())
   }
 }
 
