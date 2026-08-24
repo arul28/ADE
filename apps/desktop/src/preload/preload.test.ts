@@ -785,6 +785,93 @@ describe("preload OAuth bridge", () => {
     });
   });
 
+  // The other half of the wiring the parking refcount depends on. Window
+  // parking lives in Electron main, which only ever sees a plain invoke: every
+  // iOS Simulator call that goes through `callProjectRuntimeActionOr` is
+  // answered by the brain daemon instead, and the brain has no BrowserWindow to
+  // hold a claim against. Retain has to sit on the same local-only transport as
+  // its release or the count never leaves zero in production.
+  it("keeps iOS Simulator window parking on the local transport in both directions", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (
+        channel === IPC.iosSimulatorRetainWindowParking
+        || channel === IPC.iosSimulatorReleaseWindowParking
+      ) {
+        return { ok: true };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBeUndefined();
+    await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorRetainWindowParking);
+    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorReleaseWindowParking);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+  });
+
+  // Both directions are teardown-adjacent and must never surface an error to a
+  // drawer that is closing or a live view that is starting.
+  it("swallows iOS Simulator window parking failures in both directions", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      throw new Error(`no handler for ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBeUndefined();
+    await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
+  });
+
   it("routes local lane creation through the local runtime when a local project runtime is bound", async () => {
     const binding = {
       kind: "local",

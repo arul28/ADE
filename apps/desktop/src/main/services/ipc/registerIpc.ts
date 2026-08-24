@@ -8397,12 +8397,14 @@ export function registerIpc({
     if (result.backend === "simulator-window-capture") {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       const parkingWindow = claimSimulatorParkingWindow(browserWindow);
-      // A started stream is the one thing that owes a matching
-      // `releaseWindowParking`, so it is the only claim that takes a holder.
-      // The discovery sweep below and the launch handler above claim without
-      // holding: they are polled or fire-and-forget, and counting them would
-      // mean the count never came back down.
-      retainSimulatorParkingFollow(browserWindow);
+      // Deliberately does NOT take a holder. With a local project bound this
+      // handler never runs — preload routes `startStream` to the brain daemon,
+      // which has no BrowserWindow and no parking concept — so a retain wired
+      // here would leave the count permanently at zero in production. The
+      // renderer takes its holder over `IPC.iosSimulatorRetainWindowParking`,
+      // the local-only mirror of `releaseWindowParking`, so there is exactly
+      // one claimant of the count and it is on the same transport as its
+      // release.
       // A stream starting is the capture session attaching: place the window
       // once here, then leave it to the user.
       await attachSimulatorWindowForCapture(parkingWindow);
@@ -8475,6 +8477,16 @@ export function registerIpc({
   // Scoped to the claimant, and refcounted within it: two drawers can be open
   // in one window (a chat pane plus the Work sidebar's iOS tab), and the first
   // to close must not drop a claim the other still depends on.
+  //
+  // The retain side has to live on this same local-only channel: `startStream`
+  // — the event that owes a release — is routed to the brain daemon whenever a
+  // local project is bound, so its ipcMain handler never runs in the case that
+  // window capture actually requires. A holder taken there would never exist.
+  ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: true }> => {
+    retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender));
+    return { ok: true };
+  });
+
   ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (event): Promise<{ ok: true }> => {
     releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender));
     return { ok: true };

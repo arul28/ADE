@@ -7323,7 +7323,21 @@ contextBridge.exposeInMainWorld("ade", {
         ...(opts.session ? { session: opts.session } : {}),
       });
     },
-    // The mirror image of the call above: discovery arms the window-parking
+    // Registers this surface as depending on the parking claim. It has to be
+    // its own local-only channel rather than a side effect of `startStream`:
+    // with a local project bound — which window capture requires —
+    // `startStream` is answered by the brain daemon, which has no BrowserWindow
+    // and no parking concept, so nothing in Electron main ever runs for it.
+    // Same transport and same error handling as `releaseWindowParking` below,
+    // so the two always pair up.
+    retainWindowParking: async (): Promise<void> => {
+      try {
+        await ipcRenderer.invoke(IPC.iosSimulatorRetainWindowParking);
+      } catch {
+        /* parking is best-effort */
+      }
+    },
+    // The mirror image of the call above: capture arms the window-parking
     // follow in this process, so whoever stops capturing has to disarm it here
     // too. Deliberately not routed through the runtime — parking is a local
     // Electron-main concern — and deliberately never throws, because every

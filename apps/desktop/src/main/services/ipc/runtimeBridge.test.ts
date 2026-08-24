@@ -57,6 +57,13 @@ vi.mock("electron", () => ({
   desktopCapturer: {
     getSources: vi.fn(async () => []),
   },
+  screen: {
+    getDisplayMatching: vi.fn(() => ({ workArea: { x: 0, y: 0, width: 1_920, height: 1_080 } })),
+    getPrimaryDisplay: vi.fn(() => ({ workArea: { x: 0, y: 0, width: 1_920, height: 1_080 } })),
+  },
+  systemPreferences: {
+    getMediaAccessStatus: vi.fn(() => "granted"),
+  },
   dialog: {
     showOpenDialog: showOpenDialogMock,
   },
@@ -130,6 +137,11 @@ import {
   registerRuntimeBridge,
 } from "./runtimeBridge";
 import { registerIpc } from "./registerIpc";
+import {
+  activeSimulatorParkingWindow,
+  followSimulatorWindowUnderAde,
+  releaseSimulatorParkingFollow,
+} from "../ios/simulatorWindowCapture";
 
 const target: RemoteRuntimeTarget = {
   id: "target-1",
@@ -1958,6 +1970,57 @@ describe("registerIpc sync bridge", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    // The parking follow is process-wide module state; never leak it into the
+    // next case.
+    releaseSimulatorParkingFollow();
+  });
+
+  // The refcount that keeps a second open drawer's parking claim alive is only
+  // worth anything if something in production actually takes a holder. It used
+  // to be taken inside the `startStream` ipcMain handler — which never runs
+  // when a local project is bound, because preload routes `startStream` to the
+  // brain daemon, and window capture *requires* that binding. The count was
+  // therefore permanently zero. Exercised through the registered handlers, not
+  // the module functions, because the wiring was the whole defect.
+  it("counts window-parking holders taken over IPC so a second drawer survives the first one closing", async () => {
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    registerIpc({
+      getCtx: () => ({ logger }) as any,
+      getSyncService: () => null,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    // Only the members the parking follow touches — a real BrowserWindow would
+    // drag Electron's native side into a wiring test.
+    const claimant = {
+      id: 7,
+      isDestroyed: () => false,
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      getBounds: () => ({ x: 0, y: 0, width: 1_400, height: 900 }),
+    };
+    // What the discovery handler does in production before any holder exists.
+    followSimulatorWindowUnderAde(claimant as any);
+    browserWindowFromWebContents.mockReturnValue(claimant);
+
+    const retain = ipcHandlers.get(IPC.iosSimulatorRetainWindowParking);
+    const release = ipcHandlers.get(IPC.iosSimulatorReleaseWindowParking);
+    expect(typeof retain).toBe("function");
+    expect(typeof release).toBe("function");
+
+    // A chat pane's drawer and the Work sidebar's iOS tab, one window.
+    await retain?.(eventForSender());
+    await retain?.(eventForSender());
+
+    await release?.(eventForSender());
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    await release?.(eventForSender());
+    expect(activeSimulatorParkingWindow()).toBeNull();
   });
 
   it("sets the pairing code through the brain when no project sync service exists", async () => {

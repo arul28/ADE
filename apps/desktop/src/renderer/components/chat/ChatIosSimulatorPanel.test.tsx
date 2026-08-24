@@ -269,6 +269,7 @@ function installIosSimulatorApi(options: {
       windowState: null,
       message: null,
     }),
+    retainWindowParking: vi.fn().mockResolvedValue(undefined),
     releaseWindowParking: vi.fn().mockResolvedValue(undefined),
     openSystemSettings: vi.fn().mockResolvedValue({ ok: true }),
     revealSimulator: vi.fn().mockResolvedValue(options.revealResult ?? { ok: true, message: null }),
@@ -1694,5 +1695,58 @@ describe("ChatIosSimulatorPanel", () => {
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalled());
     expect(await screen.findByText(/Could not start the live view/)).toBeTruthy();
+  });
+
+  // The host counts holders on a local-only channel, because `startStream`
+  // itself is answered by the brain daemon whenever a project is bound and so
+  // never reaches the Electron-main code that owns parking. If the panel stops
+  // asking for the hold, the count sits at zero and the refcount that protects a
+  // second open drawer stops protecting anything.
+  it("takes one host parking hold when the live view starts", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalled());
+    await waitFor(() => expect(api.retainWindowParking).toHaveBeenCalledTimes(1));
+  });
+
+  // One hold, one release. The give-up path returns the hold but deliberately
+  // keeps the stream flagged so unmount still stops it — and unmount used to
+  // read that same flag as "you still hold parking" and release a second time.
+  // With another drawer open in this window that second release decrements a
+  // holder this panel does not own and tears down the other drawer's follow.
+  it("releases the parking hold once when the live view fails and the drawer then unmounts", async () => {
+    const { api } = installIosSimulatorApi();
+    api.listSimulatorWindowSources.mockResolvedValue({
+      sources: [],
+      windowState: null,
+      message: "Screen recording is off for ADE.",
+    });
+
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.retainWindowParking).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalledTimes(1));
+    const stopCallsBeforeUnmount = api.stopStream.mock.calls.length;
+
+    view.unmount();
+
+    // Unmount still has to stop the host stream — the stream did start — but it
+    // must not hand back a hold the give-up path already returned.
+    await waitFor(() => expect(api.stopStream.mock.calls.length).toBeGreaterThan(stopCallsBeforeUnmount));
+    expect(api.releaseWindowParking).toHaveBeenCalledTimes(1);
   });
 });

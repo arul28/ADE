@@ -812,7 +812,14 @@ export function ChatIosSimulatorPanel({
   const windowCaptureRecoveryAttemptedAtRef = useRef(0);
   const lastWindowFrameAtRef = useRef(0);
   const liveActiveSinceRef = useRef(0);
+  // Two obligations, two refs. One ref carrying both meant the give-up path —
+  // which returns the parking hold but deliberately keeps the stream flagged so
+  // unmount still reaches `stopStream` — left a later release site free to
+  // return the same hold twice. With a second drawer open in this window that
+  // second release decrements a holder this panel does not own, tearing down
+  // the other drawer's follow.
   const streamStartedByPanelRef = useRef(false);
+  const parkingHeldByPanelRef = useRef(false);
   const suppressNextSelectionEventRef = useRef(false);
   const dragStartRef = useRef<DragStart | null>(null);
   const snapshotRefreshInFlightRef = useRef(false);
@@ -1266,6 +1273,17 @@ export function ChatIosSimulatorPanel({
     // re-asking: the Simulator window is sometimes a beat behind the app.
     for (let attempt = 0; attempt < WINDOW_SOURCE_ATTEMPTS; attempt += 1) {
       const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
+      // Take the parking hold here, once, and not where the stream starts.
+      // Discovery is what arms the host's claim, and a holder only counts
+      // against a claim that already exists — while `startStream` itself is
+      // answered by the brain daemon whenever a project is bound (which window
+      // capture requires), so it never reaches the Electron-main code that owns
+      // parking at all. Held from the first sweep on, so the give-up path below
+      // has something to give back.
+      if (!parkingHeldByPanelRef.current) {
+        parkingHeldByPanelRef.current = true;
+        await window.ade.iosSimulator.retainWindowParking();
+      }
       // The session passed above only tells the host whether to park and settle
       // at all. Choosing among the windows it found is this call, right here,
       // so a device switch re-picks instead of parking on the previous window.
@@ -1574,8 +1592,12 @@ export function ChatIosSimulatorPanel({
     if (mode !== "interact" || statusSupported === null) {
       stopRendererLiveVisual();
       void window.ade.iosSimulator.stopStream().catch(() => {});
-      // Only the panel that armed the follow disarms it.
-      if (streamStartedByPanelRef.current) void window.ade.iosSimulator.releaseWindowParking();
+      // Only a hold this panel still owns is returned — releasing one it already
+      // gave back would decrement another drawer's holder in this window.
+      if (parkingHeldByPanelRef.current) {
+        parkingHeldByPanelRef.current = false;
+        void window.ade.iosSimulator.releaseWindowParking();
+      }
       streamStartedByPanelRef.current = false;
       return;
     }
@@ -1587,8 +1609,12 @@ export function ChatIosSimulatorPanel({
     ) {
       stopRendererLiveVisual();
       void window.ade.iosSimulator.stopStream().catch(() => {});
-      // Only the panel that armed the follow disarms it.
-      if (streamStartedByPanelRef.current) void window.ade.iosSimulator.releaseWindowParking();
+      // Only a hold this panel still owns is returned — releasing one it already
+      // gave back would decrement another drawer's holder in this window.
+      if (parkingHeldByPanelRef.current) {
+        parkingHeldByPanelRef.current = false;
+        void window.ade.iosSimulator.releaseWindowParking();
+      }
       streamStartedByPanelRef.current = false;
       return;
     }
@@ -1598,13 +1624,15 @@ export function ChatIosSimulatorPanel({
       try {
         stopRendererLiveVisual();
         await window.ade.iosSimulator.stopStream().catch(() => {});
-        // Starting the stream arms one parking hold on the host, so a restart
-        // (a device switch) must drop the previous one first. Otherwise this
-        // panel holds two and its single release on unmount never reaches zero.
-        if (streamStartedByPanelRef.current) {
-          streamStartedByPanelRef.current = false;
+        // Starting the live view takes one parking hold on the host, so a
+        // restart (a device switch) must drop the previous one first. Otherwise
+        // this panel holds two and its single release on unmount never reaches
+        // zero.
+        if (parkingHeldByPanelRef.current) {
+          parkingHeldByPanelRef.current = false;
           await window.ade.iosSimulator.releaseWindowParking().catch(() => {});
         }
+        streamStartedByPanelRef.current = false;
         await startWindowCaptureVisual(device);
         if (cancelled) {
           stopRendererLiveVisual();
@@ -1612,14 +1640,16 @@ export function ChatIosSimulatorPanel({
       } catch (streamError) {
         if (cancelled) return;
         // Giving up here is terminal: nothing retries a stream that never
-        // produced a frame. The host already armed the parking follow when
-        // `startStream` succeeded, so without this release it keeps re-parking
+        // produced a frame. The panel took a parking hold on its first
+        // discovery sweep, so without this release the host keeps re-parking
         // Simulator.app on every ADE window move while the drawer says the live
         // view failed. `streamStartedByPanelRef` deliberately stays set — the
-        // stream itself did start, so unmount still has to reach `stopStream`;
-        // the host makes the second release a no-op. A failure before
-        // `startStream` returned armed nothing, so it releases nothing.
-        if (streamStartedByPanelRef.current) {
+        // stream itself did start, so unmount still has to reach `stopStream` —
+        // but the hold is given back here and only here, so no later release
+        // site returns it a second time. A failure before the first sweep took
+        // no hold, so it releases nothing.
+        if (parkingHeldByPanelRef.current) {
+          parkingHeldByPanelRef.current = false;
           void window.ade.iosSimulator.releaseWindowParking().catch(() => {});
         }
         const message = streamError instanceof Error ? streamError.message : String(streamError);
@@ -1654,10 +1684,18 @@ export function ChatIosSimulatorPanel({
   // drop the window-parking follow with it, or every later ADE window move keeps
   // nudging (and reopening) Simulator.app for a drawer that no longer exists.
   useEffect(() => () => {
-    if (!streamStartedByPanelRef.current) return;
-    streamStartedByPanelRef.current = false;
-    void window.ade.iosSimulator.stopStream().catch(() => {});
-    void window.ade.iosSimulator.releaseWindowParking();
+    if (streamStartedByPanelRef.current) {
+      streamStartedByPanelRef.current = false;
+      void window.ade.iosSimulator.stopStream().catch(() => {});
+    }
+    // Gated on the hold, not on the stream: the give-up path keeps the stream
+    // flagged (unmount still has to stop it) but has already handed the hold
+    // back, and a release for a hold this panel no longer owns would decrement
+    // another drawer's holder in this same window.
+    if (parkingHeldByPanelRef.current) {
+      parkingHeldByPanelRef.current = false;
+      void window.ade.iosSimulator.releaseWindowParking();
+    }
   }, []);
 
   useEffect(() => {
