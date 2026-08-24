@@ -688,6 +688,30 @@ transcript, so an expansion survives `LazyVStack` recycling. Expanding grows the
 message downward and holds the tapped row in place; it never re-pins the
 transcript to its bottom.
 
+**Expanding is a two-rung ladder, not an infinite one.** The first "Show more"
+expands in place as above. Anything still bounded after that step offers "Open
+full output" instead of another step (`workTruncatedOutputAffordance`), which
+presents `WorkOutputViewerScreen` — a monospaced, line-numbered, lazily laid out
+reader with a wrap toggle, occurrence-counting search, Copy all and the share
+sheet. The boxed renderers (`WorkStructuredOutputBlock`, `WorkDiffOutputBlock`,
+`WorkInlineDiffPreview`) clip at a fixed height with no inner scroller, so for
+them the second rung is not a preference: another in-place step would add text
+the box cuts away. `workOutputBoxOverflows` decides whether a box is clipping
+without scanning a long result to find out, and a clipping box opens the viewer
+from its header *or* by tapping the clipped region. The viewer is presented once
+per surface through `\.workOutputViewer` rather than by a `fullScreenCover` on
+every transcript row.
+
+**Copy is always the full content, never what is on screen.** The transcript
+renders bounded slices, so a Copy control that echoed its own view silently
+handed over a preview. Fenced code blocks resolve against the message they were
+sliced from by ordinal — counted from the front for a head-anchored preview and
+from the back for a tail-anchored one, which is also the case that carries a
+synthetic opening fence and so is the one most likely to hold a fragment
+(`WorkCodeBlockSource`). Resolution runs at tap time, never per render pass. The
+tool-result box displays its 500-character truncation while `copyText` carries
+the whole result.
+
 **Long replies cost O(tail), not O(message).** `parseMarkdownBlocksForStreaming`
 already split prose at a stable boundary; syntax highlighting now does the same,
 reusing an already-highlighted stable prefix split at the last line boundary
