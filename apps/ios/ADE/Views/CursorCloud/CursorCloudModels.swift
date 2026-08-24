@@ -4,7 +4,7 @@ import Foundation
 /// `CursorCloudFleetResult` in desktop shared/types/config.ts; every field is
 /// optional-tolerant so an older host cannot crash the pane.
 
-struct CursorCloudFleetOwnership: Codable, Equatable {
+struct CursorCloudFleetOwnership: Codable, Equatable, Hashable {
   var sessionId: String?
   var sessionTitle: String?
   var laneId: String?
@@ -14,7 +14,7 @@ struct CursorCloudFleetOwnership: Codable, Equatable {
 }
 
 /// Epoch-ms numbers arrive as JSON numbers, ISO strings as strings; accept both.
-enum CursorCloudTimestamp: Codable, Equatable {
+enum CursorCloudTimestamp: Codable, Equatable, Hashable {
   case epochMs(Double)
   case iso(String)
 
@@ -67,7 +67,7 @@ extension ISO8601DateFormatter {
   }()
 }
 
-struct CursorCloudAgentSummary: Codable, Equatable, Identifiable {
+struct CursorCloudAgentSummary: Codable, Equatable, Hashable, Identifiable {
   var agentId: String
   var name: String
   var summary: String
@@ -96,7 +96,7 @@ struct CursorCloudAgentSummary: Codable, Equatable, Identifiable {
   }
 }
 
-struct CursorCloudFleetEntry: Codable, Equatable, Identifiable {
+struct CursorCloudFleetEntry: Codable, Equatable, Hashable, Identifiable {
   var agent: CursorCloudAgentSummary
   var runStatus: String?
   var latestRunId: String?
