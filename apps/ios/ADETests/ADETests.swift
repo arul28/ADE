@@ -15307,6 +15307,179 @@ final class ADETests: XCTestCase {
     ), 0)
   }
 
+  // MARK: - Work chat transcript scroll policy
+
+  func testProgrammaticScrollWaitsForTheWholeInteractionNotJustTheDrag() {
+    XCTAssertTrue(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: false))
+    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: true, scrollPhaseUserDriven: false))
+    // Finger-up ends the drag gesture, but the fling it launched still owns the
+    // offset. Writing here is what killed flings mid-deceleration.
+    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: true))
+
+    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.tracking))
+    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.interacting))
+    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.decelerating))
+    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.idle))
+    // `.animating` is OUR animation. Treating it as the reader's would let one
+    // programmatic scroll suppress the next one.
+    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.animating))
+  }
+
+  func testShortTranscriptRendersFromTheTop() {
+    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: true), .topLeading)
+    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: false), .bottomLeading)
+  }
+
+  func testPrependCorrectionBailsOutWhenTheProbeDescribesAnotherRow() {
+    let anchor = WorkChatPrependAnchor(
+      rowId: "message-42",
+      rowY: 100,
+      offsetY: 500,
+      remainingAttempts: workChatPrependAnchorAttempts
+    )
+
+    // The probe is measuring some other row, so it says nothing about the
+    // anchored one. Falling through with a zero row shift would reduce the
+    // correction to the reader's own scroll delta and apply it a second time.
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-99", y: 340),
+        currentOffsetY: 740,
+        mayWriteScrollOffset: true
+      ),
+      .retry
+    )
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: nil,
+        currentOffsetY: 740,
+        mayWriteScrollOffset: true
+      ),
+      .retry
+    )
+  }
+
+  func testPrependCorrectionIsolatesTheInsertionFromTheReadersOwnScrolling() {
+    let anchor = WorkChatPrependAnchor(
+      rowId: "message-42",
+      rowY: 100,
+      offsetY: 500,
+      remainingAttempts: workChatPrependAnchorAttempts
+    )
+    // 900pt inserted above while the reader scrolled 240pt: the row moves
+    // 900 - 240 and the offset moves 240, so the sum is the insertion.
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 + 900 - 240),
+        currentOffsetY: 500 + 240,
+        mayWriteScrollOffset: true
+      ),
+      .apply(900)
+    )
+    // A pure scroll with no prepend sums to zero and correctly restores nothing.
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 - 240),
+        currentOffsetY: 500 + 240,
+        mayWriteScrollOffset: true
+      ),
+      .retry
+    )
+  }
+
+  func testPrependCorrectionWaitsOutTheReaderWithoutSpendingAnAttempt() {
+    let anchor = WorkChatPrependAnchor(
+      rowId: "message-42",
+      rowY: 100,
+      offsetY: 500,
+      remainingAttempts: 1
+    )
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 1_000),
+        currentOffsetY: 500,
+        mayWriteScrollOffset: false
+      ),
+      .wait
+    )
+  }
+
+  func testOverlappingPrependsKeepTheAnchorThatAccumulatesBoth() {
+    // Second page lands while the first correction is still open. Re-arming on
+    // the new first row would measure only the second insertion and leave the
+    // first one uncorrected.
+    XCTAssertEqual(
+      workChatPrependArmDecision(
+        previousFirstId: "message-20",
+        nextFirstId: "message-10",
+        previousVisibleCount: 40,
+        nextVisibleCount: 60,
+        existingAnchorRowId: "message-42",
+        anchorRowStillVisible: true,
+        previousFirstRowStillVisible: true,
+        probeRowId: "message-42",
+        probeRowY: 220
+      ),
+      .extendExistingAnchorWindow
+    )
+    // Unless the anchored row is gone, in which case there is nothing left to
+    // measure against.
+    XCTAssertEqual(
+      workChatPrependArmDecision(
+        previousFirstId: "message-20",
+        nextFirstId: "message-10",
+        previousVisibleCount: 40,
+        nextVisibleCount: 60,
+        existingAnchorRowId: "message-42",
+        anchorRowStillVisible: false,
+        previousFirstRowStillVisible: true,
+        probeRowId: "message-42",
+        probeRowY: 220
+      ),
+      .retireAnchor
+    )
+  }
+
+  func testPrependAnchorOnlyArmsOnAGenuineInsertionAbove() {
+    func decision(
+      previousFirstId: String? = "message-20",
+      nextFirstId: String? = "message-10",
+      previousVisibleCount: Int = 40,
+      nextVisibleCount: Int = 60,
+      previousFirstRowStillVisible: Bool = true,
+      probeRowId: String? = "message-20",
+      probeRowY: CGFloat? = 180
+    ) -> WorkChatPrependArmDecision {
+      workChatPrependArmDecision(
+        previousFirstId: previousFirstId,
+        nextFirstId: nextFirstId,
+        previousVisibleCount: previousVisibleCount,
+        nextVisibleCount: nextVisibleCount,
+        existingAnchorRowId: nil,
+        anchorRowStillVisible: false,
+        previousFirstRowStillVisible: previousFirstRowStillVisible,
+        probeRowId: probeRowId,
+        probeRowY: probeRowY
+      )
+    }
+
+    XCTAssertEqual(decision(), .arm(rowId: "message-20", rowY: 180))
+    // Appended, not prepended: the list grew but still leads with the same row.
+    XCTAssertEqual(decision(nextFirstId: "message-20"), .ignore)
+    // Rows replaced rather than inserted.
+    XCTAssertEqual(decision(nextVisibleCount: 40), .ignore)
+    // The leading row is gone, so this is not a prepend.
+    XCTAssertEqual(decision(previousFirstRowStillVisible: false), .ignore)
+    // The probe was measuring a different row, so there is no "before" position.
+    XCTAssertEqual(decision(probeRowId: "message-77"), .ignore)
+    XCTAssertEqual(decision(probeRowY: nil), .ignore)
+  }
+
   func testMobileChatHistoryTriggerAndRenderCapStayBounded() {
     XCTAssertTrue(workChatShouldRequestOlderHistory(
       distanceFromTop: 120,

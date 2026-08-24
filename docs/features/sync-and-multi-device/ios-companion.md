@@ -654,8 +654,39 @@ and is applied through `ScrollPosition` in a non-animated transaction.
 Deliberately not total content height: a reply streaming into the tail grows the
 content at the same time, and a reader scrolled back through history is exactly
 when that happens, so a total-height correction would add the tail's growth and
-overshoot. Bottom-follow, the jump-to-latest pill, and the initial force-pin are
-untouched.
+overshoot. Bottom-follow and the jump-to-latest pill are untouched.
+
+Three rules keep that correction from becoming a teleport. A probe sample that
+describes a *different* row than the armed anchor is no measurement at all, so
+it waits rather than falling through with a zero row shift — that would reduce
+the correction to the reader's own scroll delta and apply it twice. Overlapping
+prepends keep the *first* anchor rather than re-arming on the new leading row:
+its row was pushed down by both insertions, so the displacement measured on it
+already accumulates them. And a correction is a scroll write, so like every
+other one it defers to the reader for the whole interaction — finger-down
+through the end of the fling (`workChatMayWriteScrollOffset`, fed by
+`onScrollPhaseChange`, not by the drag gesture, which ends at finger-up).
+
+**A chat opens where it was left, not at a random offset.** The transcript opens
+at the tail through `defaultScrollAnchor(.bottom, for: .initialOffset)` —
+scoped to the initial offset because the `.sizeChanges` anchor is the
+total-height correction the paragraph above exists to avoid. The force-pin
+remains as belt-and-braces, but it now stays armed until the content size has
+been quiet for 600ms rather than firing on a fixed retry ladder, because
+hydration routinely lands after that ladder ends. It stands down early only for
+a deliberate drag (16pt — the 2pt stickiness deadband is finger jitter on a
+freshly-opened chat). A transcript shorter than the viewport renders from the
+top, desktop-style; a one-entry chat skips the pin entirely.
+
+**A message's truncation budget only ever grows.** The newest assistant message
+renders tail-anchored under a generous budget so a finishing turn is readable in
+place. When a newer message arrives it becomes head-anchored — and the budget it
+already rendered under becomes its floor, so "Show more" can never appear on a
+message the reader has already read in full. Both show-more paths (the split
+controls row and the message bubble) write one shared budget map on the
+transcript, so an expansion survives `LazyVStack` recycling. Expanding grows the
+message downward and holds the tapped row in place; it never re-pins the
+transcript to its bottom.
 
 **Long replies cost O(tail), not O(message).** `parseMarkdownBlocksForStreaming`
 already split prose at a stable boundary; syntax highlighting now does the same,
@@ -668,6 +699,16 @@ their own small cache instead of the shared 256-entry inline-markdown cache, so
 one long turn cannot evict every completed message and force a main-thread
 re-parse on scrollback; the final revision is promoted. All derived render
 caches drop on `applicationDidReceiveMemoryWarning`.
+
+Two properties make that O(tail) real rather than nominal. Markdown block ids
+are position-stable (`markdown-block-<index>`), not content-derived, so a
+delta does not hand the `LazyVStack` a new identity for a row that is still the
+same row; content changes travel in a separate `digest` field that change
+detection reads. And no derived text is recomputed per refresh: each message
+carries a digest stamped by the (off-main) snapshot fold, previews are cached
+per line budget, and the presentation signature hashes those digests plus each
+preview's shape instead of re-hashing the visible transcript's full text
+several times a second.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).

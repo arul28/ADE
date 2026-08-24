@@ -185,6 +185,97 @@ struct WorkChatContentSizeSample: Equatable {
 /// Number of layout passes a prepend anchor stays armed for.
 let workChatPrependAnchorAttempts = 12
 
+/// What a presentation change does to the prepend anchor.
+enum WorkChatPrependArmDecision: Equatable {
+  case ignore
+  /// A second prepend landed while the first was still being corrected.
+  case extendExistingAnchorWindow
+  /// The anchored row is gone; nothing left to measure against.
+  case retireAnchor
+  case arm(rowId: String, rowY: CGFloat)
+}
+
+/// Decides how a presentation change affects the prepend anchor.
+///
+/// The overlapping-prepend case is the subtle one. The armed anchor rides a row
+/// that BOTH insertions pushed down, so the displacement measured on it already
+/// accumulates them. Re-arming on the new first row would measure only the
+/// second insertion and leave the first uncorrected — the "teleport up" that
+/// back-to-back page loads produced.
+func workChatPrependArmDecision(
+  previousFirstId: String?,
+  nextFirstId: String?,
+  previousVisibleCount: Int,
+  nextVisibleCount: Int,
+  existingAnchorRowId: String?,
+  anchorRowStillVisible: Bool,
+  previousFirstRowStillVisible: Bool,
+  probeRowId: String?,
+  probeRowY: CGFloat?
+) -> WorkChatPrependArmDecision {
+  guard nextVisibleCount > previousVisibleCount,
+        let previousFirstId,
+        nextFirstId != previousFirstId
+  else { return .ignore }
+
+  if existingAnchorRowId != nil {
+    return anchorRowStillVisible ? .extendExistingAnchorWindow : .retireAnchor
+  }
+
+  guard
+    // The probe has to already be measuring the row we are about to anchor on,
+    // or there is no "before" position to restore to.
+    probeRowId == previousFirstId,
+    let probeRowY,
+    // Only a genuine prepend: the row that used to lead the list has to still
+    // be in the list, just further down.
+    previousFirstRowStillVisible
+  else { return .ignore }
+
+  return .arm(rowId: previousFirstId, rowY: probeRowY)
+}
+
+/// What an armed anchor may do on this layout pass.
+enum WorkChatPrependCorrection: Equatable {
+  /// The reader owns the offset. Stay armed and spend no attempt.
+  case wait
+  /// No usable measurement yet. Spend an attempt.
+  case retry
+  /// Undo this much inserted height.
+  case apply(CGFloat)
+}
+
+/// Turns a probe sample into a correction.
+///
+/// The two `retry` cases are what keeps a correction honest. A probe describing
+/// some OTHER row carries no information about the anchored row, and treating a
+/// mismatch as a zero row shift reduces the correction to the reader's own
+/// scroll delta and applies it a second time — a teleport, not a correction.
+func workChatPrependCorrection(
+  anchor: WorkChatPrependAnchor,
+  probed: WorkChatPrependProbeSample?,
+  currentOffsetY: CGFloat,
+  mayWriteScrollOffset: Bool
+) -> WorkChatPrependCorrection {
+  // A correction is a scroll write, so it waits for the reader to let go. The
+  // anchor stays armed and spends no attempt meanwhile: the measurement below
+  // isolates the insertion from the reader's own scrolling, so applying it once
+  // the fling settles restores the same reading position it would have restored
+  // mid-fling — without fighting the fling for the offset.
+  guard mayWriteScrollOffset else { return .wait }
+  guard let probed, probed.rowId == anchor.rowId else { return .retry }
+
+  // The anchored row moves by the height inserted above it *minus* whatever the
+  // reader scrolled in the meantime, because scrolling moves the row up the
+  // screen too. Adding the offset change back isolates the insertion: with an
+  // inserted height H and a user scroll D, the row moves H - D and the offset
+  // moves D, so the sum is H either way — and a pure scroll with no prepend
+  // sums to zero and correctly restores nothing.
+  let insertedHeight = (probed.y - anchor.rowY) + (currentOffsetY - anchor.offsetY)
+  guard insertedHeight > 0.5 else { return .retry }
+  return .apply(insertedHeight)
+}
+
 /// Whether a scroll phase means the reader — not the app — owns the offset.
 ///
 /// `.animating` is deliberately not user-driven: it is the phase our own
@@ -917,44 +1008,37 @@ struct WorkChatSessionView: View {
   /// user was reading slides down by the height of the inserted page.
   @MainActor
   private func armPrependAnchorIfRowsInsertedAbove(_ nextPresentation: WorkTimelinePresentation) {
-    guard nextPresentation.visibleEntries.count > timelinePresentation.visibleEntries.count,
-          let previousFirstId = timelinePresentation.visibleEntries.first?.id,
-          nextPresentation.visibleEntries.first?.id != previousFirstId
-    else { return }
-
-    // Back-to-back prepends. The armed anchor rides a row that BOTH insertions
-    // pushed down, so the displacement it measures already accumulates them —
-    // re-arming on the new first row would instead measure only the second
-    // insertion and leave the first one uncorrected (the "teleport up"). Keep
-    // the existing anchor and only extend the window it may fire in.
-    if var anchor = scrollMetrics.prependAnchor {
-      guard nextPresentation.visibleEntries.contains(where: { $0.id == anchor.rowId }) else {
-        // The anchored row fell out of the list; nothing left to measure
-        // against, so retire it rather than restore to a row that is gone.
-        scrollMetrics.prependAnchor = nil
-        return
-      }
-      anchor.remainingAttempts = workChatPrependAnchorAttempts
-      scrollMetrics.prependAnchor = anchor
+    let previousFirstId = timelinePresentation.visibleEntries.first?.id
+    let existingAnchorRowId = scrollMetrics.prependAnchor?.rowId
+    switch workChatPrependArmDecision(
+      previousFirstId: previousFirstId,
+      nextFirstId: nextPresentation.visibleEntries.first?.id,
+      previousVisibleCount: timelinePresentation.visibleEntries.count,
+      nextVisibleCount: nextPresentation.visibleEntries.count,
+      existingAnchorRowId: existingAnchorRowId,
+      anchorRowStillVisible: existingAnchorRowId.map { rowId in
+        nextPresentation.visibleEntries.contains { $0.id == rowId }
+      } ?? false,
+      previousFirstRowStillVisible: previousFirstId.map { rowId in
+        nextPresentation.visibleEntries.contains { $0.id == rowId }
+      } ?? false,
+      probeRowId: scrollMetrics.probeRowId,
+      probeRowY: scrollMetrics.probeRowY
+    ) {
+    case .ignore:
       return
+    case .extendExistingAnchorWindow:
+      scrollMetrics.prependAnchor?.remainingAttempts = workChatPrependAnchorAttempts
+    case .retireAnchor:
+      scrollMetrics.prependAnchor = nil
+    case .arm(let rowId, let rowY):
+      scrollMetrics.prependAnchor = WorkChatPrependAnchor(
+        rowId: rowId,
+        rowY: rowY,
+        offsetY: scrollMetrics.offsetY,
+        remainingAttempts: workChatPrependAnchorAttempts
+      )
     }
-
-    guard
-      // The probe has to already be measuring the row we are about to anchor
-      // on, or there is no "before" position to restore to.
-      scrollMetrics.probeRowId == previousFirstId,
-      let previousFirstRowY = scrollMetrics.probeRowY
-    else { return }
-    // Only a genuine prepend: the row that used to lead the list has to still be
-    // in the list, just further down.
-    guard nextPresentation.visibleEntries.contains(where: { $0.id == previousFirstId }) else { return }
-
-    scrollMetrics.prependAnchor = WorkChatPrependAnchor(
-      rowId: previousFirstId,
-      rowY: previousFirstRowY,
-      offsetY: scrollMetrics.offsetY,
-      remainingAttempts: workChatPrependAnchorAttempts
-    )
   }
 
   /// Re-applies the reader's position once the prepended rows have laid out.
@@ -966,41 +1050,24 @@ struct WorkChatSessionView: View {
   func restorePrependAnchorIfNeeded(probed: WorkChatPrependProbeSample?) {
     guard var anchor = scrollMetrics.prependAnchor else { return }
 
-    // A correction is a scroll write, so it waits for the reader to let go.
-    // The anchor stays armed (and does not burn an attempt) meanwhile: the
-    // measurement below isolates the insertion from the reader's own scrolling,
-    // so applying it after the fling settles restores the same reading position
-    // it would have restored mid-fling — without fighting the fling for the
-    // offset, which is what double-applied the reader's own scroll.
-    guard workChatMayWriteScrollOffset(
-      dragActive: timelineDragActive,
-      scrollPhaseUserDriven: timelineScrollPhaseUserDriven
-    ) else { return }
-
-    // No usable measurement for THIS anchor: the probe is describing some other
-    // row (it moved with a recompose, or the anchored row was recycled out of
-    // the LazyVStack). Bail out rather than fall through with a zero row shift —
-    // that reduces the correction to the reader's own scroll delta and applies
-    // it a second time, which is a teleport, not a correction.
-    guard let probed, probed.rowId == anchor.rowId else {
+    let insertedHeight: CGFloat
+    switch workChatPrependCorrection(
+      anchor: anchor,
+      probed: probed,
+      currentOffsetY: scrollMetrics.offsetY,
+      mayWriteScrollOffset: workChatMayWriteScrollOffset(
+        dragActive: timelineDragActive,
+        scrollPhaseUserDriven: timelineScrollPhaseUserDriven
+      )
+    ) {
+    case .wait:
+      return
+    case .retry:
       anchor.remainingAttempts -= 1
       scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
       return
-    }
-
-    // The anchored row moves by the height inserted above it *minus* whatever
-    // the reader scrolled in the meantime, because scrolling moves the row up
-    // the screen too. Adding the offset change back isolates the insertion:
-    // with an inserted height H and a user scroll D, the row moves H - D and the
-    // offset moves D, so the sum is H either way — and a pure scroll with no
-    // prepend sums to zero and correctly restores nothing.
-    let rowShift = probed.y - anchor.rowY
-    let scrolled = scrollMetrics.offsetY - anchor.offsetY
-    let insertedHeight = rowShift + scrolled
-    guard insertedHeight > 0.5 else {
-      anchor.remainingAttempts -= 1
-      scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
-      return
+    case .apply(let height):
+      insertedHeight = height
     }
 
     scrollMetrics.prependAnchor = nil

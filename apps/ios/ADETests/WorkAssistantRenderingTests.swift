@@ -355,6 +355,170 @@ final class WorkAssistantRenderingTests: XCTestCase {
     }
   }
 
+  // MARK: - Budget stability
+
+  /// The regression this rule exists for: the newest assistant answer renders
+  /// tail-anchored under the generous budget, and the moment a newer message
+  /// arrives it flips to head-anchoring. That flip used to drop the budget back
+  /// to 48 lines, so a message the reader had already read in full grew a
+  /// "Show more" behind their back.
+  func testBudgetSurvivesTheFlipOutOfTailAnchoring() {
+    let asTail = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: nil,
+      isTail: true,
+      headAnchorOverride: false,
+      tailCanRenderFull: true
+    )
+    XCTAssertEqual(asTail.lineBudget, workAssistantMessageTailFullLineBudget)
+    XCTAssertEqual(asTail.anchor, .tail)
+
+    // A newer message arrived. Same message, no longer the tail.
+    let afterFlip = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: asTail.lineBudget,
+      isTail: false,
+      headAnchorOverride: false,
+      tailCanRenderFull: false
+    )
+    XCTAssertEqual(afterFlip.lineBudget, workAssistantMessageTailFullLineBudget)
+    XCTAssertEqual(afterFlip.anchor, .head)
+  }
+
+  func testBudgetNeverShrinksBelowWhatWasAlreadyRendered() {
+    let expanded = workAssistantMessageInitialLineBudget + (4 * workAssistantMessageLineBudgetStep)
+    for isTail in [true, false] {
+      let budget = workAssistantRenderBudget(
+        userLineBudget: nil,
+        floorLineBudget: expanded,
+        isTail: isTail,
+        headAnchorOverride: false,
+        tailCanRenderFull: false
+      )
+      XCTAssertEqual(budget.lineBudget, expanded)
+    }
+    // The floor is a floor, not a ceiling: a further expansion still applies.
+    XCTAssertEqual(
+      workAssistantRenderBudget(
+        userLineBudget: expanded + workAssistantMessageLineBudgetStep,
+        floorLineBudget: expanded,
+        isTail: false,
+        headAnchorOverride: true,
+        tailCanRenderFull: false
+      ).lineBudget,
+      expanded + workAssistantMessageLineBudgetStep
+    )
+  }
+
+  func testExpandingTheTailMessageAnchorsItAtItsHead() {
+    let budget = workAssistantRenderBudget(
+      userLineBudget: workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep,
+      floorLineBudget: workAssistantMessageTailFullLineBudget,
+      isTail: true,
+      headAnchorOverride: true,
+      tailCanRenderFull: true
+    )
+    XCTAssertEqual(budget.anchor, .head)
+    XCTAssertEqual(budget.lineBudget, workAssistantMessageTailFullLineBudget)
+  }
+
+  func testShowMoreStepsFromTheBudgetTheMessageIsRenderingUnder() {
+    XCTAssertEqual(
+      workAssistantMessageShowMoreLineBudget(current: nil),
+      workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
+    )
+    // A message held at the tail-full floor steps up from that floor, not back
+    // down to the initial budget.
+    XCTAssertEqual(
+      workAssistantMessageShowMoreLineBudget(current: workAssistantMessageTailFullLineBudget),
+      workAssistantMessageTailFullLineBudget + workAssistantMessageLineBudgetStep
+    )
+  }
+
+  /// End to end over the real preview slicer: a message that rendered in full as
+  /// the tail is still rendered in full — with no "Show more" — after a newer
+  /// message pushes it into head-anchoring.
+  func testMessageRenderedFullyAsTailIsNeverTruncatedLater() {
+    let markdown = (1...100).map { "Line \($0): the agent explained another step." }
+      .joined(separator: "\n")
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+
+    func preview(_ budget: WorkAssistantRenderBudget) -> WorkAssistantMessagePreview {
+      workAssistantMessagePreview(
+        markdown,
+        lineBudget: budget.lineBudget,
+        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: budget.lineBudget),
+        anchor: budget.anchor
+      )
+    }
+
+    let asTail = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: nil,
+      isTail: true,
+      headAnchorOverride: false,
+      tailCanRenderFull: true
+    )
+    let tailPreview = preview(asTail)
+    XCTAssertFalse(tailPreview.isTruncated)
+
+    let afterFlip = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: asTail.lineBudget,
+      isTail: false,
+      headAnchorOverride: false,
+      tailCanRenderFull: false
+    )
+    let headPreview = preview(afterFlip)
+    XCTAssertFalse(headPreview.isTruncated, "Show more reappeared on a message the reader already read in full")
+    XCTAssertEqual(headPreview.text, markdown)
+
+    // And the same message WITHOUT the floor is exactly the regression: it
+    // truncates. This is what the floor is protecting against.
+    let withoutFloor = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: nil,
+      isTail: false,
+      headAnchorOverride: false,
+      tailCanRenderFull: false
+    )
+    XCTAssertTrue(preview(withoutFloor).isTruncated)
+  }
+
+  // MARK: - Position-stable block ids
+
+  func testMarkdownBlockIdsAreIndexBasedAndSurviveContentEdits() {
+    let before = parseMarkdownBlocks("First paragraph.\n\n## Heading\n\nSecond paragraph.")
+    let after = parseMarkdownBlocks("First paragraph, revised.\n\n## Heading\n\nSecond paragraph.")
+
+    XCTAssertEqual(before.map(\.id), after.map(\.id))
+    XCTAssertEqual(before.map(\.id), (0..<before.count).map { "markdown-block-\($0)" })
+    // Identity is stable, but the change is still visible to change detection.
+    XCTAssertNotEqual(before[0].digest, after[0].digest)
+    XCTAssertEqual(before[1].digest, after[1].digest)
+    XCTAssertNotEqual(before[0], after[0])
+  }
+
+  func testStreamingBlockIdsMatchTheWholeTextParse() {
+    let markdown = "Intro paragraph.\n\n```swift\nlet x = 1\n```\n\nClosing paragraph."
+    let streamed = parseMarkdownBlocksForStreaming(markdown, cacheKey: "streaming-id-parity")
+    let whole = parseMarkdownBlocks(markdown)
+    XCTAssertEqual(streamed.map(\.id), whole.map(\.id))
+    XCTAssertEqual(streamed.map(\.digest), whole.map(\.digest))
+  }
+
+  /// A streaming message grows one delta at a time. Every already-rendered row
+  /// has to keep its identity across those deltas, or the LazyVStack rebuilds
+  /// the whole subtree on every frame instead of updating the tail.
+  func testStreamingDeltasDoNotChurnEarlierBlockIds() {
+    let head = "Intro paragraph.\n\n## Findings\n\n"
+    let first = parseMarkdownBlocksForStreaming(head + "Partial", cacheKey: "streaming-churn")
+    let second = parseMarkdownBlocksForStreaming(head + "Partial answer, now longer.", cacheKey: "streaming-churn")
+    XCTAssertGreaterThanOrEqual(first.count, 2)
+    XCTAssertEqual(Array(first.prefix(2)).map(\.id), Array(second.prefix(2)).map(\.id))
+    XCTAssertEqual(Array(first.prefix(2)), Array(second.prefix(2)))
+  }
+
   // MARK: - Helpers
 
   private struct ShowMoreWalk {
