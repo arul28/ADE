@@ -9399,6 +9399,7 @@ final class SyncService: ObservableObject {
       args: ["agentId": agentId]
     )
     guard let payload = response as? [String: Any] else { return ["stopped": true] }
+    if (payload["queued"] as? Bool) == true { return ["queued": true] }
     return ["stopped": (payload["stopped"] as? Bool) ?? true]
   }
 

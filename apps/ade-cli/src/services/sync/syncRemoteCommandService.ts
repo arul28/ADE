@@ -5442,7 +5442,9 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       limit: typeof payload.limit === "number" ? payload.limit : undefined,
     });
   });
-  register("ai.cursorCloudResolveLane", { viewerAllowed: true }, async (payload) => {
+  // Lane resolution can import a new lane (host state mutation), so like
+  // pull it is refused for read-only viewers.
+  register("ai.cursorCloudResolveLane", { viewerAllowed: false }, async (payload) => {
     const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
     return fleetService.resolveLaneForAgent(
       requireString(payload.agentId, "ai.cursorCloudResolveLane requires agentId."),

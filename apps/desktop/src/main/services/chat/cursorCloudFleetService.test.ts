@@ -248,6 +248,59 @@ describe("cursorCloudFleetService", () => {
         /could not read this agent's latest run.*cursor api timeout/i,
       );
     });
+
+    it("scopes resolveLaneForAgent to this project's repos and never imports a foreign branch", async () => {
+      const harness = buildHarness({
+        agents: [agent({ agentId: "bc-res", status: "running" })],
+        runs: [{
+          id: "run-r",
+          agentId: "bc-res",
+          status: "RUNNING",
+          git: { branches: [{ repoUrl: "github.com/other/repo", branch: "cursor/foreign" }] },
+        }],
+      });
+      await expect(harness.service.resolveLaneForAgent("bc-res")).rejects.toThrow(
+        /only pushed branches to other repositories/i,
+      );
+      expect(harness.laneService.importBranch).not.toHaveBeenCalled();
+    });
+
+    it("matches lanes on exact case-sensitive branch names, not URL canonicalization", async () => {
+      const harness = buildHarness({
+        agents: [agent({ agentId: "bc-case", status: "finished" })],
+        runs: [{
+          id: "run-c",
+          agentId: "bc-case",
+          status: "FINISHED",
+          git: { branches: [{ branch: "Feature/X" }] },
+        }],
+      });
+      // A lane whose branch differs only by case must NOT absorb the pull;
+      // a new lane gets imported from the exact ref instead.
+      harness.lanes.push(lane({ id: "lane-lower", branchRef: "feature/x" }));
+      const result = await harness.service.pullIntoLane("bc-case");
+      expect(result.status).toBe("created_lane");
+      expect(result.mergedBranch).toBe("Feature/X");
+    });
+
+    it("shows the project's own branch on enriched rows for multi-repo agents", async () => {
+      const harness = buildHarness({
+        agents: [agent({ agentId: "bc-row", status: "running" })],
+        runs: [{
+          id: "run-row",
+          agentId: "bc-row",
+          status: "RUNNING",
+          git: { branches: [
+            { repoUrl: "github.com/other/repo", branch: "cursor/foreign", prUrl: "https://github.com/other/repo/pull/1" },
+            { repoUrl: "github.com/arul/ade", branch: "cursor/mine", prUrl: "https://github.com/arul/ade/pull/2" },
+          ] },
+        }],
+      });
+      const result = await harness.service.getFleet({ includeArchived: false });
+      const row = result.items.find((entry) => entry.agent.agentId === "bc-row");
+      expect(row?.branch).toBe("cursor/mine");
+      expect(row?.prUrl).toBe("https://github.com/arul/ade/pull/2");
+    });
   });
 
   describe("pullIntoLane", () => {

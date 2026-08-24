@@ -235,11 +235,18 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
     );
 
     const ingress = deps.getIngressStatus();
+    // originKey comes from the batched probe above.
     const items: CursorCloudFleetEntry[] = scoped.map(({ agent, matchedBy }) => {
       const run = runsByAgentId.get(agent.agentId) ?? null;
       const runStatus = run ? normalizeRunStatus(readString(run.status)) : undefined;
+      // Prefer a branch pushed to this project's repo so multi-repo agents
+      // never advertise another repository's branch or PR on the row.
       const pushedBranches = run ? readRunPushedBranches(run) : [];
-      const primary = pushedBranches[0] ?? null;
+      const ours = originKey
+        ? pushedBranches.filter((entry) => entry.repoKey === originKey)
+        : [];
+      const unattributed = pushedBranches.filter((entry) => entry.repoKey == null);
+      const primary = ours[0] ?? unattributed[0] ?? null;
       const model = isRecord(run?.model) ? run.model : {};
       const link = linkByAgentId.get(agent.agentId) ?? null;
       const lane = link ? laneById.get(link.laneId) ?? null : null;
@@ -332,8 +339,9 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
       const linked = lanes.find((lane) => lane.id === args.linkedLaneId);
       if (linked) return { lane: linked, created: false };
     }
-    const branchKey = repoMatchKey(args.branch);
-    const byBranch = lanes.find((lane) => repoMatchKey(lane.branchRef ?? "") === branchKey);
+    // Branch refs are case-sensitive; compare exactly (repoMatchKey is a URL
+    // canonicalizer and would fold case distinctions away).
+    const byBranch = lanes.find((lane) => (lane.branchRef ?? "").trim() === args.branch);
     if (byBranch) return { lane: byBranch, created: false };
     const created = await deps.laneService.importBranch({
       branchRef: args.branch,
@@ -512,10 +520,27 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
         `Could not read this agent's latest run: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if (detail.branches[0]) {
+    // Same repo scoping as pullIntoLane: never import or match a lane from
+    // a branch that belongs to another repository.
+    const originKey = await originMatchKey();
+    const ours = originKey
+      ? detail.branches.filter((entry) => entry.repoKey === originKey)
+      : [];
+    const unattributed = detail.branches.filter((entry) => entry.repoKey == null);
+    const foreignOnly = originKey != null
+      && detail.branches.length > 0
+      && ours.length === 0
+      && unattributed.length === 0;
+    if (foreignOnly) {
+      throw new Error(
+        "This agent only pushed branches to other repositories, so there is no lane for it in this project.",
+      );
+    }
+    const chosen = ours[0] ?? unattributed[0];
+    if (chosen) {
       const resolved = await resolvePullTargetLane({
         linkedLaneId: null,
-        branch: safeBranchRef(detail.branches[0].branch),
+        branch: safeBranchRef(chosen.branch),
       });
       return { laneId: resolved.lane.id, laneName: resolved.lane.name, created: resolved.created };
     }

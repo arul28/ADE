@@ -4768,22 +4768,30 @@ const adeBridge = {
       ),
     cursorCloudPullIntoLane: async (
       agentId: string,
-    ): Promise<CursorCloudPullIntoLaneResult> =>
-      callProjectRuntimeActionOr(
+    ): Promise<CursorCloudPullIntoLaneResult> => {
+      const result = await callProjectRuntimeActionOr(
         "ai",
         "pullCursorCloudAgentIntoLane",
         { args: { agentId } },
         () => ipcRenderer.invoke(IPC.aiCursorCloudPullIntoLane, { agentId }),
-      ),
+      );
+      // Pull can create a lane (importBranch) and moves refs; lane caches must
+      // not serve pre-pull answers.
+      clearGitReadCaches();
+      return result;
+    },
     cursorCloudResolveLane: async (
       agentId: string,
-    ): Promise<{ laneId: string; laneName: string; created: boolean }> =>
-      callProjectRuntimeActionOr(
+    ): Promise<{ laneId: string; laneName: string; created: boolean }> => {
+      const result = await callProjectRuntimeActionOr(
         "ai",
         "resolveCursorCloudAgentLane",
         { args: { agentId } },
         () => ipcRenderer.invoke(IPC.aiCursorCloudResolveLane, { agentId }),
-      ),
+      );
+      if (result.created) clearGitReadCaches();
+      return result;
+    },
     cursorCloudStopRun: async (
       agentId: string,
     ): Promise<{ stopped: boolean }> =>

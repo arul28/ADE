@@ -239,6 +239,7 @@ export function FleetRow({
             onArchive={onArchive}
             onRequestDelete={onRequestDelete}
             onConfirmDelete={onConfirmDelete}
+            onConfirmDismiss={onRequestDelete}
           />
         </span>
       </div>
@@ -288,6 +289,7 @@ function RowMenu({
   onArchive,
   onRequestDelete,
   onConfirmDelete,
+  onConfirmDismiss,
 }: {
   entry: CursorCloudFleetEntry;
   busy: boolean;
@@ -297,6 +299,7 @@ function RowMenu({
   onArchive: () => void;
   onRequestDelete: () => void;
   onConfirmDelete: () => void;
+  onConfirmDismiss: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [flipUp, setFlipUp] = useState(false);
@@ -308,7 +311,12 @@ function RowMenu({
       return;
     }
     const onDocClick = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setOpen(false);
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpen(false);
+        // Dismissing the menu without acting must also stand down an armed
+        // delete confirmation.
+        if (confirmingDelete) onConfirmDismiss();
+      }
     };
     // Flip the menu above the trigger when it would overflow the viewport
     // bottom; both anchor and menu live in the same offset-parent space.
@@ -321,7 +329,7 @@ function RowMenu({
     document.addEventListener("mousedown", onDocClick);
     requestAnimationFrame(flip);
     return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
+  }, [open, confirmingDelete, onConfirmDismiss]);
 
   const itemClass =
     "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/95 disabled:opacity-40";

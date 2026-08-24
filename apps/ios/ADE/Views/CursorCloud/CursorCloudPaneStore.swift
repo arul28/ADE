@@ -62,7 +62,9 @@ final class CursorCloudPaneStore: ObservableObject {
   @Published var statusPreset: CursorCloudStatusPreset = .all {
     didSet { if oldValue != statusPreset { applyFilters() } }
   }
-  @Published var laneFilterId: String?
+  @Published var laneFilterId: String? {
+    didSet { if oldValue != laneFilterId { applyFilters() } }
+  }
   @Published var showArchived = false {
     didSet { if oldValue != showArchived { applyFilters() } }
   }

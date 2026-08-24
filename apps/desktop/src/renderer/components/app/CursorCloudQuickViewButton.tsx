@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Cursor } from "@lobehub/icons";
 
 import type { CursorCloudFleetEvent } from "../../../shared/types";
+import type { AiSettingsStatus } from "../../../shared/types/config";
 import { useAppStore } from "../../state/appStore";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
@@ -42,10 +43,16 @@ function readCursorVisibilityCached(
   if (!force && now - entry.checkedAtMs < ttl) return Promise.resolve(entry.value);
 
   entry.inFlight = Promise.resolve()
-    .then(() => window.ade.ai.getStatus())
+    .then(async (): Promise<AiSettingsStatus | false> => {
+      // Hosted web / browser-preview shells expose ai.getStatus but not the
+      // fleet surface; treat a missing member as a disconnected Cursor.
+      if (typeof window.ade.ai.cursorCloudFleet !== "function") return false;
+      return window.ade.ai.getStatus();
+    })
     .then((status) => {
-      const nextValue = status.providerConnections?.cursor?.authAvailable === true
-        || status.availableProviders.cursor === true;
+      const nextValue = status !== false
+        && (status.providerConnections?.cursor?.authAvailable === true
+          || status.availableProviders.cursor === true);
       entry.value = nextValue;
       entry.checkedAtMs = Date.now();
       return nextValue;
@@ -99,17 +106,29 @@ export function CursorCloudQuickViewButton() {
 
   useEffect(() => {
     if (!activeProjectRoot || visible) return undefined;
+    let cancelled = false;
+    let timer: number | null = null;
     // Queue the same delayed re-check on bridge-ready rather than firing an
     // immediate forced `ai.getStatus` — this must never land in the Work
-    // startup IPC window.
+    // startup IPC window. The timer is cancelled with the effect so a project
+    // switch cannot let a stale probe resolve.
     const queue = () => {
-      window.setTimeout(() => {
-        void loadVisibility(true).then((next) => setVisible(next));
+      if (timer != null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (cancelled) return;
+        void loadVisibility(true).then((next) => {
+          if (!cancelled) setVisible(next);
+        });
       }, INITIAL_VISIBILITY_CHECK_DELAY_MS);
     };
     if ((window as { __adeRuntimeBridge?: unknown }).__adeRuntimeBridge) queue();
     window.addEventListener("ade:runtime-bridge-ready", queue);
-    return () => window.removeEventListener("ade:runtime-bridge-ready", queue);
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+      window.removeEventListener("ade:runtime-bridge-ready", queue);
+    };
   }, [activeProjectRoot, visible, loadVisibility]);
 
   // Relay-driven finish badge. No polling: the same event that wakes the

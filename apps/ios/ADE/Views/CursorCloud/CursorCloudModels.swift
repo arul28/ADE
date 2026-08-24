@@ -82,13 +82,25 @@ struct CursorCloudAgentSummary: Codable, Equatable, Hashable, Identifiable {
 
   var isArchived: Bool { archived == true }
 
+  /// Desktop lowercases statuses before they cross the wire; normalize
+  /// defensively so a raw `RUNNING` from an older producer cannot drift.
+  var normalizedStatus: String? {
+    status?.lowercased()
+  }
+
   var effectiveStatus: String {
     if isArchived { return "archived" }
-    return status ?? "unknown"
+    // Desktop's shared status helper maps a live agent with no known run
+    // state to "creating"; mirror that so Active filters and Stop agree.
+    switch normalizedStatus {
+    case "running", "finished", "error": return normalizedStatus!
+    case nil: return "creating"
+    default: return "creating"
+    }
   }
 
   var isActiveRun: Bool {
-    !isArchived && (status == "running" || status == "creating")
+    !isArchived && (effectiveStatus == "running" || effectiveStatus == "creating")
   }
 
   var lastActivityDate: Date? {
@@ -111,7 +123,8 @@ struct CursorCloudFleetEntry: Codable, Equatable, Hashable, Identifiable {
 
   var displayStatus: String {
     if agent.isArchived { return "archived" }
-    return runStatus ?? agent.effectiveStatus
+    if let runStatus { return runStatus.lowercased() }
+    return agent.effectiveStatus
   }
 
   var isActiveRun: Bool {

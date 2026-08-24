@@ -169,18 +169,21 @@ struct CursorCloudAgentDetailScreen: View {
     successMessage = nil
     defer { busy = false }
     do {
+      var laneName = entry.ownership.laneName
       let laneId: String
       if let linked = entry.ownership.laneId {
         laneId = linked
       } else {
-        laneId = try await syncService.resolveCursorCloudLane(agentId: entry.agent.agentId).laneId
+        let resolved = try await syncService.resolveCursorCloudLane(agentId: entry.agent.agentId)
+        laneId = resolved.laneId
+        laneName = resolved.laneName
       }
       _ = try await syncService.openCursorCloudChat(
         agentId: entry.agent.agentId,
         laneId: laneId,
         agentName: entry.agent.name
       )
-      successMessage = "Opened as a cloud chat in lane '\(entry.ownership.laneName ?? "lane")' on your machine."
+      successMessage = "Opened as a cloud chat in lane '\(laneName ?? "lane")' on your machine."
     } catch {
       message = error.localizedDescription
     }
@@ -192,8 +195,14 @@ struct CursorCloudAgentDetailScreen: View {
     successMessage = nil
     defer { busy = false }
     do {
-      _ = try await syncService.stopCursorCloudAgent(agentId: entry.agent.agentId)
-      successMessage = "Stop requested — the run is being cancelled."
+      let result = try await syncService.stopCursorCloudAgent(agentId: entry.agent.agentId)
+      if (result["queued"] as? Bool) == true {
+        message = "The stop request was queued on your machine — it will cancel shortly."
+      } else if (result["stopped"] ?? true) == false {
+        message = "The run could not be stopped on your machine."
+      } else {
+        successMessage = "Stop requested — the run is being cancelled."
+      }
     } catch {
       message = error.localizedDescription
     }
