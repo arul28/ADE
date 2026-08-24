@@ -13561,12 +13561,18 @@ final class SyncService: ObservableObject {
   func steerChatSession(
     sessionId: String,
     text: String,
-    attachments: [AgentChatFileRef]? = nil
+    attachments: [AgentChatFileRef]? = nil,
+    dispatchMode: String? = nil
   ) async throws -> SyncChatMessageDelivery {
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendChatCommand(
       action: chatActionName("chat.steer", sessionId: sessionId),
-      payload: AgentChatSteerRequest(sessionId: sessionId, text: text, attachments: attachments),
+      payload: AgentChatSteerRequest(
+        sessionId: sessionId,
+        text: text,
+        attachments: attachments,
+        dispatchMode: dispatchMode
+      ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )

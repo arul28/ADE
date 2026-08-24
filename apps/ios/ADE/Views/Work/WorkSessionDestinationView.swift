@@ -91,6 +91,23 @@ func workChatManualSteerDispatchModes(
   return WorkActiveSendCapability.forProvider(provider).atomicDispatchModes
 }
 
+/// The `dispatchMode` that rides `chat.steer` itself, so a busy host dispatches
+/// the message in the same round-trip instead of staging it and waiting for a
+/// second `chat.dispatchSteer` call. This is the desktop contract, and the
+/// strings are the desktop's exactly — the host rejects anything else.
+///
+/// Nil means "stage it", which covers the queue mode, a provider with no
+/// mid-turn channel, and a host too old to promote at all. Resolving it once,
+/// up front, is what keeps the "turn was already active" resend from quietly
+/// downgrading a Send-now tap into a staged message.
+func workChatAtomicSteerDispatchMode(
+  deliveryMode: WorkActiveSendMode,
+  dispatchModes: [WorkActiveSendMode]
+) -> String? {
+  guard deliveryMode != .queue, dispatchModes.contains(deliveryMode) else { return nil }
+  return deliveryMode.rawValue
+}
+
 func latestActiveTurnId(from transcript: [WorkChatEnvelope]) -> String? {
   for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
     switch envelope.event {
@@ -891,8 +908,16 @@ struct WorkSessionDestinationView: View {
     syncService.chatTurnActiveHint(sessionId: sessionId)
   }
 
+  /// Host-gated as well as provider-gated. A brain that predates
+  /// `chat.dispatchSteer` can neither promote a staged row nor honor an atomic
+  /// `dispatchMode`, so the staged strip's buttons and the send path have to
+  /// read the same empty list — otherwise the send path would ask for a mode
+  /// the strip is hiding the recovery for.
   var manualSteerDispatchModes: [WorkActiveSendMode] {
-    workChatManualSteerDispatchModes(session: session, summary: chatSummary)
+    guard syncService.supportsChatRemoteAction("chat.dispatchSteer", sessionId: sessionId) else {
+      return []
+    }
+    return workChatManualSteerDispatchModes(session: session, summary: chatSummary)
   }
 
   /// Lane id the header menu acts on. Resolved against the loaded lane list so
@@ -1463,12 +1488,12 @@ struct WorkSessionDestinationView: View {
     // same table.
     // Also host-gated: a brain that predates `chat.dispatchSteer` cannot
     // promote a staged row at all, so the buttons would only ever produce an
-    // error toast.
+    // error toast. `manualSteerDispatchModes` carries the same gate.
     let activeSendModesAvailable = syncService.supportsChatRemoteAction(
       "chat.dispatchSteer",
       sessionId: session.id
     )
-    let manualDispatchModes = activeSendModesAvailable ? manualSteerDispatchModes : []
+    let manualDispatchModes = manualSteerDispatchModes
     let dispatchSteerInlineAction: (@MainActor (String) async -> Void)?
     if manualDispatchModes.contains(.inline) {
       dispatchSteerInlineAction = { steerId in await dispatchSteerInline(steerId) }
@@ -2562,6 +2587,10 @@ struct WorkSessionDestinationView: View {
     updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending")
     do {
       let delivery: SyncChatMessageDelivery
+      // No `dispatchMode` on either steer: a launch prompt has no composer
+      // behind it, so there is no chosen active-turn mode to carry. Landing on
+      // an already-busy session stages it, which is the conservative reading of
+      // "run this next" and matches what the desktop launcher does.
       if useSteer {
         delivery = try await syncService.steerChatSession(sessionId: sessionId, text: prompt)
       } else {

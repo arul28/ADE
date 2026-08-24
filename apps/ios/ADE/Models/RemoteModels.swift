@@ -3369,6 +3369,12 @@ struct AgentChatSteerRequest: Codable, Equatable {
   var sessionId: String
   var text: String
   var attachments: [AgentChatFileRef]? = nil
+  /// `"inline"` or `"interrupt"` — the desktop's `dispatchMode` spelling, kept
+  /// character-identical because the host validates the string. Present only
+  /// when the user picked an active-turn mode: the host then dispatches in this
+  /// same round-trip instead of staging the message, so nothing reaches the
+  /// staged strip. Omitted (nil) for a plain staged steer.
+  var dispatchMode: String? = nil
 }
 
 struct AgentChatCancelSteerRequest: Codable, Equatable {
