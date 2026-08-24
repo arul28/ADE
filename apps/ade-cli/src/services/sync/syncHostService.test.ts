@@ -5980,8 +5980,9 @@ describe("CTO-gated Linear sync commands", () => {
       const viewerBlockedActions = new Set<string>([
         "cto.setLinearToken",
         "cto.clearLinearToken",
-        // Pull mutates host lane worktrees (fetch + merge), so like
-        // chat.launchCli it is refused for read-only viewers.
+        // Lane resolution can import a lane and pull mutates worktrees —
+        // both are host state mutations refused to read-only viewers.
+        "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
       ]);
 
