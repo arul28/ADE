@@ -440,13 +440,15 @@ private enum WorkPreviewData {
       optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature([]),
       localEchoMessages: [],
       localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature([]),
-      expandedToolCardIdsSnapshot: ["cmd-1"],
-      expandedToolCardIdsRenderSignature: workExpandedToolCardIdsRenderSignature(["cmd-1"]),
+      cardExpansionSnapshot: WorkCardExpansionState(expandedIds: ["cmd-1"]),
+      cardExpansionRenderSignature: workCardExpansionRenderSignature(
+        WorkCardExpansionState(expandedIds: ["cmd-1"])
+      ),
       artifactContentRenderSignature: workLoadedArtifactContentRenderSignature([:]),
       artifactDrawerPresentedSnapshot: false,
       sendingSnapshot: false,
       errorMessageSnapshot: nil,
-      expandedToolCardIds: Binding<Set<String>>.constant(["cmd-1"]),
+      cardExpansion: .constant(WorkCardExpansionState(expandedIds: ["cmd-1"])),
       artifactContent: .constant([:]),
       fullscreenImage: Binding<WorkFullscreenImage?>.constant(nil),
       artifactDrawerPresented: .constant(false),

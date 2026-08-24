@@ -151,15 +151,18 @@ extension WorkChatSessionView {
       )
       .equatable()
     case .toolCard(let toolCard):
-      timelineToolCard(toolCard)
+      timelineToolCard(toolCard, entryId: entry.id)
     case .eventCard(let card):
-      timelineEventCard(card)
+      timelineEventCard(card, entryId: entry.id)
     case .adeCard(let card):
       if card.isHiddenAfterDismiss {
         EmptyView()
       } else {
         WorkAdeCardView(
           card: card,
+          // Live for its own turn, one line ("CI · PR #490  18✓ 3✕") after.
+          isExpanded: cardIsExpanded(card.id, entryId: entry.id, keepsOpenWhileLive: true),
+          onToggle: { toggleCard(card.id, entryId: entry.id, keepsOpenWhileLive: true) },
           onAction: card.variant == "claude_session_quota"
             ? { action in
               if action.id == "fork-local" {
@@ -177,21 +180,34 @@ extension WorkChatSessionView {
         modelLabel: chatSummaryContext.modelLabel
       )
     case .commandCard(let commandCard):
-      WorkCommandCardView(card: commandCard)
-        .equatable()
+      WorkCommandCardView(
+        card: commandCard,
+        isExpanded: cardIsExpanded(commandCard.id, entryId: entry.id),
+        onToggle: { toggleCard(commandCard.id, entryId: entry.id) }
+      )
+      .equatable()
     case .fileChangeCard(let fileChangeCard):
-      WorkFileChangeCardView(card: fileChangeCard)
-        .equatable()
+      WorkFileChangeCardView(
+        card: fileChangeCard,
+        isExpanded: cardIsExpanded(fileChangeCard.id, entryId: entry.id),
+        onToggle: { toggleCard(fileChangeCard.id, entryId: entry.id) }
+      )
+      .equatable()
     case .subagent(let row):
       WorkSubagentTimelineRowView(row: row, onOpen: onSelectSubagentRow)
     case .subagentStoppedGroup(let model):
-      WorkSubagentStoppedGroupCardView(model: model, onOpen: onSelectSubagentRow)
+      WorkSubagentStoppedGroupCardView(
+        model: model,
+        isExpanded: cardIsExpanded(model.id, entryId: entry.id),
+        onToggle: { toggleCard(model.id, entryId: entry.id) },
+        onOpen: onSelectSubagentRow
+      )
     case .toolGroup(let group):
-      timelineToolGroup(group)
+      timelineToolGroup(group, entryId: entry.id)
     case .changedFiles(let group):
-      timelineChangedFiles(group)
+      timelineChangedFiles(group, entryId: entry.id)
     case .artifact(let artifact):
-      timelineArtifact(artifact)
+      timelineArtifact(artifact, entryId: entry.id)
     case .turnSeparator(let separator):
       WorkTurnSeparatorView(separator: separator)
     case .turnEndMarker(let marker):
@@ -298,30 +314,34 @@ extension WorkChatSessionView {
   }
 
   @ViewBuilder
-  func timelineToolGroup(_ group: WorkToolGroupModel) -> some View {
+  func timelineToolGroup(_ group: WorkToolGroupModel, entryId: String) -> some View {
     WorkToolCallsPanelView(
       group: group,
-      isExpanded: expandedToolCardIds.contains(group.id),
-      onToggle: { toggleToolCard(group.id) }
+      isExpanded: cardIsExpanded(group.id, entryId: entryId),
+      onToggle: { toggleCard(group.id, entryId: entryId) },
+      expandedMemberIds: cardExpansion.expandedIds,
+      onToggleMember: { memberId in toggleNestedCard(memberId) }
     )
   }
 
   @ViewBuilder
-  func timelineChangedFiles(_ group: WorkChangedFilesGroupModel) -> some View {
+  func timelineChangedFiles(_ group: WorkChangedFilesGroupModel, entryId: String) -> some View {
     WorkChangedFilesPanelView(
       group: group,
-      isExpanded: expandedToolCardIds.contains(group.id),
-      onToggle: { toggleToolCard(group.id) },
+      isExpanded: cardIsExpanded(group.id, entryId: entryId),
+      onToggle: { toggleCard(group.id, entryId: entryId) },
+      expandedFileIds: cardExpansion.expandedIds,
+      onToggleFile: { fileId in toggleNestedCard(fileId) },
       onUndo: nil
     )
   }
 
   @ViewBuilder
-  func timelineToolCard(_ toolCard: WorkToolCardModel) -> some View {
+  func timelineToolCard(_ toolCard: WorkToolCardModel, entryId: String) -> some View {
     WorkToolCardView(
       toolCard: toolCard,
-      isExpanded: expandedToolCardIds.contains(toolCard.id),
-      onToggle: { toggleToolCard(toolCard.id) },
+      isExpanded: cardIsExpanded(toolCard.id, entryId: entryId),
+      onToggle: { toggleCard(toolCard.id, entryId: entryId) },
       onOpenFile: { path in
         Task { await onOpenFile(path) }
       },
@@ -333,14 +353,22 @@ extension WorkChatSessionView {
   }
 
   @ViewBuilder
-  func timelineEventCard(_ card: WorkEventCardModel) -> some View {
+  func timelineEventCard(_ card: WorkEventCardModel, entryId: String) -> some View {
     if card.kind == "reasoning" {
       WorkReasoningCard(
         card: card,
-        isLive: isReasoningLive(card)
+        isLive: isReasoningLive(card),
+        isExpanded: cardIsExpanded(card.id, entryId: entryId),
+        onToggle: { toggleCard(card.id, entryId: entryId) }
       )
     } else if card.kind == "plan" {
-      WorkProposedPlanCard(card: card)
+      WorkProposedPlanCard(
+        card: card,
+        // A plan being written is the one thing the reader is watching, so it
+        // stays open for its own turn and folds to `Plan · 4/7` after.
+        isExpanded: cardIsExpanded(card.id, entryId: entryId, keepsOpenWhileLive: true),
+        onToggle: { toggleCard(card.id, entryId: entryId, keepsOpenWhileLive: true) }
+      )
     } else if card.kind == "question" {
       WorkResolvedQuestionCard(card: card, fallbackProvider: chatSummaryContext.provider)
     } else if card.kind == "planApproval" {
@@ -355,7 +383,11 @@ extension WorkChatSessionView {
         onRecover: onRecoverCodexTurn
       )
     } else if card.kind == "turnDiagnostics" {
-      WorkTurnDiagnosticsDisclosureView(card: card)
+      WorkTurnDiagnosticsDisclosureView(
+        card: card,
+        isExpanded: cardIsExpanded(card.id, entryId: entryId),
+        onToggle: { toggleCard(card.id, entryId: entryId) }
+      )
     } else {
       WorkEventCardView(
         card: card,
@@ -375,10 +407,12 @@ extension WorkChatSessionView {
   }
 
   @ViewBuilder
-  func timelineArtifact(_ artifact: ComputerUseArtifactSummary) -> some View {
+  func timelineArtifact(_ artifact: ComputerUseArtifactSummary, entryId: String) -> some View {
     WorkArtifactView(
       artifact: artifact,
       content: artifactContent[artifact.id],
+      isExpanded: cardIsExpanded(artifact.id, entryId: entryId),
+      onToggle: { toggleCard(artifact.id, entryId: entryId) },
       onAppear: { Task { await onLoadArtifact(artifact) } },
       onOpenImage: { image in
         fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)

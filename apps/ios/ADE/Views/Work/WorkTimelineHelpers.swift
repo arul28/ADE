@@ -63,6 +63,7 @@ func buildWorkChatTimelineSnapshot(
     latestTranscriptTimestamp: latestTranscriptTimestamp,
     latestMessageAssistantId: latestWorkTimelineMessageAssistantId(timeline),
     latestTurnEndTurnId: workLatestTurnEndTurnId(in: timeline),
+    liveTurnEntryIds: workEntryIdsAfterLatestTurnEnd(in: timeline),
     timeline: timeline
   )
 }

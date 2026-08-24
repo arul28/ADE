@@ -19,6 +19,10 @@ let workChatInitialPinCancelDeadband: CGFloat = 16
 let workChatBottomAnchorSpacerHeight: CGFloat = 1
 let workChatContentBottomGutterHeight: CGFloat = 2
 let workChatSubagentActivePopupHeight: CGFloat = 34
+/// The composer chip strip. Its capsules declare `minHeight: 44` for the touch
+/// target, so the row that holds them has to be 44 too — pinning it to 34 was
+/// what squeezed the PR chip's label into an ellipsis.
+let workChatComposerChipRowHeight: CGFloat = 44
 let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
@@ -456,13 +460,13 @@ struct WorkChatSessionView: View {
   let optimisticPendingSteersRenderSignature: Int
   let localEchoMessages: [WorkLocalEchoMessage]
   let localEchoMessagesRenderSignature: Int
-  let expandedToolCardIdsSnapshot: Set<String>
-  let expandedToolCardIdsRenderSignature: Int
+  let cardExpansionSnapshot: WorkCardExpansionState
+  let cardExpansionRenderSignature: Int
   let artifactContentRenderSignature: Int
   let artifactDrawerPresentedSnapshot: Bool
   let sendingSnapshot: Bool
   let errorMessageSnapshot: String?
-  @Binding var expandedToolCardIds: Set<String>
+  @Binding var cardExpansion: WorkCardExpansionState
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
   @Binding var fullscreenImage: WorkFullscreenImage?
   @Binding var artifactDrawerPresented: Bool
@@ -579,7 +583,6 @@ struct WorkChatSessionView: View {
   var scheduledWorkSnapshotsRenderSignature: Int = 0
   var selectedSubagentTaskId: String? = nil
   var onOpenChatInfo: (() -> Void)? = nil
-  var onOpenSubagents: (() -> Void)? = nil
   /// Tapping a subagent spawn/result timeline row opens the same detail surface
   /// the Chat Info roster row opens (full transcript takeover or expanded row).
   var onSelectSubagentRow: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
@@ -1358,36 +1361,31 @@ struct WorkChatSessionView: View {
         WorkClaudeGoalPill(goal: claudeGoal)
       }
 
-      let subagentCount = subagentSnapshots.count
-      let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
-      let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil
-      let showsSubagentBadge = inputLockMessage == nil
-        && subagentCount > 0
-        && onOpenSubagents != nil
+      // One chip per destination. Subagents used to get their own capsule that
+      // opened the very same sheet as Chat Info; the count now covers both.
+      let chatInfoCount = workChatInfoItemCount(
+        subagents: subagentSnapshots,
+        scheduledWork: scheduledWorkSnapshots
+      )
+      let showsChatInfoBadge = inputLockMessage == nil && chatInfoCount > 0 && onOpenChatInfo != nil
       let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
-      if showsChatInfoBadge || showsSubagentBadge || showsPrBadge {
-        HStack(spacing: 8) {
-          if showsChatInfoBadge, let onOpenChatInfo {
-            WorkChatInfoActivePopup(count: activeScheduledWorkCount, onOpen: onOpenChatInfo)
-          }
-          if showsSubagentBadge {
-            if subagentCount == 1,
-               let snapshot = subagentSnapshots.first,
-               let onSelectSubagentRow {
-              WorkSubagentActivePopup(count: subagentCount) {
-                Task { await onSelectSubagentRow(snapshot) }
-              }
-            } else if let onOpenSubagents {
-              WorkSubagentActivePopup(count: subagentCount, onOpen: onOpenSubagents)
+      if showsChatInfoBadge || showsPrBadge {
+        // Horizontally scrollable so a future chip can never truncate the ones
+        // beside it — it just scrolls out of reach instead.
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            if showsChatInfoBadge, let onOpenChatInfo {
+              WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
+            }
+            if showsPrBadge, let prBadge, let onOpenPrDetails {
+              WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
             }
           }
-          if showsPrBadge, let prBadge, let onOpenPrDetails {
-            WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
-          }
-          Spacer(minLength: 0)
+          .padding(.trailing, 8)
         }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: workChatSubagentActivePopupHeight, alignment: .leading)
+        .frame(height: workChatComposerChipRowHeight, alignment: .leading)
       }
 
       if !pendingSteers.isEmpty {
@@ -1814,6 +1812,14 @@ struct WorkChatSessionView: View {
             unreadBelowCount = 0
           }
         }
+        // The turn ending is the single collapse trigger. Dropping every
+        // override here is what makes the finished turn fold to one line each,
+        // and what stops a "keep this shut while it runs" tap from outliving
+        // the run it was about.
+        .onChange(of: isStreamingTurn) { wasStreaming, isStreaming in
+          guard wasStreaming, !isStreaming else { return }
+          cardExpansion.clearForTurnEnd()
+        }
   }
 
   /// Session lifecycle + input-recovery handlers, split from `body` for type-checker budget.
@@ -2088,15 +2094,6 @@ func workLocalEchoMessagesRenderSignature(_ messages: [WorkLocalEchoMessage]) ->
       hasher.combine(attachment.type)
       hasher.combine(attachment.url)
     }
-  }
-  return hasher.finalize()
-}
-
-func workExpandedToolCardIdsRenderSignature(_ ids: Set<String>) -> Int {
-  var hasher = Hasher()
-  hasher.combine(ids.count)
-  for id in ids.sorted() {
-    hasher.combine(id)
   }
   return hasher.finalize()
 }

@@ -201,6 +201,17 @@ struct WorkToolCardView: View, Equatable {
         "status": toolCard.status.rawValue
       ]
     )
+    .workCollapsedCardPeek(enabled: !isExpanded && peekText != nil, onExpand: onToggle) {
+      WorkStructuredOutputBlock(title: "Result", text: peekText ?? "")
+    }
+  }
+
+  /// What a long press on the collapsed row shows: the result if there is one,
+  /// otherwise the arguments that produced it.
+  private var peekText: String? {
+    if let result = toolCard.resultText, !result.isEmpty { return result }
+    if let args = toolCard.argsText, !args.isEmpty { return args }
+    return nil
   }
 
   /// Hybrid ladder under the result box: one expansion in place, then the
@@ -388,8 +399,10 @@ struct WorkToolCallsPanelView: View {
   let group: WorkToolGroupModel
   let isExpanded: Bool
   let onToggle: () -> Void
-
-  @State private var expandedMemberIds: Set<String> = []
+  /// Member expansion comes from the session's central set, so an opened call
+  /// survives recycling and is swept when its turn ends.
+  var expandedMemberIds: Set<String> = []
+  var onToggleMember: (String) -> Void = { _ in }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -408,18 +421,18 @@ struct WorkToolCallsPanelView: View {
     .accessibilityLabel("Tool calls cluster, \(group.count) calls, \(isExpanded ? "expanded" : "collapsed")")
   }
 
+  /// Same grammar as every other collapsed card row: leading glyph, one-line
+  /// summary, right-aligned count, trailing chevron.
   private var header: some View {
     Button(action: onToggle) {
       HStack(alignment: .center, spacing: 6) {
-        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-          .font(.system(size: 9, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.65))
+        Image(systemName: "wrench.and.screwdriver")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 16)
         Text("Tool calls")
           .font(.caption.weight(.medium))
           .foregroundStyle(ADEColor.textMuted)
-        Text("(\(group.count))")
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(ADEColor.textMuted.opacity(0.55))
         if !isExpanded, let latest = group.latest {
           WorkToolStatusGlyph(status: latest.status)
           Text(memberSlug(latest))
@@ -434,12 +447,48 @@ struct WorkToolCallsPanelView: View {
               .truncationMode(.tail)
           }
         }
-        Spacer(minLength: 0)
+        Spacer(minLength: 6)
+        Text("\(group.count)")
+          .font(.caption.weight(.semibold).monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 2)
+          .background(ADEColor.textMuted.opacity(0.10), in: Capsule(style: .continuous))
+        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
       }
       .padding(.vertical, 2)
       .frame(minHeight: 44)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .workCollapsedCardPeek(enabled: !isExpanded, onExpand: onToggle) {
+      collapsedPeekBody
+    }
+  }
+
+  /// Long-press peek for the collapsed cluster: the calls it would reveal,
+  /// without moving the transcript.
+  private var collapsedPeekBody: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(group.members) { member in
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          WorkToolStatusGlyph(status: member.status)
+          Text(memberSlug(member))
+            .font(.caption.monospaced().weight(.semibold))
+            .foregroundStyle(rowVerbColor(member.status))
+          if let target = memberTarget(member), !target.isEmpty {
+            Text(target)
+              .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          Spacer(minLength: 4)
+        }
+      }
+    }
   }
 
   @ViewBuilder
@@ -449,11 +498,7 @@ struct WorkToolCallsPanelView: View {
     let target = memberTarget(member)
 
     Button {
-      if expandedMemberIds.contains(memberId) {
-        expandedMemberIds.remove(memberId)
-      } else {
-        expandedMemberIds.insert(memberId)
-      }
+      onToggleMember(memberId)
     } label: {
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -582,9 +627,11 @@ struct WorkChangedFilesPanelView: View {
   let group: WorkChangedFilesGroupModel
   let isExpanded: Bool
   let onToggle: () -> Void
+  /// Per-file expansion comes from the session's central set (see
+  /// `WorkCardExpansionState`), not from view state that dies on recycle.
+  var expandedFileIds: Set<String> = []
+  var onToggleFile: (String) -> Void = { _ in }
   let onUndo: (() -> Void)?
-
-  @State private var expandedFileIds: Set<String> = []
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -607,23 +654,35 @@ struct WorkChangedFilesPanelView: View {
     HStack(alignment: .center, spacing: 6) {
       Button(action: onToggle) {
         HStack(alignment: .center, spacing: 6) {
-          Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(ADEColor.textMuted.opacity(0.65))
+          Image(systemName: "doc.on.doc")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 16)
           Text("Files changed")
             .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
-          Text("(\(group.count))")
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(ADEColor.textMuted.opacity(0.55))
           if !isExpanded {
             collapsedPreview
           }
-          Spacer(minLength: 0)
+          Spacer(minLength: 6)
+          Text("\(group.count)")
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(ADEColor.textMuted.opacity(0.10), in: Capsule(style: .continuous))
+          Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
         }
         .padding(.vertical, 2)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .workCollapsedCardPeek(enabled: !isExpanded, onExpand: onToggle) {
+        collapsedPeekBody
+      }
       if isExpanded, let onUndo {
         Button(action: onUndo) {
           HStack(spacing: 4) {
@@ -665,15 +724,31 @@ struct WorkChangedFilesPanelView: View {
     }
   }
 
+  /// Long-press peek for the collapsed cluster: the file list it would reveal,
+  /// without moving the transcript.
+  private var collapsedPeekBody: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(group.files) { file in
+        HStack(spacing: 8) {
+          Text(fileExtBadge(file.path))
+            .font(.system(size: 9, weight: .heavy, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+          Text(file.path)
+            .font(.caption.monospaced())
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Spacer(minLength: 4)
+        }
+      }
+    }
+  }
+
   @ViewBuilder
   private func fileRow(_ file: WorkChangedFileEntry) -> some View {
     let expanded = expandedFileIds.contains(file.id)
     Button {
-      if expandedFileIds.contains(file.id) {
-        expandedFileIds.remove(file.id)
-      } else {
-        expandedFileIds.insert(file.id)
-      }
+      onToggleFile(file.id)
     } label: {
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -763,35 +838,6 @@ struct WorkChangedFilesPanelView: View {
     case "delete", "remove": return "Deleted"
     case "rename": return "Renamed"
     default: return nil
-    }
-  }
-}
-
-/// One expanded member of a tool group. Keeps its own expansion state so the
-/// group container only toggles cluster-level collapse — individual cards can
-/// still drill into args/output without leaking state up to the parent.
-private struct WorkToolGroupMemberRow: View {
-  let member: WorkToolGroupMember
-  let onOpenFile: (String) -> Void
-  let onOpenPr: (Int) -> Void
-  @State private var localExpanded = false
-
-  var body: some View {
-    switch member {
-    case .tool(let card):
-      WorkToolCardView(
-        toolCard: card,
-        // Running cards stay auto-expanded so live args/output remain visible
-        // during streaming — the whole point of the tool-streaming flow.
-        isExpanded: card.status == .running || localExpanded,
-        onToggle: { localExpanded.toggle() },
-        onOpenFile: onOpenFile,
-        onOpenPr: onOpenPr
-      )
-    case .command(let card):
-      WorkCommandCardView(card: card)
-    case .fileChange(let card):
-      WorkFileChangeCardView(card: card)
     }
   }
 }
@@ -1005,19 +1051,21 @@ struct WorkDiffCopyButton: View {
 }
 
 struct WorkCommandCardView: View, Equatable {
-  /// Row-level gate: the card only redraws when its model changes. Its own
-  /// expansion is `@State`, which invalidates independently of this compare.
+  /// Row-level gate: the card only redraws when its model or its expansion
+  /// changes. Expansion lives in the session's central set, not in `@State`, so
+  /// it has to be part of the compare.
   static func == (lhs: WorkCommandCardView, rhs: WorkCommandCardView) -> Bool {
-    lhs.card == rhs.card
+    lhs.card == rhs.card && lhs.isExpanded == rhs.isExpanded
   }
 
   let card: WorkCommandCardModel
-  @State private var isExpanded = false
+  let isExpanded: Bool
+  let onToggle: () -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Button {
-        isExpanded.toggle()
+        onToggle()
       } label: {
         HStack(alignment: .top, spacing: 10) {
           Image(systemName: statusIcon)
@@ -1082,6 +1130,9 @@ struct WorkCommandCardView: View, Equatable {
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Command, \(card.status.rawValue). Tap to \(isExpanded ? "collapse" : "expand") output.")
+    .workCollapsedCardPeek(enabled: !isExpanded && !card.output.isEmpty, onExpand: onToggle) {
+      WorkANSIOutputBlock(title: card.command, text: card.output)
+    }
   }
 
   var statusTint: Color {
@@ -1197,12 +1248,13 @@ struct WorkInlineDiffPreview: View {
 
 struct WorkFileChangeCardView: View, Equatable {
   static func == (lhs: WorkFileChangeCardView, rhs: WorkFileChangeCardView) -> Bool {
-    lhs.card == rhs.card
+    lhs.card == rhs.card && lhs.isExpanded == rhs.isExpanded
   }
 
   let card: WorkFileChangeCardModel
+  let isExpanded: Bool
+  let onToggle: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var isExpanded = false
 
   private var diffStats: (additions: Int, deletions: Int) {
     aggregateDiffStats(card.diff)
@@ -1234,7 +1286,7 @@ struct WorkFileChangeCardView: View, Equatable {
       Button {
         guard hasDiff else { return }
         withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-          isExpanded.toggle()
+          onToggle()
         }
       } label: {
         HStack(spacing: 8) {
@@ -1292,6 +1344,9 @@ struct WorkFileChangeCardView: View, Equatable {
     .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("File change, \(card.path), \(changeCountDescription). \(hasDiff ? "Tap to \(isExpanded ? "collapse" : "expand") diff." : "No diff payload available.")")
+    .workCollapsedCardPeek(enabled: !isExpanded && hasDiff, onExpand: onToggle) {
+      WorkInlineDiffPreview(path: card.path, diff: card.diff)
+    }
   }
 
   private var fileExtensionBadge: String {
@@ -1725,8 +1780,8 @@ func workCodexRecoveryMoreOptions(_ options: [String]) -> [String] {
 
 struct WorkTurnDiagnosticsDisclosureView: View {
   let card: WorkEventCardModel
-
-  @State private var isExpanded = false
+  let isExpanded: Bool
+  let onToggle: () -> Void
 
   private var summary: String {
     var parts: [String] = []
@@ -1741,7 +1796,18 @@ struct WorkTurnDiagnosticsDisclosureView: View {
   }
 
   var body: some View {
-    DisclosureGroup(isExpanded: $isExpanded) {
+    DisclosureGroup(
+      // `onToggle` flips, so only forward a value that actually disagrees with
+      // what we are already showing — SwiftUI re-sends the current value on
+      // some layout passes, and a blind toggle there would snap the group shut.
+      isExpanded: Binding(
+        get: { isExpanded },
+        set: { wantsExpanded in
+          guard wantsExpanded != isExpanded else { return }
+          onToggle()
+        }
+      )
+    ) {
       VStack(alignment: .leading, spacing: 8) {
         if card.diagnosticModerationChecks > 0 {
           Label(
@@ -2168,11 +2234,15 @@ struct WorkResolvedApprovalChip: View {
 /// feel like a plan, not a dumped array.
 struct WorkProposedPlanCard: View {
   let card: WorkEventCardModel
+  /// The checklist while the plan is being written; `Plan · <step>  4/7` after
+  /// its turn ends.
+  var isExpanded: Bool = true
+  var onToggle: () -> Void = {}
 
   private var steps: [WorkPlanStep] { card.planSteps }
 
   private var completed: Int {
-    steps.filter { normalize($0.status) == .completed }.count
+    workPlanCardCompletedStepCount(card)
   }
 
   private var inProgress: Int {
@@ -2185,6 +2255,50 @@ struct WorkProposedPlanCard: View {
   }
 
   var body: some View {
+    Group {
+      if isExpanded {
+        expandedBody
+          .padding(14)
+      } else {
+        collapsedRow
+      }
+    }
+    .background(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .fill(ADEColor.cardBackground.opacity(0.45))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.brandClaude.opacity(0.22), lineWidth: 1)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(isExpanded ? accessibilitySummary : workPlanCardCollapsedAccessibilityLabel(card))
+    .workCollapsedCardPeek(enabled: !isExpanded, onExpand: onToggle) {
+      expandedBody
+    }
+  }
+
+  private var collapsedRow: some View {
+    WorkCollapsedCardRow(
+      systemImage: "list.bullet.clipboard",
+      glyphTint: ADEColor.brandClaude,
+      summary: workPlanCardCollapsedSummary(card),
+      chips: workPlanCardCollapsedProgressLabel(card).map { label in
+        [
+          WorkCollapsedStatusChip(
+            id: "progress",
+            label: label,
+            tone: completed == steps.count ? .success : .accent,
+            accessibilityText: "\(completed) of \(steps.count) steps done"
+          )
+        ]
+      } ?? [],
+      accessibilityText: workPlanCardCollapsedAccessibilityLabel(card),
+      onToggle: onToggle
+    )
+  }
+
+  private var expandedBody: some View {
     VStack(alignment: .leading, spacing: 12) {
       header
 
@@ -2205,17 +2319,6 @@ struct WorkProposedPlanCard: View {
         }
       }
     }
-    .padding(14)
-    .background(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .fill(ADEColor.cardBackground.opacity(0.45))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(ADEColor.brandClaude.opacity(0.22), lineWidth: 1)
-    )
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(accessibilitySummary)
   }
 
   private var header: some View {
@@ -2242,7 +2345,13 @@ struct WorkProposedPlanCard: View {
           .font(.caption.weight(.semibold).monospacedDigit())
           .foregroundStyle(progressFraction == 1 ? ADEColor.success : ADEColor.brandClaude)
       }
+
+      Image(systemName: "chevron.down")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
     }
+    .contentShape(Rectangle())
+    .onTapGesture { onToggle() }
   }
 
   private var progressBar: some View {
@@ -2713,36 +2822,13 @@ struct WorkComposerBadgeCapsule<Content: View>: View {
   }
 }
 
-struct WorkSubagentActivePopup: View {
-  let count: Int
-  let onOpen: () -> Void
-
-  private var label: String {
-    count == 1 ? "Subagent" : "Subagents"
-  }
-
-  var body: some View {
-    WorkComposerBadgeCapsule(
-      tint: ADEColor.accent,
-      spacing: 8,
-      accessibilityLabel: "\(count) \(label.lowercased())",
-      onOpen: onOpen
-    ) {
-      Image(systemName: "person.2.fill")
-        .font(.system(size: 12, weight: .semibold))
-      Text(label)
-        .font(.caption.weight(.semibold))
-      if count > 1 {
-        Text("\(count)")
-          .font(.caption2.weight(.bold))
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
-      }
-    }
-  }
-}
-
+/// The single chat-activity chip above the composer: icon plus a count, no
+/// label. It replaced a separate "Subagents" capsule that opened the very same
+/// sheet — two chips, one destination, and between them enough text to squeeze
+/// the PR chip into an ellipsis.
+///
+/// `count` is `workChatInfoItemCount` — subagents, background work and
+/// schedules together, which is exactly what the sheet lists.
 struct WorkChatInfoActivePopup: View {
   let count: Int
   let onOpen: () -> Void
@@ -2750,16 +2836,14 @@ struct WorkChatInfoActivePopup: View {
   var body: some View {
     WorkComposerBadgeCapsule(
       tint: ADEColor.accent,
-      accessibilityLabel: "Chat Info, \(count) scheduled item\(count == 1 ? "" : "s")",
+      spacing: 6,
+      accessibilityLabel: "Chat info, \(count) item\(count == 1 ? "" : "s")",
       onOpen: onOpen
     ) {
       Image(systemName: "info.circle.fill")
-        .font(.system(size: 12, weight: .semibold))
-      Text("Chat Info")
-        .font(.caption.weight(.semibold))
-        .lineLimit(1)
+        .font(.system(size: 13, weight: .semibold))
       Text("\(count)")
-        .font(.caption2.weight(.bold))
+        .font(.caption2.weight(.bold).monospacedDigit())
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
@@ -3833,11 +3917,11 @@ struct WorkSubagentTimelineRowView: View {
 /// "jump to start"). Never a red error block.
 struct WorkSubagentStoppedGroupCardView: View {
   let model: WorkSubagentStoppedGroupModel
+  let isExpanded: Bool
+  let onToggle: () -> Void
   /// Same opener the result rows use; nil in previews/offline renders leaves the
   /// list inert (and hides the per-row open affordance).
   let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
-
-  @State private var expanded = false
 
   private var headline: String {
     "\(model.count) \(model.count == 1 ? "agent" : "agents") stopped when you interrupted"
@@ -3848,7 +3932,7 @@ struct WorkSubagentStoppedGroupCardView: View {
       Button {
         // No height animation — mirror the desktop card, which just toggles the
         // list, and stay calm under Reduce Motion.
-        expanded.toggle()
+        onToggle()
       } label: {
         HStack(spacing: 10) {
           Image(systemName: "stop.fill")
@@ -3860,7 +3944,7 @@ struct WorkSubagentStoppedGroupCardView: View {
             .lineLimit(1)
             .truncationMode(.tail)
           Spacer(minLength: 6)
-          Image(systemName: expanded ? "chevron.down" : "chevron.right")
+          Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
         }
@@ -3868,9 +3952,9 @@ struct WorkSubagentStoppedGroupCardView: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel(headline)
-      .accessibilityHint(expanded ? "Collapse list" : "Expand list")
+      .accessibilityHint(isExpanded ? "Collapse list" : "Expand list")
 
-      if expanded {
+      if isExpanded {
         VStack(alignment: .leading, spacing: 0) {
           ForEach(model.rows) { row in
             stoppedItem(row)
@@ -4194,10 +4278,14 @@ func workAdeCardNavLabel(_ target: WorkAdeCardNavTarget?) -> String? {
 /// `.warning`, so this view has no red path to take.
 struct WorkAdeCardView: View, Equatable {
   static func == (lhs: WorkAdeCardView, rhs: WorkAdeCardView) -> Bool {
-    lhs.card == rhs.card
+    lhs.card == rhs.card && lhs.isExpanded == rhs.isExpanded
   }
 
   let card: WorkAdeCardModel
+  /// Full card while its turn is live; a single "CI · PR #490  18✓ 3✕" row once
+  /// the turn has ended. Owned by the session so a reopened chat starts folded.
+  var isExpanded: Bool = true
+  var onToggle: () -> Void = {}
   /// Dispatch for host-specific actions. The reserved `open` action is handled
   /// locally through `navTarget` on every client.
   var onAction: ((WorkAdeCardAction) -> Void)? = nil
@@ -4231,11 +4319,15 @@ struct WorkAdeCardView: View, Equatable {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      progressBar
-      if card.isKnownVariant {
-        richBody
+      if isExpanded {
+        progressBar
+        if card.isKnownVariant {
+          richBody
+        } else {
+          fallbackBody
+        }
       } else {
-        fallbackBody
+        collapsedRow
       }
     }
     .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -4245,7 +4337,32 @@ struct WorkAdeCardView: View, Equatable {
     )
     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     .accessibilityElement(children: .contain)
-    .accessibilityLabel(card.fallbackText)
+    .accessibilityLabel(isExpanded ? card.fallbackText : workAdeCardCollapsedAccessibilityLabel(card))
+    .workCollapsedCardPeek(enabled: !isExpanded, onExpand: onToggle) {
+      expandedPeekBody
+    }
+  }
+
+  /// The one-line form: glyph, `Title · PR #490`, pass/fail chips, chevron.
+  private var collapsedRow: some View {
+    WorkCollapsedCardRow(
+      systemImage: workAdeCardCollapsedGlyph(card),
+      glyphTint: accentTint,
+      summary: workAdeCardCollapsedSummary(card),
+      chips: workAdeCardCollapsedChips(card),
+      accessibilityText: workAdeCardCollapsedAccessibilityLabel(card),
+      onToggle: onToggle
+    )
+  }
+
+  private var expandedPeekBody: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if card.isKnownVariant {
+        richBody
+      } else {
+        fallbackBody
+      }
+    }
   }
 
   // MARK: Progress
@@ -4323,8 +4440,13 @@ struct WorkAdeCardView: View, Equatable {
         .buttonStyle(.plain)
         .accessibilityLabel("Open \(label)")
       }
+      Image(systemName: "chevron.up")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
     }
     .padding(.horizontal, 12)
+    .contentShape(Rectangle())
+    .onTapGesture { onToggle() }
   }
 
   private var degradedStatus: some View {

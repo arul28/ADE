@@ -638,7 +638,10 @@ struct WorkSessionDestinationView: View {
   @State var expandedSubagentDetailIds: Set<String> = []
   @State var probingSubagentTaskId: String?
   @State var remoteSubagentRefreshInFlight = false
-  @State var expandedToolCardIds = Set<String>()
+  /// Central expansion state for every collapsible transcript card. Lives
+  /// here, above the list, so it survives `LazyVStack` recycling and can be
+  /// swept in one move when a turn ends.
+  @State var cardExpansion = WorkCardExpansionState()
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State var artifactContentRenderSignature = 0
   @State var artifactContentLoadsInFlight = Set<String>()
@@ -1563,13 +1566,13 @@ struct WorkSessionDestinationView: View {
       optimisticPendingSteersRenderSignature: viewingSubagent ? 0 : workPendingSteersRenderSignature(optimisticPendingSteers),
       localEchoMessages: localEchoMessagesForView,
       localEchoMessagesRenderSignature: viewingSubagent ? 0 : workLocalEchoMessagesRenderSignature(localEchoMessages),
-      expandedToolCardIdsSnapshot: expandedToolCardIds,
-      expandedToolCardIdsRenderSignature: workExpandedToolCardIdsRenderSignature(expandedToolCardIds),
+      cardExpansionSnapshot: cardExpansion,
+      cardExpansionRenderSignature: workCardExpansionRenderSignature(cardExpansion),
       artifactContentRenderSignature: artifactContentRenderSignature,
       artifactDrawerPresentedSnapshot: artifactDrawerPresented,
       sendingSnapshot: sending,
       errorMessageSnapshot: errorMessage ?? openingDeliveryWarning,
-      expandedToolCardIds: $expandedToolCardIds,
+      cardExpansion: $cardExpansion,
       artifactContent: $artifactContent,
       fullscreenImage: $fullscreenImage,
       artifactDrawerPresented: $artifactDrawerPresented,
@@ -1629,11 +1632,11 @@ struct WorkSessionDestinationView: View {
       scheduledWorkSnapshots: viewingSubagent ? [] : scheduledWorkSnapshots,
       scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : workScheduledWorkSnapshotsRenderSignature(scheduledWorkSnapshots),
       selectedSubagentTaskId: subagentView?.taskId,
+      // One chip, one destination: subagents, background work and schedules
+      // all live in the Chat Info sheet. Timeline-row selection stays scoped
+      // to the parent chat, so nested transcript state cannot accidentally
+      // fetch from itself.
       onOpenChatInfo: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
-      // A singular badge opens its child directly; an aggregate badge opens
-      // Chat Info. Timeline-row selection stays scoped to the parent chat, so
-      // nested transcript state cannot accidentally fetch from itself.
-      onOpenSubagents: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
       onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
       onForkChatInLane: {
         let modelId = (composerChatSummary?.modelId ?? composerChatSummary?.model ?? "")

@@ -125,6 +125,7 @@ private func workSnapshotByApplyingAssistantTextTail(
   )
   nextSnapshot.latestMessageAssistantId = workIncrementalLatestAssistantId(timeline)
   nextSnapshot.latestTurnEndTurnId = workLatestTurnEndTurnId(in: timeline)
+  nextSnapshot.liveTurnEntryIds = workEntryIdsAfterLatestTurnEnd(in: timeline)
   nextSnapshot.transcriptIndicatesActiveTurn = true
   nextSnapshot.transcriptLatestTurnEnded = false
   // Keep interruptibility consistent with the full-rebuild path (which derives
@@ -936,13 +937,37 @@ extension WorkChatSessionView {
     return true
   }
 
+  /// True while this timeline row belongs to the turn that is streaming right
+  /// now. Every other row — including everything in a freshly opened chat — is
+  /// history, and history renders collapsed.
+  func isLiveTurnEntry(_ entryId: String) -> Bool {
+    isStreamingTurn && timelineSnapshot.liveTurnEntryIds.contains(entryId)
+  }
+
+  /// `keepsOpenWhileLive` is the card's own behavior during its turn: plans and
+  /// `ade_card`s render in full while they are being written, everything else
+  /// opens only on a tap.
+  func cardIsExpanded(_ id: String, entryId: String, keepsOpenWhileLive: Bool = false) -> Bool {
+    cardExpansion.isExpanded(
+      id: id,
+      defaultsOpen: keepsOpenWhileLive && isLiveTurnEntry(entryId)
+    )
+  }
+
   @MainActor
-  func toggleToolCard(_ id: String) {
-    if expandedToolCardIds.contains(id) {
-      expandedToolCardIds.remove(id)
-    } else {
-      expandedToolCardIds.insert(id)
-    }
+  func toggleCard(_ id: String, entryId: String, keepsOpenWhileLive: Bool = false) {
+    cardExpansion.toggle(
+      id: id,
+      defaultsOpen: keepsOpenWhileLive && isLiveTurnEntry(entryId)
+    )
+  }
+
+  /// Nested rows (a file inside the changed-files panel, a call inside a tool
+  /// cluster) share the central set so they survive recycling and get swept at
+  /// turn end with their parent. They never auto-open.
+  @MainActor
+  func toggleNestedCard(_ id: String) {
+    cardExpansion.toggle(id: id, defaultsOpen: false)
   }
 
   @MainActor

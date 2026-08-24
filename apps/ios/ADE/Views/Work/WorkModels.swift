@@ -876,6 +876,26 @@ func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
   return nil
 }
 
+/// Entries that arrived after the most recent turn-end marker — i.e. the rows
+/// belonging to the turn currently in flight.
+///
+/// Position, not `turnId`, is the attribution rule: not every payload carries a
+/// turn id, and the marker is itself a timeline row, so "after the last marker"
+/// is both cheaper and total. Combined with `isStreamingTurn` it answers the one
+/// question every collapsible card asks — "is my turn still going?" — and it
+/// answers "no" for the whole transcript when nothing is streaming, which is
+/// what makes a reopened chat render entirely collapsed.
+func workEntryIdsAfterLatestTurnEnd(in timeline: [WorkTimelineEntry]) -> Set<String> {
+  var ids = Set<String>()
+  for entry in timeline.reversed() {
+    if case .turnEndMarker = entry.payload {
+      return ids
+    }
+    ids.insert(entry.id)
+  }
+  return ids
+}
+
 struct WorkTimelineEntry: Identifiable, Equatable {
   let id: String
   let timestamp: String
@@ -1032,6 +1052,8 @@ struct WorkChatTimelineSnapshot: Equatable {
   var latestTranscriptTimestamp: String?
   var latestMessageAssistantId: String?
   var latestTurnEndTurnId: String?
+  /// Rows belonging to the turn in flight. Empty once every turn has ended.
+  var liveTurnEntryIds: Set<String>
   var timeline: [WorkTimelineEntry]
 
   static let empty = WorkChatTimelineSnapshot(
@@ -1050,6 +1072,7 @@ struct WorkChatTimelineSnapshot: Equatable {
     latestTranscriptTimestamp: nil,
     latestMessageAssistantId: nil,
     latestTurnEndTurnId: nil,
+    liveTurnEntryIds: [],
     timeline: []
   )
 
