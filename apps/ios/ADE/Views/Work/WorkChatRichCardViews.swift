@@ -795,15 +795,19 @@ struct WorkStructuredOutputBlock: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       WorkOutputBlockHeader(title: title, copyText: text)
-      ScrollView {
-        Text(text)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
-          .textSelection(.enabled)
-      }
-      .frame(maxHeight: 180)
-      .padding(10)
+      // Clipped, not scrollable. A vertical scroll view nested inside the
+      // transcript's own vertical scroll view competes for every drag that
+      // starts on it, and it only ever clipped: there was no way to reach past
+      // its 180pt from inside the box anyway. The card-level "Show all" control
+      // is still how the full text is reached.
+      Text(text)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(ADEColor.textPrimary)
+        .textSelection(.enabled)
+        .frame(maxHeight: 180, alignment: .top)
+        .clipped()
+        .padding(10)
       .background(ADEColor.recessedBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
   }
@@ -959,7 +963,9 @@ struct WorkDiffOutputBlock: View {
       Text(title)
         .font(.caption2.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
-      ScrollView([.horizontal, .vertical]) {
+      // Horizontal only: the vertical axis competed with the transcript's own
+      // scroll view for drags that started on the diff, and only clipped.
+      ScrollView(.horizontal) {
         VStack(alignment: .leading, spacing: 2) {
           ForEach(Array(diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
             Text(line.isEmpty ? " " : line)
@@ -974,7 +980,8 @@ struct WorkDiffOutputBlock: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(maxHeight: 220)
+      .frame(maxHeight: 220, alignment: .top)
+      .clipped()
       .padding(10)
       .background(ADEColor.recessedBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
@@ -985,7 +992,7 @@ struct WorkInlineDiffPreview: View {
   let diff: String
 
   var body: some View {
-    ScrollView([.horizontal, .vertical]) {
+    ScrollView(.horizontal) {
       LazyVStack(alignment: .leading, spacing: 2) {
         ForEach(Array(diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
           Text(line.isEmpty ? " " : line)
@@ -996,7 +1003,8 @@ struct WorkInlineDiffPreview: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .frame(maxHeight: 320)
+    .frame(maxHeight: 320, alignment: .top)
+    .clipped()
     .padding(.top, 8)
     .padding(.leading, 18)
     .overlay(alignment: .topLeading) {
