@@ -1160,8 +1160,9 @@ _    ____  _____
 
   A launched simulator session belongs to one chat at a time. Run
   "ios-sim shutdown" before launching it from a different chat, or use
-  "shutdown --force" when you intentionally want to take over. Use
-  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
+  "shutdown --force" / "launch --force" when you intentionally want to take
+  over. Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a
+  lane.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show simulator readiness
@@ -1173,6 +1174,7 @@ _    ____  _____
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
     $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
+    $ ade --socket ios-sim launch --force          Take the simulator over in one step
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.

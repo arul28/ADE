@@ -26,7 +26,9 @@ id and lane and how long ago it claimed. Service messages state the fact and
 the code and stop there — the drawer and the iOS app read the same string and
 cannot run a shell command, so the "now run this" half lives in the CLI's own
 hint (`iosSimulatorErrorHint`), keyed off the code.
-Ownership releases automatically when the owning chat closes. An anonymous
+Ownership releases automatically when the owning chat is deleted or archived —
+those are the only two paths that call `notifyChatSessionEnded`, so a chat that
+is merely closed or navigated away from still holds the session. An anonymous
 caller cannot evict an owner silently; it must pass `--force`, and
 `launch --force` validates the new target before evicting.
 

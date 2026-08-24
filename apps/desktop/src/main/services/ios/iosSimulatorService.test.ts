@@ -1167,6 +1167,74 @@ describe("iosSimulatorService launch concurrency and ownership", () => {
     }
   });
 
+  // `launch-progress` broadcasts project-wide. Unstamped, a second drawer
+  // renders this launch's stepper over its own live view and — never seeing a
+  // terminal step it recognises as its own — the overlay sticks there.
+  it("stamps every launch-progress event with the owning chat and lane", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-progress-owner-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const events: IosSimulatorEventPayload[] = [];
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => projectRoot,
+      onEvent: (payload) => events.push(payload),
+    });
+
+    const progressEvents = () => events
+      .filter((event): event is Extract<IosSimulatorEventPayload, { type: "launch-progress" }> =>
+        event.type === "launch-progress")
+      .map((event) => event.progress);
+
+    try {
+      await service.launch({
+        projectRoot,
+        build: true,
+        chatSessionId: "chat-A",
+        laneId: "lane-A",
+      });
+      const owned = progressEvents();
+      expect(owned.length).toBeGreaterThan(0);
+      for (const progress of owned) {
+        expect(progress.chatSessionId).toBe("chat-A");
+        expect(progress.laneId).toBe("lane-A");
+      }
+
+      // The failing step is emitted from the catch, before the finally drops
+      // the owner — so a foreign drawer can discard that one too.
+      events.length = 0;
+      await expect(service.launch({
+        projectRoot,
+        build: true,
+        chatSessionId: "chat-B",
+        force: true,
+        targetId: encodeTargetId(["project", "apps/Nope/Nope.xcodeproj", "Nope"]),
+      })).rejects.toThrow();
+      const failed = progressEvents().filter((progress) => progress.status === "failed");
+      expect(failed.length).toBeGreaterThan(0);
+      for (const progress of failed) expect(progress.chatSessionId).toBe("chat-B");
+
+      // An anonymous launch stays unstamped, so a drawer that predates the
+      // stamp keeps rendering it rather than silently dropping every step.
+      events.length = 0;
+      await service.launch({ projectRoot, build: true, force: true });
+      const anonymous = progressEvents();
+      expect(anonymous.length).toBeGreaterThan(0);
+      for (const progress of anonymous) {
+        expect(progress.chatSessionId).toBeNull();
+        expect(progress.laneId).toBeNull();
+      }
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("makes an anonymous caller pass force before taking a chat-owned simulator", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-anon-takeover-`);

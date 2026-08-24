@@ -890,6 +890,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --lane, --lane-id <id>      Lane to build in and bind the session to.
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
+    --force, -f                 Take over another chat's session; the new target
+                                is validated before the owner is evicted.
     --mode snapshot|live        Inspector launch mode; default live.
     --foreground                Bring Simulator.app to the front; default is background.
     --background                Accepted, no-op: background is the default.
@@ -2227,8 +2229,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   A launched simulator session belongs to one chat at a time. Run
   "ios-sim shutdown" before launching it from a different chat, or use
-  "shutdown --force" when you intentionally want to take over. Use
-  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
+  "shutdown --force" / "launch --force" when you intentionally want to take
+  over. Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a
+  lane.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show simulator readiness
@@ -2240,6 +2243,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
     $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
+    $ ade --socket ios-sim launch --force          Take the simulator over in one step
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
@@ -9199,15 +9203,23 @@ function callerWorkspaceRoot(): string {
 /**
  * Root/lane defaults every rooted `ios-sim` subcommand shares.
  *
- * Precedence: an explicit `--project-root`/`--root` wins; otherwise a known
- * lane is forwarded and the service resolves that lane's worktree; otherwise
- * the caller's own workspace root is sent, which covers a plain shell sitting
- * in a lane worktree with no `ADE_LANE_ID`. Without this an agent working in a
- * lane built, screenshotted, and inspected the primary checkout instead of its
- * own code.
+ * Precedence: a subcommand `--project-root`/`--root` wins; then the global
+ * `ade --project-root` prefix, which `parseCliArgs` consumes before the
+ * subcommand ever sees it — without it `ade --project-root /repo ios-sim apps`
+ * run from elsewhere silently scanned the caller's cwd instead; then a known
+ * lane, which the service resolves to that lane's worktree; otherwise the
+ * caller's own workspace root, which covers a plain shell sitting in a lane
+ * worktree with no `ADE_LANE_ID`. Without this an agent working in a lane
+ * built, screenshotted, and inspected the primary checkout instead of its own
+ * code.
  */
-function iosSimulatorRootArgs(args: string[], laneId: string | null): JsonObject {
-  const explicitRoot = readValue(args, ["--project-root", "--root"]);
+function iosSimulatorRootArgs(
+  args: string[],
+  laneId: string | null,
+  globalProjectRoot: string | null,
+): JsonObject {
+  const explicitRoot =
+    readValue(args, ["--project-root", "--root"]) ?? globalProjectRoot;
   if (explicitRoot) {
     return { projectRoot: explicitRoot, ...(laneId ? { laneId } : {}) };
   }
@@ -9255,7 +9267,10 @@ function readIosSimulatorOutPath(args: string[]): JsonObject {
   return outPath ? { outPath } : {};
 }
 
-function buildIosSimulatorPlan(args: string[]): CliPlan {
+function buildIosSimulatorPlan(
+  args: string[],
+  globalProjectRoot: string | null = null,
+): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help")
     return { kind: "help", text: buildIosSimulatorHelp(args) };
@@ -9265,7 +9280,8 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
   // flags out of `args`.
   const claimArgs: ToolClaimArgs = sub === "claim" ? {} : readToolClaimArgs(args);
   const laneId = asString(claimArgs.laneId);
-  const rootArgs = (): JsonObject => iosSimulatorRootArgs(args, laneId);
+  const rootArgs = (): JsonObject =>
+    iosSimulatorRootArgs(args, laneId, globalProjectRoot);
   const numericPositionals = () =>
     args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
@@ -9353,6 +9369,11 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     readFlag(args, ["--background", "--keep-background"]);
     const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
     const follow = readFlag(args, ["--follow"]);
+    // Takeover of another chat's simulator session. The service validates the
+    // new device/target before it evicts the owner, so this is the documented
+    // escape hatch from IOS_SIMULATOR_OWNED_BY_OTHER_SESSION — without parsing
+    // it here the flag was silently dropped and the retry failed identically.
+    const force = readFlag(args, ["--force", "-f"]);
     const launchArgs: JsonObject = {
       deviceUdid: readValue(args, ["--device", "--udid"]),
       ...rootArgs(),
@@ -9366,6 +9387,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       mode: readValue(args, ["--mode"]) ?? "live",
       keepSimulatorInBackground: !foreground,
       ...(openDrawer ? { openDrawer: true } : {}),
+      ...(force ? { force: true } : {}),
     };
     const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs(
       "ios_simulator.launch",
@@ -12595,7 +12617,10 @@ function hasHelpFlag(args: string[]): boolean {
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath"> = { socketPath: null },
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> = {
+    socketPath: null,
+    projectRoot: null,
+  },
 ): CliPlan {
   const args = [...command];
   if (args[0] === "--version" || args[0] === "-v") {
@@ -12932,7 +12957,7 @@ function buildCliPlan(
     return buildProofPlan(args);
   }
   if (primary === "ios-sim" || primary === "ios" || primary === "simulator")
-    return buildIosSimulatorPlan(args);
+    return buildIosSimulatorPlan(args, options.projectRoot ?? null);
   if (
     primary === "app-control" ||
     primary === "app" ||

@@ -9552,6 +9552,73 @@ describe("ADE CLI", () => {
     });
   });
 
+  // SKILL.md and the feature README both tell agents to recover from
+  // IOS_SIMULATOR_OWNED_BY_OTHER_SESSION with `launch --force`. The flag was
+  // documented but never parsed, so it was silently dropped and the retry
+  // failed with the identical ownership error.
+  it("ios-sim launch forwards --force and omits it otherwise", () => {
+    for (const flag of ["--force", "-f"]) {
+      const forced = buildCliPlan(["ios-sim", "launch", "--target", "app", flag]);
+      expect(forced.kind).toBe("execute");
+      if (forced.kind !== "execute") return;
+      expect(forced.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "launch",
+          args: { targetId: "app", force: true },
+        },
+      });
+    }
+
+    const plain = buildCliPlan(["ios-sim", "launch", "--target", "app"]);
+    expect(plain.kind).toBe("execute");
+    if (plain.kind !== "execute") return;
+    const params = plain.steps[0]?.params as
+      | { arguments?: { args?: Record<string, unknown> } }
+      | undefined;
+    expect(params?.arguments?.args).not.toHaveProperty("force");
+  });
+
+  // `parseCliArgs` consumes the global `--project-root` prefix before the
+  // subcommand sees it, so `ade --project-root /repo ios-sim apps` used to fall
+  // back to the caller's cwd and scan the wrong checkout.
+  it("ios-sim root defaults prefer the global --project-root over the caller cwd", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      const parsed = parseCliArgs(["--project-root", "/tmp/global-repo", "ios-sim", "apps"]);
+      const plan = buildCliPlan(parsed.command, parsed.options);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "listLaunchTargets",
+          args: { projectRoot: path.resolve("/tmp/global-repo") },
+        },
+      });
+
+      // A subcommand-level --project-root still wins over the global prefix.
+      const scoped = parseCliArgs([
+        "--project-root",
+        "/tmp/global-repo",
+        "ios-sim",
+        "apps",
+        "--project-root",
+        "/tmp/scoped-repo",
+      ]);
+      const scopedPlan = buildCliPlan(scoped.command, scoped.options);
+      expect(scopedPlan.kind).toBe("execute");
+      if (scopedPlan.kind !== "execute") return;
+      expect(scopedPlan.steps[0]?.params).toMatchObject({
+        arguments: { args: { projectRoot: "/tmp/scoped-repo" } },
+      });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+    }
+  });
+
   it("ios-sim preview stream aliases map to live view actions", () => {
     const start = buildCliPlan(["ios-sim", "preview-start", "--fps", "30"]);
     expect(start.kind).toBe("execute");

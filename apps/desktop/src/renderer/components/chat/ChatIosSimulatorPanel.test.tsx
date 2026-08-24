@@ -263,13 +263,13 @@ function installIosSimulatorApi(options: {
       capturable: true,
       issue: null,
       message: null,
-      permission: null,
     }),
     listSimulatorWindowSources: vi.fn().mockResolvedValue({
       sources: options.windowSources ?? [simulatorWindowSource],
       windowState: null,
       message: null,
     }),
+    releaseWindowParking: vi.fn().mockResolvedValue(undefined),
     openSystemSettings: vi.fn().mockResolvedValue({ ok: true }),
     revealSimulator: vi.fn().mockResolvedValue(options.revealResult ?? { ok: true, message: null }),
     attachToChatSession: vi.fn().mockResolvedValue(null),
@@ -680,8 +680,7 @@ describe("ChatIosSimulatorPanel", () => {
     );
 
     // A missing required tool takes over the media area, and the chip row moves
-    // into that card — so wait for the card before reaching for the chip, or the
-    // click lands on the pre-status row that is about to unmount.
+    // into that card — so wait for the card before reaching for the chip.
     await screen.findByText("Simulator unavailable");
     const xcodeChip = screen.getAllByRole("button", { name: /Xcode/ })[0]!;
     await user.click(xcodeChip);
@@ -1358,7 +1357,6 @@ describe("ChatIosSimulatorPanel", () => {
         capturable: false,
         issue: "minimized",
         message: "The simulator is minimized. Restore it to refresh the live view.",
-        permission: null,
       },
     });
 
@@ -1416,12 +1414,6 @@ describe("ChatIosSimulatorPanel", () => {
         capturable: false,
         issue: "screen-recording-permission",
         message: "Screen Recording is off for ADE. Turn it on to see the live view.",
-        permission: {
-          kind: "screen-recording",
-          status: "denied",
-          canRequest: false,
-          settingsPane: "screen-recording",
-        },
       } as IosSimulatorWindowState,
     });
 
@@ -1452,7 +1444,6 @@ describe("ChatIosSimulatorPanel", () => {
         capturable: false,
         issue: "hidden",
         message: "The simulator window is hidden.",
-        permission: null,
       },
       revealResult: { ok: false, message: "Automation is off for ADE." },
     });
@@ -1510,6 +1501,81 @@ describe("ChatIosSimulatorPanel", () => {
     expect(screen.getByText("Build")).toBeTruthy();
   });
 
+  // Launch progress broadcasts project-wide. A second drawer used to render the
+  // other chat's steps over its own live view — and keep rendering them once
+  // that launch failed, because progress only clears when THIS panel launches.
+  it("ignores launch progress stamped for another chat", async () => {
+    const { emit } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const progress = (chatSessionId: string | null, message: string) => ({
+      launchId: `launch-${chatSessionId ?? "none"}`,
+      step: "build-app",
+      status: "running",
+      message,
+      detail: null,
+      chatSessionId,
+      updatedAt: new Date().toISOString(),
+    });
+
+    act(() => {
+      emit({ type: "launch-progress", progress: progress("chat-2", "Building someone else's app") } as never);
+    });
+
+    await waitFor(() => expect(screen.queryByText("Build")).toBeNull());
+
+    // An older host stamps nothing; dropping that would leave the stepper blank.
+    act(() => {
+      emit({ type: "launch-progress", progress: progress(null, "Building") } as never);
+    });
+
+    expect(await screen.findByText("Build")).toBeTruthy();
+  });
+
+  // buildIosSimToolChips(null) reads "Xcode missing / Runtime missing", so an
+  // unguarded row accused a healthy Mac on every drawer open.
+  it("does not show tool chips before the first status lands", async () => {
+    // Controls-only gap: a warn, not a missing, so the chip row stays in the
+    // header instead of moving into the unsupported card.
+    const controlsWarnStatus: IosSimulatorStatus = {
+      ...activeStatus,
+      tools: activeStatus.tools.map((tool) =>
+        tool.name === "idb" ? { ...tool, available: false, detail: "missing", installHint: "brew install idb" } : tool
+      ),
+    };
+    let resolveStatus: ((status: IosSimulatorStatus) => void) | null = null;
+    const { api } = installIosSimulatorApi();
+    api.getStatus.mockImplementation(() => new Promise<IosSimulatorStatus>((resolve) => {
+      resolveStatus = resolve;
+    }));
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /Xcode/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Runtime/ })).toBeNull();
+
+    await act(async () => {
+      resolveStatus?.(controlsWarnStatus);
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole("button", { name: /Controls/ })).toBeTruthy();
+  });
+
   it("stops the host capture stream when the drawer unmounts", async () => {
     const { api } = installIosSimulatorApi();
 
@@ -1527,5 +1593,27 @@ describe("ChatIosSimulatorPanel", () => {
     view.unmount();
 
     await waitFor(() => expect(api.stopStream.mock.calls.length).toBeGreaterThan(callsBeforeUnmount));
+  });
+
+  // Discovery arms the window-parking follow in Electron main. Nothing on the
+  // path production takes released it, so every later ADE window move re-ran the
+  // park — whose first act relaunches a Simulator the user had quit.
+  it("releases the host window-parking follow when the drawer unmounts", async () => {
+    const { api } = installIosSimulatorApi();
+
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.listSimulatorWindowSources).toHaveBeenCalled());
+    expect(api.releaseWindowParking).not.toHaveBeenCalled();
+
+    view.unmount();
+
+    await waitFor(() => expect(api.releaseWindowParking).toHaveBeenCalled());
   });
 });

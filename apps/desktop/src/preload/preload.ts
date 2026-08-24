@@ -7323,6 +7323,18 @@ contextBridge.exposeInMainWorld("ade", {
         ...(opts.session ? { session: opts.session } : {}),
       });
     },
+    // The mirror image of the call above: discovery arms the window-parking
+    // follow in this process, so whoever stops capturing has to disarm it here
+    // too. Deliberately not routed through the runtime — parking is a local
+    // Electron-main concern — and deliberately never throws, because every
+    // caller is a teardown path.
+    releaseWindowParking: async (): Promise<void> => {
+      try {
+        await ipcRenderer.invoke(IPC.iosSimulatorReleaseWindowParking);
+      } catch {
+        /* teardown is best-effort */
+      }
+    },
     openSystemSettings: async (args: {
       pane: IosSimulatorPrivacyPane;
     }): Promise<{ ok: boolean }> => {

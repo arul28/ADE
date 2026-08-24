@@ -9,6 +9,8 @@ import {
   CURSOR_LOGIN_IPC_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
+  IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
+  IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -32,7 +34,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     // A remote runtime builds with the same xcodebuild as a local one, so a
     // cold launch or preview render needs the same budget whichever runtime
     // answers it. Without these the remote path fell through to 30s and
-    // reported a timeout while the build was still running.
+    // reported a timeout while the build was still running. This map only sets
+    // the renderer→main IPC timer; the transport budget underneath it lives in
+    // remoteConnectionPool's LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.
     launch: IPC.iosSimulatorLaunch,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
@@ -156,21 +160,22 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // A cold iOS launch is a full xcodebuild plus boot, install and launch. The
     // service's own inner budgets sum to roughly 930s in the worst case, so the
     // IPC timer has to sit above that or the renderer reports a failure for a
-    // launch that is still compiling — including on the remote-runtime path,
-    // which routes back through this channel via RUNTIME_ACTION_CHANNEL.
+    // launch that is still compiling. The remote-runtime path reads its IPC
+    // budget from this same case via RUNTIME_ACTION_CHANNEL; the RPC transport
+    // it wraps carries its own, shorter budget from remoteConnectionPool.
     case IPC.iosSimulatorLaunch:
-      return 17 * 60_000;
+      return IOS_SIMULATOR_LAUNCH_TIMEOUT_MS;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
     // Preview Lab compiles the target before it can render a frame, so these
     // three carry the same 10 minute budget the local runtime map gives them.
-    // The remote-runtime path routes through these same channels via
+    // The remote-runtime path reads its IPC budget from these same cases via
     // RUNTIME_ACTION_CHANNEL, so a shorter budget here reported a timeout for
     // a preview that was still compiling.
     case IPC.iosSimulatorEnsurePreviewWorkspace:
     case IPC.iosSimulatorRenderCurrentPreview:
     case IPC.iosSimulatorRenderPreview:
-      return 10 * 60_000;
+      return IOS_SIMULATOR_PREVIEW_TIMEOUT_MS;
     case IPC.iosSimulatorListLaunchTargets:
     case IPC.iosSimulatorGetScreenSnapshot:
     case IPC.iosSimulatorInspectPoint:

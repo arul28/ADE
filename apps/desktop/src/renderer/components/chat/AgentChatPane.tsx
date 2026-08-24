@@ -6950,23 +6950,29 @@ export function AgentChatPane({
     };
   }, [chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
 
+  // Is this simulator session about the chat this pane is showing? Unscoped
+  // events only apply to the active tile. Hoisted out of the subscription below
+  // because the seed effect that follows asks the same question of `getStatus`.
+  const iosSimulatorAddressesThisPane = useCallback((
+    chatSessionId?: string | null,
+    eventLaneId?: string | null,
+  ) => {
+    const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
+      ? chatSessionId.trim()
+      : null;
+    const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
+      ? eventLaneId.trim()
+      : null;
+    if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
+    if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
+    if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
+    return true;
+  }, [isTileActive, laneId]);
+
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.onEvent || hideLaneToolDrawers) return undefined;
-    // Is this event about the chat this pane is showing? Unscoped events only
-    // apply to the active tile.
-    const addressesThisPane = (chatSessionId?: string | null, eventLaneId?: string | null) => {
-      const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
-        ? chatSessionId.trim()
-        : null;
-      const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
-        ? eventLaneId.trim()
-        : null;
-      if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
-      if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
-      if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
-      return true;
-    };
+    const addressesThisPane = iosSimulatorAddressesThisPane;
     return api.onEvent((event) => {
       if (event.type === "session-started") {
         if (!addressesThisPane(event.session.chatSessionId, event.session.laneId)) return;
@@ -6975,6 +6981,12 @@ export function AgentChatPane({
         return;
       }
       if (event.type === "session-released") {
+        // Same scoping as its two siblings: without this, any chat's release
+        // cleared the chip out from under a pane whose session is still live.
+        if (!addressesThisPane(
+          event.previousSession?.chatSessionId,
+          event.previousSession?.laneId,
+        )) return;
         setIosSimulatorSessionChip(null);
         return;
       }
@@ -6993,7 +7005,7 @@ export function AgentChatPane({
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     });
-  }, [hideLaneToolDrawers, isTileActive, laneId]);
+  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
@@ -7004,7 +7016,26 @@ export function AgentChatPane({
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
     setIosSimulatorSessionChip(null);
-  }, [selectedSessionId, laneId]);
+    const api = window.ade?.iosSimulator;
+    if (!api?.getStatus || hideLaneToolDrawers) return undefined;
+    let cancelled = false;
+    // The chip existed only as a side effect of the live `session-started`
+    // event, so the two commonest cases lost it entirely: opening ADE while a
+    // session is already running, and switching chats and back (the clear above
+    // is unconditional). Ask what is actually running instead of waiting for an
+    // event that already fired.
+    void api.getStatus().then((simulatorStatus) => {
+      if (cancelled) return;
+      const session = simulatorStatus?.activeSession ?? null;
+      if (!session) return;
+      if (!iosSimulatorAddressesThisPane(session.chatSessionId, session.laneId)) return;
+      setIosSimulatorAvailable(true);
+      setIosSimulatorSessionChip({ deviceName: session.deviceName });
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, laneId, selectedSessionId]);
 
   useEffect(() => {
     const next = new Set<string>();

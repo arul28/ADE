@@ -2055,6 +2055,8 @@ declare global {
         listSimulatorWindowSources: (opts?: {
           session?: IosSimulatorWindowCaptureSessionHint | null;
         }) => Promise<IosSimulatorWindowSourcesResult>;
+        /** Disarms the window-parking follow that discovery arms. Never throws. */
+        releaseWindowParking: () => Promise<void>;
         openSystemSettings: (args: {
           pane: IosSimulatorPrivacyPane;
         }) => Promise<{ ok: boolean }>;

@@ -14,6 +14,10 @@ import {
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   longRunningLocalRuntimeActionTimeoutMs,
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
+  IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
+  IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
+  IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
+  IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 
@@ -196,6 +200,37 @@ describe("ipcInvokeTimeoutMs", () => {
     }]);
     expect(remoteLaunchTimeoutMs).toBe(17 * 60_000);
     expect(remoteLaunchTimeoutMs).toBeGreaterThan(930_000);
+  });
+
+  // The IPC timer above only bounds renderer→main. The RPC transport it wraps
+  // has its own budget, and without an entry in remoteConnectionPool's map a
+  // launch fell back to RuntimeRpcClient's 600s default — shorter than
+  // xcodebuild's own 600s allowance — so a remote cold launch failed with
+  // "Remote ADE service timed out" while the build was still running.
+  it("keeps the remote iOS transport budget under its IPC budget", () => {
+    expect(IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(930_000);
+    expect(IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS).toBeLessThan(
+      IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
+    );
+    expect(IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS).toBeLessThan(
+      IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
+    );
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "launch", args: {} },
+    }])).toBeGreaterThan(IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS);
+    for (const action of [
+      "renderPreview",
+      "renderCurrentPreview",
+      "ensurePreviewWorkspace",
+    ] as const) {
+      expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+        id: "target-1",
+        projectId: "project-1",
+        request: { domain: "ios_simulator", action, args: {} },
+      }])).toBeGreaterThan(IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS);
+    }
   });
 
   it("lets transcription run longer than the default invoke ceiling", () => {

@@ -75,9 +75,9 @@ Preview fixtures must not require live sync, keychain, network, push, sockets, o
 
 One chat owns a simulator session at a time. A second launch fails with `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`, naming the owning chat and lane and how long ago it claimed. Service errors state the fact and the code only; the CLI adds the command to run next.
 
-- Ownership auto-releases when the owning chat closes. Re-run `launch`.
+- Ownership releases automatically only when the owning chat is deleted or archived. Merely closing or navigating away from it does not free the simulator. Once released, re-run `launch`.
 - If the owner is still live and the user wants it taken over: `ade --socket ios-sim shutdown --force --text`, or `launch --force`.
-- You cannot evict an owner without `--force`. Don't force it on your own initiative — ask, or wait.
+- You cannot evict an owner without `--force`. Don't force it on your own initiative — ask. Waiting only pays off if the owner is actively finishing; an idle chat holds the session indefinitely, so don't sit in a retry loop.
 - `claim --lane <lane-id>` is only for attaching an already-running session to a lane. It is not a step in a normal launch.
 
 ## Gotchas

@@ -192,12 +192,21 @@ const MEDIA_ZOOM_STEP = 0.25;
 
 /** Stream reports active but no new frame landed inside this window. */
 const FRAME_STALL_MS = 3_000;
-/** Host discovery already budgets 4s per call and names its own blockers. */
+/**
+ * Host discovery budgets 4s per call and answers with a `message` only for a
+ * terminal blocker, so a sweep that simply came back empty is worth repeating —
+ * a Simulator window can appear a beat after the app does.
+ */
 const WINDOW_SOURCE_ATTEMPTS = 3;
 /** Window-state poll cadence: fast while the state is moving, slow once settled. */
 const WINDOW_POLL_FAST_MS = 2_000;
 const WINDOW_POLL_SLOW_MS = 10_000;
 const WINDOW_POLL_STABLE_THRESHOLD = 3;
+
+function trimmedOrNull(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  return value.trim() || null;
+}
 
 function shortChatId(id: string): string {
   if (id.length <= 8) return id;
@@ -1251,9 +1260,10 @@ export function ChatIosSimulatorPanel({
     streamStartedByPanelRef.current = true;
     let source: IosSimulatorWindowSource | null = null;
     let blockerMessage: string | null = null;
-    // Discovery is capped at a 4s wall budget per call by the host and returns
-    // early with a named `message` the moment it hits a permission blocker, so
-    // polling past that only delays a reason we already have.
+    // The host answers with a `message` only when it has reached a verdict — a
+    // permission blocker, no session, or its own budget exhausted — so a message
+    // ends the poll. An empty sweep with no message is transient and worth
+    // re-asking: the Simulator window is sometimes a beat behind the app.
     for (let attempt = 0; attempt < WINDOW_SOURCE_ATTEMPTS; attempt += 1) {
       const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
       // The session passed above only tells the host whether to park and settle
@@ -1284,10 +1294,14 @@ export function ChatIosSimulatorPanel({
     });
   }, []);
 
-  useEffect(() => {
-    const video = videoRef.current;
+  /**
+   * `liveStreamRef` is only ever populated by window capture, so its presence is
+   * the whole precondition. Stable identity matters: React re-runs a callback
+   * ref whose identity changed, and a churning ref would detach a playing video.
+   */
+  const attachLiveStream = useCallback((video: HTMLVideoElement | null) => {
     const stream = liveStreamRef.current;
-    if (!video || !stream || liveVisualKind !== "window") return;
+    if (!video || !stream || video.srcObject === stream) return;
     video.srcObject = stream;
     void video.play().then(() => {
       liveActiveSinceRef.current = Date.now();
@@ -1305,7 +1319,24 @@ export function ChatIosSimulatorPanel({
         ? { ...current, status: "error", error: error instanceof Error ? error.message : String(error) }
         : current);
     });
-  }, [liveVisualKind, liveWindowSourceId, trackWindowVideoFrames]);
+  }, [trackWindowVideoFrames]);
+
+  /**
+   * A callback ref, not an effect keyed on the visual: the <video> is a sibling
+   * branch of the launch stepper, so toggling the stepper remounts the element
+   * without changing the visual. An effect would not re-run and the new element
+   * would have no `srcObject`; attaching on mount cannot miss it.
+   */
+  const setVideoNode = useCallback((video: HTMLVideoElement | null) => {
+    videoRef.current = video;
+    attachLiveStream(video);
+  }, [attachLiveStream]);
+
+  // The element can outlive a stream swap (a device switch re-picks the capture
+  // source), which the callback ref alone would not see.
+  useEffect(() => {
+    attachLiveStream(videoRef.current);
+  }, [attachLiveStream, liveVisualKind, liveWindowSourceId]);
 
   useEffect(() => {
     windowScreenRectRef.current = windowScreenRect;
@@ -1423,6 +1454,16 @@ export function ChatIosSimulatorPanel({
   useEffect(() => {
     const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
       if (event.type === "launch-progress") {
+        // These events broadcast project-wide, so a second drawer in the same
+        // project used to render another chat's steps over its own live view —
+        // and, once a foreign launch failed, kept rendering them. Progress that
+        // names an owner is only ours if the name matches. Unstamped progress
+        // is still accepted: an older host sends none, and dropping it would
+        // leave the stepper permanently blank.
+        const owningChatSessionId = trimmedOrNull(event.progress.chatSessionId);
+        if (owningChatSessionId && sessionId && owningChatSessionId !== sessionId) return;
+        const owningLaneId = trimmedOrNull(event.progress.laneId);
+        if (owningLaneId && laneId && owningLaneId !== laneId) return;
         setLaunchProgress((current) => {
           const withoutStep = current.filter((item) => item.launchId !== event.progress.launchId || item.step !== event.progress.step);
           return [...withoutStep, event.progress];
@@ -1467,7 +1508,7 @@ export function ChatIosSimulatorPanel({
     return () => {
       unsubscribe();
     };
-  }, [onAddContext, refreshStatus, sessionId]);
+  }, [laneId, onAddContext, refreshStatus, sessionId]);
 
   useEffect(() => {
     void refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined).catch((error) => {
@@ -1527,6 +1568,8 @@ export function ChatIosSimulatorPanel({
     if (mode !== "interact" || statusSupported === null) {
       stopRendererLiveVisual();
       void window.ade.iosSimulator.stopStream().catch(() => {});
+      // Only the panel that armed the follow disarms it.
+      if (streamStartedByPanelRef.current) void window.ade.iosSimulator.releaseWindowParking();
       streamStartedByPanelRef.current = false;
       return;
     }
@@ -1538,6 +1581,8 @@ export function ChatIosSimulatorPanel({
     ) {
       stopRendererLiveVisual();
       void window.ade.iosSimulator.stopStream().catch(() => {});
+      // Only the panel that armed the follow disarms it.
+      if (streamStartedByPanelRef.current) void window.ade.iosSimulator.releaseWindowParking();
       streamStartedByPanelRef.current = false;
       return;
     }
@@ -1581,11 +1626,14 @@ export function ChatIosSimulatorPanel({
   ]);
 
   // The renderer-side teardown above never reached the host, so a closed drawer
-  // left the capture helper running. Stop it once, on real unmount only.
+  // left the capture helper running. Stop it once, on real unmount only — and
+  // drop the window-parking follow with it, or every later ADE window move keeps
+  // nudging (and reopening) Simulator.app for a drawer that no longer exists.
   useEffect(() => () => {
     if (!streamStartedByPanelRef.current) return;
     streamStartedByPanelRef.current = false;
     void window.ade.iosSimulator.stopStream().catch(() => {});
+    void window.ade.iosSimulator.releaseWindowParking();
   }, []);
 
   useEffect(() => {
@@ -2945,7 +2993,13 @@ export function ChatIosSimulatorPanel({
         />
       ) : null}
 
-      {!mediaExpanded && !setupBlocked && !toolChipsHealthy ? (
+      {/*
+        Guarded on `status` for the same reason `setupBlocked` is: the chips read
+        "missing" until the first status lands, so an unguarded row flashed
+        "Xcode ● missing / Runtime ● missing" on a perfectly healthy Mac every
+        time the drawer opened. Nothing renders until the machine has answered.
+      */}
+      {!mediaExpanded && Boolean(status) && !setupBlocked && !toolChipsHealthy ? (
         <IosSimToolChips chips={toolChips} onCopy={(text) => void copyInstallHint(text)} className="shrink-0 px-0.5" />
       ) : null}
 
@@ -3210,7 +3264,7 @@ export function ChatIosSimulatorPanel({
               <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
                 <div className="relative h-full w-full" style={mediaZoomStyle}>
                   <video
-                    ref={videoRef}
+                    ref={setVideoNode}
                     className="h-full w-full object-contain"
                     muted
                     playsInline

@@ -20,7 +20,6 @@ import type {
   IosSimulatorPermissionStatus,
   IosSimulatorPrivacyPane,
   IosSimulatorWindowCaptureSessionHint,
-  IosSimulatorWindowPermissionHint,
   IosSimulatorWindowSource,
   IosSimulatorWindowState,
 } from "../../../shared/types";
@@ -98,21 +97,6 @@ function screenCaptureAccessStatus(): IosSimulatorPermissionStatus {
   }
 }
 
-function permissionHint(
-  kind: IosSimulatorPrivacyPane,
-  status: IosSimulatorPermissionStatus,
-): IosSimulatorWindowPermissionHint {
-  return {
-    kind,
-    status,
-    // macOS never prompts for Screen Recording from an Electron main process;
-    // that grant is Settings-only. An undecided Automation grant still prompts
-    // on the next Apple event, so retrying is worth offering.
-    canRequest: kind === "automation" && status === "not-determined",
-    settingsPane: kind,
-  };
-}
-
 function windowIssueMessage(issue: IosSimulatorWindowState["issue"]): string | null {
   switch (issue) {
     case "not-running":
@@ -142,7 +126,6 @@ export async function getSimulatorWindowState(): Promise<IosSimulatorWindowState
       capturable: false,
       issue: "unknown",
       message: null,
-      permission: null,
     };
   }
   // Check the cheap blocker before spending a subprocess — but only a decided
@@ -162,7 +145,6 @@ export async function getSimulatorWindowState(): Promise<IosSimulatorWindowState
       capturable: false,
       issue,
       message: windowIssueMessage(issue),
-      permission: permissionHint("screen-recording", screenStatus),
     };
   }
   const script = [
@@ -193,7 +175,6 @@ export async function getSimulatorWindowState(): Promise<IosSimulatorWindowState
       capturable: denied ? false : null,
       issue,
       message: windowIssueMessage(issue),
-      permission: denied ? permissionHint("automation", "denied") : null,
     };
   }
   const raw = result.stdout.trim();
@@ -207,7 +188,6 @@ export async function getSimulatorWindowState(): Promise<IosSimulatorWindowState
       capturable: false,
       issue,
       message: windowIssueMessage(issue),
-      permission: null,
     };
   }
   const [visibleRaw, windowCountRaw, minimizedCountRaw] = raw.split("|");
@@ -231,7 +211,6 @@ export async function getSimulatorWindowState(): Promise<IosSimulatorWindowState
     capturable: issue === null,
     issue,
     message: windowIssueMessage(issue),
-    permission: null,
   };
 }
 
@@ -290,19 +269,25 @@ function simulatorWorkArea(adeBounds: SimulatorWindowFrame | null) {
  * nudge — it un-hides/un-minimizes a window that cannot be captured and, while
  * the user has not taken the window over, keeps its position following ADE.
  * It never resizes a window the user chose and never focuses ADE.
+ *
+ * `allowLaunch` — defaulting to `attach` — is what separates a capture caller
+ * from the background window-move follow. Only a caller that is actually
+ * starting or repairing capture may start Simulator.app; the follow must never
+ * resurrect a Simulator the user deliberately quit.
  */
 async function prepareSimulatorWindowForCapture(
   window: BrowserWindow | null,
-  options: { attach?: boolean } = {},
+  options: { attach?: boolean; allowLaunch?: boolean } = {},
 ): Promise<void> {
   if (process.platform !== "darwin") return;
   const attach = options.attach === true;
+  const allowLaunch = options.allowLaunch ?? attach;
   if (attach) {
     simulatorFollowSuspended = false;
     simulatorAdeSetFrame = null;
   }
   // `-g` keeps the Simulator behind ADE; it must never take focus.
-  await runMacUtility("open", ["-g", "-a", "Simulator"], 900);
+  if (allowLaunch) await runMacUtility("open", ["-g", "-a", "Simulator"], 900);
   const measured = await runMacUtility("osascript", ["-e", MEASURE_SIMULATOR_WINDOW_SCRIPT], 900);
   if (measured.code !== 0) return;
   const parts = measured.stdout.trim().split("|");
@@ -563,7 +548,11 @@ export async function ensureSimulatorWindowCapturable(
   options: { windowState: IosSimulatorWindowState; remainingMs: () => number },
 ): Promise<void> {
   if (simulatorHasBeenParked() && options.windowState.capturable === true) return;
-  await prepareSimulatorWindowForCapture(parkingWindow, { attach: !simulatorHasBeenParked() });
+  // A capture caller may start Simulator.app; the background follow may not.
+  await prepareSimulatorWindowForCapture(parkingWindow, {
+    attach: !simulatorHasBeenParked(),
+    allowLaunch: true,
+  });
   await settleWithin(300, options.remainingMs);
 }
 

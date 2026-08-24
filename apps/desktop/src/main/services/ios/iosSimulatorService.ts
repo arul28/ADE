@@ -2024,6 +2024,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
   let controlQueue: Promise<void> = Promise.resolve();
   let activeLaunchId: string | null = null;
+  /**
+   * Who asked for each in-flight launch. `launch-progress` events broadcast
+   * project-wide, so without an owner stamp a second drawer renders another
+   * chat's stepper over its own live view — and, because that foreign launch
+   * never emits a terminal step this drawer recognises, the overlay sticks.
+   * Keyed by launch id rather than held in one variable because `shutdown
+   * --force` clears `activeLaunchId` out from under a still-running launch,
+   * which would otherwise leave its remaining steps unattributed. Entries are
+   * removed in `launch`'s own `finally`.
+   */
+  const launchOwners = new Map<string, { chatSessionId: string | null; laneId: string | null }>();
   const trackedCompanionPids = new Set<number>();
   const toolBinaryPaths = new Map<string, string>();
   const activeBuildDataPaths = new Map<string, number>();
@@ -2250,12 +2261,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     detail?: string | null,
     extra: Partial<Pick<IosSimulatorLaunchProgress, "deviceUdid" | "targetId" | "buildRoot">> = {},
   ): IosSimulatorLaunchProgress => {
+    const owner = launchOwners.get(launchId) ?? null;
     const progress: IosSimulatorLaunchProgress = {
       launchId,
       step,
       status,
       message,
       detail: detail ?? null,
+      chatSessionId: owner?.chatSessionId ?? null,
+      laneId: owner?.laneId ?? null,
       deviceUdid: extra.deviceUdid ?? null,
       targetId: extra.targetId ?? null,
       buildRoot: extra.buildRoot ?? null,
@@ -3529,6 +3543,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     );
     const launchId = randomUUID();
     activeLaunchId = launchId;
+    // Stamped before the first step emits, so every event this launch produces
+    // carries its owner and other drawers can drop it.
+    launchOwners.set(launchId, {
+      chatSessionId: incomingChatSessionId,
+      laneId: launchArgs.laneId?.trim() || null,
+    });
     let currentStep: IosSimulatorLaunchStepId = "resolve-device";
     try {
       const projectRoot = await resolveScopedRoot(launchArgs);
@@ -3743,6 +3763,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       throw error;
     } finally {
       if (activeLaunchId === launchId) activeLaunchId = null;
+      // After the catch above has emitted this launch's last (failed) step.
+      launchOwners.delete(launchId);
     }
   };
 
@@ -4459,6 +4481,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       setStreamStopped(null);
       activeSession = null;
       activeLaunchId = null;
+      launchOwners.clear();
       activeBuildDataPaths.clear();
       toolAvailabilityCache.clear();
       if (xcodeMcpBridge) {

@@ -23,6 +23,34 @@ export const USAGE_REFRESH_HISTORY_TIMEOUT_MS = LEDGER_WORKER_TIMEOUT_MS + 30_00
  */
 export const USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS =
   LEDGER_WORKER_TIMEOUT_MS + 15_000;
+
+/**
+ * A cold simulator launch is boot (90s) + xcodebuild (600s) + install (180s)
+ * + launch (60s) = 930s worst case; 17 min keeps headroom above that sum.
+ */
+export const IOS_SIMULATOR_LAUNCH_TIMEOUT_MS = 17 * 60_000;
+
+/**
+ * Preview Lab drives Xcode's preview toolchain, which compiles the target
+ * before it can render a single frame — the same build cost as a launch.
+ */
+export const IOS_SIMULATOR_PREVIEW_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * The innermost budgets on the remote path: the JSON-RPC transport carrying
+ * these actions to a paired/SSH runtime, whose daemon runs the very same
+ * xcodebuild and Xcode preview toolchain a local one does. Without entries
+ * here the transport fell back to `RuntimeRpcClient`'s 600s default — for a
+ * launch that is shorter than xcodebuild's own 600s allowance alone, so a
+ * remote cold launch reported "Remote ADE service timed out" while the build
+ * was still running. Both stay below the IPC budgets above them so the chain
+ * expires monotonically outward (transport < IPC) instead of racing and
+ * surfacing an opaque IPC timeout in place of the transport's legible reason.
+ */
+export const IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_LAUNCH_TIMEOUT_MS - 30_000;
+export const IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_PREVIEW_TIMEOUT_MS - 30_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
@@ -95,17 +123,14 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],
-  // A cold simulator launch is boot (90s) + xcodebuild (600s) + install (180s)
-  // + launch (60s) = 930s; 17 min keeps headroom above that sum. The 30s
-  // default reported "Remote ADE service timed out" while the daemon kept
-  // building, so the session surfaced minutes later with no error to explain
-  // it.
-  ["ios_simulator.launch", 17 * 60_000],
-  // Preview Lab drives Xcode's preview toolchain, which compiles the target
-  // before it can render a single frame — the same build cost as a launch.
-  ["ios_simulator.renderPreview", 10 * 60_000],
-  ["ios_simulator.renderCurrentPreview", 10 * 60_000],
-  ["ios_simulator.ensurePreviewWorkspace", 10 * 60_000],
+  // See IOS_SIMULATOR_LAUNCH_TIMEOUT_MS. The 30s default reported "Remote ADE
+  // service timed out" while the daemon kept building, so the session surfaced
+  // minutes later with no error to explain it.
+  ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  // See IOS_SIMULATOR_PREVIEW_TIMEOUT_MS.
+  ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
+  ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
+  ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

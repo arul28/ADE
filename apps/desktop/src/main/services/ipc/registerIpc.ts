@@ -8444,13 +8444,28 @@ export function registerIpc({
     }
     if (sources.length) return { sources, windowState, message: null };
 
+    // `message` is a verdict, not a status line: the caller stops polling the
+    // moment one arrives. A permission blocker, a missing session and an
+    // exhausted budget are terminal, so they get named. Plain emptiness with
+    // budget left is not — a Simulator window can appear a beat after the app
+    // does — so it answers with no message and lets the caller sweep again.
     const message = windowState.message
       ?? (!hasActiveSession
         ? "No simulator session is running. Launch the app from ADE first."
         : remainingMs() <= 0
           ? "Timed out finding the simulator window. Try again."
-          : "ADE cannot find a Simulator window to capture.");
+          : null);
     return { sources, windowState, message };
+  });
+
+  // The window-parking follow is armed by the discovery call above and has to be
+  // dropped when the drawer stops capturing. The shutdown handler below is not
+  // enough on its own: with a runtime bound, `shutdown` goes to the runtime
+  // action and this process never sees it, so a stale follow kept nudging (and
+  // relaunching) Simulator.app on every ADE window move.
+  ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (): Promise<{ ok: true }> => {
+    releaseSimulatorParkingFollow();
+    return { ok: true };
   });
 
   ipcMain.handle(IPC.iosSimulatorOpenSystemSettings, async (_event, arg = {}): Promise<{ ok: boolean }> => {

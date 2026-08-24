@@ -352,6 +352,7 @@ export const IPC = {
   iosSimulatorGetStreamStatus: "ade.iosSimulator.getStreamStatus",
   iosSimulatorGetWindowState: "ade.iosSimulator.getWindowState",
   iosSimulatorListWindowSources: "ade.iosSimulator.listWindowSources",
+  iosSimulatorReleaseWindowParking: "ade.iosSimulator.releaseWindowParking",
   iosSimulatorOpenSystemSettings: "ade.iosSimulator.openSystemSettings",
   iosSimulatorRevealWindow: "ade.iosSimulator.revealWindow",
   iosSimulatorTap: "ade.iosSimulator.tap",

@@ -234,7 +234,7 @@ export type IosSimulatorWindowIssue =
  * (or every window query and park silently no-ops). Both used to surface as
  * `issue: "unknown"` with a null message, so the drawer showed a blank live
  * view and named no blocker — hence the two dedicated `IosSimulatorWindowIssue`
- * members above and the `permission` hint below.
+ * members above, which the overlay turns into an "Open Settings" affordance.
  */
 export type IosSimulatorPrivacyPane = "screen-recording" | "automation";
 
@@ -245,18 +245,6 @@ export type IosSimulatorPermissionStatus =
   | "restricted"
   | "unknown";
 
-export type IosSimulatorWindowPermissionHint = {
-  kind: IosSimulatorPrivacyPane;
-  status: IosSimulatorPermissionStatus;
-  /**
-   * True only when macOS will still show a prompt. Screen Recording is never
-   * requestable from JS (the grant is Settings-only), while an undecided
-   * Automation grant prompts on the first Apple event.
-   */
-  canRequest: boolean;
-  settingsPane: IosSimulatorPrivacyPane;
-};
-
 export type IosSimulatorWindowState = {
   appRunning: boolean;
   visible: boolean | null;
@@ -265,8 +253,6 @@ export type IosSimulatorWindowState = {
   capturable: boolean | null;
   issue: IosSimulatorWindowIssue | null;
   message: string | null;
-  /** Which privacy grant is blocking capture, when one is. */
-  permission: IosSimulatorWindowPermissionHint | null;
 };
 
 /**
@@ -442,6 +428,15 @@ export type IosSimulatorLaunchProgress = {
   status: IosSimulatorLaunchStepStatus;
   message: string;
   detail?: string | null;
+  /**
+   * Who owns this launch. These events broadcast project-wide, so a second
+   * drawer in the same project sees every other chat's steps — including
+   * another lane's build root. Drawers drop progress stamped for a chat or lane
+   * that is not theirs; unstamped progress is still accepted so an older host
+   * keeps working.
+   */
+  chatSessionId?: string | null;
+  laneId?: string | null;
   deviceUdid?: string | null;
   targetId?: string | null;
   /**
