@@ -660,6 +660,10 @@ struct WorkRootScreen: View {
             // Real-Linear-logo button, immediately left of the bell; gated on the
             // active project's Linear connection.
             LinearPaneToolbarButton()
+            // Cursor Cloud fleet button, immediately left of the Linear one;
+            // gated on an active project plus the host advertising the fleet
+            // commands; the pane resolves connection state itself.
+            CursorCloudPaneToolbarButton()
           }
         }
       }

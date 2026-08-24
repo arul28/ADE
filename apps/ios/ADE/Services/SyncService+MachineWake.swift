@@ -52,20 +52,22 @@ extension SyncService {
 
   /// Clears whatever else is holding the root's single sheet presenter.
   ///
-  /// The wake card is the last of four sheets chained onto one presenter, so
-  /// with Settings, Activity or Linear already up it simply never appears — and
-  /// the navigation awaiting the tap parks for the full prompt timeout with
-  /// nothing on screen to answer it. Closing them is the honest trade: the user
-  /// asked to open work on another machine, and that question outranks the
-  /// sheet they left open.
+  /// The wake card is the last of five sheets chained onto one presenter, so
+  /// with Settings, Activity, Linear or Cursor Cloud already up it simply never
+  /// appears — and the navigation awaiting the tap parks for the full prompt
+  /// timeout with nothing on screen to answer it. Closing them is the honest
+  /// trade: the user asked to open work on another machine, and that question
+  /// outranks the sheet they left open.
   /// Returns whether anything was actually up, so the caller only pays a
   /// main-actor hop when a dismissal has to commit first.
   @discardableResult
   func dismissSheetsCompetingWithMachineWake() -> Bool {
     let hadSheet = settingsPresented || attentionDrawerPresented || linearPanePresented
+      || cursorCloudPanePresented
     settingsPresented = false
     attentionDrawerPresented = false
     linearPanePresented = false
+    cursorCloudPanePresented = false
     return hadSheet
   }
 

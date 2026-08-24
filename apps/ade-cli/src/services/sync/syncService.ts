@@ -22,6 +22,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -141,6 +142,7 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
   pushPublisherService?: PushPublisherService | null;
@@ -726,6 +728,7 @@ export function createSyncService(args: SyncServiceArgs) {
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
@@ -868,6 +871,7 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
       agentChatService: args.agentChatService,
+      cursorCloudFleetService: args.cursorCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,
       orchestrationService: args.orchestrationService,
       pushPublisherService: args.pushPublisherService,

@@ -16,6 +16,12 @@
 		E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000097 /* LinearLaunchScreen.swift */; };
 		E20000000000000000000098 /* LinearPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000098 /* LinearPaneSheet.swift */; };
 		E20000000000000000000099 /* LinearPaneToolbarButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000099 /* LinearPaneToolbarButton.swift */; };
+		E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C1 /* CursorCloudModels.swift */; };
+		E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C2 /* CursorCloudPaneStore.swift */; };
+		E2A00000000000000000C3 /* CursorCloudPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C3 /* CursorCloudPaneSheet.swift */; };
+		E2A00000000000000000C4 /* CursorCloudAgentListScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C4 /* CursorCloudAgentListScreen.swift */; };
+		E2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift */; };
+		E2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */; };
 		E2000000000000000000009A /* LinearOAuthRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009A /* LinearOAuthRunner.swift */; };
 		E2000000000000000000009B /* LinearConnectionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009B /* LinearConnectionScreen.swift */; };
 		AA1100000000000000000001 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
@@ -332,6 +338,12 @@
 		D20000000000000000000097 /* LinearLaunchScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchScreen.swift; path = ADE/Views/Linear/LinearLaunchScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000098 /* LinearPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneSheet.swift; path = ADE/Views/Linear/LinearPaneSheet.swift; sourceTree = "<group>"; };
 		D20000000000000000000099 /* LinearPaneToolbarButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneToolbarButton.swift; path = ADE/Views/Linear/LinearPaneToolbarButton.swift; sourceTree = "<group>"; };
+		D2A00000000000000000C1 /* CursorCloudModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudModels.swift; path = ADE/Views/CursorCloud/CursorCloudModels.swift; sourceTree = "<group>"; };
+		D2A00000000000000000C2 /* CursorCloudPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudPaneStore.swift; path = ADE/Views/CursorCloud/CursorCloudPaneStore.swift; sourceTree = "<group>"; };
+		D2A00000000000000000C3 /* CursorCloudPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudPaneSheet.swift; path = ADE/Views/CursorCloud/CursorCloudPaneSheet.swift; sourceTree = "<group>"; };
+		D2A00000000000000000C4 /* CursorCloudAgentListScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudAgentListScreen.swift; path = ADE/Views/CursorCloud/CursorCloudAgentListScreen.swift; sourceTree = "<group>"; };
+		D2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudAgentDetailScreen.swift; path = ADE/Views/CursorCloud/CursorCloudAgentDetailScreen.swift; sourceTree = "<group>"; };
+		D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CursorCloudContractDecodingTests.swift; path = ADETests/CursorCloudContractDecodingTests.swift; sourceTree = "<group>"; };
 		D2000000000000000000009A /* LinearOAuthRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearOAuthRunner.swift; path = ADE/Views/Linear/LinearOAuthRunner.swift; sourceTree = "<group>"; };
 		D2000000000000000000009B /* LinearConnectionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearConnectionScreen.swift; path = ADE/Views/Linear/LinearConnectionScreen.swift; sourceTree = "<group>"; };
 		AA1000000000000000000001 /* ADESharedContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedContainer.swift; path = ADE/Shared/ADESharedContainer.swift; sourceTree = "<group>"; };
@@ -644,6 +656,18 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		D2A00000000000000000CA /* CursorCloud */ = {
+			isa = PBXGroup;
+			children = (
+				D2A00000000000000000C1 /* CursorCloudModels.swift */,
+				D2A00000000000000000C2 /* CursorCloudPaneStore.swift */,
+				D2A00000000000000000C3 /* CursorCloudPaneSheet.swift */,
+				D2A00000000000000000C4 /* CursorCloudAgentListScreen.swift */,
+				D2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift */,
+			);
+			name = CursorCloud;
+			sourceTree = "<group>";
+		};
 		D2000000000000000000009F /* Linear */ = {
 			isa = PBXGroup;
 			children = (
@@ -726,6 +750,7 @@
 				D10000000000000000000021 /* Work */,
 				H10000000000000000000020 /* Cto */,
 				D2000000000000000000009F /* Linear */,
+				D2A00000000000000000CA /* CursorCloud */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
 				AD0000000000000000000C01 /* Account */,
@@ -1146,6 +1171,7 @@
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
 				A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
+				D2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -1407,6 +1433,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				E20000000000000000000091 /* LinearBrand.swift in Sources */,
+				E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */,
+				E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */,
+				E2A00000000000000000C3 /* CursorCloudPaneSheet.swift in Sources */,
+				E2A00000000000000000C4 /* CursorCloudAgentListScreen.swift in Sources */,
+				E2A00000000000000000C5 /* CursorCloudAgentDetailScreen.swift in Sources */,
 				E20000000000000000000092 /* LinearSVGPath.swift in Sources */,
 				E20000000000000000000093 /* LinearLaunchModel.swift in Sources */,
 				E20000000000000000000094 /* LinearPaneStore.swift in Sources */,
@@ -1670,6 +1701,7 @@
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
 				A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,
+				E2A00000000000000000D1 /* CursorCloudContractDecodingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

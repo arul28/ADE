@@ -120,6 +120,7 @@ import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -1068,6 +1069,7 @@ type SyncHostServiceArgs = {
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
     "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
@@ -2085,6 +2087,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     conflictService: args.conflictService,
     operationService: args.operationService,
     agentChatService: args.agentChatService,
+    cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
     orchestrationService: args.orchestrationService,

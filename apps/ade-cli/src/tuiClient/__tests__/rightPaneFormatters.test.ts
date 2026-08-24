@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  CURSOR_CLOUD_PANE_NOTE,
   derivePrMergeReadiness,
+  formatCursorCloudFleetRows,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
@@ -9,6 +11,35 @@ import {
   formatPrSummary,
   formatSystemDetails,
 } from "../rightPaneFormatters";
+import type { CursorCloudFleetEntry } from "../../../../desktop/src/shared/types/config";
+
+function fleetEntry(args: {
+  agentId: string;
+  name: string;
+  status?: "running" | "finished" | "error";
+  runStatus?: "running" | "finished" | "error";
+  createdAt?: number | null;
+  lastModified?: number | null;
+}): CursorCloudFleetEntry {
+  const { agentId, name, status, runStatus, createdAt, lastModified } = args;
+  return {
+    agent: {
+      agentId,
+      name,
+      summary: "",
+      ...(status !== undefined ? { status } : {}),
+      ...(createdAt !== undefined ? { createdAt } : {}),
+      ...(lastModified !== undefined ? { lastModified } : {}),
+    },
+    latestRunId: null,
+    branch: null,
+    prUrl: null,
+    modelId: null,
+    ownership: { sessionId: null, sessionTitle: null, laneId: null, laneName: null, linearIssueId: null },
+    matchedBy: "repo",
+    ...(runStatus !== undefined ? { runStatus } : {}),
+  };
+}
 
 describe("rightPaneFormatters", () => {
   it("formats system details as stable rows", () => {
@@ -401,5 +432,83 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("auth       oauth");
     expect(body).toContain("expires    2026-05-14 06:54");
     expect(body).not.toContain("\"connected\"");
+  });
+
+  it("formats fleet rows as glyph · name · status · age, newest first", () => {
+    const now = Date.parse("2026-08-24T12:00:00Z");
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      const rows = formatCursorCloudFleetRows([
+        fleetEntry({ agentId: "agent-old", name: "old run", createdAt: now - 3 * 60 * 60 * 1000 }),
+        fleetEntry({ agentId: "agent-new", name: "new run", createdAt: now - 5 * 60 * 1000 }),
+      ]);
+      expect(rows[0]).toBe("○ new run · queued · 5m");
+      expect(rows[1]).toBe("○ old run · queued · 3h");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("orders running cloud agents ahead of finished ones and marks their status", () => {
+    const now = Date.now();
+    const rows = formatCursorCloudFleetRows([
+      fleetEntry({
+        agentId: "agent-done",
+        name: "done run",
+        status: "finished",
+        createdAt: now - 60 * 1000,
+        runStatus: "finished",
+      }),
+      fleetEntry({
+        agentId: "agent-live",
+        name: "live run",
+        status: "running",
+        createdAt: now - 10 * 60 * 60 * 1000,
+        runStatus: "running",
+      }),
+      fleetEntry({
+        agentId: "agent-broke",
+        name: "broke run",
+        status: "error",
+        createdAt: now - 2 * 60 * 1000,
+        runStatus: "error",
+      }),
+    ]);
+
+    expect(rows.map((row) => row.slice(0, 1))).toEqual(["●", "✓", "✗"]);
+    expect(rows[0]).toContain("live run · running");
+    expect(rows[1]).toContain("done run · finished · 1m");
+    expect(rows[2]).toContain("broke run · error · 2m");
+  });
+
+  it("appends the agent id only when the row fits the pane budget", () => {
+    const shortRows = formatCursorCloudFleetRows([
+      fleetEntry({ agentId: "abcdefghij", name: "tiny" }),
+    ]);
+    expect(shortRows[0]).toBe("○ tiny · queued · abcdefghij");
+
+    const longRows = formatCursorCloudFleetRows([
+      fleetEntry({ agentId: "abcdefghij", name: "a very long agent name that fills the row" }),
+    ]);
+    expect(longRows[0].endsWith("abcdefghij")).toBe(false);
+  });
+
+  it("falls back to lastModified for age when createdAt is missing", () => {
+    const now = Date.parse("2026-08-24T12:00:00Z");
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      const rows = formatCursorCloudFleetRows([
+        fleetEntry({ agentId: "agent-m", name: "modified only", lastModified: now - 2 * 60 * 1000 }),
+      ]);
+      expect(rows[0]).toBe("○ modified only · queued · 2m");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("keeps the management note pointing at desktop/iOS", () => {
+    expect(CURSOR_CLOUD_PANE_NOTE).toContain("desktop or iOS");
   });
 });

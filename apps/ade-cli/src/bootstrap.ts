@@ -100,6 +100,7 @@ import { createAutomationIngressService, createKvIngressCursorStore } from "../.
 import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "../../desktop/src/main/services/automations/cursorCloudIngressService";
+import { createCursorCloudFleetService } from "../../desktop/src/main/services/chat/cursorCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
@@ -306,6 +307,7 @@ export type AdeRuntime = {
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
@@ -1536,6 +1538,46 @@ export async function createAdeRuntime(args: {
     });
     teardown.push(() => cursorCloudIngressService.stop());
     cursorCloudIngressService.start();
+    const cursorCloudFleetService = createCursorCloudFleetService({
+      projectRoot,
+      logger,
+      listCursorCloudAgents: (args) => aiIntegrationService.listCursorCloudAgents(args),
+      listCursorCloudRuns: async (args) => {
+        const result = await aiIntegrationService.listCursorCloudRuns(args);
+        return { items: result.items as Array<Record<string, unknown>> };
+      },
+      laneService: {
+        list: (args) => laneService.list(args),
+        importBranch: (args) => laneService.importBranch(args),
+      },
+      listCursorCloudSessionLinks: async () => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        const sessions = await agentChatService.listSessions(undefined, { includeArchived: true });
+        return sessions
+          .filter((session) => Boolean(session.cursorCloudAgentId))
+          .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
+          .map((session) => ({
+            sessionId: session.sessionId,
+            agentId: session.cursorCloudAgentId ?? "",
+            laneId: session.laneId,
+            title: session.title ?? null,
+          }))
+          .filter((link) => link.agentId.length > 0);
+      },
+      openCursorCloudChat: (args) => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        return agentChatService.openCursorCloudChat(args);
+      },
+      cancelCursorCloudRun: (args) => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        return agentChatService.cancelCursorCloudRun(args);
+      },
+      getCursorCloudAgent: (agentId) => aiIntegrationService.getCursorCloudAgent(agentId),
+      getIngressStatus: () => {
+        const status = cursorCloudIngressService.getStatus();
+        return { state: status.state, lastEventAt: status.lastEventAt };
+      },
+    });
     const configReloadService = createConfigReloadService({
       paths: {
         sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -1953,6 +1995,7 @@ export async function createAdeRuntime(args: {
         autoRebaseService,
         computerUseArtifactBrokerService,
         agentChatService,
+        cursorCloudFleetService,
         pushPublisherService,
         ctoStateService,
         ctoMemoryService,
@@ -2093,6 +2136,7 @@ export async function createAdeRuntime(args: {
       externalSessionsService,
       aiIntegrationService,
       agentChatService,
+      cursorCloudFleetService,
       orchestrationService,
       ctoStateService,
       ctoMemoryService,

@@ -1558,6 +1558,51 @@ These modules are pure and unit-testable:
 - `pendingInput.ts` exports `getPendingInputQuestionCount()` and
   `hasPendingInputOptions()` for introspection inside the composer.
 
+## Cursor Cloud fleet view
+
+The top bar carries a Cursor quick-view button (`CursorCloudQuickViewButton`,
+mounted by `TopBar` beside the Linear quick-view) that opens
+`CursorCloudFleetModal` — a **project-scoped** account surface listing every
+Cursor Cloud agent that belongs to the open project. An agent qualifies when an
+ADE chat session links to it or when its repos include the project's origin;
+shared `cursorCloudRepoMatch.ts` normalizes SSH, HTTPS, and `.git`-suffixed
+remotes so those spellings of one repository compare equal. Each entry records
+why it matched (`matchedBy: session / repo / both`), so agents launched on
+cursor.com outside ADE still appear — unlinked — instead of being invisible.
+
+Grouping is state-first: **Active runs** first, then finished/error rows grouped
+under their owning ADE lane (the lane header carries its Linear identifier when
+present), then unlinked rows clustered by repo · branch. Status, lane, and
+archived filters apply across all groups. What counts as active is derived once
+in `shared/cursorCloudFleetStatus.ts`, so the modal, the row component, and the
+main-process service cannot disagree about section placement or Stop-button
+visibility.
+
+Row actions: **Open** mirrors the cloud agent into an ADE chat in its lane
+(resolving the lane first when unlinked), **Stop** cancels the latest run even
+for agents launched elsewhere, **Pull into lane…** appears once a run finishes,
+and the ⋯ menu offers Archive/Unarchive, Open PR, and Delete with an explicit
+click-again confirmation. Expanding a row lazily fetches usage; failures render
+inline on the offending row rather than disabling it.
+
+Pull-into-lane never guesses at a target. Resolution order is the linked
+session's lane → any local lane already on the pushed branch → a fresh lane
+imported from the remote branch. It refuses dirty worktrees (uncommitted changes
+must be committed or stashed first), fetches + merges `FETCH_HEAD`, and on merge
+conflict aborts the merge and reports exactly that instead of half-landing.
+Branch names coming back from Cursor are guarded against git option injection,
+and a multi-repo agent pulls only a branch pushed to *this* project's repo —
+branches attributed to other repositories refuse with an explanation.
+
+Freshness has no timer. The Cursor Cloud ingress relay's terminal deliveries are
+re-broadcast as the per-project `ade.ai.cursorCloud.fleetEvent` push, which
+soft-refreshes the open modal and lights the button's unread-finishes badge
+while it is closed; everything else waits for the manual refresh control. When
+the relay is unconfigured or erroring, a banner says so ("Live updates not
+configured yet — this list updates on refresh and when agents finish") rather
+than letting a stale list look current. A missing Cursor key renders a connect
+prompt linking Settings → AI connections instead of an empty list.
+
 ## Fragile and tricky wiring
 
 - **Draft launch job lifecycle.** `DraftLaunchJob` tracks multi-step

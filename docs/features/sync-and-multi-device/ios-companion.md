@@ -477,6 +477,29 @@ apps/ios/
 │   │   │                            # LinearOAuthRunner (worker-bounce OAuth via
 │   │   │                            #   ASWebAuthenticationSession, ade:// capture),
 │   │   │                            #   all gated on supportsRemoteAction.
+│   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
+│   │   │                            #   (full-screen sheet mirroring the Linear
+│   │   │                            #   pane's presentation) +
+│   │   │                            # CursorCloudPaneToolbarButton (Work top-bar
+│   │   │                            #   button beside the Linear one; shown while a
+│   │   │                            #   project is open — the pane itself resolves
+│   │   │                            #   connection state so a missing key renders an
+│   │   │                            #   honest connect prompt instead of hiding the
+│   │   │                            #   surface) + CursorCloudPaneStore (fleet load /
+│   │   │                            #   status-lane-archived filters / active,
+│   │   │                            #   per-lane, and unlinked repo·branch grouping
+│   │   │                            #   over ai.cursorCloudFleet),
+│   │   │                            # CursorCloudAgentListScreen (pull-to-refresh,
+│   │   │                            #   skeleton/failure/connect/empty states) +
+│   │   │                            # CursorCloudAgentDetailScreen (facts, summary,
+│   │   │                            #   Open in ADE / Stop / Pull into lane /
+│   │   │                            #   cursor.com actions) +
+│   │   │                            # CursorCloudModels (Swift mirrors of the fleet
+│   │   │                            #   DTOs). Every action executes host-side like
+│   │   │                            #   Linear; no Cursor credentials live on device.
+│   │   │                            #   Gated on an active project plus the host
+│   │   │                            #   advertising the optional ai.cursorCloud*
+│   │   │                            #   commands, so an older brain omits the pane.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),

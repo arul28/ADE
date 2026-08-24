@@ -274,6 +274,7 @@ import { createAutomationIngressService, createKvIngressCursorStore } from "./se
 import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "./services/automations/cursorCloudIngressService";
+import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createReviewService } from "./services/review/reviewService";
@@ -4080,6 +4081,15 @@ app.whenReady().then(async () => {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+        emitProjectEvent(projectRoot, IPC.aiCursorCloudFleetEvent, {
+          agentId: record.agentId,
+          status: record.status,
+          summary: record.summary,
+          branchName: record.branchName,
+          prUrl: record.prUrl,
+          eventId: record.eventId,
+          createdAt: record.createdAt,
+        });
         if (!automationService) return;
         await Promise.all(buildCursorCloudAutomationDispatches(record).map((dispatch) =>
           automationService.dispatchIngressTrigger(dispatch).catch((error) => {
@@ -4091,6 +4101,40 @@ app.whenReady().then(async () => {
         ));
       },
       logger,
+    });
+
+    const cursorCloudFleetService = createCursorCloudFleetService({
+      projectRoot,
+      logger,
+      listCursorCloudAgents: (args) => aiIntegrationService.listCursorCloudAgents(args),
+      listCursorCloudRuns: async (args) => {
+        const result = await aiIntegrationService.listCursorCloudRuns(args);
+        return { items: result.items as Array<Record<string, unknown>> };
+      },
+      laneService: {
+        list: (args) => laneService.list(args),
+        importBranch: (args) => laneService.importBranch(args),
+      },
+      listCursorCloudSessionLinks: async () => {
+        const sessions = await agentChatService.listSessions(undefined, { includeArchived: true });
+        return sessions
+          .filter((session) => Boolean(session.cursorCloudAgentId))
+          .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
+          .map((session) => ({
+            sessionId: session.sessionId,
+            agentId: session.cursorCloudAgentId ?? "",
+            laneId: session.laneId,
+            title: session.title ?? null,
+          }))
+          .filter((link) => link.agentId.length > 0);
+      },
+      openCursorCloudChat: (args) => agentChatService.openCursorCloudChat(args),
+      cancelCursorCloudRun: (args) => agentChatService.cancelCursorCloudRun(args),
+      getCursorCloudAgent: (agentId) => aiIntegrationService.getCursorCloudAgent(agentId),
+      getIngressStatus: () => {
+        const status = cursorCloudIngressService.getStatus();
+        return { state: status.state, lastEventAt: status.lastEventAt };
+      },
     });
     automationService?.setCursorCloudIngressAvailable(() => {
       const status = cursorCloudIngressService.getStatus();
@@ -4467,6 +4511,7 @@ app.whenReady().then(async () => {
       autoRebaseService,
       computerUseArtifactBrokerService,
       agentChatService,
+      cursorCloudFleetService,
       ctoStateService,
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
@@ -4893,6 +4938,7 @@ app.whenReady().then(async () => {
       automationIngressService,
       linearIngressService,
       cursorCloudIngressService,
+      cursorCloudFleetService,
       feedbackReporterService,
       usageTrackingService,
       storageInsightsService,

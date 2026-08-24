@@ -3966,6 +3966,7 @@ final class SyncService: ObservableObject {
   /// bound in `ContentView`). Opened from the Work top-bar Linear button and by
   /// `requestedLinearIssueNavigation` deep links.
   @Published var linearPanePresented = false
+  @Published var cursorCloudPanePresented = false
   /// A `ade://linear-issue/<IDENT>` deep link that should open the Linear pane
   /// straight to a specific issue instead of bouncing to the paired Mac.
   @Published var requestedLinearIssueNavigation: LinearIssueNavigationRequest?
@@ -9363,6 +9364,52 @@ final class SyncService: ObservableObject {
       action: "cto.getLinearIssueComments",
       args: ["issueId": issueId],
       as: [LinearIssueComment].self
+    )
+  }
+
+  // MARK: - Cursor Cloud fleet (global pane)
+  //
+  // All execution is host-side: the phone renders the fleet the paired
+  // desktop's Cursor connection sees, and every action routes through the
+  // desktop like the Linear pane. No Cursor credentials live on device.
+
+  func fetchCursorCloudFleet() async throws -> CursorCloudFleetResult {
+    try await sendDecodableCommand(action: "ai.cursorCloudFleet", as: CursorCloudFleetResult.self)
+  }
+
+  func resolveCursorCloudLane(agentId: String) async throws -> CursorCloudResolvedLane {
+    try await sendDecodableCommand(
+      action: "ai.cursorCloudResolveLane",
+      args: ["agentId": agentId],
+      as: CursorCloudResolvedLane.self
+    )
+  }
+
+  func pullCursorCloudAgentIntoLane(agentId: String) async throws -> CursorCloudPullResult {
+    try await sendDecodableCommand(
+      action: "ai.cursorCloudPullIntoLane",
+      args: ["agentId": agentId],
+      as: CursorCloudPullResult.self
+    )
+  }
+
+  func stopCursorCloudAgent(agentId: String) async throws -> [String: Bool] {
+    let response = try await sendCommand(
+      action: "ai.cursorCloudStopRun",
+      args: ["agentId": agentId]
+    )
+    guard let payload = response as? [String: Any] else { return ["stopped": true] }
+    if (payload["queued"] as? Bool) == true { return ["queued": true] }
+    return ["stopped": (payload["stopped"] as? Bool) ?? true]
+  }
+
+  func openCursorCloudChat(agentId: String, laneId: String, agentName: String?) async throws -> CursorCloudOpenChatResult {
+    var args: [String: Any] = ["cloudAgentId": agentId, "laneId": laneId]
+    if let agentName, !agentName.isEmpty { args["agentName"] = agentName }
+    return try await sendDecodableCommand(
+      action: "ai.openCursorCloudChat",
+      args: args,
+      as: CursorCloudOpenChatResult.self
     )
   }
 

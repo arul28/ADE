@@ -100,6 +100,7 @@ import {
   toggleModelPickerFavorite,
   getOpenCodeRuntimeDiagnostics,
   watchCursorCloudMirror,
+  getCursorCloudFleet,
   getSlashCommands,
   getScheduledWorkState,
   getStoredApiKeyProviders,
@@ -372,6 +373,7 @@ import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearComm
 import {
   formatLinearIssueComments,
   derivePrMergeReadiness,
+  formatCursorCloudFleetRows,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
@@ -379,6 +381,7 @@ import {
   formatPrReview,
   formatPrSummary,
   formatSystemDetails,
+  CURSOR_CLOUD_PANE_NOTE,
 } from "./rightPaneFormatters";
 import {
   buildFeedbackDraftInput,
@@ -10672,6 +10675,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({
           kind: "details",
           title: "Machines",
+          body: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (name === "/cloud") {
+      setRightPane({
+        kind: "list",
+        title: "Cloud agents",
+        rows: [],
+        emptyText: "Loading Cursor Cloud agents…",
+      });
+      setRightOpen(true);
+      try {
+        const fleet = await getCursorCloudFleet(conn);
+        setRightPane({
+          kind: "list",
+          title: fleet.items.length ? `Cloud agents · ${fleet.items.length}` : "Cloud agents",
+          rows: formatCursorCloudFleetRows(fleet.items),
+          emptyText: "No Cursor Cloud agents for this project.",
+          footnote: CURSOR_CLOUD_PANE_NOTE,
+        });
+      } catch (error) {
+        setRightPane({
+          kind: "details",
+          title: "Cloud agents",
           body: error instanceof Error ? error.message : String(error),
         });
       }

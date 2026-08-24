@@ -43,6 +43,13 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // go limited, and an older host simply omits the actions.
   "ai.openCursorCloudChat",
   "ai.watchCursorCloudMirror",
+  // Cursor Cloud fleet view. The phone gates its Cloud pane affordances on
+  // these; optional so an older brain simply omits the pane instead of going
+  // limited.
+  "ai.cursorCloudFleet",
+  "ai.cursorCloudResolveLane",
+  "ai.cursorCloudPullIntoLane",
+  "ai.cursorCloudStopRun",
   // Per-project prompt stash. iOS gates the overflow-menu items on these
   // descriptors so an older brain simply omits stash instead of going limited.
   "chat.listPromptStashes",

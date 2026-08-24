@@ -1,6 +1,8 @@
 import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
 import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { NO_CI_REASON, rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
+import type { CursorCloudFleetEntry } from "../../../desktop/src/shared/types/config";
+import { formatCursorCloudAge } from "../../../desktop/src/renderer/lib/cursorCloudUtils";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -559,4 +561,46 @@ export function formatLinearIssueComments(value: unknown): string {
   }
   if (items.length > 20) lines.push("", `… and ${items.length - 20} more`);
   return lines.join("\n");
+}
+
+// /cloud pane. Read-only by design: open/stop/pull/archive/delete need lane
+// and ownership context the terminal does not have, so the pane only answers
+// "what is running and how old is it" and points management at desktop/iOS.
+export const CURSOR_CLOUD_PANE_NOTE = "Read-only here — manage agents on desktop or iOS.";
+
+function cursorCloudFleetStatusGlyph(status: string): string {
+  if (status === "running") return "●";
+  if (status === "finished" || status === "completed") return "✓";
+  if (status === "error" || status === "failed" || status === "cancelled") return "✗";
+  return "○";
+}
+
+function cursorCloudFleetCreatedAt(entry: CursorCloudFleetEntry): number {
+  const raw = entry.agent.createdAt ?? entry.agent.lastModified ?? null;
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+/**
+ * One line per fleet entry for the /cloud right-pane list: running agents
+ * first, each group newest first. The short agent id is appended only when the
+ * composed row fits the default pane width, so narrow terminals clip nothing.
+ */
+export function formatCursorCloudFleetRows(entries: CursorCloudFleetEntry[]): string[] {
+  const ordered = [...entries].sort((left, right) => {
+    const leftRunning = (left.runStatus ?? left.agent.status)?.toLowerCase() === "running" ? 0 : 1;
+    const rightRunning = (right.runStatus ?? right.agent.status)?.toLowerCase() === "running" ? 0 : 1;
+    if (leftRunning !== rightRunning) return leftRunning - rightRunning;
+    return cursorCloudFleetCreatedAt(right) - cursorCloudFleetCreatedAt(left);
+  });
+  // DEFAULT_PANE_WIDTH (38) minus the four cells the list renderer reserves.
+  const rowBudget = 34;
+  return ordered.map((entry) => {
+    const name = entry.agent.name?.trim() || entry.agent.agentId;
+    const status = entry.runStatus ?? entry.agent.status ?? "queued";
+    const age = formatCursorCloudAge(cursorCloudFleetCreatedAt(entry) || null);
+    let row = `${cursorCloudFleetStatusGlyph(status.toLowerCase())} ${name} · ${status.toLowerCase()}${age ? ` · ${age}` : ""}`;
+    const agentId = entry.agent.agentId?.trim();
+    if (agentId && row.length + 3 + agentId.length <= rowBudget) row += ` · ${agentId}`;
+    return row;
+  });
 }

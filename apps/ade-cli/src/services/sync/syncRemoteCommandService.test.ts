@@ -18,6 +18,7 @@ function makePayload(
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
   aiIntegrationService?: Record<string, unknown>;
+  cursorCloudFleetService?: Record<string, unknown>;
   conflictService?: Record<string, unknown>;
   diffService?: Record<string, unknown>;
   externalSessionsService?: Record<string, unknown>;
@@ -89,6 +90,7 @@ function createService(options?: {
     ...(options?.projectConfigService ? { projectConfigService: options.projectConfigService } : {}),
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
+    ...(options?.cursorCloudFleetService ? { cursorCloudFleetService: options.cursorCloudFleetService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
@@ -3246,5 +3248,29 @@ describe("web-reachable settings and lane-risk commands", () => {
       .rejects.toThrow(/laneId/);
     await expect(service.execute(makePayload("chat.launchCli", { laneId: "lane-1", provider: "claude" })))
       .rejects.toThrow(/kickoffPrompt/);
+  });
+
+  it("routes Cursor Cloud fleet reads and actions to the fleet service", async () => {
+    const getFleet = vi.fn().mockResolvedValue({ items: [], relayState: "ready", lastEventAt: null, fetchedAt: "t" });
+    const resolveLaneForAgent = vi.fn().mockResolvedValue({ laneId: "lane-1", laneName: "L", created: false });
+    const pullIntoLane = vi.fn().mockResolvedValue({ status: "pulled", laneId: "lane-1", laneName: "L", sessionId: null, mergedBranch: "b" });
+    const stopAgentRun = vi.fn().mockResolvedValue({ stopped: true });
+    const { service } = createService({
+      cursorCloudFleetService: { getFleet, resolveLaneForAgent, pullIntoLane, stopAgentRun },
+    });
+
+    const fleet = await service.execute(makePayload("ai.cursorCloudFleet", { includeArchived: false }));
+    expect(getFleet).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false }));
+    expect(fleet).toEqual(expect.objectContaining({ relayState: "ready" }));
+
+    await expect(service.execute(makePayload("ai.cursorCloudResolveLane", { agentId: "bc-1" })))
+      .resolves.toEqual({ laneId: "lane-1", laneName: "L", created: false });
+    expect(resolveLaneForAgent).toHaveBeenCalledWith("bc-1");
+
+    await service.execute(makePayload("ai.cursorCloudPullIntoLane", { agentId: "bc-2" }));
+    expect(pullIntoLane).toHaveBeenCalledWith("bc-2");
+
+    await service.execute(makePayload("ai.cursorCloudStopRun", { agentId: "bc-3" }));
+    expect(stopAgentRun).toHaveBeenCalledWith("bc-3");
   });
 });
