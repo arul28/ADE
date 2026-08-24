@@ -189,7 +189,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       return (
         <SmartTooltip
           key={it.to}
-          side="bottom"
+          side="right"
           content={tooltip}
           wrapperClassName="w-full"
           wrapperStyle={{ display: "flex" }}
@@ -220,7 +220,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     return (
       <SmartTooltip
         key={it.to}
-        side="bottom"
+        side="right"
         content={tooltip}
         wrapperClassName="w-full"
         wrapperStyle={{ display: "flex" }}
@@ -336,7 +336,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
         <div className="mt-auto" />
 
         <SmartTooltip
-          side="bottom"
+          side="right"
           content={{
             label: "Chats",
             description: "Chat with ADE agents without opening or linking a project.",

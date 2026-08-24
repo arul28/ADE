@@ -22,12 +22,14 @@ export type SmartTooltipContent = {
   glossaryTermId?: string;
 };
 
+type TooltipSide = "top" | "bottom" | "left" | "right";
+
 type SmartTooltipProps = {
   children: React.ReactElement;
   content: SmartTooltipContent;
   /** Override the global toggle (used for the toggle button itself) */
   forceEnabled?: boolean;
-  side?: "top" | "bottom";
+  side?: TooltipSide;
   wrapperClassName?: string;
   wrapperStyle?: React.CSSProperties;
 };
@@ -53,7 +55,7 @@ export function SmartTooltip({
   const tooltipId = useId();
 
   const [visible, setVisible] = useState(false);
-  const [coords, setCoords] = useState<{ x: number; y: number; side: "top" | "bottom" } | null>(null);
+  const [coords, setCoords] = useState<{ x: number; y: number; side: TooltipSide } | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,17 +83,32 @@ export function SmartTooltip({
       if (!el) return;
       const r = el.getBoundingClientRect();
       const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
 
       // Pick side: prefer requested, but flip if no room
       let side = preferredSide;
       if (side === "top" && r.top < 140) side = "bottom";
       else if (side === "bottom" && window.innerHeight - r.bottom < 140) side = "top";
+      else if (side === "right" && window.innerWidth - r.right < 160) side = "left";
+      else if (side === "left" && r.left < 160) side = "right";
 
-      setCoords({
-        x: cx,
-        y: side === "top" ? r.top - GAP : r.bottom + GAP,
-        side,
-      });
+      let x: number;
+      let y: number;
+      if (side === "top") {
+        x = cx;
+        y = r.top - GAP;
+      } else if (side === "bottom") {
+        x = cx;
+        y = r.bottom + GAP;
+      } else if (side === "right") {
+        x = r.right + GAP;
+        y = cy;
+      } else {
+        x = r.left - GAP;
+        y = cy;
+      }
+
+      setCoords({ x, y, side });
       setVisible(true);
     }, HOVER_DELAY);
   }, [enabled, preferredSide, clearHideTimer]);
@@ -131,17 +148,28 @@ export function SmartTooltip({
     [],
   );
 
-  // Clamp horizontal position after first paint
+  // Clamp position to the viewport after first paint. top/bottom tooltips are
+  // horizontally centered on the trigger and so can overflow left/right;
+  // left/right tooltips are vertically centered and so can overflow top/bottom.
   useEffect(() => {
     if (!visible || !tooltipRef.current || !coords) return;
     const tt = tooltipRef.current;
     const ttRect = tt.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const half = ttRect.width / 2;
-    let x = coords.x;
-    if (x - half < VIEWPORT_PAD) x = half + VIEWPORT_PAD;
-    if (x + half > vw - VIEWPORT_PAD) x = vw - half - VIEWPORT_PAD;
-    if (x !== coords.x) setCoords((prev) => prev ? { ...prev, x } : prev);
+    if (coords.side === "top" || coords.side === "bottom") {
+      const vw = window.innerWidth;
+      const half = ttRect.width / 2;
+      let x = coords.x;
+      if (x - half < VIEWPORT_PAD) x = half + VIEWPORT_PAD;
+      if (x + half > vw - VIEWPORT_PAD) x = vw - half - VIEWPORT_PAD;
+      if (x !== coords.x) setCoords((prev) => prev ? { ...prev, x } : prev);
+    } else {
+      const vh = window.innerHeight;
+      const half = ttRect.height / 2;
+      let y = coords.y;
+      if (y - half < VIEWPORT_PAD) y = half + VIEWPORT_PAD;
+      if (y + half > vh - VIEWPORT_PAD) y = vh - half - VIEWPORT_PAD;
+      if (y !== coords.y) setCoords((prev) => prev ? { ...prev, y } : prev);
+    }
   }, [visible, coords]);
 
   const hasExtra = Boolean(content.gitCommand || content.effect || content.warning || content.shortcut);
@@ -201,7 +229,14 @@ export function SmartTooltip({
                 zIndex: 9999,
                 left: coords.x,
                 top: coords.y,
-                transform: coords.side === "top" ? "translate(-50%, -100%)" : "translate(-50%, 0)",
+                transform:
+                  coords.side === "top"
+                    ? "translate(-50%, -100%)"
+                    : coords.side === "bottom"
+                      ? "translate(-50%, 0)"
+                      : coords.side === "right"
+                        ? "translate(0, -50%)"
+                        : "translate(-100%, -50%)",
                 // Only allow pointer events when there's a link to click; otherwise preserve
                 // the original click-through behaviour.
                 pointerEvents: content.docUrl ? "auto" : "none",
