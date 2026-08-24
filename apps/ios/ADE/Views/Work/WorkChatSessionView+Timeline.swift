@@ -45,14 +45,43 @@ extension WorkChatSessionView {
         controls: model,
         onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
         onShowMore: {
-          assistantLineBudgets[model.messageId] = model.nextLineBudget
-          refreshTimelinePresentation()
-          if isNearBottom {
-            pinToLatestAfterLayout(proxy, reason: "assistant-show-more")
-          }
+          expandAssistantMessage(
+            messageId: model.messageId,
+            nextLineBudget: model.nextLineBudget,
+            controlsRowId: model.id,
+            proxy: proxy
+          )
         }
       )
       .equatable()
+    }
+  }
+
+  /// One "Show more" step, for both render paths.
+  ///
+  /// Expansion grows the message DOWNWARD from a head anchor, so the reader's
+  /// current view is unchanged and the right thing to do with the scroll offset
+  /// is to leave the row they tapped where it is. It used to re-pin the
+  /// transcript to its bottom, which threw the reader to the end of the chat
+  /// for asking to see more of a message in the middle of it.
+  @MainActor
+  func expandAssistantMessage(
+    messageId: String,
+    nextLineBudget: Int,
+    controlsRowId: String,
+    proxy: ScrollViewProxy
+  ) {
+    assistantLineBudgets[messageId] = nextLineBudget
+    assistantHeadAnchorOverrides.insert(messageId)
+    refreshTimelinePresentation()
+    // Not animated: the expansion inserts a screenful of text, and animating
+    // the offset onto it reads as the transcript lurching.
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    Task { @MainActor in
+      withTransaction(transaction) {
+        proxy.scrollTo(controlsRowId, anchor: .bottom)
+      }
     }
   }
 
@@ -92,8 +121,21 @@ extension WorkChatSessionView {
         maxUserBubbleWidth: maxUserBubbleWidth,
         onRunUnprocessed: onRunUnprocessedMessage,
         onEditUnprocessed: onEditUnprocessedMessage,
-        onDismissUnprocessed: onDismissUnprocessedMessage
+        onDismissUnprocessed: onDismissUnprocessedMessage,
+        onShowMore: message.role == "assistant"
+          ? {
+            expandAssistantMessage(
+              messageId: message.id,
+              nextLineBudget: workAssistantMessageShowMoreLineBudget(
+                current: assistantLineBudgets[message.id] ?? assistantBudgetFloors[message.id]
+              ),
+              controlsRowId: entry.id,
+              proxy: proxy
+            )
+          }
+          : nil
       )
+      .equatable()
     case .toolCard(let toolCard):
       timelineToolCard(toolCard)
     case .eventCard(let card):
@@ -112,6 +154,7 @@ extension WorkChatSessionView {
             }
             : nil
         )
+        .equatable()
       }
     case .usageSummary(let summary):
       WorkTurnUsageSummaryBanner(
@@ -121,8 +164,10 @@ extension WorkChatSessionView {
       )
     case .commandCard(let commandCard):
       WorkCommandCardView(card: commandCard)
+        .equatable()
     case .fileChangeCard(let fileChangeCard):
       WorkFileChangeCardView(card: fileChangeCard)
+        .equatable()
     case .subagent(let row):
       WorkSubagentTimelineRowView(row: row, onOpen: onSelectSubagentRow)
     case .subagentStoppedGroup(let model):
@@ -261,7 +306,6 @@ extension WorkChatSessionView {
   func timelineToolCard(_ toolCard: WorkToolCardModel) -> some View {
     WorkToolCardView(
       toolCard: toolCard,
-      references: extractWorkNavigationTargets(from: [toolCard.argsText, toolCard.resultText].compactMap { $0 }.joined(separator: "\n")),
       isExpanded: expandedToolCardIds.contains(toolCard.id),
       onToggle: { toggleToolCard(toolCard.id) },
       onOpenFile: { path in
@@ -271,6 +315,7 @@ extension WorkChatSessionView {
         Task { await onOpenPr(prNumber) }
       }
     )
+    .equatable()
   }
 
   @ViewBuilder
@@ -303,6 +348,7 @@ extension WorkChatSessionView {
         onOpenFile: { path in Task { await onOpenFile(path) } },
         onOpenPr: { number in Task { await onOpenPr(number) } }
       )
+      .equatable()
     }
   }
 

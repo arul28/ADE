@@ -73,9 +73,16 @@ private struct WorkWebSearchSource: Identifiable {
   let url: URL
 }
 
-struct WorkToolCardView: View {
+struct WorkToolCardView: View, Equatable {
+  static func == (lhs: WorkToolCardView, rhs: WorkToolCardView) -> Bool {
+    lhs.toolCard == rhs.toolCard && lhs.isExpanded == rhs.isExpanded
+  }
+
   let toolCard: WorkToolCardModel
-  let references: WorkNavigationTargets
+  /// Derived from `toolCard`, so it is deliberately absent from `==`. Computed
+  /// lazily below rather than passed in: extracting them concatenates the tool's
+  /// arguments and result, which is not work a collapsed row should ever do.
+  var references: WorkNavigationTargets { workToolCardNavigationTargets(toolCard) }
   let isExpanded: Bool
   let onToggle: () -> Void
   let onOpenFile: (String) -> Void
@@ -718,9 +725,6 @@ private struct WorkToolGroupMemberRow: View {
     case .tool(let card):
       WorkToolCardView(
         toolCard: card,
-        references: extractWorkNavigationTargets(
-          from: [card.argsText, card.resultText].compactMap { $0 }.joined(separator: "\n")
-        ),
         // Running cards stay auto-expanded so live args/output remain visible
         // during streaming — the whole point of the tool-streaming flow.
         isExpanded: card.status == .running || localExpanded,
@@ -749,11 +753,27 @@ func workToolResultPreview(_ text: String?) -> String? {
   return nil
 }
 
+/// File paths and PR numbers mentioned by a tool call. Extracted from the
+/// concatenation of its arguments and result, so it is only ever asked for by an
+/// expanded card.
+func workToolCardNavigationTargets(_ card: WorkToolCardModel) -> WorkNavigationTargets {
+  extractWorkNavigationTargets(
+    from: [card.argsText, card.resultText].compactMap { $0 }.joined(separator: "\n")
+  )
+}
+
 /// Returns the text to render in the result block, plus whether it was
 /// actually truncated. `expanded == true` always returns the full text.
 func workToolResultTruncate(_ text: String, expanded: Bool) -> (text: String, didTruncate: Bool) {
-  guard !expanded, text.count > workToolResultTruncateLimit else {
-    return (text, didTruncate: !expanded && text.count > workToolResultTruncateLimit)
+  // `text.count` walks the whole string counting graphemes, and this runs on
+  // every body pass of every tool card. UTF-8 length is stored, and is always
+  // >= the character count, so a string that fits in UTF-8 bytes provably fits
+  // in characters — only the rare long result pays for the exact count.
+  guard !expanded, text.utf8.count > workToolResultTruncateLimit else {
+    return (text, didTruncate: false)
+  }
+  guard text.count > workToolResultTruncateLimit else {
+    return (text, didTruncate: false)
   }
   let end = text.index(text.startIndex, offsetBy: workToolResultTruncateLimit)
   return (String(text[..<end]) + "…", didTruncate: true)
@@ -841,7 +861,13 @@ struct WorkOutputBlockHeader: View {
   }
 }
 
-struct WorkCommandCardView: View {
+struct WorkCommandCardView: View, Equatable {
+  /// Row-level gate: the card only redraws when its model changes. Its own
+  /// expansion is `@State`, which invalidates independently of this compare.
+  static func == (lhs: WorkCommandCardView, rhs: WorkCommandCardView) -> Bool {
+    lhs.card == rhs.card
+  }
+
   let card: WorkCommandCardModel
   @State private var isExpanded = false
 
@@ -982,7 +1008,11 @@ struct WorkInlineDiffPreview: View {
   }
 }
 
-struct WorkFileChangeCardView: View {
+struct WorkFileChangeCardView: View, Equatable {
+  static func == (lhs: WorkFileChangeCardView, rhs: WorkFileChangeCardView) -> Bool {
+    lhs.card == rhs.card
+  }
+
   let card: WorkFileChangeCardModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isExpanded = false
@@ -1084,7 +1114,11 @@ struct WorkFileChangeCardView: View {
   }
 }
 
-struct WorkEventCardView: View {
+struct WorkEventCardView: View, Equatable {
+  static func == (lhs: WorkEventCardView, rhs: WorkEventCardView) -> Bool {
+    lhs.card == rhs.card
+  }
+
   let card: WorkEventCardModel
   var onOpenFile: ((String) -> Void)? = nil
   var onOpenPr: ((Int) -> Void)? = nil
@@ -3971,7 +4005,11 @@ func workAdeCardNavLabel(_ target: WorkAdeCardNavTarget?) -> String? {
 /// Tone note: failures are AMBER here, never red. The wire contract has no
 /// danger tone and `workAdeCardTone(from:)` folds red-ish values into
 /// `.warning`, so this view has no red path to take.
-struct WorkAdeCardView: View {
+struct WorkAdeCardView: View, Equatable {
+  static func == (lhs: WorkAdeCardView, rhs: WorkAdeCardView) -> Bool {
+    lhs.card == rhs.card
+  }
+
   let card: WorkAdeCardModel
   /// Dispatch for host-specific actions. The reserved `open` action is handled
   /// locally through `navTarget` on every client.

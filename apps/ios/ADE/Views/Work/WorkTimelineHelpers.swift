@@ -1495,7 +1495,12 @@ func buildWorkTimeline(
     : buildWorkChatMessages(from: transcript)
 
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
-    WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
+    // Stamped here, at the end of the fold, rather than at construction: the
+    // builders above merge streaming fragments by mutating `markdown` in place,
+    // so this is the first point where a message's text is final.
+    var message = message
+    message.markdownDigest = workStableDigest(message.markdown)
+    return WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
   // Counted, not set-membership: two identical echoes must not both vanish on
   // one matching row. Built from `messages` rather than the transcript so the
@@ -1591,6 +1596,7 @@ func buildWorkTimeline(
       id: echo.id,
       role: "user",
       markdown: echo.text,
+      markdownDigest: workStableDigest(echo.text),
       timestamp: echo.timestamp,
       turnId: nil,
       itemId: nil,

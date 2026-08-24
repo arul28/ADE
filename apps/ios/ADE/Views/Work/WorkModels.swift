@@ -113,6 +113,14 @@ struct WorkChatMessage: Identifiable, Equatable {
   let id: String
   let role: String
   var markdown: String
+  /// Digest of `markdown`, stamped once by the (off-main) snapshot fold.
+  ///
+  /// Change detection used to hash the full text of every visible message on
+  /// every presentation refresh — main-thread work proportional to the whole
+  /// visible transcript, several times a second during a streaming turn. Nil
+  /// only for messages built outside the fold, where the callers below fall
+  /// back to hashing the text.
+  var markdownDigest: String? = nil
   var assistantPreview: WorkAssistantMessagePreview? = nil
   let timestamp: String
   let turnId: String?
@@ -718,12 +726,16 @@ struct WorkAssistantMonospacedRenderModel: Identifiable, Equatable {
   let itemId: String?
   let text: String
   let accessibilityLabel: String
+  /// Digest of the source message. Lets change detection separate two slices of
+  /// two different messages without hashing either slice.
+  var sourceDigest: String = ""
 
   static func == (lhs: WorkAssistantMonospacedRenderModel, rhs: WorkAssistantMonospacedRenderModel) -> Bool {
     lhs.id == rhs.id
       && lhs.messageId == rhs.messageId
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
+      && lhs.sourceDigest == rhs.sourceDigest
       && lhs.text == rhs.text
       && lhs.accessibilityLabel == rhs.accessibilityLabel
   }

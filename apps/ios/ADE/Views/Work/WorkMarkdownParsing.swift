@@ -87,8 +87,25 @@ enum WorkMarkdownBlockKind: Equatable {
 }
 
 struct WorkMarkdownBlock: Identifiable, Equatable {
+  /// Position-stable within its message: `markdown-block-<index>`.
+  ///
+  /// Deliberately NOT content-derived. The id used to carry a digest of the
+  /// block's text, so every streaming delta and every "Show more" step handed
+  /// the `LazyVStack` a brand-new identity for a row that was still the same
+  /// row — destroying reuse and re-creating the whole subtree instead of
+  /// updating it. Content changes are detected through `digest` / `kind`.
   let id: String
   let kind: WorkMarkdownBlockKind
+  /// Digest of `kind.cacheKey`, computed once at parse time. Change detection
+  /// (Equatable, presentation signatures) reads this instead of rebuilding and
+  /// re-hashing the block's full text on every refresh.
+  let digest: String
+
+  init(id: String, kind: WorkMarkdownBlockKind, digest: String? = nil) {
+    self.id = id
+    self.kind = kind
+    self.digest = digest ?? workStableDigest(kind.cacheKey)
+  }
 }
 
 func parseMarkdownBlocks(_ markdown: String) -> [WorkMarkdownBlock] {
@@ -152,8 +169,9 @@ func parseMarkdownBlocksForStreaming(_ markdown: String, cacheKey: String) -> [W
     // bakes the running block index into each id, and ids must match the
     // whole-text parse exactly.
     blocks.append(WorkMarkdownBlock(
-      id: "markdown-block-\(blocks.count)-\(workStableDigest(tailBlock.kind.cacheKey))",
-      kind: tailBlock.kind
+      id: "markdown-block-\(blocks.count)",
+      kind: tailBlock.kind,
+      digest: tailBlock.digest
     ))
   }
   workStreamingMarkdownCache.setObject(
@@ -195,8 +213,7 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
   var blocks: [WorkMarkdownBlock] = []
 
   func appendBlock(_ kind: WorkMarkdownBlockKind) {
-    let blockID = "markdown-block-\(blocks.count)-\(workStableDigest(kind.cacheKey))"
-    blocks.append(WorkMarkdownBlock(id: blockID, kind: kind))
+    blocks.append(WorkMarkdownBlock(id: "markdown-block-\(blocks.count)", kind: kind))
   }
 
   func appendParagraph(_ lines: [String]) {

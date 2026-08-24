@@ -399,6 +399,13 @@ struct WorkChatSessionView: View {
   @State var assistantPreviewCache = WorkAssistantPreviewCache()
   @State var contextUsageViewModelCache = WorkContextUsageViewModelCache()
   @State var assistantLineBudgets: [String: Int] = [:]
+  /// Largest budget each assistant message has already rendered under. A budget
+  /// may grow but never shrink, so "Show more" cannot appear on a message the
+  /// reader already read in full.
+  @State var assistantBudgetFloors: [String: Int] = [:]
+  /// Messages the reader expanded. They read from the top from then on, so a
+  /// tap does not swap the visible slice for the other end of the message.
+  @State var assistantHeadAnchorOverrides: Set<String> = []
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
@@ -833,6 +840,7 @@ struct WorkChatSessionView: View {
       if case .toolGroup = entry.payload { return false }
       return true
     }
+    var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: presentedTimeline,
       visibleCount: visibleTimelineCount,
@@ -840,6 +848,8 @@ struct WorkChatSessionView: View {
       transcript: transcript,
       assistantPreviewCache: assistantPreviewCache,
       assistantLineBudgets: assistantLineBudgets,
+      assistantBudgetFloors: &budgetFloors,
+      assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
       streamingAssistantMessageId: streamingAssistantMessageId
     )
     let timelineDelta = nextPresentation.timelineCount - timelinePresentation.timelineCount
@@ -862,8 +872,13 @@ struct WorkChatSessionView: View {
         transcript: transcript,
         assistantPreviewCache: assistantPreviewCache,
         assistantLineBudgets: assistantLineBudgets,
+        assistantBudgetFloors: &budgetFloors,
+        assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
         streamingAssistantMessageId: streamingAssistantMessageId
       )
+    }
+    if budgetFloors != assistantBudgetFloors {
+      assistantBudgetFloors = budgetFloors
     }
     guard nextPresentation != timelinePresentation else { return }
     armPrependAnchorIfRowsInsertedAbove(nextPresentation)
@@ -1751,6 +1766,8 @@ struct WorkChatSessionView: View {
           optimisticallyAnsweredInputIds.removeAll()
           collapsedPendingInputId = nil
           assistantLineBudgets.removeAll()
+          assistantBudgetFloors.removeAll()
+          assistantHeadAnchorOverrides.removeAll()
           composerSettingMutationInFlight = false
           composerSettingMutationGeneration &+= 1
           resetScrollStateForCurrentSession(reason: "session-change")
@@ -2185,6 +2202,8 @@ private func makeWorkTimelinePresentation(
   transcript: [WorkChatEnvelope],
   assistantPreviewCache: WorkAssistantPreviewCache,
   assistantLineBudgets: [String: Int],
+  assistantBudgetFloors: inout [String: Int],
+  assistantHeadAnchorOverrides: Set<String>,
   streamingAssistantMessageId: String?
 ) -> WorkTimelinePresentation {
   let rawVisibleEntries = visibleWorkTimelineEntries(from: timeline, visibleCount: visibleCount)
@@ -2195,17 +2214,22 @@ private func makeWorkTimelinePresentation(
     modelId: chatSummary.modelId,
     transcript: transcript
   )
+  var resolvedLineBudgets: [String: Int] = [:]
   let visibleEntries = workTimelineEntriesWithAssistantPreviews(
     visibleEntriesWithSeparators,
     cache: assistantPreviewCache,
     assistantLineBudgets: assistantLineBudgets,
+    assistantBudgetFloors: &assistantBudgetFloors,
+    assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
+    resolvedLineBudgets: &resolvedLineBudgets,
     tailAnchoredAssistantMessageId: workLatestAssistantMessageId(in: timeline)
   )
   let renderEntries = workTimelineRenderEntries(
     from: visibleEntries,
     streamingAssistantMessageId: streamingAssistantMessageId,
     splitAssistantMessageId: workLatestAssistantMessageId(in: timeline),
-    assistantLineBudgets: assistantLineBudgets
+    assistantLineBudgets: assistantLineBudgets,
+    resolvedAssistantLineBudgets: resolvedLineBudgets
   )
   let hiddenCount = max(timeline.count - rawVisibleEntries.count, 0)
   return WorkTimelinePresentation(
@@ -2268,24 +2292,38 @@ private func workTimelinePresentationSignature(
         hasher.combine(message.unprocessedResolution?.action)
         hasher.combine(message.unprocessedResolution?.state)
         hasher.combine(message.unprocessedResolution?.resolvedAt)
-        workTimelineCombineTextSignature(message.markdown, into: &hasher)
+        workTimelineCombineMessageTextSignature(message, into: &hasher)
         if let preview = message.assistantPreview {
-          workTimelineCombineTextSignature(preview.text, into: &hasher)
+          // A preview is a pure function of (message text, anchor, budget), and
+          // the text is already in this hash. Its shape is enough to separate
+          // two previews of the same message — no need to hash the slice, which
+          // is O(message) on every refresh.
           hasher.combine(preview.isTruncated)
+          hasher.combine(preview.anchor)
           hasher.combine(preview.visibleLineCount)
           hasher.combine(preview.totalLineCount)
+          hasher.combine(preview.visibleCharacterCount)
+          hasher.combine(preview.usesMonospacedRendering)
         }
       }
     case .assistantMarkdownBlock(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
       hasher.combine(model.block.id)
-      workTimelineCombineTextSignature(model.block.kind.cacheKey, into: &hasher)
+      // The block's own precomputed digest, not a rebuilt `kind.cacheKey`:
+      // building that key allocates a full copy of the block's text, once per
+      // block, on every presentation refresh.
+      hasher.combine(model.block.digest)
+      hasher.combine(model.isStreamingTail)
     case .assistantMonospaced(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
-      workTimelineCombineTextSignature(model.text, into: &hasher)
-      workTimelineCombineTextSignature(model.accessibilityLabel, into: &hasher)
+      // Digest of the source message plus the size of the slice taken from it:
+      // together these change whenever the rendered text does, without hashing
+      // the (potentially very long) slice itself.
+      hasher.combine(model.sourceDigest)
+      hasher.combine(model.text.utf8.count)
+      hasher.combine(model.accessibilityLabel)
     case .assistantControls(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
@@ -2304,10 +2342,63 @@ private func workTimelineCombineTextSignature(_ text: String, into hasher: inout
   hasher.combine(text.hashValue)
 }
 
+/// Prefers the digest the snapshot fold stamped on the message; only messages
+/// built outside the fold pay to hash their text here.
+private func workTimelineCombineMessageTextSignature(_ message: WorkChatMessage, into hasher: inout Hasher) {
+  hasher.combine(message.markdown.utf8.count)
+  if let digest = message.markdownDigest {
+    hasher.combine(digest)
+  } else {
+    hasher.combine(message.markdown.hashValue)
+  }
+}
+
+/// What a message renders under this pass: how much of it, and from which end.
+struct WorkAssistantRenderBudget: Equatable {
+  let lineBudget: Int
+  let anchor: WorkAssistantMessagePreviewAnchor
+}
+
+/// The budget rule, as one pure decision.
+///
+/// The contract it enforces is that a budget never shrinks. The newest assistant
+/// message renders tail-anchored under a generous budget so a finishing turn is
+/// readable in place; the moment a newer message arrives it becomes head-
+/// anchored, and *that* used to drop it back to the 48-line budget — so a
+/// message the reader had just read in full grew a "Show more" behind their
+/// back. The budget it already rendered under becomes its floor instead.
+///
+/// - Parameters:
+///   - userLineBudget: what "Show more" has asked for, nil if untouched.
+///   - floorLineBudget: the largest budget this message has already rendered under.
+///   - isTail: this is the newest assistant message in the timeline.
+///   - headAnchorOverride: the reader expanded this message, so it reads from
+///     the top from now on even while it is still the tail.
+///   - tailCanRenderFull: the whole message fits within the tail-full budgets.
+func workAssistantRenderBudget(
+  userLineBudget: Int?,
+  floorLineBudget: Int?,
+  isTail: Bool,
+  headAnchorOverride: Bool,
+  tailCanRenderFull: Bool
+) -> WorkAssistantRenderBudget {
+  var floor = max(floorLineBudget ?? 0, workAssistantMessageInitialLineBudget)
+  if isTail, tailCanRenderFull {
+    floor = max(floor, workAssistantMessageTailFullLineBudget)
+  }
+  return WorkAssistantRenderBudget(
+    lineBudget: max(userLineBudget ?? 0, floor),
+    anchor: (isTail && !headAnchorOverride) ? .tail : .head
+  )
+}
+
 private func workTimelineEntriesWithAssistantPreviews(
   _ entries: [WorkTimelineEntry],
   cache: WorkAssistantPreviewCache,
   assistantLineBudgets: [String: Int],
+  assistantBudgetFloors: inout [String: Int],
+  assistantHeadAnchorOverrides: Set<String>,
+  resolvedLineBudgets: inout [String: Int],
   tailAnchoredAssistantMessageId: String?
 ) -> [WorkTimelineEntry] {
   var visibleAssistantMessageIds = Set<String>()
@@ -2317,26 +2408,36 @@ private func workTimelineEntriesWithAssistantPreviews(
     else { return entry }
 
     visibleAssistantMessageIds.insert(message.id)
-    let previewAnchor: WorkAssistantMessagePreviewAnchor = message.id == tailAnchoredAssistantMessageId ? .tail : .head
-    let baselinePreview = cache.preview(for: message, anchor: previewAnchor)
-    let tailCanRenderFull = previewAnchor == .tail
+    let isTail = message.id == tailAnchoredAssistantMessageId
+    let headAnchorOverride = assistantHeadAnchorOverrides.contains(message.id)
+    let baselineAnchor: WorkAssistantMessagePreviewAnchor = (isTail && !headAnchorOverride) ? .tail : .head
+    let baselinePreview = cache.preview(for: message, anchor: baselineAnchor)
+    let tailCanRenderFull = baselineAnchor == .tail
       && !baselinePreview.usesMonospacedRendering
       && baselinePreview.totalLineCount <= workAssistantMessageTailFullLineBudget
       && baselinePreview.totalCharacterCount <= workAssistantMessageTailFullCharacterBudget
-    let lineBudget = assistantLineBudgets[message.id]
-      ?? (tailCanRenderFull ? workAssistantMessageTailFullLineBudget : workAssistantMessageInitialLineBudget)
-    let characterBudget = workAssistantMessageCharacterBudget(
-      forLineBudget: lineBudget,
-      tailCanRenderFull: tailCanRenderFull && assistantLineBudgets[message.id] == nil
+    let budget = workAssistantRenderBudget(
+      userLineBudget: assistantLineBudgets[message.id],
+      floorLineBudget: assistantBudgetFloors[message.id],
+      isTail: isTail,
+      headAnchorOverride: headAnchorOverride,
+      tailCanRenderFull: tailCanRenderFull
     )
-    if lineBudget == workAssistantMessageInitialLineBudget {
+    // Persist the floor so the flip to head-anchoring cannot take back what the
+    // reader could already see.
+    if budget.lineBudget > (assistantBudgetFloors[message.id] ?? 0) {
+      assistantBudgetFloors[message.id] = budget.lineBudget
+    }
+    resolvedLineBudgets[message.id] = budget.lineBudget
+
+    if budget.lineBudget == workAssistantMessageInitialLineBudget, budget.anchor == baselineAnchor {
       message.assistantPreview = baselinePreview
     } else {
-      message.assistantPreview = workAssistantMessagePreview(
-        message.markdown,
-        lineBudget: lineBudget,
-        characterBudget: characterBudget,
-        anchor: previewAnchor,
+      message.assistantPreview = cache.preview(
+        for: message,
+        anchor: budget.anchor,
+        lineBudget: budget.lineBudget,
+        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: budget.lineBudget),
         classification: baselinePreview.usesMonospacedRendering
       )
     }
@@ -2348,6 +2449,10 @@ private func workTimelineEntriesWithAssistantPreviews(
     )
   }
   cache.prune(keeping: visibleAssistantMessageIds)
+  // Floors are deliberately NOT pruned with the preview cache. A message that
+  // leaves the paged window and is revealed again by scroll-back must come back
+  // rendered the way the reader last saw it. The map holds one small entry per
+  // assistant message seen in this session and is dropped on session change.
   return hydratedEntries
 }
 
@@ -2365,7 +2470,11 @@ func workTimelineRenderEntries(
   from entries: [WorkTimelineEntry],
   streamingAssistantMessageId: String?,
   splitAssistantMessageId: String? = nil,
-  assistantLineBudgets: [String: Int] = [:]
+  assistantLineBudgets: [String: Int] = [:],
+  /// Budget each message actually rendered under, after floors were applied.
+  /// "Show more" has to step from this, not from the raw request, or the first
+  /// tap on a message held at a floor would step backwards.
+  resolvedAssistantLineBudgets: [String: Int] = [:]
 ) -> [WorkTimelineRenderEntry] {
   var rendered: [WorkTimelineRenderEntry] = []
   rendered.reserveCapacity(entries.count)
@@ -2398,7 +2507,10 @@ func workTimelineRenderEntries(
       continue
     }
 
-    let requestedLineBudget = assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
+    let requestedLineBudget = max(
+      resolvedAssistantLineBudgets[message.id] ?? 0,
+      assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
+    )
     // One bounded step per tap, with no ceiling. A 1000-line answer is reached
     // by tapping "Show more" until it is all here; the reader is never left
     // with a truncated message and no way to see the rest.
@@ -2415,7 +2527,8 @@ func workTimelineRenderEntries(
         turnId: message.turnId,
         itemId: message.itemId,
         text: preview.text,
-        accessibilityLabel: accessibilityLabel
+        accessibilityLabel: accessibilityLabel,
+        sourceDigest: message.markdownDigest ?? ""
       )
       rendered.append(WorkTimelineRenderEntry(
         id: model.id,
