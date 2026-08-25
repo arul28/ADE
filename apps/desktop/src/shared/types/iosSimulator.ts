@@ -14,9 +14,50 @@ export type IosSimulatorToolStatus = {
 };
 
 export const IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE = "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION" as const;
+/** A stored target id points at a project/app bundle that is not under the resolved build root. */
+export const IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE = "IOS_SIMULATOR_TARGET_ROOT_MISMATCH" as const;
+/** A second launch arrived while one was still running. */
+export const IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE = "IOS_SIMULATOR_LAUNCH_IN_PROGRESS" as const;
+/** Only a previously installed app resolved, and the caller did not ask for it by name. */
+export const IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE = "IOS_SIMULATOR_NO_BUILDABLE_TARGET" as const;
+/**
+ * A laneId was supplied but no worktree could be resolved for it. Silently
+ * falling back to the primary checkout is how a lane agent builds, screenshots,
+ * and "verifies" code it never wrote.
+ */
+export const IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE = "IOS_SIMULATOR_LANE_NOT_RESOLVED" as const;
+/** An `--out` path escaped the resolved build root. */
+export const IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE = "IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT" as const;
 
 export type IosSimulatorShutdownArgs = {
+  /**
+   * Who is asking. Shutdown enforces the same single-owner rule as `launch`:
+   * a caller that is not the owning chat — including an anonymous caller that
+   * names no chat at all — is refused with
+   * `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` unless it passes `force`. Without
+   * this field the service could not tell chat A's own stop apart from chat
+   * B's, so any chat following its skill instructions killed whichever session
+   * happened to be running.
+   */
+  chatSessionId?: string | null;
   force?: boolean | null;
+  /**
+   * Stop for whoever is running, without claiming to be them.
+   *
+   * ADE's lane-scoped simulator surface deliberately drives whatever session
+   * its lane is running and hides the ownership card, so the guard has to step
+   * aside for it. It used to do that by reading the owner's id off `getStatus`
+   * and replaying it as `chatSessionId` — a caller impersonating the owner,
+   * which is both a lie in the logs and a pattern any other caller can copy.
+   * This says what is actually meant, and unlike `force` it asks for nothing
+   * else: no companion sweep, no launch-lock reset.
+   *
+   * It is intent, not permission. The single-owner rule is cooperative — see
+   * `docs/features/ios-simulator/README.md` — and exists to stop one chat
+   * tearing down another's session by accident, not to make a session
+   * un-evictable.
+   */
+  ignoreOwnership?: boolean | null;
 };
 
 export type IosSimulatorShutdownResult = {
@@ -68,11 +109,30 @@ export type IosSimulatorLaunchTarget = {
 export type IosSimulatorListLaunchTargetsArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  /**
+   * Lane the caller is working in. When no explicit `projectRoot` is given the
+   * service resolves this lane's worktree and uses it as the build root, so an
+   * agent running in a lane never builds the primary checkout by accident.
+   */
+  laneId?: string | null;
 };
 
 export type IosSimulatorClaimArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /**
+   * Take a session another chat owns, deliberately.
+   *
+   * Claim rewrites `activeSession.chatSessionId`, so without a guard it was the
+   * cheapest eviction path of all: any chat could name itself the owner and
+   * then issue a plain `shutdown`, which the single-owner rule would accept.
+   * The same cooperative guard `shutdown` uses now applies here, and this is
+   * how a caller says it means to take over. Re-attributing the *lane* alone
+   * never trips it — that leaves the owning chat exactly where it was.
+   */
+  ignoreOwnership?: boolean | null;
+  /** Same bypass as `ignoreOwnership`, spelled the way `launch`/`shutdown` spell it. */
+  force?: boolean | null;
 };
 
 export type IosSimulatorLaunchArgs = {
@@ -91,6 +151,19 @@ export type IosSimulatorLaunchArgs = {
   force?: boolean | null;
   environment?: Record<string, string> | null;
   arguments?: string[] | null;
+  /**
+   * Ask the desktop shell to open the iOS simulator drawer for this launch.
+   * Defaults to false: agent launches must not steal the user's screen. The
+   * drawer passes true for its own launches.
+   */
+  openDrawer?: boolean | null;
+};
+
+export type IosSimulatorCapabilities = {
+  canTap: boolean;
+  canType: boolean;
+  canDrag: boolean;
+  canInspect: boolean;
 };
 
 export type IosSimulatorSession = {
@@ -109,11 +182,37 @@ export type IosSimulatorSession = {
   bridgeUrl: string | null;
   startedAt: string;
   claimedAt: string | null;
+  /**
+   * Absolute directory xcodebuild ran in. Equals the lane worktree for lane
+   * launches. Optional on the session because a session restored from an older
+   * shape (or observed before a launch completed) has never carried one; the
+   * launch result below narrows it to a required string.
+   */
+  buildRoot?: string | null;
+  /** True when nothing was rebuilt, so the running app can predate the caller's code changes. */
+  usedInstalledBinary?: boolean | null;
+};
+
+export type IosSimulatorLaunchResult = IosSimulatorSession & {
+  buildRoot: string;
+  usedInstalledBinary: boolean;
+  /** Launch-only: what the resolved input backend can drive right now. */
+  capabilities: IosSimulatorCapabilities;
+};
+
+export type IosSimulatorScreenshotArgs = {
+  deviceUdid?: string | null;
+  projectRoot?: string | null;
+  laneId?: string | null;
+  /** Where to write the PNG. Relative paths resolve against the build root. */
+  outPath?: string | null;
 };
 
 export type IosSimulatorScreenshot = {
   deviceUdid: string;
   dataUrl: string;
+  /** Absolute path of the written PNG. Agents read this instead of the data URL. */
+  filePath: string;
   width: number | null;
   height: number | null;
   capturedAt: string;
@@ -126,9 +225,15 @@ export type IosSimulatorStreamStatus = {
   requestedBackend?: IosSimulatorStreamBackend | null;
   fallbackReason?: string | null;
   degradationReason?: string | null;
+  /**
+   * Measured frame rate. The service never measures frames — the renderer owns
+   * the Simulator.app window capture — so this stays null service-side instead
+   * of reporting a number nobody counted.
+   */
   fps: number | null;
   targetFps: number | null;
-  frameCount: number;
+  /** Null service-side for the same reason as `fps`. */
+  frameCount: number | null;
   startedAt: string | null;
   lastFrameAt: string | null;
   lastError: string | null;
@@ -158,6 +263,26 @@ export type IosSimulatorWindowIssue =
   | "hidden"
   | "minimized"
   | "no-window"
+  | "screen-recording-permission"
+  | "automation-denied"
+  | "unknown";
+
+/**
+ * Live-view capture of the real Simulator window depends on two macOS privacy
+ * grants that the app cannot see through `simctl`: Screen Recording (or
+ * `desktopCapturer` hands back black thumbnails) and Automation/System Events
+ * (or every window query and park silently no-ops). Both used to surface as
+ * `issue: "unknown"` with a null message, so the drawer showed a blank live
+ * view and named no blocker — hence the two dedicated `IosSimulatorWindowIssue`
+ * members above, which the overlay turns into an "Open Settings" affordance.
+ */
+export type IosSimulatorPrivacyPane = "screen-recording" | "automation";
+
+export type IosSimulatorPermissionStatus =
+  | "not-determined"
+  | "granted"
+  | "denied"
+  | "restricted"
   | "unknown";
 
 export type IosSimulatorWindowState = {
@@ -167,6 +292,24 @@ export type IosSimulatorWindowState = {
   minimizedWindowCount: number | null;
   capturable: boolean | null;
   issue: IosSimulatorWindowIssue | null;
+  message: string | null;
+};
+
+/**
+ * The window-parking path runs in Electron main, whose own iOS simulator
+ * service never sees a launch that the brain daemon owns — its `activeSession`
+ * is always null. Callers that already hold the runtime session pass it here so
+ * parking keys off the session that actually exists.
+ */
+export type IosSimulatorWindowCaptureSessionHint = {
+  deviceUdid: string;
+  deviceName: string | null;
+};
+
+export type IosSimulatorWindowSourcesResult = {
+  sources: IosSimulatorWindowSource[];
+  windowState: IosSimulatorWindowState | null;
+  /** Short, actionable blocker text. Null when `sources` is non-empty. */
   message: string | null;
 };
 
@@ -223,6 +366,7 @@ export type IosSimulatorPreviewMatch = {
 
 export type IosSimulatorListPreviewsArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
   sourceFile?: string | null;
   sourceLine?: number | null;
   elementLabel?: string | null;
@@ -231,6 +375,7 @@ export type IosSimulatorListPreviewsArgs = {
 
 export type IosSimulatorEnsurePreviewWorkspaceArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
   sourceFile?: string | null;
   sourceLine?: number | null;
   openIfNeeded?: boolean | null;
@@ -247,6 +392,7 @@ export type IosSimulatorEnsurePreviewWorkspaceResult = {
 
 export type IosSimulatorRenderPreviewArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
   sourceFilePath: string;
   previewDefinitionIndexInFile?: number | null;
   tabIdentifier?: string | null;
@@ -285,6 +431,7 @@ export type IosSimulatorRenderCurrentPreviewResult = {
 
 export type IosSimulatorOpenPreviewWorkspaceArgs = {
   projectRoot?: string | null;
+  laneId?: string | null;
 };
 
 export type IosSimulatorStartStreamArgs = {
@@ -321,21 +468,35 @@ export type IosSimulatorLaunchProgress = {
   status: IosSimulatorLaunchStepStatus;
   message: string;
   detail?: string | null;
+  /**
+   * Who owns this launch. These events broadcast project-wide, so a second
+   * drawer in the same project sees every other chat's steps — including
+   * another lane's build root. Drawers drop progress stamped for a chat or lane
+   * that is not theirs; unstamped progress is still accepted so an older host
+   * keeps working.
+   */
+  chatSessionId?: string | null;
+  laneId?: string | null;
   deviceUdid?: string | null;
   targetId?: string | null;
+  /**
+   * Absolute build root for the `build-app` step. Carried as data so the
+   * stepper UI never has to parse it back out of `message`/`detail` prose.
+   */
+  buildRoot?: string | null;
   updatedAt: string;
 };
 
 export type IosSimulatorPoint = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   x: number;
   y: number;
 };
 
 export type IosSimulatorDragArgs = {
   deviceUdid?: string | null;
-  projectRoot?: string | null;
   startX: number;
   startY: number;
   endX: number;
@@ -421,6 +582,7 @@ export type IosScreenSnapshotProvider = {
 export type IosScreenSnapshotArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   x?: number | null;
   y?: number | null;
 };
@@ -439,6 +601,7 @@ export type IosScreenSnapshot = {
 export type IosSimulatorInspectPointArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   x: number;
   y: number;
   includeScreenshot?: boolean | null;

@@ -218,7 +218,6 @@ import type {
   SyncProjectSwitchResultPayload,
   UpdateInstallImpact,
 } from "../shared/types";
-import type { IosSimulatorDrawerMode } from "../shared/types/iosSimulator";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -4307,103 +4306,30 @@ app.whenReady().then(async () => {
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
+      // Lane-scoped calls build the lane's worktree, not the primary checkout.
+      resolveLaneWorktreePath: (laneId: string): string | null => {
+        try {
+          return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return null;
+        }
+      },
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
     });
-    const iosSimulatorDrawerActionModes: Partial<Record<string, IosSimulatorDrawerMode>> = {
-      inspectPoint: "inspect",
-      launch: "interact",
-      openPreviewWorkspace: "preview",
-      renderCurrentPreview: "preview",
-      renderPreview: "preview",
-      selectPoint: "inspect",
-      startStream: "interact",
-      tap: "interact",
-      typeText: "interact",
-      drag: "interact",
-      swipe: "interact",
-    };
-    const requestIosSimulatorDrawerOpen = (
-      action: keyof typeof iosSimulatorDrawerActionModes,
-      rawArgs: unknown,
-      result?: unknown,
-    ): void => {
-      const mode = iosSimulatorDrawerActionModes[action];
-      if (!mode) return;
-      const argRecord = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
-        ? rawArgs as Record<string, unknown>
-        : null;
-      const resultRecord = result && typeof result === "object" && !Array.isArray(result)
-        ? result as Record<string, unknown>
-        : null;
-      const chatSessionId = readString(argRecord, "chatSessionId") ?? readString(resultRecord, "chatSessionId") ?? null;
-      const laneId = readString(argRecord, "laneId") ?? readString(resultRecord, "laneId") ?? null;
-      emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, {
-        type: "drawer-open-requested",
-        action,
-        mode,
-        chatSessionId,
-        laneId,
+    agentChatService.registerChatSessionEndedListener((sessionId) => {
+      void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
+        logger.debug("ios_simulator.release_on_chat_end_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    };
-    const iosSimulatorRpcService = {
-      ...iosSimulatorService,
-      inspectPoint: async (arg: Parameters<typeof iosSimulatorService.inspectPoint>[0]) => {
-        const result = await iosSimulatorService.inspectPoint(arg);
-        requestIosSimulatorDrawerOpen("inspectPoint", arg, result);
-        return result;
-      },
-      launch: async (arg?: Parameters<typeof iosSimulatorService.launch>[0]) => {
-        const result = await iosSimulatorService.launch(arg);
-        requestIosSimulatorDrawerOpen("launch", arg, result);
-        return result;
-      },
-      openPreviewWorkspace: async (arg?: Parameters<typeof iosSimulatorService.openPreviewWorkspace>[0]) => {
-        const result = await iosSimulatorService.openPreviewWorkspace(arg);
-        requestIosSimulatorDrawerOpen("openPreviewWorkspace", arg, result);
-        return result;
-      },
-      renderPreview: async (arg: Parameters<typeof iosSimulatorService.renderPreview>[0]) => {
-        const result = await iosSimulatorService.renderPreview(arg);
-        requestIosSimulatorDrawerOpen("renderPreview", arg, result);
-        return result;
-      },
-      renderCurrentPreview: async (arg?: Parameters<typeof iosSimulatorService.renderCurrentPreview>[0]) => {
-        const result = await iosSimulatorService.renderCurrentPreview(arg);
-        requestIosSimulatorDrawerOpen("renderCurrentPreview", arg, result);
-        return result;
-      },
-      selectPoint: async (arg: Parameters<typeof iosSimulatorService.selectPoint>[0]) => {
-        const result = await iosSimulatorService.selectPoint(arg);
-        requestIosSimulatorDrawerOpen("selectPoint", arg, result);
-        return result;
-      },
-      startStream: async (arg?: Parameters<typeof iosSimulatorService.startStream>[0]) => {
-        const result = await iosSimulatorService.startStream(arg);
-        requestIosSimulatorDrawerOpen("startStream", arg, result);
-        return result;
-      },
-      tap: async (arg: Parameters<typeof iosSimulatorService.tap>[0]) => {
-        const result = await iosSimulatorService.tap(arg);
-        requestIosSimulatorDrawerOpen("tap", arg, result);
-        return result;
-      },
-      typeText: async (arg: Parameters<typeof iosSimulatorService.typeText>[0]) => {
-        const result = await iosSimulatorService.typeText(arg);
-        requestIosSimulatorDrawerOpen("typeText", arg, result);
-        return result;
-      },
-      drag: async (arg: Parameters<typeof iosSimulatorService.drag>[0]) => {
-        const result = await iosSimulatorService.drag(arg);
-        requestIosSimulatorDrawerOpen("drag", arg, result);
-        return result;
-      },
-      swipe: async (arg: Parameters<typeof iosSimulatorService.swipe>[0]) => {
-        const result = await iosSimulatorService.swipe(arg);
-        requestIosSimulatorDrawerOpen("swipe", arg, result);
-        return result;
-      },
-    };
+    });
+    // `drawer-open-requested` is emitted by the service itself, not wrapped on
+    // here: production launches go to the brain daemon, which has no wrapper, so
+    // a wrapper-only emitter made `--open-drawer` and an agent's inspect/select
+    // reveal inert on the path agents actually use. Both hosts feed the same
+    // renderer subscriber, so wrapping here as well would double-open.
     const appControlService = createAppControlService({
       projectRoot,
       logger,
@@ -4930,7 +4856,7 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       computerUseArtifactBrokerService,
-      iosSimulatorService: iosSimulatorRpcService,
+      iosSimulatorService,
       appControlService,
       builtInBrowserService,
       syncHostService: syncService.getHostService(),

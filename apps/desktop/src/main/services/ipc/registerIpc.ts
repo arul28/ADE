@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -103,7 +103,6 @@ import type {
   IosSimulatorSession,
   IosSimulatorStatus,
   IosSimulatorToolStatus,
-  IosSimulatorWindowState,
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
@@ -115,7 +114,25 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  IosSimulatorPrivacyPane,
+  IosSimulatorWindowSourcesResult,
 } from "../../../shared/types";
+import {
+  activeSimulatorParkingWindow,
+  attachSimulatorWindowForCapture,
+  ensureSimulatorWindowCapturable,
+  followSimulatorWindowUnderAde,
+  getSimulatorWindowState,
+  listSimulatorWindowSources,
+  openSimulatorPrivacyPane,
+  readSimulatorSessionHint,
+  reattachSimulatorWindowForCapture,
+  releaseSimulatorParkingFollowAfter,
+  releaseSimulatorParkingHolder,
+  retainSimulatorParkingFollow,
+  revealSimulatorWindow,
+  SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS,
+} from "../ios/simulatorWindowCapture";
 import {
   readGitOriginUrl,
   toShallowRecentProjectSummary,
@@ -8592,241 +8609,24 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorListLaunchTargets, async (_event, arg = {}) =>
     ensureIosSimulator().listLaunchTargets(arg));
 
-  const simulatorWindowName = /(?:^|\s|[(\[\-–])(simulator|iphone|ipad|apple\s*watch|apple\s*tv|vision\s*pro)(?:\s|[)\]\-–]|$)/i;
-  const runMacUtility = async (command: string, args: string[], timeoutMs = 900) => {
-    await new Promise<void>((resolve) => {
-      const child = spawn(command, args, { stdio: "ignore", windowsHide: true });
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        child.removeAllListeners("error");
-        child.removeAllListeners("exit");
-        resolve();
-      };
-      const timeout = setTimeout(() => {
-        try { child.kill("SIGTERM"); } catch { /* already gone */ }
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 250);
-        finish();
-      }, timeoutMs);
-      child.once("error", finish);
-      child.once("exit", finish);
-    });
-  };
-  const runMacUtilityText = async (command: string, args: string[], timeoutMs = 900): Promise<string> => {
-    return new Promise<string>((resolve, reject) => {
-      const child = spawn(command, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      let stdout = "";
-      let stderr = "";
-      const timeout = setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error(`${command} timed out.`));
-      }, timeoutMs);
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-      child.once("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.once("exit", (code) => {
-        clearTimeout(timeout);
-        if (code === 0) {
-          resolve(stdout.trim());
-          return;
-        }
-        reject(new Error(stderr.trim() || `${command} exited with code ${code ?? "unknown"}.`));
-      });
-    });
-  };
-  const windowIssueMessage = (issue: IosSimulatorWindowState["issue"]): string | null => {
-    switch (issue) {
-      case "not-running":
-        return "The simulator is not running. Launch it from ADE again.";
-      case "hidden":
-        return "The simulator is hidden. Show it to refresh the live view.";
-      case "minimized":
-        return "The simulator is minimized. Restore it to refresh the live view.";
-      case "no-window":
-        return "The simulator is running, but ADE cannot find a visible simulator window.";
-      default:
-        return null;
-    }
-  };
-  const getSimulatorWindowState = async (): Promise<IosSimulatorWindowState> => {
-    if (process.platform !== "darwin") {
-      return {
-        appRunning: false,
-        visible: null,
-        windowCount: null,
-        minimizedWindowCount: null,
-        capturable: false,
-        issue: "unknown",
-        message: null,
-      };
-    }
-    const script = [
-      'tell application "System Events"',
-      '  if not (exists process "Simulator") then return "not-running|false|0|0"',
-      '  tell process "Simulator"',
-      '    set processVisible to visible',
-      '    set windowCount to count windows',
-      '    set minimizedCount to 0',
-      '    repeat with simulatorWindow in windows',
-      '      try',
-      '        if value of attribute "AXMinimized" of simulatorWindow then set minimizedCount to minimizedCount + 1',
-      '      end try',
-      '    end repeat',
-      '    return (processVisible as text) & "|" & (windowCount as text) & "|" & (minimizedCount as text)',
-      '  end tell',
-      'end tell',
-    ].join("\n");
-    try {
-      const raw = await runMacUtilityText("osascript", ["-e", script], 900);
-      if (raw.startsWith("not-running")) {
-        const issue: IosSimulatorWindowState["issue"] = "not-running";
-        return {
-          appRunning: false,
-          visible: false,
-          windowCount: 0,
-          minimizedWindowCount: 0,
-          capturable: false,
-          issue,
-          message: windowIssueMessage(issue),
-        };
-      }
-      const [visibleRaw, windowCountRaw, minimizedCountRaw] = raw.split("|");
-      const visible = visibleRaw === "true";
-      const windowCount = Number.parseInt(windowCountRaw ?? "", 10);
-      const minimizedWindowCount = Number.parseInt(minimizedCountRaw ?? "", 10);
-      const hasWindows = Number.isFinite(windowCount) && windowCount > 0;
-      const allWindowsMinimized = hasWindows && Number.isFinite(minimizedWindowCount) && minimizedWindowCount >= windowCount;
-      const issue: IosSimulatorWindowState["issue"] = !visible
-        ? "hidden"
-        : !hasWindows
-          ? "no-window"
-          : allWindowsMinimized
-            ? "minimized"
-            : null;
-      return {
-        appRunning: true,
-        visible,
-        windowCount: Number.isFinite(windowCount) ? windowCount : null,
-        minimizedWindowCount: Number.isFinite(minimizedWindowCount) ? minimizedWindowCount : null,
-        capturable: issue === null,
-        issue,
-        message: windowIssueMessage(issue),
-      };
-    } catch {
-      return {
-        appRunning: true,
-        visible: null,
-        windowCount: null,
-        minimizedWindowCount: null,
-        capturable: null,
-        issue: "unknown",
-        message: null,
-      };
-    }
-  };
-  const focusBrowserWindow = (window: BrowserWindow | null) => {
-    if (!window) return;
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
-  };
-  const prepareSimulatorWindowForCapture = async (window: BrowserWindow | null, options: { placeBehindAde?: boolean } = {}) => {
-    await runMacUtility("open", ["-g", "-a", "Simulator"], 900);
-    const bounds = options.placeBehindAde && window ? window.getBounds() : null;
-    const targetWidth = bounds ? Math.max(300, Math.min(440, Math.round(bounds.width * 0.34))) : 0;
-    const targetHeight = bounds ? Math.max(520, Math.min(860, bounds.height - 120)) : 0;
-    // Park the real Simulator window under ADE, but away from the drawer.
-    // Window capture needs the window to stay unminimized; placing it under
-    // the left side avoids capturing the user's cursor while they interact
-    // with the simulator surface on the right.
-    const targetX = bounds ? Math.round(bounds.x + Math.max(64, Math.min(140, bounds.width * 0.08))) : 0;
-    const targetY = bounds ? Math.round(bounds.y + 72) : 0;
-    const script = [
-      'tell application "System Events"',
-      '  if exists process "Simulator" then',
-      '    tell process "Simulator"',
-      '      set visible to true',
-      '      repeat with simulatorWindow in windows',
-      '        try',
-      '          set value of attribute "AXMinimized" of simulatorWindow to false',
-      '        end try',
-      bounds
-        ? [
-            '        try',
-            `          set position of simulatorWindow to {${targetX}, ${targetY}}`,
-            `          set size of simulatorWindow to {${Math.round(targetWidth)}, ${Math.round(targetHeight)}}`,
-            '        end try',
-          ].join("\n")
-        : "",
-      '      end repeat',
-      '    end tell',
-      '  end if',
-      'end tell',
-    ].filter(Boolean).join("\n");
-    await runMacUtility("osascript", ["-e", script], 1_200);
-    focusBrowserWindow(window);
-  };
-  let simulatorParkingWindow: BrowserWindow | null = null;
-  let simulatorParkingTimer: NodeJS.Timeout | null = null;
-  let cleanupSimulatorParkingFollow: (() => void) | null = null;
-  const scheduleSimulatorParking = (window: BrowserWindow) => {
-    if (simulatorParkingTimer) clearTimeout(simulatorParkingTimer);
-    simulatorParkingTimer = setTimeout(() => {
-      simulatorParkingTimer = null;
-      if (window.isDestroyed()) return;
-      void prepareSimulatorWindowForCapture(window, { placeBehindAde: true }).catch(() => {});
-    }, 120);
-  };
-  const followSimulatorWindowUnderAde = (window: BrowserWindow | null) => {
-    if (!window || window.isDestroyed()) return;
-    if (simulatorParkingWindow === window) {
-      return;
-    }
-    cleanupSimulatorParkingFollow?.();
-    simulatorParkingWindow = window;
-    const onBoundsChanged = () => scheduleSimulatorParking(window);
-    const onClosed = () => {
-      cleanupSimulatorParkingFollow?.();
-    };
-    window.on("move", onBoundsChanged);
-    window.on("resize", onBoundsChanged);
-    window.once("closed", onClosed);
-    cleanupSimulatorParkingFollow = () => {
-      if (simulatorParkingTimer) {
-        clearTimeout(simulatorParkingTimer);
-        simulatorParkingTimer = null;
-      }
-      if (!window.isDestroyed()) {
-        window.off("move", onBoundsChanged);
-        window.off("resize", onBoundsChanged);
-        window.off("closed", onClosed);
-      }
-      if (simulatorParkingWindow === window) simulatorParkingWindow = null;
-      cleanupSimulatorParkingFollow = null;
-    };
-  };
-  const activeSimulatorParkingWindow = (): BrowserWindow | null => {
-    if (!simulatorParkingWindow || simulatorParkingWindow.isDestroyed()) return null;
-    return simulatorParkingWindow;
-  };
+  // One Simulator.app, many ADE windows: whichever window claims it first owns
+  // the parking follow until it releases or is forced out. Everything the claim
+  // then does to the window lives in `../ios/simulatorWindowCapture`.
   const claimSimulatorParkingWindow = (
     window: BrowserWindow | null,
     options: { force?: boolean } = {},
   ): BrowserWindow | null => {
     const current = activeSimulatorParkingWindow();
     if (current && !options.force) {
+      // There is one Simulator window and many ADE windows. Losing the claim is
+      // silent to the user, so at least say so in the log when a second window
+      // asks for a simulator that is already parked against another.
+      if (current !== window && window && !window.isDestroyed()) {
+        getCtx().logger.info("ios_simulator.parking_window_already_claimed", {
+          claimedWindowId: current.id,
+          requestedWindowId: window.id,
+        });
+      }
       return current;
     }
     if (!window || window.isDestroyed()) return current;
@@ -8841,7 +8641,7 @@ export function registerIpc({
     if (!keepSimulatorInBackground) {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       const parkingWindow = claimSimulatorParkingWindow(browserWindow, { force: true });
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
+      await attachSimulatorWindowForCapture(parkingWindow);
     }
     return result;
   });
@@ -8852,16 +8652,23 @@ export function registerIpc({
     if (arg !== undefined && arg !== null && typeof arg !== "object") {
       throw new Error("iosSimulatorAttachToChatSession requires { chatSessionId } payload.");
     }
-    const payload = (arg ?? {}) as { chatSessionId?: string | null; callerChatSessionId?: string | null };
+    const payload = (arg ?? {}) as {
+      chatSessionId?: string | null;
+      callerChatSessionId?: string | null;
+      takeOver?: boolean;
+    };
     const chatSessionId = payload.chatSessionId ?? null;
     const callerChatSessionId = payload.callerChatSessionId ?? chatSessionId;
-    return ensureIosSimulator().attachToChatSession(chatSessionId, callerChatSessionId);
+    return ensureIosSimulator().attachToChatSession(chatSessionId, callerChatSessionId, {
+      takeOver: payload.takeOver === true,
+    });
   });
 
-  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => {
-    cleanupSimulatorParkingFollow?.();
-    return ensureIosSimulator().shutdown(arg);
-  });
+  // The follow is dropped *after* the shutdown resolves, never before: the
+  // service refuses a foreign caller by throwing, and a refusal must leave the
+  // owning chat's parking follow exactly as it found it.
+  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) =>
+    releaseSimulatorParkingFollowAfter(() => ensureIosSimulator().shutdown(arg)));
 
   ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
 
@@ -8898,7 +8705,17 @@ export function registerIpc({
     if (result.backend === "simulator-window-capture") {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       const parkingWindow = claimSimulatorParkingWindow(browserWindow);
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
+      // Deliberately does NOT take a holder. With a local project bound this
+      // handler never runs — preload routes `startStream` to the brain daemon,
+      // which has no BrowserWindow and no parking concept — so a retain wired
+      // here would leave the count permanently at zero in production. The
+      // renderer takes its holder over `IPC.iosSimulatorRetainWindowParking`,
+      // the local-only mirror of `releaseWindowParking`, so there is exactly
+      // one claimant of the count and it is on the same transport as its
+      // release.
+      // A stream starting is the capture session attaching: place the window
+      // once here, then leave it to the user.
+      await attachSimulatorWindowForCapture(parkingWindow);
     }
     return result;
   });
@@ -8909,35 +8726,117 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorGetWindowState, async () => getSimulatorWindowState());
 
-  ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event, arg = {}) => {
+  // The one place ADE takes focus for the Simulator is the user's own Reveal.
+  ipcMain.handle(IPC.iosSimulatorRevealWindow, async (): Promise<{ ok: boolean; message: string | null }> =>
+    revealSimulatorWindow());
+
+  ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event, arg = {}): Promise<IosSimulatorWindowSourcesResult> => {
     const status = await getIosSimulatorStatusForEvent(event, arg, IPC.iosSimulatorListWindowSources);
-    if (!status.supported) return [];
-    const readSources = async () => desktopCapturer.getSources({
-      types: ["window"],
-      thumbnailSize: { width: 320, height: 320 },
-    });
+    if (!status.supported) {
+      return { sources: [], windowState: null, message: "The iOS Simulator is not available on this machine." };
+    }
+    // The clock starts here, not above: the status call is a remote-runtime
+    // round trip on a bound project and has nothing to do with the window
+    // budget. Counting it left the discovery work with less time than its own
+    // subprocess ceilings need.
+    const startedAt = Date.now();
+    const remainingMs = () => SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS - (Date.now() - startedAt);
+    // The Electron-main simulator service never sees a launch the brain daemon
+    // owns, so its `activeSession` is always null and parking used to be dead in
+    // production. Trust the caller's session when it has one.
+    const hasActiveSession = Boolean(readSimulatorSessionHint(arg)) || Boolean(status.activeSession);
+
+    const windowState = await getSimulatorWindowState();
+    if (windowState.issue === "screen-recording-permission" || windowState.issue === "automation-denied") {
+      // Capture cannot succeed and parking cannot run; name the blocker instead
+      // of sweeping every window for nothing.
+      return { sources: [], windowState, message: windowState.message };
+    }
+
     const senderWindow = BrowserWindow.fromWebContents(event.sender);
-    const parkingWindow = status.activeSession
-      ? claimSimulatorParkingWindow(senderWindow)
-      : null;
-    if (status.activeSession) {
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
-      await new Promise((resolve) => setTimeout(resolve, 350));
+    const parkingWindow = hasActiveSession ? claimSimulatorParkingWindow(senderWindow) : null;
+    if (hasActiveSession) {
+      await ensureSimulatorWindowCapturable(parkingWindow, { windowState, remainingMs });
     }
-    let sources = await readSources();
-    if (status.activeSession && !sources.some((source) => simulatorWindowName.test(source.name))) {
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
-      await new Promise((resolve) => setTimeout(resolve, 650));
-      sources = await readSources();
+
+    let sources = await listSimulatorWindowSources();
+    if (!sources.length && hasActiveSession && remainingMs() > 700) {
+      await reattachSimulatorWindowForCapture(parkingWindow, { remainingMs });
+      sources = await listSimulatorWindowSources();
     }
-    return sources
-      .filter((source) => simulatorWindowName.test(source.name))
-      .map((source) => ({
-        id: source.id,
-        name: source.name,
-        thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    if (sources.length) return { sources, windowState, message: null };
+
+    // The park above is allowed to change every fact the read at the top of the
+    // handler established: it starts Simulator.app, un-hides it and
+    // un-minimizes it. Re-read before judging, or the verdict is an instruction
+    // describing what ADE just did — a cold start answered "The simulator is
+    // not running. Launch it from ADE again." *because ADE had launched it*,
+    // and the drawer treats any message as terminal and gave up on the first
+    // sweep. Only the parked path needs the second read; without a session
+    // nothing moved.
+    const settledWindowState = hasActiveSession ? await getSimulatorWindowState() : windowState;
+
+    // `message` is a verdict, and the drawer asks only once, so every answer is
+    // final: a permission blocker, a missing session and an exhausted budget
+    // each name themselves, and the caller shows that text verbatim.
+    //
+    // The remaining branch — empty sources, a live session, budget left, and no
+    // window-state message — is left deliberately verdict-free. It is the case
+    // where a cold Simulator's window is a beat behind the app it just started,
+    // and the host genuinely does not know why it found nothing. Naming it here
+    // would replace the drawer's fallback ("ADE could not find the <device>
+    // window. Make sure the simulator is running and its window is open, then
+    // try again."), which is both truthful about the outcome and more
+    // actionable than anything this layer could assert, with a guess. The host
+    // reports the absence; the caller owns the wording.
+    const message = settledWindowState.message
+      ?? (!hasActiveSession
+        ? "No simulator session is running. Launch the app from ADE first."
+        : remainingMs() <= 0
+          ? "Timed out finding the simulator window. Try again."
+          : null);
+    return { sources, windowState: settledWindowState, message };
+  });
+
+  // The window-parking follow is armed by the discovery call above and has to be
+  // dropped when the drawer stops capturing. The shutdown handler below is not
+  // enough on its own: with a runtime bound, `shutdown` goes to the runtime
+  // action and this process never sees it, so a stale follow kept nudging (and
+  // relaunching) Simulator.app on every ADE window move.
+  //
+  // Scoped to the claimant, and refcounted within it: two drawers can be open
+  // in one window (a chat pane plus the Work sidebar's iOS tab), and the first
+  // to close must not drop a claim the other still depends on.
+  //
+  // The retain side has to live on this same local-only channel: `startStream`
+  // — the event that owes a release — is routed to the brain daemon whenever a
+  // local project is bound, so its ipcMain handler never runs in the case that
+  // window capture actually requires. A holder taken there would never exist.
+  //
+  // `ok` is the truth, not an acknowledgement: a sender that does not own the
+  // claim is silently not counted, and a renderer that believed otherwise would
+  // later release a holder it never took — the incumbent drawer's.
+  //
+  // The sender travels with the holder because it is the only thing that can
+  // report a renderer reload: that throws away the drawer without running its
+  // release and never closes the window, so a window-scoped count leaked a
+  // holder for the life of the process. The reload signal is the sender's
+  // main-frame navigation, not `destroyed` — the webContents object outlives
+  // any number of reloads.
+  ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: boolean }> => ({
+    ok: retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender), event.sender),
+  }));
+
+  ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (event): Promise<{ ok: true }> => {
+    releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender), event.sender);
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.iosSimulatorOpenSystemSettings, async (_event, arg = {}): Promise<{ ok: boolean }> => {
+    const pane: IosSimulatorPrivacyPane = (arg as { pane?: unknown } | null)?.pane === "automation"
+      ? "automation"
+      : "screen-recording";
+    return openSimulatorPrivacyPane(pane);
   });
 
   ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));

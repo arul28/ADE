@@ -1908,6 +1908,46 @@ describe("AgentChatPane pane reserve", () => {
 });
 
 describe("AgentChatPane companion drawers", () => {
+  // The chip was set only by the live `session-started` event, so the two
+  // commonest cases had no signal at all: opening ADE on a running session, and
+  // switching chats and back (which clears it unconditionally).
+  it("seeds the simulator chip from a session that was already live", async () => {
+    const session = buildSession("session-1", { title: "Drawer audit chat" });
+    installAdeMocks({ sessions: [session] });
+    seedDrawerStore();
+    (window as any).ade.iosSimulator.getStatus = vi.fn().mockResolvedValue({
+      platform: "darwin",
+      activeSession: {
+        chatSessionId: session.sessionId,
+        laneId: session.laneId,
+        deviceName: "iPhone 17 Pro",
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Simulator running")).toBeTruthy();
+
+    // Another chat's release must not clear this pane's chip — the guard its two
+    // sibling handlers already had.
+    await waitFor(() => expect(typeof iosEventListener).toBe("function"));
+    act(() => {
+      iosEventListener?.({
+        type: "session-released",
+        previousSession: { chatSessionId: "session-other", laneId: "lane-other" },
+      } as never);
+    });
+    expect(screen.getByText("Simulator running")).toBeTruthy();
+
+    act(() => {
+      iosEventListener?.({
+        type: "session-released",
+        previousSession: { chatSessionId: session.sessionId, laneId: session.laneId },
+      } as never);
+    });
+    await waitFor(() => expect(screen.queryByText("Simulator running")).toBeNull());
+  });
+
   it("opens and closes the iOS simulator and App Control drawers from chat chrome", async () => {
     renderDrawerPane();
 

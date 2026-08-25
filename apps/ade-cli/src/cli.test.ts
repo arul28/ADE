@@ -23,6 +23,8 @@ import {
   graphWaitState,
   inferFormatter,
   includeHostProjectInCatalog,
+  iosSimulatorErrorHint,
+  iosSimulatorSubcommandFromArgv,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
@@ -8755,6 +8757,38 @@ describe("ADE CLI", () => {
     if (typeHelp.kind !== "help") return;
     expect(typeHelp.text).toContain("iOS Simulator: type");
     expect(typeHelp.text).toContain("--value, --message <v>");
+
+    // `claim` is implemented and listed in the top-level help, so asking for
+    // its help must not answer "unknown subcommand".
+    const claimHelp = buildCliPlan(["ios-sim", "claim", "--help"]);
+    expect(claimHelp.kind).toBe("help");
+    if (claimHelp.kind !== "help") return;
+    expect(claimHelp.text).toContain("iOS Simulator: claim");
+    expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
+  });
+
+  it("rejects an unknown ios-sim --backend as a usage error", () => {
+    // A bare Error here printed a stack trace and exited 1; a usage error
+    // prints the message and exits 2.
+    let thrown: unknown;
+    try {
+      buildCliPlan(["ios-sim", "live-start", "--backend", "nope"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error | undefined)?.constructor.name).toBe(
+      "CliUsageError",
+    );
+    // The message names the subcommand the caller actually typed and the
+    // values that would have worked.
+    expect((thrown as Error).message).toContain("ios-sim live-start");
+    expect((thrown as Error).message).toContain("unknown --backend 'nope'");
+    expect((thrown as Error).message).toContain("auto, simulator-window-capture");
+    // Every valid value still builds a plan.
+    for (const backend of ["auto", "simulator-window-capture"]) {
+      const plan = buildCliPlan(["ios-sim", "stream-start", "--backend", backend]);
+      expect(plan.kind).toBe("execute");
+    }
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
@@ -9803,6 +9837,83 @@ describe("ADE CLI", () => {
     });
   });
 
+  // SKILL.md and the feature README both tell agents to recover from
+  // IOS_SIMULATOR_OWNED_BY_OTHER_SESSION with `launch --force`. The flag was
+  // documented but never parsed, so it was silently dropped and the retry
+  // failed with the identical ownership error.
+  it("ios-sim launch forwards --force and omits it otherwise", () => {
+    for (const flag of ["--force", "-f"]) {
+      const forced = buildCliPlan(["ios-sim", "launch", "--target", "app", flag]);
+      expect(forced.kind).toBe("execute");
+      if (forced.kind !== "execute") return;
+      expect(forced.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "launch",
+          args: { targetId: "app", force: true },
+        },
+      });
+    }
+
+    const plain = buildCliPlan(["ios-sim", "launch", "--target", "app"]);
+    expect(plain.kind).toBe("execute");
+    if (plain.kind !== "execute") return;
+    const params = plain.steps[0]?.params as
+      | { arguments?: { args?: Record<string, unknown> } }
+      | undefined;
+    expect(params?.arguments?.args).not.toHaveProperty("force");
+  });
+
+  // `parseCliArgs` consumes the global `--project-root` prefix before the
+  // subcommand sees it, so `ade --project-root /repo ios-sim apps` used to fall
+  // back to the caller's cwd and scan the wrong checkout.
+  it("ios-sim root defaults prefer the global --project-root over the caller cwd", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      const parsed = parseCliArgs(["--project-root", "/tmp/global-repo", "ios-sim", "apps"]);
+      const plan = buildCliPlan(parsed.command, parsed.options);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "listLaunchTargets",
+          args: { projectRoot: path.resolve("/tmp/global-repo") },
+        },
+      });
+
+      // A subcommand-level --project-root still wins over the global prefix.
+      const scoped = parseCliArgs([
+        "--project-root",
+        "/tmp/global-repo",
+        "ios-sim",
+        "apps",
+        "--project-root",
+        "/tmp/scoped-repo",
+      ]);
+      const scopedPlan = buildCliPlan(scoped.command, scoped.options);
+      expect(scopedPlan.kind).toBe("execute");
+      if (scopedPlan.kind !== "execute") return;
+      expect(scopedPlan.steps[0]?.params).toMatchObject({
+        arguments: { args: { projectRoot: path.resolve("/tmp/scoped-repo") } },
+      });
+
+      // A relative subcommand root must resolve against the caller cwd, not the
+      // brain process cwd, so the daemon and the shell agree on the path.
+      const relative = parseCliArgs(["ios-sim", "apps", "--project-root", "relative-repo"]);
+      const relativePlan = buildCliPlan(relative.command, relative.options);
+      expect(relativePlan.kind).toBe("execute");
+      if (relativePlan.kind !== "execute") return;
+      expect(relativePlan.steps[0]?.params).toMatchObject({
+        arguments: { args: { projectRoot: path.resolve("relative-repo") } },
+      });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+    }
+  });
+
   it("ios-sim preview stream aliases map to live view actions", () => {
     const start = buildCliPlan(["ios-sim", "preview-start", "--fps", "30"]);
     expect(start.kind).toBe("execute");
@@ -9857,6 +9968,62 @@ describe("ADE CLI", () => {
           },
         },
       });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
+  });
+
+  // `ios-sim claim` parsed no flags of its own, so the ownership bypass spelled
+  // the way launch/shutdown spell it was dropped on the floor and the claim was
+  // refused as if the caller had never asked — the silent flag-drop class this
+  // lane already fixed twice.
+  it("forwards the ios-sim claim ownership bypass flags to the service", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+
+      const forced = buildCliPlan(["ios-sim", "claim", "--lane", "lane-a", "--force"]);
+      expect(forced.kind).toBe("execute");
+      if (forced.kind !== "execute") return;
+      expect(forced.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "claim",
+          args: { laneId: "lane-a", force: true },
+        },
+      });
+
+      const ignored = buildCliPlan([
+        "ios-sim",
+        "claim",
+        "--lane",
+        "lane-a",
+        "--ignore-ownership",
+      ]);
+      expect(ignored.kind).toBe("execute");
+      if (ignored.kind !== "execute") return;
+      expect(ignored.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "claim",
+          args: { laneId: "lane-a", ignoreOwnership: true },
+        },
+      });
+
+      // Neither flag means neither key: a plain claim must not smuggle a
+      // takeover through as `force: false`.
+      const plain = buildCliPlan(["ios-sim", "claim", "--lane", "lane-a"]);
+      expect(plain.kind).toBe("execute");
+      if (plain.kind !== "execute") return;
+      const plainArgs = (plain.steps[0]?.params as { arguments: { args: Record<string, unknown> } })
+        .arguments.args;
+      expect(plainArgs).not.toHaveProperty("force");
+      expect(plainArgs).not.toHaveProperty("ignoreOwnership");
     } finally {
       if (previousLane === undefined) delete process.env.ADE_LANE_ID;
       else process.env.ADE_LANE_ID = previousLane;
@@ -9956,7 +10123,7 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "ios_simulator",
         action: "openPreviewWorkspace",
-        args: { projectRoot: "/tmp/app" },
+        args: { projectRoot: path.resolve("/tmp/app") },
       },
     });
   });
@@ -9981,7 +10148,7 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "resolvePreviewMatch",
         args: {
-          projectRoot: "/tmp/app",
+          projectRoot: path.resolve("/tmp/app"),
           sourceFile: "Views/HomeView.swift",
           sourceLine: 44,
           elementLabel: "Settings",
@@ -10088,7 +10255,7 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "renderCurrentPreview",
         args: {
-          projectRoot: "/tmp/app",
+          projectRoot: path.resolve("/tmp/app"),
           sourceFile: "Views/HomeView.swift",
           sourceLine: 44,
           elementLabel: "Settings",
@@ -11322,6 +11489,334 @@ describe("ADE CLI", () => {
       if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
       else process.env.ADE_CHAT_SESSION_ID = previousChat;
     }
+  });
+
+  describe("ios-sim build root and capture flags", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+
+    const launchArgsFor = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { args?: Record<string, unknown> } }
+        | undefined;
+      return params?.arguments?.args ?? {};
+    };
+
+    beforeEach(() => {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+      process.env.ADE_WORKSPACE_ROOT = "/tmp/ade-project/.ade/worktrees/lane-a";
+    });
+
+    afterEach(() => {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    });
+
+    it("routes rooted subcommands at the lane, then the caller's worktree", () => {
+      // An agent in a lane: the lane resolves the build root service-side, so
+      // the CLI must not pin a projectRoot that would override it.
+      process.env.ADE_LANE_ID = "lane-ios-1";
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "apps"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "apps"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "snapshot"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "snapshot"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "previews", "--source", "A.swift"]))
+        .toMatchObject({ laneId: "lane-ios-1" });
+
+      // A plain shell inside the worktree with no ADE_LANE_ID still builds the
+      // worktree it is standing in, not the primary checkout.
+      delete process.env.ADE_LANE_ID;
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        projectRoot: path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"),
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).laneId).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "select", "120", "420"])).toMatchObject({
+        projectRoot: path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"),
+      });
+    });
+
+    it("lets an explicit --project-root beat the lane default", () => {
+      process.env.ADE_LANE_ID = "lane-ios-1";
+      expect(
+        launchArgsFor(["ios-sim", "launch", "--project-root", "/tmp/primary"]),
+      ).toMatchObject({ projectRoot: path.resolve("/tmp/primary") });
+      expect(
+        launchArgsFor(["ios-sim", "apps", "--root", "/tmp/primary"]),
+      ).toMatchObject({
+        projectRoot: path.resolve("/tmp/primary"),
+        laneId: "lane-ios-1",
+      });
+    });
+
+    it("keeps the simulator in the background unless asked otherwise", () => {
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        keepSimulatorInBackground: true,
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).openDrawer).toBeUndefined();
+      // Back-compat: --background was the old opt-in and must stay harmless.
+      expect(launchArgsFor(["ios-sim", "launch", "--background"])).toMatchObject({
+        keepSimulatorInBackground: true,
+      });
+      expect(launchArgsFor(["ios-sim", "launch", "--foreground"])).toMatchObject({
+        keepSimulatorInBackground: false,
+      });
+      expect(launchArgsFor(["ios-sim", "launch", "--open-drawer"])).toMatchObject({
+        openDrawer: true,
+        keepSimulatorInBackground: true,
+      });
+    });
+
+    it("gives launch the daemon's own budget and a follow notice", () => {
+      const plan = buildCliPlan(["ios-sim", "launch", "--follow"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.formatter).toBe("ios-sim-launch");
+      expect(plan.minTimeoutMs).toBe(17 * 60_000);
+      expect(plan.progressNotice).toContain("not streamed");
+
+      const quiet = buildCliPlan(["ios-sim", "launch"]);
+      expect(quiet.kind).toBe("execute");
+      if (quiet.kind !== "execute") return;
+      expect(quiet.progressNotice).toBeUndefined();
+    });
+
+    it("sends the caller's chat session on shutdown so the owner guard can bite", () => {
+      // Without a caller identity the service can only evict unconditionally,
+      // which is exactly the "you cannot take another chat's session" promise
+      // the docs make.
+      process.env.ADE_CHAT_SESSION_ID = "chat-owner-1";
+      expect(launchArgsFor(["ios-sim", "shutdown"])).toMatchObject({
+        chatSessionId: "chat-owner-1",
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown"]).force).toBeUndefined();
+      // An explicit flag still wins over the environment.
+      expect(
+        launchArgsFor(["ios-sim", "stop", "--chat-session", "chat-other"]),
+      ).toMatchObject({ chatSessionId: "chat-other" });
+      // --force is the documented override and must still reach the service.
+      expect(launchArgsFor(["ios-sim", "shutdown", "--force"])).toMatchObject({
+        chatSessionId: "chat-owner-1",
+        force: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown", "-f"])).toMatchObject({
+        force: true,
+      });
+    });
+
+    // Same silent flag-drop as claim: help and docs name `--ignore-ownership`,
+    // and until it was parsed the documented bypass was a no-op that pushed
+    // callers onto `--force` (the hard reset).
+    it("forwards shutdown --ignore-ownership instead of silently dropping it", () => {
+      expect(launchArgsFor(["ios-sim", "shutdown", "--ignore-ownership"])).toMatchObject({
+        ignoreOwnership: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown", "--ignore-owner"])).toMatchObject({
+        ignoreOwnership: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown"])).not.toHaveProperty("ignoreOwnership");
+      expect(launchArgsFor(["ios-sim", "shutdown", "--force"])).not.toHaveProperty(
+        "ignoreOwnership",
+      );
+    });
+
+    it("does not invent a build root for tap, drag, or type", () => {
+      // These act on whatever is already on the device; the service takes no
+      // root, so sending one advertised a flag that silently did nothing.
+      expect(launchArgsFor(["ios-sim", "tap", "120", "420"]).projectRoot)
+        .toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "tap", "120", "420"]).laneId)
+        .toBeUndefined();
+      expect(
+        launchArgsFor(["ios-sim", "drag", "120", "700", "120", "250"])
+          .projectRoot,
+      ).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "type", "--value", "hi"]).projectRoot)
+        .toBeUndefined();
+      // `select` does match Swift sources, so it keeps its root.
+      expect(
+        launchArgsFor(["ios-sim", "select", "120", "420"]).projectRoot,
+      ).toBe(path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"));
+    });
+
+    it("passes --out through to the screenshot action", () => {
+      expect(
+        launchArgsFor(["ios-sim", "screenshot", "--out", "shot.png"]),
+      ).toMatchObject({ outPath: "shot.png" });
+      expect(launchArgsFor(["ios-sim", "screenshot"]).outPath).toBeUndefined();
+
+      // The written path is what an agent reads next, so it prints raw and
+      // untruncated rather than as a table cell.
+      const longPath = `/Users/someone/Projects/ADE/.ade/worktrees/${"a".repeat(80)}/shot.png`;
+      const output = formatOutput(
+        { deviceUdid: "UDID-1", filePath: longPath, width: 393, height: 852 },
+        { text: true } as any,
+        inferFormatter({
+          kind: "execute",
+          label: "iOS simulator screenshot",
+          steps: [],
+        }),
+      );
+      expect(output).toContain(`file: ${longPath}`);
+    });
+
+    it("files an ios-sim proof as screenshot-then-ingest", () => {
+      const plan = buildCliPlan([
+        "ios-sim",
+        "proof",
+        "--caption",
+        "Settings after the fix",
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps).toHaveLength(2);
+      expect(plan.steps[0]).toMatchObject({
+        key: "screenshot",
+        params: {
+          arguments: { domain: "ios_simulator", action: "screenshot" },
+        },
+      });
+      const ingest = plan.steps[1]?.params;
+      expect(typeof ingest).toBe("function");
+      if (typeof ingest !== "function") return;
+      // The action envelope, not the bare record: that is what the runtime
+      // actually answers with.
+      expect(
+        ingest({
+          screenshot: {
+            domain: "ios_simulator",
+            action: "screenshot",
+            result: { filePath: "/tmp/lane-a/.ade/ios/shot.png" },
+          },
+        }),
+      ).toMatchObject({
+        name: "ingest_computer_use_artifacts",
+        arguments: {
+          backendName: "ade-ios-simulator",
+          toolName: "ios-sim proof",
+          inputs: [
+            {
+              kind: "screenshot",
+              title: "Settings after the fix",
+              description: "Settings after the fix",
+              path: "/tmp/lane-a/.ade/ios/shot.png",
+            },
+          ],
+        },
+      });
+      expect(() => ingest({ screenshot: { result: {} } })).toThrow(
+        /could not find the captured screenshot path/,
+      );
+    });
+
+    it("turns the new simulator error codes into one actionable line", () => {
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_TARGET_ROOT_MISMATCH: launch target x is outside the build root /tmp/a.",
+        ),
+      ).toContain("ade ios-sim apps");
+      // The service message already carries the launch id; the hint adds only
+      // the command, so it no longer re-extracts the id with a regex over
+      // someone else's prose.
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_LAUNCH_IN_PROGRESS: an iOS simulator launch (launch-7) is already running.",
+        ),
+      ).toContain("ade ios-sim shutdown --force");
+      expect(
+        iosSimulatorErrorHint("IOS_SIMULATOR_NO_BUILDABLE_TARGET: none under /tmp/a."),
+      ).toContain("--target-id");
+      // These two moved here from the service, which now states only the fact
+      // and the code — this layer is the one home for command advice.
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.",
+        ),
+      ).toContain("ade ios-sim shutdown --force");
+      expect(
+        iosSimulatorErrorHint("IOS_SIMULATOR_LANE_NOT_RESOLVED: no worktree resolved for lane lane-x."),
+      ).toContain("--project-root");
+      expect(iosSimulatorErrorHint("something else went wrong")).toBeNull();
+    });
+
+    // A refused `claim` wanted to re-attribute a session, not tear one down, so
+    // it must not be pointed at the hard reset: `shutdown --force` stops the
+    // owner's idb companions and clears the launch lock to do a job the
+    // non-destructive bypass does without any of it.
+    it("points a refused claim at the non-destructive bypass, not shutdown --force", () => {
+      const owned =
+        "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.";
+
+      const claimHint = iosSimulatorErrorHint(owned, "claim");
+      expect(claimHint).toContain("--ignore-ownership");
+      expect(claimHint).not.toContain("shutdown --force");
+
+      // Every other subcommand keeps the takeover advice it already had.
+      expect(iosSimulatorErrorHint(owned, "launch")).toContain("shutdown --force");
+      expect(iosSimulatorErrorHint(owned, "shutdown")).toContain("shutdown --force");
+      expect(iosSimulatorErrorHint(owned, null)).toContain("shutdown --force");
+    });
+
+    // The hint is emitted from `main`, which only has raw argv, so the wiring
+    // that recovers the subcommand is what actually decides which line prints.
+    it("recovers the ios-sim subcommand from raw argv, aliases and global flags included", () => {
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "claim", "--lane", "lane-a"])).toBe("claim");
+      expect(iosSimulatorSubcommandFromArgv(["--socket", "ios-sim", "claim"])).toBe("claim");
+      // A global flag that carries a value must not be mistaken for the command.
+      expect(
+        iosSimulatorSubcommandFromArgv(["--project-root", "/tmp/root", "ios", "claim"]),
+      ).toBe("claim");
+      // Aliases resolve to the canonical name the hint keys on.
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "stop"])).toBe("shutdown");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "open"])).toBe("launch");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim"])).toBe("status");
+      expect(iosSimulatorSubcommandFromArgv(["lanes", "list"])).toBeNull();
+    });
+
+    it("summarises a launch with its build root, warning, and capabilities", () => {
+      const output = formatOutput(
+        {
+          id: "sess-1",
+          deviceUdid: "UDID-1",
+          deviceName: "iPhone 16",
+          bundleId: "com.example.app",
+          appName: "Example",
+          laneId: "lane-ios-1",
+          mode: "live",
+          keepSimulatorInBackground: true,
+          buildRoot: "/Users/x/Projects/ADE/.ade/worktrees/lane-a",
+          usedInstalledBinary: true,
+          capabilities: {
+            canTap: true,
+            canType: true,
+            canDrag: false,
+            canInspect: false,
+          },
+        },
+        { text: true } as any,
+        "ios-sim-launch",
+      );
+      expect(output).toContain("iPhone 16 (UDID-1)");
+      expect(output).toContain("build root: …/ADE/.ade/worktrees/lane-a");
+      expect(output).toContain("tap/type/drag/inspect  yes/yes/no/no");
+      expect(output).toContain("prebuilt binary");
+    });
   });
 
   it("update commands map to auto-update actions", () => {

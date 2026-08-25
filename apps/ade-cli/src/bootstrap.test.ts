@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 import {
+  bindIosSimulatorReleaseOnChatEnd,
   createHeadlessAdeCliAgentEnv,
   emitRuntimePrCardsForChanges,
   inferAgentSkillsRootForCliEntry,
@@ -182,6 +183,43 @@ describe("createAdeRuntime startup teardown", () => {
     // And the exception list may not outlive its reason: an entry for a service
     // nobody starts any more is stale documentation.
     expect([...startedWithoutRelease.keys()].filter((service) => !started.has(service))).toEqual([]);
+  });
+
+  it("wires the chat-end simulator release through bindIosSimulatorReleaseOnChatEnd", () => {
+    expect(runtimeFn).toContain("bindIosSimulatorReleaseOnChatEnd({");
+  });
+});
+
+describe("bindIosSimulatorReleaseOnChatEnd", () => {
+  it("does not register a chat-end simulator release on the headless chat stub", () => {
+    const releaseIfOwnedBy = vi.fn().mockResolvedValue(undefined);
+
+    expect(bindIosSimulatorReleaseOnChatEnd({
+      agentChatService: {},
+      iosSimulatorService: { releaseIfOwnedBy },
+      logger: { debug: vi.fn() },
+    })).toBe(false);
+    expect(releaseIfOwnedBy).not.toHaveBeenCalled();
+  });
+
+  it("registers a release listener when the agent chat service supports it", async () => {
+    const listeners: Array<(sessionId: string) => void> = [];
+    const releaseIfOwnedBy = vi.fn().mockResolvedValue(undefined);
+    const agentChatService = {
+      registerChatSessionEndedListener(listener: (sessionId: string) => void) {
+        listeners.push(listener);
+      },
+    };
+
+    expect(bindIosSimulatorReleaseOnChatEnd({
+      agentChatService,
+      iosSimulatorService: { releaseIfOwnedBy },
+      logger: { debug: vi.fn() },
+    })).toBe(true);
+    expect(listeners).toHaveLength(1);
+    listeners[0]!("chat-1");
+    await Promise.resolve();
+    expect(releaseIfOwnedBy).toHaveBeenCalledWith("chat-1");
   });
 });
 

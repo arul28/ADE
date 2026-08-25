@@ -684,9 +684,12 @@ import type {
   IosSimulatorInspectPointArgs,
   IosSimulatorInspectResult,
   IosSimulatorLaunchArgs,
+  IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
+  IosSimulatorPrivacyPane,
   IosSimulatorScreenshot,
+  IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorShutdownArgs,
@@ -694,8 +697,9 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorWindowCaptureSessionHint,
+  IosSimulatorWindowSourcesResult,
   IosSimulatorWindowState,
-  IosSimulatorWindowSource,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlEventPayload,
@@ -7415,7 +7419,7 @@ const adeBridge = {
     launch: async (
       args: IosSimulatorLaunchArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<IosSimulatorSession> => {
+    ): Promise<IosSimulatorLaunchResult> => {
       clearIosSimulatorStatusCaches();
       try {
         return await callIosSimulatorActionOr(
@@ -7429,7 +7433,11 @@ const adeBridge = {
       }
     },
     attachToChatSession: async (
-      args: { chatSessionId: string | null; callerChatSessionId?: string | null },
+      args: {
+        chatSessionId: string | null;
+        callerChatSessionId?: string | null;
+        takeOver?: boolean;
+      },
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorSession | null> => {
       clearIosSimulatorStatusCaches();
@@ -7437,7 +7445,13 @@ const adeBridge = {
         return await callIosSimulatorActionOr(
           pin,
           "attachToChatSession",
-          { argsList: [args.chatSessionId, args.callerChatSessionId] },
+          {
+            argsList: [
+              args.chatSessionId,
+              args.callerChatSessionId,
+              { takeOver: args.takeOver === true },
+            ],
+          },
           () => ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
         );
       } finally {
@@ -7461,7 +7475,7 @@ const adeBridge = {
       }
     },
     screenshot: async (
-      args: { deviceUdid?: string | null } = {},
+      args: IosSimulatorScreenshotArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorScreenshot> =>
       callIosSimulatorActionOr(pin, "screenshot", { args }, () =>
@@ -7608,23 +7622,73 @@ const adeBridge = {
       await assertLocalProjectHostAction("iOS Simulator window state");
       return ipcRenderer.invoke(IPC.iosSimulatorGetWindowState);
     },
-    listSimulatorWindowSources: async (): Promise<
-      IosSimulatorWindowSource[]
-    > => {
+    listSimulatorWindowSources: async (
+      opts: {
+        session?: IosSimulatorWindowCaptureSessionHint | null;
+      } = {},
+    ): Promise<IosSimulatorWindowSourcesResult> => {
+      // The root is never the caller's to choose: window capture is always
+      // scoped to the window's own bound local project.
       const binding = await requireLocalProjectHostBinding("iOS Simulator window sources");
+      // Window parking runs in Electron main, whose simulator service never sees
+      // a launch the brain daemon owns. Callers that already hold the runtime
+      // session pass it here so parking keys off a session that exists.
       return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources, {
         projectRoot: binding.rootPath,
+        ...(opts.session ? { session: opts.session } : {}),
       });
     },
+    // Registers this surface as depending on the parking claim. It has to be
+    // its own local-only channel rather than a side effect of `startStream`:
+    // with a local project bound — which window capture requires —
+    // `startStream` is answered by the brain daemon, which has no BrowserWindow
+    // and no parking concept, so nothing in Electron main ever runs for it.
+    // Same transport as `releaseWindowParking` below, so the two always pair up.
+    //
+    // Resolves whether the host actually counted the holder — it refuses one
+    // from a window that does not own the claim — so the caller only pairs a
+    // release with a retain that really happened. Never throws, and a failure
+    // is reported as "not held" for the same reason.
+    retainWindowParking: async (): Promise<boolean> => {
+      try {
+        const result = await ipcRenderer.invoke(IPC.iosSimulatorRetainWindowParking) as { ok?: unknown } | null;
+        return result?.ok === true;
+      } catch {
+        /* parking is best-effort */
+        return false;
+      }
+    },
+    // The mirror image of the call above: capture arms the window-parking
+    // follow in this process, so whoever stops capturing has to disarm it here
+    // too. Deliberately not routed through the runtime — parking is a local
+    // Electron-main concern — and deliberately never throws, because every
+    // caller is a teardown path.
+    releaseWindowParking: async (): Promise<void> => {
+      try {
+        await ipcRenderer.invoke(IPC.iosSimulatorReleaseWindowParking);
+      } catch {
+        /* teardown is best-effort */
+      }
+    },
+    openSystemSettings: async (args: {
+      pane: IosSimulatorPrivacyPane;
+    }): Promise<{ ok: boolean }> => {
+      await assertLocalProjectHostAction("iOS Simulator system settings");
+      return ipcRenderer.invoke(IPC.iosSimulatorOpenSystemSettings, args);
+    },
+    revealSimulator: async (): Promise<{ ok: boolean; message: string | null }> => {
+      await assertLocalProjectHostAction("iOS Simulator reveal");
+      return ipcRenderer.invoke(IPC.iosSimulatorRevealWindow);
+    },
     tap: async (
-      args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number },
+      args: { deviceUdid?: string | null; x: number; y: number },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
       callIosSimulatorActionOr(pin, "tap", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTap, args),
       ),
     typeText: async (
-      args: { deviceUdid?: string | null; projectRoot?: string | null; text: string },
+      args: { deviceUdid?: string | null; text: string },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
       callIosSimulatorActionOr(pin, "typeText", { args }, () =>
@@ -7645,7 +7709,13 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
       ),
     selectPoint: async (
-      args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number },
+      args: {
+        deviceUdid?: string | null;
+        projectRoot?: string | null;
+        laneId?: string | null;
+        x: number;
+        y: number;
+      },
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorSelectResult> =>
       callIosSimulatorActionOr(pin, "selectPoint", { args }, () =>

@@ -626,9 +626,12 @@ import type {
   IosSimulatorInspectPointArgs,
   IosSimulatorInspectResult,
   IosSimulatorLaunchArgs,
+  IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
+  IosSimulatorPrivacyPane,
   IosSimulatorScreenshot,
+  IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorShutdownArgs,
@@ -636,8 +639,9 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorWindowCaptureSessionHint,
+  IosSimulatorWindowSourcesResult,
   IosSimulatorWindowState,
-  IosSimulatorWindowSource,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlEventPayload,
@@ -2092,9 +2096,13 @@ declare global {
         launch: (
           args?: IosSimulatorLaunchArgs,
           pin?: OpenProjectBinding | null,
-        ) => Promise<IosSimulatorSession>;
+        ) => Promise<IosSimulatorLaunchResult>;
         attachToChatSession: (
-          args: { chatSessionId: string | null; callerChatSessionId?: string | null },
+          args: {
+            chatSessionId: string | null;
+            callerChatSessionId?: string | null;
+            takeOver?: boolean;
+          },
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorSession | null>;
         shutdown: (
@@ -2102,7 +2110,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorShutdownResult>;
         screenshot: (
-          args?: { deviceUdid?: string | null },
+          args?: IosSimulatorScreenshotArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorScreenshot>;
         getScreenSnapshot: (
@@ -2156,13 +2164,30 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorStreamStatus>;
         getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
-        listSimulatorWindowSources: () => Promise<IosSimulatorWindowSource[]>;
+        listSimulatorWindowSources: (opts?: {
+          session?: IosSimulatorWindowCaptureSessionHint | null;
+        }) => Promise<IosSimulatorWindowSourcesResult>;
+        /**
+         * Registers one capture surface as depending on the parking claim.
+         * Resolves whether the host counted the holder — it refuses one from a
+         * window that does not own the claim — so only a `true` may be paired
+         * with a later release. Never throws; a failure resolves `false`.
+         */
+        retainWindowParking: () => Promise<boolean>;
+        /** Drops one holder of the window-parking follow. Never throws. */
+        releaseWindowParking: () => Promise<void>;
+        openSystemSettings: (args: {
+          pane: IosSimulatorPrivacyPane;
+        }) => Promise<{ ok: boolean }>;
+        revealSimulator: () => Promise<{ ok: boolean; message: string | null }>;
+        // No projectRoot: tapping drives the booted device, and the service
+        // never resolves a build root for it.
         tap: (
-          args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number },
+          args: { deviceUdid?: string | null; x: number; y: number },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         typeText: (
-          args: { deviceUdid?: string | null; projectRoot?: string | null; text: string },
+          args: { deviceUdid?: string | null; text: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         drag: (
@@ -2173,8 +2198,16 @@ declare global {
           args: IosSimulatorDragArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        // Mirrors the shared IosSimulatorPoint: selection matches source
+        // against the caller's tree, so the lane has to ride the wire.
         selectPoint: (
-          args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number },
+          args: {
+            deviceUdid?: string | null;
+            projectRoot?: string | null;
+            laneId?: string | null;
+            x: number;
+            y: number;
+          },
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorSelectResult>;
         onEvent: (

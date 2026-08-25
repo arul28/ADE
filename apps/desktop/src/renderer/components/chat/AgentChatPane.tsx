@@ -3666,6 +3666,12 @@ export function AgentChatPane({
   );
   const [iosSimulatorDrawerModeRequest, setIosSimulatorDrawerModeRequest] = useState<{ mode: IosSimulatorDrawerMode; nonce: number } | null>(null);
   const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
+  const iosSimulatorOpenRef = useRef(iosSimulatorOpen);
+  iosSimulatorOpenRef.current = iosSimulatorOpen;
+  // An agent launching the simulator used to force this drawer open, closing
+  // whatever the user had on screen. It now only offers: a chip appears while a
+  // simulator session is live and the drawer is closed.
+  const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{ deviceName: string | null } | null>(null);
   // CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR. The state
   // and its `setCursorCloudPaneOpen(false)` call sites stay wired so the panel can be restored by
   // uncommenting the mount below — nothing sets it true while the panel is off.
@@ -4047,7 +4053,7 @@ export function AgentChatPane({
     if (!api?.getStatus) return;
     if (!effectiveIosSimulatorOpen || !isTileActive) return;
     let cancelled = false;
-    void api.getStatus()
+    void api.getStatus(chatRuntimePinRef.current)
       .then((status) => {
         if (cancelled) return;
         setIosSimulatorAvailable(status.platform === "darwin");
@@ -4179,8 +4185,18 @@ export function AgentChatPane({
     clearPromptSuggestionForSession(selectedSessionId);
   }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
 
-  const iosSimulatorProjectRoot = chatLaneWorktreePath
-    ?? (chatRuntimePin ? chatRuntimePin.rootPath : projectRoot);
+  const iosSimulatorProjectRoot = useMemo(() => {
+    const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
+    if (scopedLaneId) {
+      // A lane whose worktree the roster has not caught up with must never fall
+      // back to the primary checkout: that is exactly how a lane chat builds,
+      // launches and screenshots code it never wrote, and reports it as verified.
+      // Null means "the lane decides" — the panel then sends the lane id on its
+      // own and the host resolves the worktree, or fails loudly saying so.
+      return chatLaneWorktreePath ?? null;
+    }
+    return chatRuntimePin ? chatRuntimePin.rootPath : projectRoot;
+  }, [chatLaneWorktreePath, chatRuntimePin, chatScopeLaneId, laneId, projectRoot, selectedSession?.laneId]);
   // `selectedSessionId` is internal state synced from props in an effect, so it
   // trails the incoming selection by one render. Deriving the transcript from
   // it painted the OUTGOING chat's events for a beat after the pane was pointed
@@ -7018,28 +7034,62 @@ export function AgentChatPane({
     };
   }, [chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
 
+  // Is this simulator session about the chat this pane is showing? Unscoped
+  // events only apply to the active tile. Hoisted out of the subscription below
+  // because the seed effect that follows asks the same question of `getStatus`.
+  const iosSimulatorAddressesThisPane = useCallback((
+    chatSessionId?: string | null,
+    eventLaneId?: string | null,
+  ) => {
+    const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
+      ? chatSessionId.trim()
+      : null;
+    const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
+      ? eventLaneId.trim()
+      : null;
+    if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
+    if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
+    if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
+    return true;
+  }, [isTileActive, laneId]);
+
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.onEvent || hideLaneToolDrawers) return undefined;
+    const addressesThisPane = iosSimulatorAddressesThisPane;
     return api.onEvent((event) => {
+      if (event.type === "session-started") {
+        if (!addressesThisPane(event.session.chatSessionId, event.session.laneId)) return;
+        setIosSimulatorAvailable(true);
+        setIosSimulatorSessionChip({ deviceName: event.session.deviceName });
+        return;
+      }
+      if (event.type === "session-released") {
+        // Same scoping as its two siblings: without this, any chat's release
+        // cleared the chip out from under a pane whose session is still live.
+        if (!addressesThisPane(
+          event.previousSession?.chatSessionId,
+          event.previousSession?.laneId,
+        )) return;
+        setIosSimulatorSessionChip(null);
+        return;
+      }
       if (event.type !== "drawer-open-requested") return;
-      const eventChatSessionId = typeof event.chatSessionId === "string" && event.chatSessionId.trim().length
-        ? event.chatSessionId.trim()
-        : null;
-      const eventLaneId = typeof event.laneId === "string" && event.laneId.trim().length
-        ? event.laneId.trim()
-        : null;
-      if (eventChatSessionId && eventChatSessionId !== selectedSessionIdRef.current) return;
-      if (eventLaneId && laneId && eventLaneId !== laneId) return;
-      if (!eventChatSessionId && !eventLaneId && !isTileActive) return;
+      if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
       setIosSimulatorAvailable(true);
-      setChatActionsOpen(false);
-      setAppControlOpen(false);
-      setCursorCloudPaneOpen(false);
+      // This event now only arrives for surfaces the user drove (point selection
+      // and inspection, or a launch started from this drawer). Yield the right
+      // pane only on the closed → open transition, and only to App Control,
+      // which is the one panel that cannot share the split. Chat actions (proof)
+      // stays exactly as the user left it.
+      if (!iosSimulatorOpenRef.current) {
+        setAppControlOpen(false);
+        setCursorCloudPaneOpen(false);
+      }
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
-    });
-  }, [hideLaneToolDrawers, isTileActive, laneId]);
+    }, chatRuntimePin);
+  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
@@ -7049,7 +7099,27 @@ export function AgentChatPane({
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
-  }, [selectedSessionId, laneId]);
+    setIosSimulatorSessionChip(null);
+    const api = window.ade?.iosSimulator;
+    if (!api?.getStatus || hideLaneToolDrawers) return undefined;
+    let cancelled = false;
+    // The chip existed only as a side effect of the live `session-started`
+    // event, so the two commonest cases lost it entirely: opening ADE while a
+    // session is already running, and switching chats and back (the clear above
+    // is unconditional). Ask what is actually running instead of waiting for an
+    // event that already fired.
+    void api.getStatus(chatRuntimePinRef.current).then((simulatorStatus) => {
+      if (cancelled) return;
+      const session = simulatorStatus?.activeSession ?? null;
+      if (!session) return;
+      if (!iosSimulatorAddressesThisPane(session.chatSessionId, session.laneId)) return;
+      setIosSimulatorAvailable(true);
+      setIosSimulatorSessionChip({ deviceName: session.deviceName });
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, laneId, selectedSessionId]);
 
   useEffect(() => {
     const next = new Set<string>();
@@ -12379,6 +12449,27 @@ export function AgentChatPane({
           chatSessionId={selectedSessionId}
           onRevealTerminal={revealChatTerminal}
         />
+      ) : null}
+      {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
+        <button
+          type="button"
+          onClick={() => {
+            setAppControlOpen(false);
+            setCursorCloudPaneOpen(false);
+            setIosSimulatorOpen(true);
+          }}
+          className={cn(
+            "inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
+            "border-cyan-300/20 bg-cyan-400/[0.06] text-cyan-100/75 hover:border-cyan-200/32 hover:text-cyan-50",
+          )}
+          title={iosSimulatorSessionChip.deviceName
+            ? `Simulator running on ${iosSimulatorSessionChip.deviceName}`
+            : "Simulator running"}
+        >
+          <DeviceMobile size={11} weight="fill" aria-hidden className="shrink-0" />
+          <span className="min-w-0 truncate">Simulator running</span>
+          <span className="shrink-0 text-cyan-200/55">Open</span>
+        </button>
       ) : null}
       {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip

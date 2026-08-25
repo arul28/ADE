@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import type * as NodeChildProcess from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +39,9 @@ const hasKnownSshHostKeyForTargetMock = vi.hoisted(() => vi.fn(() => false));
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
 const trustSshHostKeyForTargetMock = vi.hoisted(() => vi.fn());
 const createLinearOAuthServiceMock = vi.hoisted(() => vi.fn());
+const desktopCapturerGetSources = vi.hoisted(
+  () => vi.fn(async (): Promise<Array<{ id: string; name: string; thumbnail: { isEmpty: () => boolean; toDataURL: () => string } }>> => []),
+);
 
 vi.mock("electron", () => ({
   app: {
@@ -55,7 +60,14 @@ vi.mock("electron", () => ({
     writeText: vi.fn(),
   },
   desktopCapturer: {
-    getSources: vi.fn(async () => []),
+    getSources: desktopCapturerGetSources,
+  },
+  screen: {
+    getDisplayMatching: vi.fn(() => ({ workArea: { x: 0, y: 0, width: 1_920, height: 1_080 } })),
+    getPrimaryDisplay: vi.fn(() => ({ workArea: { x: 0, y: 0, width: 1_920, height: 1_080 } })),
+  },
+  systemPreferences: {
+    getMediaAccessStatus: vi.fn(() => "granted"),
   },
   dialog: {
     showOpenDialog: showOpenDialogMock,
@@ -130,6 +142,12 @@ import {
   registerRuntimeBridge,
 } from "./runtimeBridge";
 import { registerIpc } from "./registerIpc";
+import {
+  __testSetSimulatorWindowCaptureHooks,
+  activeSimulatorParkingWindow,
+  followSimulatorWindowUnderAde,
+  releaseSimulatorParkingFollow,
+} from "../ios/simulatorWindowCapture";
 
 const target: RemoteRuntimeTarget = {
   id: "target-1",
@@ -147,6 +165,11 @@ function sender(id = 42) {
   return {
     id,
     isDestroyed: vi.fn(() => false),
+    // `on`/`off` as well as `once`: the simulator parking holder watches this
+    // webContents for a reload (a main-frame navigation) and takes its
+    // listeners back off when the holder goes.
+    on: vi.fn(),
+    off: vi.fn(),
     once: vi.fn(),
     send: vi.fn(),
   } as any;
@@ -154,6 +177,118 @@ function sender(id = 42) {
 
 function eventForSender(nextSender = sender()) {
   return { sender: nextSender } as any;
+}
+
+// --- iOS Simulator window parking / discovery harness -----------------------
+//
+// The parking claim is armed in exactly one production place — the
+// `iosSimulatorListWindowSources` handler — so every case below drives that
+// handler rather than the module function it calls. Arming the claim directly
+// is what let the wiring rot while the tests stayed green.
+
+const simulatorSession = {
+  id: "session-1",
+  deviceUdid: "device-1",
+  deviceName: "iPhone 17 Pro",
+  bundleId: "com.example.app",
+  appName: "Example",
+  appBundlePath: null,
+  targetId: "target-1",
+  projectRoot: "/repo",
+  laneId: null,
+  chatSessionId: "chat-1",
+  mode: "live" as const,
+  bridgeUrl: null,
+  startedAt: "2026-04-29T00:00:00.000Z",
+  claimedAt: "2026-04-29T00:00:01.000Z",
+};
+
+function iosSimulatorServiceStub(overrides: Record<string, unknown> = {}) {
+  return {
+    getStatus: vi.fn(async () => ({
+      platform: "darwin",
+      supported: true,
+      tools: [
+        { name: "xcrun", available: true, detail: "ok", installHint: "" },
+        { name: "xcodebuild", available: true, detail: "ok", installHint: "" },
+        { name: "simulator_window", available: true, detail: "ok", installHint: "" },
+      ],
+      activeDevice: null,
+      activeSession: simulatorSession,
+    })),
+    // Last, so a caller can actually override any key this stub defines —
+    // spread first, the defaults above silently won every collision.
+    ...overrides,
+  };
+}
+
+/** Which `osascript` the capture module ran, told apart by a marker script. */
+type MacCall = "open" | "state" | "measure" | "apply";
+
+function installSimulatorSpawn(responder: (call: MacCall) => { stdout?: string; stderr?: string; code?: number | null }) {
+  const spawn = ((command: string, args: string[]) => {
+    const script = args[args.length - 1] ?? "";
+    const call: MacCall = command === "open"
+      ? "open"
+      : script.includes('"not-running|false|0|0"')
+        ? "state"
+        : script.includes('"nowindow"')
+          ? "measure"
+          : "apply";
+    const result = responder(call);
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      kill: () => boolean;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    setImmediate(() => {
+      if (result.stdout) child.stdout.emit("data", Buffer.from(result.stdout));
+      if (result.stderr) child.stderr.emit("data", Buffer.from(result.stderr));
+      child.emit("exit", result.code ?? 0);
+    });
+    return child;
+  }) as unknown as typeof NodeChildProcess.spawn;
+  restoreSimulatorHooks?.();
+  restoreSimulatorHooks = __testSetSimulatorWindowCaptureHooks({ spawn, platform: "darwin" });
+}
+
+let restoreSimulatorHooks: (() => void) | null = null;
+
+/** Simulator running with one visible window, and every park succeeding. */
+const healthySimulator = (call: MacCall) => (call === "state"
+  ? { stdout: "true|1|0" }
+  : call === "measure"
+    ? { stdout: "ok|true|false|112|72|402|860" }
+    : { stdout: "" });
+
+function simulatorWindowSource(name = "iPhone 17 Pro — Simulator") {
+  return { id: "window:1", name, thumbnail: { isEmpty: () => true, toDataURL: () => "" } };
+}
+
+function parkingClaimant(id = 7) {
+  return {
+    id,
+    isDestroyed: () => false,
+    on: vi.fn(),
+    once: vi.fn(),
+    off: vi.fn(),
+    getBounds: () => ({ x: 0, y: 0, width: 1_400, height: 900 }),
+  };
+}
+
+function registerIpcForSimulator(serviceOverrides: Record<string, unknown> = {}) {
+  const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  registerIpc({
+    getCtx: () => ({ logger, iosSimulatorService: iosSimulatorServiceStub(serviceOverrides) }) as any,
+    getSyncService: () => null,
+    switchProjectFromDialog: vi.fn(),
+    closeCurrentProject: vi.fn(),
+    closeProjectByPath: vi.fn(),
+    globalStatePath: "/tmp/ade-state.json",
+  });
 }
 
 function localBinding(rootPath = "/repo"): OpenProjectBinding {
@@ -2022,6 +2157,167 @@ describe("registerIpc sync bridge", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    // The parking follow is process-wide module state; never leak it into the
+    // next case. Arming a throwaway claim first is what makes the teardown
+    // reset the parked frame and the holders even when the case never claimed.
+    followSimulatorWindowUnderAde(parkingClaimant(999) as any);
+    releaseSimulatorParkingFollow();
+    restoreSimulatorHooks?.();
+    restoreSimulatorHooks = null;
+    desktopCapturerGetSources.mockReset().mockResolvedValue([]);
+  });
+
+  // The refcount that keeps a second open drawer's parking claim alive is only
+  // worth anything if something in production actually takes a holder — and
+  // only if something in production actually arms the claim. It used to be
+  // taken inside the `startStream` ipcMain handler, which never runs when a
+  // local project is bound (preload routes it to the brain daemon, and window
+  // capture *requires* that binding), so the count was permanently zero. Every
+  // step here therefore goes through a registered handler: the claim is armed
+  // by the discovery call, exactly as production arms it.
+  it("counts window-parking holders taken over IPC so a second drawer survives the first one closing", async () => {
+    registerIpcForSimulator();
+    installSimulatorSpawn(healthySimulator);
+    desktopCapturerGetSources.mockResolvedValue([simulatorWindowSource()]);
+
+    const claimant = parkingClaimant();
+    browserWindowFromWebContents.mockReturnValue(claimant);
+
+    const discover = ipcHandlers.get(IPC.iosSimulatorListWindowSources);
+    const retain = ipcHandlers.get(IPC.iosSimulatorRetainWindowParking);
+    const release = ipcHandlers.get(IPC.iosSimulatorReleaseWindowParking);
+    expect(typeof discover).toBe("function");
+    expect(typeof retain).toBe("function");
+    expect(typeof release).toBe("function");
+
+    // The one production site that arms the claim. Without it every retain
+    // below answers false and the refcount is decoration.
+    await discover?.(eventForSender(), {});
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    // A chat pane's drawer and the Work sidebar's iOS tab, one window.
+    await expect(retain?.(eventForSender())).resolves.toEqual({ ok: true });
+    await expect(retain?.(eventForSender())).resolves.toEqual({ ok: true });
+
+    await release?.(eventForSender());
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    await release?.(eventForSender());
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // The service checks the single-owner rule "before any teardown so a refused
+  // shutdown leaves the stream and companion of the owning chat untouched". The
+  // IPC handler used to drop the window-parking follow *before* awaiting the
+  // call, so a refusal travelled back to the foreign caller with the owner's
+  // follow already gone — the promise broken from the outside.
+  it("keeps the owner's parking follow when a shutdown is refused", async () => {
+    const shutdown = vi.fn(async () => {
+      throw new Error("IOS_SIMULATOR_OWNED_BY_OTHER_SESSION");
+    });
+    registerIpcForSimulator({ shutdown });
+    installSimulatorSpawn(healthySimulator);
+    desktopCapturerGetSources.mockResolvedValue([simulatorWindowSource()]);
+
+    const claimant = parkingClaimant();
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(eventForSender(), {});
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    await expect(ipcHandlers.get(IPC.iosSimulatorShutdown)?.(eventForSender(), { chatSessionId: "chat-2" }))
+      .rejects.toThrow("IOS_SIMULATOR_OWNED_BY_OTHER_SESSION");
+
+    expect(shutdown).toHaveBeenCalled();
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+  });
+
+  it("drops the parking follow once a shutdown actually releases the session", async () => {
+    const shutdown = vi.fn(async () => ({ released: true, previousSession: null }));
+    registerIpcForSimulator({ shutdown });
+    installSimulatorSpawn(healthySimulator);
+    desktopCapturerGetSources.mockResolvedValue([simulatorWindowSource()]);
+
+    const claimant = parkingClaimant();
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(eventForSender(), {});
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    await expect(ipcHandlers.get(IPC.iosSimulatorShutdown)?.(eventForSender(), { chatSessionId: "chat-1" }))
+      .resolves.toEqual({ released: true, previousSession: null });
+
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // A second ADE window's drawer asks for a holder while the first window owns
+  // the claim. The host cannot count it, and used to answer `{ ok: true }`
+  // anyway — so that drawer believed it held one and its teardown issued a real
+  // release, stealing the incumbent's only holder and killing a follow it was
+  // still using. The refusal has to be in the answer.
+  it("tells a window that does not own the parking claim that its holder was refused", async () => {
+    registerIpcForSimulator();
+    installSimulatorSpawn(healthySimulator);
+    desktopCapturerGetSources.mockResolvedValue([simulatorWindowSource()]);
+
+    const claimant = parkingClaimant(7);
+    const other = parkingClaimant(8);
+
+    const discover = ipcHandlers.get(IPC.iosSimulatorListWindowSources);
+    const retain = ipcHandlers.get(IPC.iosSimulatorRetainWindowParking);
+    const release = ipcHandlers.get(IPC.iosSimulatorReleaseWindowParking);
+
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await discover?.(eventForSender(), {});
+    await expect(retain?.(eventForSender())).resolves.toEqual({ ok: true });
+
+    browserWindowFromWebContents.mockReturnValue(other);
+    // The loser's own discovery call does not steal the claim either.
+    await discover?.(eventForSender(sender(43)), {});
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+    await expect(retain?.(eventForSender(sender(43)))).resolves.toEqual({ ok: false });
+    await release?.(eventForSender(sender(43)));
+
+    // The incumbent's drawer is still capturing, so its follow has to survive
+    // the other window's teardown.
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await release?.(eventForSender());
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // Cold start: the Simulator is not running when the handler first reads the
+  // window state, ADE launches it during the park, and the window server has
+  // drawn a window by the time the sweeps finish — but `desktopCapturer` is a
+  // beat behind and lists nothing yet. Judging on the pre-park read answered
+  // "The simulator is not running. Launch it from ADE again." *about the app
+  // ADE had just launched*, and the drawer treats any message as terminal, so
+  // it gave up on the first of its three attempts.
+  it("does not call a cold simulator 'not running' after its own park started it", async () => {
+    registerIpcForSimulator();
+    let stateReads = 0;
+    installSimulatorSpawn((call) => {
+      if (call === "state") {
+        stateReads += 1;
+        return { stdout: stateReads === 1 ? "not-running|false|0|0" : "true|1|0" };
+      }
+      if (call === "measure") return { stdout: "ok|true|false|112|72|402|860" };
+      return { stdout: "" };
+    });
+    desktopCapturerGetSources.mockResolvedValue([]);
+    browserWindowFromWebContents.mockReturnValue(parkingClaimant());
+
+    const first = await ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(eventForSender(), {}) as any;
+
+    expect(stateReads).toBeGreaterThan(1);
+    expect(first.windowState).toMatchObject({ appRunning: true, issue: null });
+    // No verdict: the caller is free to sweep again.
+    expect(first.message).toBeNull();
+
+    // Which it does, and the window is listed by then.
+    desktopCapturerGetSources.mockResolvedValue([simulatorWindowSource()]);
+    const second = await ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(eventForSender(), {}) as any;
+    expect(second.sources).toHaveLength(1);
+    expect(second.message).toBeNull();
   });
 
   it("sets the pairing code through the brain when no project sync service exists", async () => {
@@ -3013,7 +3309,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { projectRoot: "/repo" },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ sources: [] });
 
     expect(getProjectContext).toHaveBeenCalledWith("/repo");
     expect(repoGetStatus).toHaveBeenCalledTimes(1);
@@ -3059,7 +3355,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { projectRoot: "/repo" },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ sources: [] });
 
     expect(getProjectContext).toHaveBeenCalledWith("/repo");
     expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
@@ -3209,7 +3505,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { projectRoot: "/repo" },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ sources: [] });
 
     expect(getStatus).toHaveBeenCalledTimes(1);
   });
