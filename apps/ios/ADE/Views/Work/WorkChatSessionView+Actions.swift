@@ -1479,6 +1479,7 @@ extension WorkChatSessionView {
     else { return }
     guard workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: scrollMetrics.distanceFromBottom,
+      contentFitsViewport: scrollMetrics.scrollableHeight <= 0.5,
       loading: olderHistoryLoadInFlight,
       hasError: olderHistoryLoadError != nil,
       hasBufferedEntries: hiddenTimelineCount > 0,
@@ -1530,11 +1531,9 @@ extension WorkChatSessionView {
 
   /// The reader took the transcript over, so the initial bottom pin stands down.
   ///
-  /// Split from `releaseBottomStickinessForUserScroll` because the two answer
-  /// different questions at different sensitivities: 2pt of travel is enough to
-  /// mean "stop following the stream", but cancelling the opening pin needs a
-  /// deliberate drag (`workChatInitialPinCancelDeadband`) — finger jitter on a
-  /// tap used to strand a freshly-opened chat mid-transcript.
+  /// A user-driven scroll phase is enough to stand down the opening pin. This
+  /// runs on the native scroll phase transition, so a small tap cannot strand a
+  /// freshly-opened chat while a real drag still cancels the pin immediately.
   @MainActor
   func cancelPendingInitialBottomPinForUserScroll() {
     guard pendingInitialBottomPinSessionId == session.id else { return }
@@ -1550,18 +1549,17 @@ extension WorkChatSessionView {
   }
 
   @MainActor
-  func allowBottomStickinessResumeFromUserScroll(reason: String) {
-    guard bottomStickinessReleasedByUser else { return }
-    bottomStickinessReleasedByUser = false
-  }
-
-  @MainActor
   func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
     bottomStickinessReleasedByUser = false
-    let targetId = latestScrollTargetId
     if animated {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+        // Keep the ScrollPosition channel and the id-based reader in agreement.
+        // The reader is useful for older OS/layout paths, while the bound
+        // position is the authoritative tail jump when a LazyVStack has not
+        // materialized the sentinel in the current pass.
+        let targetId = latestScrollTargetId
         proxy.scrollTo(targetId, anchor: .bottom)
+        scrollPosition.scrollTo(edge: .bottom)
       }
       return
     }
@@ -1569,7 +1567,9 @@ extension WorkChatSessionView {
     var transaction = Transaction()
     transaction.animation = nil
     withTransaction(transaction) {
+      let targetId = latestScrollTargetId
       proxy.scrollTo(targetId, anchor: .bottom)
+      scrollPosition.scrollTo(edge: .bottom)
     }
   }
 

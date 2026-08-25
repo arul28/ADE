@@ -549,6 +549,37 @@ private func workAppendPlainProse(
 /// characters, not bytes, because row height follows glyphs.
 let workMarkdownProseRowCharacterLimit = 1_600
 
+/// Maximum list items in one rendered markdown block.
+///
+/// A list is itself a SwiftUI `VStack` inside the transcript's lazy stack. A
+/// long numbered answer can therefore bypass the prose-row character budget
+/// and create one multi-screen child row, bringing back the lazy-placement
+/// feedback loop that the prose splitter prevents. Keeping the block to a
+/// small, predictable number of items preserves the list's reading order while
+/// giving the outer transcript several normal-sized rows to estimate.
+let workMarkdownListItemsPerRenderBlock = 16
+
+/// Splits a list into bounded render blocks without dropping or reordering
+/// items. Ordered-list numbering is applied by the parser from each chunk's
+/// offset, so the helper only needs to preserve item order.
+func workBoundedListItemChunks(
+  _ items: [String],
+  limit: Int = workMarkdownListItemsPerRenderBlock
+) -> [[String]] {
+  guard !items.isEmpty else { return [] }
+  guard limit > 0, items.count > limit else { return [items] }
+
+  var chunks: [[String]] = []
+  chunks.reserveCapacity((items.count + limit - 1) / limit)
+  var offset = 0
+  while offset < items.count {
+    let end = min(offset + limit, items.count)
+    chunks.append(Array(items[offset..<end]))
+    offset = end
+  }
+  return chunks
+}
+
 /// Splits one oversized paragraph into rows of comparable height.
 ///
 /// Every cut is decided from the front, out of text that is already present, so
@@ -810,6 +841,18 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
     }
   }
 
+  func appendListBlocks(_ items: [String], orderedStart: Int? = nil) {
+    var itemOffset = 0
+    for chunk in workBoundedListItemChunks(items) {
+      if let orderedStart {
+        appendBlock(.orderedList(start: orderedStart + itemOffset, items: chunk))
+      } else {
+        appendBlock(.unorderedList(chunk))
+      }
+      itemOffset += chunk.count
+    }
+  }
+
   while index < lines.count {
     let line = lines[index]
     let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -871,7 +914,7 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
     }
 
     if let unordered = parseList(startingAt: index, in: lines, ordered: false) {
-      appendBlock(.unorderedList(unordered.items))
+      appendListBlocks(unordered.items)
       index = unordered.nextIndex
       continue
     }
@@ -885,7 +928,7 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
         // markers and let the prose splitter turn it into stable rows.
         appendParagraph([trimmed])
       } else {
-        appendBlock(.orderedList(start: ordered.startNumber ?? 1, items: ordered.items))
+        appendListBlocks(ordered.items, orderedStart: ordered.startNumber ?? 1)
       }
       index = ordered.nextIndex
       continue

@@ -15,7 +15,6 @@ let workChatTouchScrollDeadband: CGFloat = 2
 /// tap on a freshly-opened chat, and cancelling the pin there is what left
 /// transcripts parked at a random offset while hydration was still growing the
 /// content underneath.
-let workChatInitialPinCancelDeadband: CGFloat = 16
 let workChatBottomAnchorSpacerHeight: CGFloat = 1
 let workChatContentBottomGutterHeight: CGFloat = 2
 let workChatSubagentActivePopupHeight: CGFloat = 34
@@ -105,14 +104,29 @@ func workChatShouldRequestOlderHistory(
 /// there leaves buffered history unreachable by any gesture at all.
 func workChatShouldContinueAutomaticOlderHistory(
   distanceFromBottom: CGFloat,
+  contentFitsViewport: Bool,
   loading: Bool,
   hasError: Bool,
   hasBufferedEntries: Bool,
   hasHostHistory: Bool
 ) -> Bool {
-  guard distanceFromBottom <= workChatOlderHistoryScrollableDistance, !loading else { return false }
+  guard contentFitsViewport,
+        distanceFromBottom <= workChatOlderHistoryScrollableDistance,
+        !loading
+  else { return false }
   if hasBufferedEntries { return true }
   return !hasError && hasHostHistory
+}
+
+/// The prepend probe is only useful while the reader is close enough to the
+/// head for a history page to land. Keeping it installed on the first row for
+/// the whole transcript makes every ordinary scroll participate in SwiftUI's
+/// preference graph, even though there is no correction to perform.
+func workChatShouldInstallPrependProbe(
+  distanceFromTop: CGFloat,
+  hasPrependAnchor: Bool
+) -> Bool {
+  hasPrependAnchor || distanceFromTop <= workChatOlderHistoryTriggerDistance
 }
 
 /// Scroll state a prepend has to preserve: which row led the list, where that
@@ -139,6 +153,7 @@ struct WorkChatPrependAnchor {
 /// keeps its existing meaning.
 final class WorkChatScrollMetrics {
   var distanceFromBottom: CGFloat = 0
+  var distanceFromTop: CGFloat = 0
   var offsetY: CGFloat = 0
   var scrollableHeight: CGFloat = 0
   /// Position of the row currently being probed (the list's first row, or the
@@ -1002,7 +1017,14 @@ struct WorkChatSessionView: View {
   /// the armed row while a prepend is in flight (it is no longer first once the
   /// older page lands above it).
   var prependProbeRowId: String? {
-    scrollMetrics.prependAnchor?.rowId ?? timelinePresentation.visibleEntries.first?.id
+    let hasPrependAnchor = scrollMetrics.prependAnchor != nil
+    guard workChatShouldInstallPrependProbe(
+      distanceFromTop: scrollMetrics.distanceFromTop,
+      hasPrependAnchor: hasPrependAnchor
+    ) else {
+      return nil
+    }
+    return scrollMetrics.prependAnchor?.rowId ?? timelinePresentation.visibleEntries.first?.id
   }
 
   /// The last real probe measurement, replayed when a correction had to wait for
@@ -1249,7 +1271,15 @@ struct WorkChatSessionView: View {
       // or the probe silently never installs and the anchor never arms.
       let probeRenderRowId = visibleTimelineRenderEntries
         .first { $0.sourceEntryId == probeRowId }?.id
-      ForEach(visibleTimelineRenderEntries) { entry in
+      // Keep SwiftUI's identity pass over tiny values. Render entries carry
+      // full assistant payloads, so iterating them directly makes AttributeGraph
+      // copy long markdown responses just to read `id` during layout.
+      let renderEntries = visibleTimelineRenderEntries
+      let renderRowReferences = renderEntries.enumerated().map { index, entry in
+        WorkTimelineRenderRowReference(id: entry.id, index: index)
+      }
+      ForEach(renderRowReferences) { reference in
+        let entry = renderEntries[reference.index]
         timelineRenderEntryView(
           for: entry,
           proxy: proxy,
@@ -1595,7 +1625,15 @@ struct WorkChatSessionView: View {
             let userDriven = workChatScrollPhaseIsUserDriven(phase)
             guard timelineScrollPhaseUserDriven != userDriven else { return }
             timelineScrollPhaseUserDriven = userDriven
-            guard !userDriven else { return }
+            timelineDragActive = userDriven
+            if userDriven {
+              // Let the native ScrollView own the whole interaction. The old
+              // zero-distance simultaneous DragGesture competed with it and
+              // could leave a tail-pinned chat one gesture away from moving.
+              cancelPendingInitialBottomPinForUserScroll()
+              releaseBottomStickinessForUserScroll(reason: "scroll-phase")
+              return
+            }
             // A fling that ended may have left a prepend correction waiting.
             restorePrependAnchorIfNeeded(probed: lastPrependProbeSample)
           }
@@ -1606,6 +1644,7 @@ struct WorkChatSessionView: View {
             // reference box or to state that only changes at a threshold — no
             // list scans, and nothing that invalidates the transcript per frame.
             scrollMetrics.offsetY = sample.offsetY
+            scrollMetrics.distanceFromTop = sample.distanceFromTop
             scrollMetrics.scrollableHeight = sample.scrollableHeight
             guard sample.containerHeight > 1 else { return }
             updateBottomStickiness(distanceFromBottom: sample.distanceFromBottom, proxy: proxy)
@@ -1636,30 +1675,6 @@ struct WorkChatSessionView: View {
                   value: geometry.size.width
                 )
             }
-          )
-          .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-              .onChanged { value in
-                if !timelineDragActive {
-                  timelineDragActive = true
-                }
-                if abs(value.translation.height) > workChatInitialPinCancelDeadband {
-                  cancelPendingInitialBottomPinForUserScroll()
-                }
-                if value.translation.height > workChatTouchScrollDeadband {
-                  releaseBottomStickinessForUserScroll(reason: "drag")
-                } else if value.translation.height < -workChatTouchScrollDeadband {
-                  allowBottomStickinessResumeFromUserScroll(reason: "drag")
-                }
-              }
-              .onEnded { value in
-                let releasedBottomStickiness = value.translation.height > workChatTouchScrollDeadband
-                if timelineDragActive {
-                  timelineDragActive = false
-                }
-                guard !releasedBottomStickiness else { return }
-                updateBottomStickiness(distanceFromBottom: scrollMetrics.distanceFromBottom, proxy: proxy)
-              }
           )
           .overlay(alignment: .top) {
             WorkChatNavigationBackdrop()
@@ -1707,12 +1722,11 @@ struct WorkChatSessionView: View {
         .background(workChatCanvasBackground.ignoresSafeArea())
         .adeNavigationGlass()
         .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
-          let changed = abs(scrollViewportHeight - height) > 1
+          guard height > 0, abs(scrollViewportHeight - height) > 1 else { return }
           scrollViewportHeight = height
-          guard changed, isNearBottom else { return }
-          pinToLatestAfterLayout(proxy, reason: "viewport-height")
         }
         .onPreferenceChange(WorkChatViewportWidthPreferenceKey.self) { width in
+          guard width > 0, abs(scrollViewportWidth - width) > 1 else { return }
           scrollViewportWidth = width
         }
         .onPreferenceChange(WorkChatPrependProbePreferenceKey.self) { sample in
@@ -1731,8 +1745,6 @@ struct WorkChatSessionView: View {
         .onPreferenceChange(WorkChatComposerLayoutHeightPreferenceKey.self) { height in
           guard height > 0, abs(composerLayoutHeight - height) > 1 else { return }
           composerLayoutHeight = height
-          guard isNearBottom else { return }
-          pinToLatestAfterLayout(proxy, reason: "composer-height")
         }
   }
 
@@ -1990,6 +2002,19 @@ struct WorkChatSessionView: View {
       )
     }
   }
+}
+
+/// Lightweight identity passed to SwiftUI's `ForEach` for the transcript.
+///
+/// `WorkTimelineRenderEntry` intentionally carries the render payload, which
+/// can include an entire assistant response and its streaming classifier. If
+/// `ForEach` iterates that value type directly, SwiftUI copies the payload just
+/// to read `Identifiable.id` while reconciling rows. A long chat can therefore
+/// spend its layout budget copying markdown instead of drawing the viewport.
+/// Keep the heavy array captured once and reconcile only these tiny references.
+private struct WorkTimelineRenderRowReference: Identifiable {
+  let id: String
+  let index: Int
 }
 
 private extension WorkChatSessionView {
