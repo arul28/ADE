@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.64] - 2026-08-25
+
+### Codex
+
+- Pin Codex app-server 0.149.1. Unsandboxed `!` / `/shell` are app-server RPCs with a user-shell chip; follow-ups queue during compaction or review instead of steering a turn that will reject them (#1154).
+- `/memory reset` confirms first. Background terminals have an explicit stop. Interrupted or stalled compaction fail-opens instead of wedging the session.
+
+### Prompt settings
+
+- Changing model or provider no longer rewrites approval, sandbox, or fast-mode preferences (#1153).
+
+### OpenCode
+
+- One v2 SDK client. The tracked CLI no longer echoes ADE's prompt into the session (#1155).
+
+### Chats and Work
+
+- GitHub issues attach to a chat alongside Linear (#1147).
+- Cursor Cloud fleet view on desktop, iOS, and the TUI (#1146).
+- PR pane can auto-open (#1142).
+- Work model catalogs follow the prompt-box machine (#1139).
+
+### iOS
+
+- Simulator builds stay on the lane worktree; the drawer reports what it can actually do (#1150).
+- Work chat scroll and render performance; stop shipping the whole models.dev directory to the phone (#1148, #1149).
+
+### Fixes
+
+- Project picker recents (#1152).
+- Windows brain heartbeat honors `ADE_BRAIN_HEARTBEAT_STALE_MS` (#1143).
+- Storage truth chain, suspension-aware watchdogs, runtime leak and updater status (#1140).
+
 ## [1.2.63] - 2026-08-20
 
 ### GitHub connection
@@ -1671,7 +1704,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.63...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.64...HEAD
+[1.2.64]: https://github.com/arul28/ADE/compare/v1.2.63...v1.2.64
 [1.2.63]: https://github.com/arul28/ADE/compare/v1.2.62...v1.2.63
 [1.2.62]: https://github.com/arul28/ADE/compare/v1.2.61...v1.2.62
 [1.2.61]: https://github.com/arul28/ADE/compare/v1.2.60...v1.2.61
