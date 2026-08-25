@@ -432,6 +432,8 @@ private enum WorkPreviewData {
       chatSummaryContext: WorkChatSummaryRenderContext(WorkPreviewData.chatSummary),
       transcript: WorkPreviewData.transcript,
       transcriptRenderSignature: workChatEnvelopeListRenderSignature(WorkPreviewData.transcript),
+      allowsIncrementalTranscriptUpdate: false,
+      transcriptIncrementalDelta: .constant([]),
       fallbackEntries: [],
       fallbackEntriesRenderSignature: workFallbackEntriesRenderSignature([]),
       artifacts: [WorkPreviewData.artifact],

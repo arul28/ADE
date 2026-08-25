@@ -142,6 +142,10 @@ struct WorkChatMessage: Identifiable, Equatable {
   /// on every token batch. Completed snapshot messages leave these nil and
   /// continue to derive their values from the authoritative markdown.
   var markdownCharacterCount: Int? = nil
+  /// Exact UTF-8 byte count for the authoritative markdown. The streaming
+  /// merger uses this to avoid rescanning the entire growing response before
+  /// deciding whether an incoming provider payload is a fragment or replay.
+  var markdownUTF8Count: Int? = nil
   var markdownLineCount: Int? = nil
   var markdownHasCarriageReturn: Bool? = nil
   var markdownContainsFence: Bool? = nil
@@ -776,6 +780,7 @@ struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
   let totalLineCount: Int
   let canShowMore: Bool
   let nextLineBudget: Int
+  let willRemainTruncatedAfterNextStep: Bool
   /// The reader has already taken one "Show more" step on this message, so the
   /// ladder's next rung is the full-screen viewer rather than another step.
   var hasExpandedInPlace = false
@@ -788,6 +793,7 @@ struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
       && lhs.totalLineCount == rhs.totalLineCount
       && lhs.canShowMore == rhs.canShowMore
       && lhs.nextLineBudget == rhs.nextLineBudget
+      && lhs.willRemainTruncatedAfterNextStep == rhs.willRemainTruncatedAfterNextStep
       && lhs.hasExpandedInPlace == rhs.hasExpandedInPlace
   }
 }
@@ -1074,6 +1080,7 @@ struct WorkChatTimelineSnapshot: Equatable {
   var transcriptHasInterruptibleActivity: Bool
   var latestTranscriptTimestamp: String?
   var latestMessageAssistantId: String?
+  var latestMessageAssistantItemId: String?
   var latestTurnEndTurnId: String?
   /// Rows belonging to the turn in flight. Empty once every turn has ended.
   var liveTurnEntryIds: Set<String>
@@ -1094,6 +1101,7 @@ struct WorkChatTimelineSnapshot: Equatable {
     transcriptHasInterruptibleActivity: false,
     latestTranscriptTimestamp: nil,
     latestMessageAssistantId: nil,
+    latestMessageAssistantItemId: nil,
     latestTurnEndTurnId: nil,
     liveTurnEntryIds: [],
     timeline: []

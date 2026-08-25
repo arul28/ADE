@@ -46,6 +46,7 @@ func buildWorkChatTimelineSnapshot(
     artifacts: artifacts,
     localEchoMessages: localEchoMessages
   )
+  let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
 
   return WorkChatTimelineSnapshot(
     signature: signature,
@@ -61,7 +62,8 @@ func buildWorkChatTimelineSnapshot(
     transcriptLatestTurnEnded: transcriptLatestTurnEnded,
     transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
     latestTranscriptTimestamp: latestTranscriptTimestamp,
-    latestMessageAssistantId: latestWorkTimelineMessageAssistantId(timeline),
+    latestMessageAssistantId: latestAssistantTail?.id,
+    latestMessageAssistantItemId: latestAssistantTail?.itemId,
     latestTurnEndTurnId: workLatestTurnEndTurnId(in: timeline),
     liveTurnEntryIds: workEntryIdsAfterLatestTurnEnd(in: timeline),
     timeline: timeline
@@ -493,10 +495,18 @@ private func latestWorkTranscriptTimestamp(_ transcript: [WorkChatEnvelope]) -> 
   return latest
 }
 
-private func latestWorkTimelineMessageAssistantId(_ timeline: [WorkTimelineEntry]) -> String? {
+private struct WorkTimelineAssistantTail {
+  let id: String?
+  let itemId: String?
+}
+
+private func latestWorkTimelineAssistantTail(_ timeline: [WorkTimelineEntry]) -> WorkTimelineAssistantTail? {
   for entry in timeline.reversed() {
     guard case .message(let message) = entry.payload else { continue }
-    return message.role == "assistant" ? message.id : nil
+    return WorkTimelineAssistantTail(
+      id: message.role == "assistant" ? message.id : nil,
+      itemId: message.role == "assistant" ? message.itemId : nil
+    )
   }
   return nil
 }
@@ -1506,6 +1516,7 @@ func buildWorkTimeline(
     // so this is the first point where a message's text is final.
     var message = message
     message.markdownDigest = workStableDigest(message.markdown)
+    message.markdownUTF8Count = message.markdown.utf8.count
     let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
     let normalizedMarkdown = hasCarriageReturn
       ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")

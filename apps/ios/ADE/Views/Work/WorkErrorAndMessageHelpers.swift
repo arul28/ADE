@@ -438,23 +438,29 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
   // response for every token batch.
   let (
     existingCharacterCount,
+    existingUTF8Length,
     existingLineCount,
     existingHasCarriageReturn,
     existingContainsFence,
     existingTrailingBacktickRun,
+    existingTrailingRegionalIndicatorRun,
+    existingLastCharacter,
     mergeResult
-  ): (Int, Int, Bool, Bool, Int, WorkStreamingMergeResult) = {
+  ): (Int, Int, Int, Bool, Bool, Int, Int, Character?, WorkStreamingMergeResult) = {
     let existing = message.markdown
     return (
       message.markdownCharacterCount ?? existing.count,
+      message.markdownUTF8Count ?? existing.utf8.count,
       message.markdownLineCount ?? workAssistantMessageLineCount(existing),
       message.markdownHasCarriageReturn ?? existing.contains("\r"),
       message.markdownContainsFence ?? existing.contains("```"),
       message.markdownTrailingBacktickRun ?? workMarkdownTrailingBacktickRun(existing),
+      workTrailingRegionalIndicatorRun(existing),
+      existing.last,
       workStreamingMergeResult(
         existing,
         incoming,
-        existingUTF8Length: existing.utf8.count,
+        existingUTF8Length: message.markdownUTF8Count ?? existing.utf8.count,
         existingTrailingBacktickRun: message.markdownTrailingBacktickRun
           ?? workMarkdownTrailingBacktickRun(existing)
       )
@@ -484,7 +490,13 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
     existingContainsFence
   }
   if !mergedHasCarriageReturn, case .appended(let appended) = mergeResult {
-    message.markdownCharacterCount = existingCharacterCount + appended.count
+    message.markdownUTF8Count = existingUTF8Length + appended.utf8.count
+    message.markdownCharacterCount = workStreamingMergedCharacterCount(
+      existingLastCharacter: existingLastCharacter,
+      existingTrailingRegionalIndicatorRun: existingTrailingRegionalIndicatorRun,
+      appended: appended,
+      existingCharacterCount: existingCharacterCount
+    )
     message.markdownLineCount = existingLineCount + appended.reduce(into: 0) { count, character in
       if character == "\n" { count += 1 }
     }
@@ -508,6 +520,7 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
     let normalized = mergedHasCarriageReturn
       ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
       : message.markdown
+    message.markdownUTF8Count = message.markdown.utf8.count
     message.markdownCharacterCount = normalized.count
     message.markdownLineCount = workAssistantMessageLineCount(normalized)
     let classifier = WorkStreamingMonospacedClassifierState(text: normalized)
@@ -517,6 +530,80 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
   }
   message.assistantPreview = nil
   return true
+}
+
+/// Appending a delta normally makes the grapheme count additive. The only
+/// exception is when the first grapheme of that delta joins the previous tail
+/// (combining marks, regional-indicator flags, emoji modifiers, or a similar
+/// Unicode boundary). Detect that boundary with a tiny string, and pay for a
+/// full count only on that uncommon path; the ordinary ASCII stream remains
+/// O(delta) with no full-response scan.
+private func workStreamingMergedCharacterCount(
+  existingLastCharacter: Character?,
+  existingTrailingRegionalIndicatorRun: Int,
+  appended: String,
+  existingCharacterCount: Int
+) -> Int {
+  guard let existingLast = existingLastCharacter,
+        let appendedFirst = appended.first
+  else {
+    return existingCharacterCount + appended.count
+  }
+
+  let existingTail = String(existingLast)
+  // `String.first` is a grapheme, not a scalar. A delta beginning with an
+  // odd run of regional indicators can therefore start with a paired
+  // `Character` even though its first scalar still needs to pair with the
+  // previous message tail. Handle that boundary explicitly before the
+  // general combining-mark/emoji check below.
+  if existingTrailingRegionalIndicatorRun % 2 == 1,
+     let appendedFirstScalar = appended.unicodeScalars.first,
+     workIsRegionalIndicator(appendedFirstScalar) {
+    // Swift groups regional indicators in pairs. When the existing run is
+    // odd, the incoming run only reduces the grapheme delta by one when it is
+    // odd too; an even incoming run simply pairs with the existing singleton
+    // and leaves the incoming grapheme count additive.
+    let incomingRegionalIndicatorRun = workLeadingRegionalIndicatorRun(in: appended)
+    if incomingRegionalIndicatorRun % 2 == 1 {
+      return existingCharacterCount + appended.count - 1
+    }
+  }
+
+  let appendedHead = String(appendedFirst)
+  let detachedBoundaryCount = existingTail.count + appendedHead.count
+  let mergedBoundaryCount = (existingTail + appendedHead).count
+  guard mergedBoundaryCount < detachedBoundaryCount else {
+    return existingCharacterCount + appended.count
+  }
+
+  // The prefix is the only part whose grapheme segmentation can change when
+  // it is joined to the existing message tail. Preserve the already-counted
+  // prefix and replace that one boundary cluster with its authoritative count.
+  return existingCharacterCount - 1
+    + (existingTail + appended).count
+}
+
+private func workTrailingRegionalIndicatorRun(_ text: String) -> Int {
+  var count = 0
+  for scalar in text.unicodeScalars.reversed() {
+    guard workIsRegionalIndicator(scalar) else { break }
+    count += 1
+  }
+  return count
+}
+
+private func workLeadingRegionalIndicatorRun(in text: String) -> Int {
+  var count = 0
+  for scalar in text.unicodeScalars {
+    guard workIsRegionalIndicator(scalar) else { break }
+    count += 1
+  }
+  return count
+}
+
+private func workIsRegionalIndicator(_ scalar: UnicodeScalar?) -> Bool {
+  guard let scalar else { return false }
+  return (0x1F1E6...0x1F1FF).contains(scalar.value)
 }
 
 private func workMarkdownTrailingBacktickRunAfterAppending(_ appended: String, precedingRun: Int) -> Int {

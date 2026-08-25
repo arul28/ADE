@@ -275,6 +275,8 @@ func mergeWorkTranscriptEntries(
   var seenStableOccurrences = Set<String>()
   var seenStableLegacyOccurrences = Set<String>()
   var seenLegacyOnlyOccurrences = Set<String>()
+  var idlessIndicesByFrame: [String: [Int]] = [:]
+  var stableFrames = Set<String>()
   var result: [AgentChatTranscriptEntry] = []
   result.reserveCapacity(older.count + newer.count)
   for entry in older + newer {
@@ -285,10 +287,8 @@ func mergeWorkTranscriptEntries(
       // a row that was cached without one. Match that upgrade by the physical
       // transcript frame, not the mutable text, but only when the frame is
       // unique; repeated id-less rows must never be collapsed accidentally.
-      let matchingIdlessIndices = result.indices.filter { index in
-        workTranscriptEntryStableIdentity(result[index]) == nil
-          && workTranscriptEntryLegacyFrame(result[index]) == workTranscriptEntryLegacyFrame(entry)
-      }
+      let frame = workTranscriptEntryLegacyFrame(entry)
+      let matchingIdlessIndices = idlessIndicesByFrame[frame] ?? []
       if matchingIdlessIndices.count == 1,
          workTranscriptEntriesAreStableUpgrade(
            result[matchingIdlessIndices[0]],
@@ -296,6 +296,8 @@ func mergeWorkTranscriptEntries(
            uniqueIdlessFrameCount: matchingIdlessIndices.count
          ) {
         result[matchingIdlessIndices[0]] = entry
+        idlessIndicesByFrame[frame] = nil
+        stableFrames.insert(frame)
         seenStableOccurrences.insert(stableIdentity)
         seenStableLegacyOccurrences.insert(legacyIdentity)
         continue
@@ -304,10 +306,7 @@ func mergeWorkTranscriptEntries(
       // newly identified one instead of deleting an occurrence. For the
       // ordinary same-text case with no stable upgrade target, preserve the
       // existing id-less row rather than duplicating it.
-      let hasStableFrame = result.contains { existing in
-        workTranscriptEntryStableIdentity(existing) != nil
-          && workTranscriptEntryLegacyFrame(existing) == workTranscriptEntryLegacyFrame(entry)
-      }
+      let hasStableFrame = stableFrames.contains(frame)
       if matchingIdlessIndices.isEmpty,
          !hasStableFrame,
          seenLegacyOnlyOccurrences.contains(legacyIdentity) {
@@ -316,11 +315,14 @@ func mergeWorkTranscriptEntries(
       seenStableOccurrences.insert(stableIdentity)
       seenStableLegacyOccurrences.insert(legacyIdentity)
       result.append(entry)
+      stableFrames.insert(frame)
     } else {
       guard !seenLegacyOnlyOccurrences.contains(legacyIdentity),
             !seenStableLegacyOccurrences.contains(legacyIdentity)
       else { continue }
       seenLegacyOnlyOccurrences.insert(legacyIdentity)
+      let frame = workTranscriptEntryLegacyFrame(entry)
+      idlessIndicesByFrame[frame, default: []].append(result.count)
       result.append(entry)
     }
   }
@@ -336,6 +338,11 @@ func mergeWorkTranscriptPageOccurrences(
   guard !older.isEmpty else { return newer }
   guard !newer.isEmpty else { return older }
   let maxOverlap = min(older.count, newer.count)
+  var idlessFrameCounts: [String: Int] = [:]
+  for entry in older where workTranscriptEntryStableIdentity(entry) == nil {
+    let frame = workTranscriptEntryLegacyFrame(entry)
+    idlessFrameCounts[frame, default: 0] += 1
+  }
   var overlap = 0
   if maxOverlap > 0 {
     for candidate in stride(from: maxOverlap, through: 1, by: -1) {
@@ -348,10 +355,7 @@ func mergeWorkTranscriptPageOccurrences(
           || workTranscriptEntriesAreStableUpgrade(
             cached,
             refreshed,
-            uniqueIdlessFrameCount: older.filter {
-              workTranscriptEntryStableIdentity($0) == nil
-                && workTranscriptEntryLegacyFrame($0) == workTranscriptEntryLegacyFrame(cached)
-            }.count
+            uniqueIdlessFrameCount: idlessFrameCounts[workTranscriptEntryLegacyFrame(cached)] ?? 0
           )
         if !sameOccurrence {
           matches = false
@@ -382,10 +386,7 @@ func mergeWorkTranscriptPageOccurrences(
       mergedOlder[olderIndex] = refreshed
       continue
     }
-    let uniqueIdlessFrameCount = older.filter {
-      workTranscriptEntryStableIdentity($0) == nil
-        && workTranscriptEntryLegacyFrame($0) == workTranscriptEntryLegacyFrame(cached)
-    }.count
+    let uniqueIdlessFrameCount = idlessFrameCounts[workTranscriptEntryLegacyFrame(cached)] ?? 0
     if workTranscriptEntriesAreStableUpgrade(
       cached,
       refreshed,
@@ -748,6 +749,8 @@ struct WorkSessionDestinationView: View {
   @State var lastKnownChatSummary: AgentChatSessionSummary?
   @State var transcript: [WorkChatEnvelope] = []
   @State var transcriptRenderSignature = 0
+  @State var transcriptAllowsIncrementalSnapshot = false
+  @State var transcriptIncrementalDelta: [WorkChatEnvelope] = []
   @State var mainChatRenderEpoch = 0
   @State var liveTranscriptCache = WorkLiveTranscriptCache()
   @State var fallbackEntries: [AgentChatTranscriptEntry] = []
@@ -843,9 +846,24 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
-  func setTranscript(_ next: [WorkChatEnvelope]) {
+  func setTranscript(
+    _ next: [WorkChatEnvelope],
+    allowsIncrementalSnapshot: Bool = false,
+    incrementalDelta: [WorkChatEnvelope] = []
+  ) {
     if transcript.isEmpty, !next.isEmpty {
       mainChatRenderEpoch &+= 1
+    }
+    let canUseIncrementalSnapshot = allowsIncrementalSnapshot && !incrementalDelta.isEmpty
+    if canUseIncrementalSnapshot {
+      // Multiple host ticks can arrive before the renderer's coalescing window
+      // wakes. Keep every fragment since the last rendered revision together;
+      // the child clears this binding after it consumes them.
+      transcriptIncrementalDelta.append(contentsOf: incrementalDelta)
+      transcriptAllowsIncrementalSnapshot = true
+    } else {
+      transcriptAllowsIncrementalSnapshot = false
+      transcriptIncrementalDelta = []
     }
     transcript = next
     transcriptRenderSignature &+= 1
@@ -1705,6 +1723,8 @@ struct WorkSessionDestinationView: View {
       ),
       transcript: transcriptForView,
       transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
+      allowsIncrementalTranscriptUpdate: viewingSubagent ? false : transcriptAllowsIncrementalSnapshot,
+      transcriptIncrementalDelta: viewingSubagent ? .constant([]) : $transcriptIncrementalDelta,
       fallbackEntries: fallbackEntriesForView,
       fallbackEntriesRenderSignature: viewingSubagent ? 0 : fallbackEntriesRenderSignature,
       artifacts: artifactsForView,
@@ -2310,7 +2330,11 @@ struct WorkSessionDestinationView: View {
       )
     }
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
-      setTranscript(mergedTranscript)
+      setTranscript(
+        mergedTranscript,
+        allowsIncrementalSnapshot: !liveDeltaTranscript.isEmpty && !liveTranscriptWasRebuilt,
+        incrementalDelta: liveDeltaTranscript
+      )
     }
     if fetchedFallbackEntriesAvailable, fallbackEntries != fetchedFallbackEntries {
       setFallbackEntries(fetchedFallbackEntries)
@@ -2872,7 +2896,11 @@ struct WorkSessionDestinationView: View {
       )
     }
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
-      setTranscript(mergedTranscript)
+      setTranscript(
+        mergedTranscript,
+        allowsIncrementalSnapshot: !liveDeltaTranscript.isEmpty && !liveTranscriptWasRebuilt,
+        incrementalDelta: liveDeltaTranscript
+      )
     }
     reconcileOptimisticPendingSteers(with: mergedTranscript)
     reconcileLocalEchoMessages()

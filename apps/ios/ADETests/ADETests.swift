@@ -19513,6 +19513,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workApplyStreamingAssistantText("\nSecond line", to: &message))
     XCTAssertTrue(workApplyStreamingAssistantText("\nThird line", to: &message))
     XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
     XCTAssertEqual(message.markdownLineCount, 3)
     XCTAssertEqual(message.markdownHasCarriageReturn, false)
     XCTAssertEqual(message.markdownContainsFence, false)
@@ -19521,6 +19522,263 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(preview.totalCharacterCount, message.markdown.count)
     XCTAssertEqual(preview.totalLineCount, 3)
     XCTAssertFalse(preview.isTruncated)
+  }
+
+  func testStreamingPreviewMetadataKeepsGraphemeCountAcrossDeltaBoundary() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-graphemes",
+      role: "assistant",
+      markdown: "Cafe",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-1"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\u{301}", to: &message))
+    XCTAssertEqual(message.markdown, "Cafe\u{301}")
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+  }
+
+  func testStreamingPreviewMetadataKeepsRegionalIndicatorPairingAcrossDeltaBoundary() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-regional-indicators",
+      role: "assistant",
+      markdown: "\u{1F1FA}",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-2"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\u{1F1F8}\u{1F1E6}\u{1F1E7}", to: &message))
+    XCTAssertEqual(message.markdown, "\u{1F1FA}\u{1F1F8}\u{1F1E6}\u{1F1E7}")
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+    XCTAssertEqual(message.markdownCharacterCount, 2)
+  }
+
+  func testStreamingPreviewMetadataKeepsEvenRegionalIndicatorDeltaAdditive() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-even-regional-indicators",
+      role: "assistant",
+      markdown: "\u{1F1FA}",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-3"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\u{1F1F8}\u{1F1E6}", to: &message))
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+    XCTAssertEqual(message.markdownCharacterCount, 2)
+  }
+
+  func testStreamingPreviewMetadataKeepsUTF8CountAcrossReplayAndCarriageReturn() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-utf8",
+      role: "assistant",
+      markdown: "Café",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-4"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\nnext", to: &message))
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+    XCTAssertFalse(workApplyStreamingAssistantText(message.markdown, to: &message))
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\r\nfinal", to: &message))
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+  }
+
+  func testIncrementalTimelineSortDetectsSameTimestampRankInversion() {
+    let first = WorkChatMessage(
+      id: "first",
+      role: "assistant",
+      markdown: "first",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "first"
+    )
+    let second = WorkChatMessage(
+      id: "second",
+      role: "assistant",
+      markdown: "second",
+      timestamp: first.timestamp,
+      turnId: "turn-1",
+      itemId: "second"
+    )
+    let timeline = [
+      WorkTimelineEntry(id: "second", timestamp: second.timestamp, rank: 1_500, payload: .message(second)),
+      WorkTimelineEntry(id: "first", timestamp: first.timestamp, rank: 2, payload: .message(first))
+    ]
+
+    XCTAssertTrue(workIncrementalTimelineNeedsSort(timeline))
+  }
+
+  func testIncrementalTailTracksNewEntryWhenFutureEchoMovesSuffix() {
+    let assistant = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      sequence: 1,
+      event: .assistantText(text: "first", turnId: "turn-1", itemId: "item-1")
+    )
+    let futureEcho = WorkLocalEchoMessage(
+      text: "queued later",
+      timestamp: "2026-03-25T00:00:03.000Z"
+    )
+    let previous = buildWorkChatTimelineSnapshot(
+      transcript: [assistant],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: [futureEcho]
+    )
+    let nextAssistant = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-03-25T00:00:02.000Z",
+      sequence: 2,
+      event: .assistantText(text: "second", turnId: "turn-1", itemId: "item-2")
+    )
+    let insertedEntry = WorkTimelineEntry(
+      id: "message-\(nextAssistant.id)",
+      timestamp: nextAssistant.timestamp,
+      rank: 1,
+      payload: .message(WorkChatMessage(
+        id: nextAssistant.id,
+        role: "assistant",
+        markdown: "second",
+        timestamp: nextAssistant.timestamp,
+        turnId: "turn-1",
+        itemId: "item-2"
+      ))
+    )
+    let sortedTimeline = (previous.timeline + [insertedEntry]).sorted { lhs, rhs in
+      if lhs.timestamp == rhs.timestamp { return lhs.rank < rhs.rank }
+      return lhs.timestamp < rhs.timestamp
+    }
+
+    let summary = workIncrementalUpdatedTailSummary(
+      previous: previous,
+      timeline: sortedTimeline,
+      previousTimelineCount: previous.timeline.count,
+      candidateEnvelopes: [nextAssistant][...],
+      newTimelineEntryIDs: [insertedEntry.id]
+    )
+
+    // The queued local echo is the sorted visible message tail, so the
+    // canonical streaming target is intentionally nil; it must not fall back
+    // to the previous assistant just because the new row moved before it.
+    XCTAssertNil(summary.latestAssistantMessageId)
+    XCTAssertTrue(summary.liveTurnEntryIds.contains(insertedEntry.id))
+  }
+
+  func testIncrementalStreamingHintClearsWhenCanonicalUserReplacesEcho() {
+    let previousAssistant = WorkChatMessage(
+      id: "assistant-previous",
+      role: "assistant",
+      markdown: "Done",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "assistant-item"
+    )
+    let canonicalUser = WorkChatMessage(
+      id: "user-canonical",
+      role: "user",
+      markdown: "Next turn",
+      timestamp: "2026-03-25T00:00:02.000Z",
+      turnId: "turn-2",
+      itemId: nil
+    )
+    let timeline = [
+      WorkTimelineEntry(
+        id: "message-\(previousAssistant.id)",
+        timestamp: previousAssistant.timestamp,
+        rank: 0,
+        payload: .message(previousAssistant)
+      ),
+      WorkTimelineEntry(
+        id: "message-\(canonicalUser.id)",
+        timestamp: canonicalUser.timestamp,
+        rank: 1,
+        payload: .message(canonicalUser)
+      ),
+    ]
+    let userEnvelope = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: canonicalUser.timestamp,
+      sequence: 2,
+      event: .userMessage(
+        text: canonicalUser.markdown,
+        attachments: nil,
+        turnId: canonicalUser.turnId,
+        steerId: nil,
+        deliveryState: nil,
+        processed: nil
+      )
+    )
+
+    let candidates = Array([userEnvelope])[...]
+    XCTAssertNil(
+      workIncrementalLatestAssistantMessageId(
+        previous: previousAssistant.id,
+        timeline: timeline,
+        candidateEnvelopes: candidates
+      )
+    )
+  }
+
+  func testIncrementalStreamingHintFollowsNewAssistantItemWithoutUserBoundary() {
+    let firstAssistant = WorkChatMessage(
+      id: "assistant-first",
+      role: "assistant",
+      markdown: "First item",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-first"
+    )
+    let secondAssistant = WorkChatMessage(
+      id: "assistant-second",
+      role: "assistant",
+      markdown: "Second item",
+      timestamp: "2026-03-25T00:00:02.000Z",
+      turnId: "turn-1",
+      itemId: "item-second"
+    )
+    let timeline = [
+      WorkTimelineEntry(
+        id: "message-\(firstAssistant.id)",
+        timestamp: firstAssistant.timestamp,
+        rank: 0,
+        payload: .message(firstAssistant)
+      ),
+      WorkTimelineEntry(
+        id: "message-\(secondAssistant.id)",
+        timestamp: secondAssistant.timestamp,
+        rank: 1,
+        payload: .message(secondAssistant)
+      ),
+    ]
+    let secondItemEnvelope = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: secondAssistant.timestamp,
+      sequence: 2,
+      event: .assistantText(
+        text: "Second item grows",
+        turnId: secondAssistant.turnId,
+        itemId: secondAssistant.itemId
+      )
+    )
+
+    XCTAssertEqual(
+      workIncrementalLatestAssistantMessageId(
+        previous: firstAssistant.id,
+        previousItemId: firstAssistant.itemId,
+        timeline: timeline,
+        candidateEnvelopes: [secondItemEnvelope][...]
+      ),
+      secondAssistant.id
+    )
   }
 
   func testWorkChatAccessibilityPreviewCapsHugeMessages() {
@@ -24299,6 +24557,160 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(card.body?.contains("First thought.") == true)
     XCTAssertTrue(card.body?.contains("Second thought.") == true)
     XCTAssertEqual(workIncrementalEventCards(from: timeline), [card])
+  }
+
+  func testIncrementalReasoningDeclinesAfterCanonicalPhaseCollapse() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    let third = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:03.000Z",
+      sequence: 3,
+      event: .reasoning(text: "Third thought.", turnId: "turn-1", itemId: "reasoning-3", summaryIndex: nil)
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first, second],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertTrue(
+      snapshot.timeline.contains { $0.id.hasPrefix("activity-phase-reasoning:") },
+      "the fixture must exercise the canonical collapsed phase"
+    )
+
+    var timeline = snapshot.timeline
+    XCTAssertFalse(workIncrementalApplyLiveMetadata(third, to: &timeline))
+    XCTAssertEqual(timeline, snapshot.timeline, "a raw event must not be appended beside a collapsed phase")
+  }
+
+  func testIncrementalReasoningHistoricalPhaseDoesNotBlockLaterTurn() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    let laterUser = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:00.000Z",
+      sequence: 3,
+      event: .userMessage(
+        text: "Next turn",
+        attachments: nil,
+        turnId: "turn-2",
+        steerId: nil,
+        deliveryState: nil,
+        processed: nil
+      )
+    )
+    let laterReasoning = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:01.000Z",
+      sequence: 4,
+      event: .reasoning(text: "Later thought.", turnId: "turn-2", itemId: "reasoning-3", summaryIndex: nil)
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first, second, laterUser],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertTrue(snapshot.timeline.contains { $0.id.hasPrefix("activity-phase-reasoning:") })
+
+    var timeline = snapshot.timeline
+    XCTAssertTrue(
+      workIncrementalApplyLiveMetadata(laterReasoning, to: &timeline),
+      "a historical collapsed phase must not force every later turn through a full rebuild"
+    )
+  }
+
+  func testIncrementalReasoningReplayDeclinesWhenHistoricalCardIsCollapsed() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    let laterUser = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:00.000Z",
+      sequence: 3,
+      event: .userMessage(
+        text: "Next turn",
+        attachments: nil,
+        turnId: "turn-2",
+        steerId: nil,
+        deliveryState: nil,
+        processed: nil
+      )
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first, second, laterUser],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let historicalCardId = workIncrementalEventCard(for: first)?.id
+    XCTAssertNotNil(historicalCardId)
+    XCTAssertTrue(snapshot.eventCards.contains { $0.id == historicalCardId })
+    XCTAssertTrue(snapshot.timeline.contains { $0.id.hasPrefix("activity-phase-reasoning:") })
+
+    let replay = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:01.000Z",
+      sequence: 4,
+      event: .reasoning(text: "First thought, replayed.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    var timeline = snapshot.timeline
+    var eventCards = snapshot.eventCards
+    XCTAssertFalse(
+      workIncrementalApplyLiveMetadata(replay, to: &timeline, eventCards: &eventCards),
+      "a replay for a collapsed historical card must use the canonical rebuild"
+    )
+    XCTAssertEqual(timeline, snapshot.timeline)
+  }
+
+  func testIncrementalReasoningDeclinesAtCollapseThreshold() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    var timeline: [WorkTimelineEntry] = []
+
+    XCTAssertTrue(workIncrementalApplyLiveMetadata(first, to: &timeline))
+    XCTAssertFalse(workIncrementalApplyLiveMetadata(second, to: &timeline))
+    XCTAssertEqual(timeline.count, 1, "the fast path must not append a raw row before canonical collapse")
   }
 
   func testLongMiddleReplacementChangesFullTimelineSnapshotSignature() {

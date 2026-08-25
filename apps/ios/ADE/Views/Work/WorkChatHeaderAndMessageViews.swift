@@ -848,6 +848,37 @@ func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int, tailCanR
   return tailCanRenderFull ? max(steppedBudget, workAssistantMessageTailFullCharacterBudget) : steppedBudget
 }
 
+/// Whether the next bounded preview rung will still need its own control row.
+///
+/// The decision must use the same effective line/character budgets as
+/// `workAssistantMessagePreview`. Comparing the requested line budget with the
+/// message's line count is not enough: a single very long line can remain
+/// character-truncated after the final line budget, leaving a Show More row
+/// whose source entry has already replaced it.
+func workAssistantMessageWillRemainTruncated(
+  _ preview: WorkAssistantMessagePreview,
+  nextLineBudget: Int
+) -> Bool {
+  let requestedLineBudget = max(nextLineBudget, 1)
+  let effectiveLineBudget = workAssistantMessageEffectiveLineBudget(
+    requestedLineBudget: requestedLineBudget,
+    usesMonospacedPreview: preview.usesMonospacedRendering
+  )
+  let requestedCharacterBudget = workAssistantMessageCharacterBudget(forLineBudget: requestedLineBudget)
+  let characterBudget = max(
+    preview.usesMonospacedRendering
+      ? max(
+        requestedCharacterBudget,
+        workAssistantMessageWideCharacterBudget(forLineBudget: effectiveLineBudget)
+      )
+      : requestedCharacterBudget,
+    256
+  )
+  let smallFullCharacterBudget = max(characterBudget, workAssistantMessageSmallFullCharacterBudget)
+  return preview.totalLineCount > effectiveLineBudget
+    || preview.totalCharacterCount > smallFullCharacterBudget
+}
+
 func workAssistantMessagePreview(
   _ markdown: String,
   lineBudget: Int,

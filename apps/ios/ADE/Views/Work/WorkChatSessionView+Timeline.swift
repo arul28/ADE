@@ -49,7 +49,7 @@ extension WorkChatSessionView {
             messageId: model.messageId,
             nextLineBudget: model.nextLineBudget,
             proxy: proxy,
-            restoreRowId: model.nextLineBudget < model.totalLineCount
+            restoreRowId: model.willRemainTruncatedAfterNextStep
               ? entry.id
               : entry.sourceEntryId,
           )

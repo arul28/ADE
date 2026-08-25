@@ -155,6 +155,106 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
     assertStreamingMatchesFullParse("Short opener.\n\n\(wall)\n\nShort closer.", deltaSizes: [23, 61])
   }
 
+  func testPlainProseAppendKeepsSettledRowsAndFallsBackForMarkdown() {
+    let base = (1...100)
+      .map { "The keeper walked the length of the gallery and counted lamp \($0) again." }
+      .joined(separator: " ")
+    let key = "\(#function)-plain"
+    let initial = parseMarkdownBlocksForStreaming(base, cacheKey: key)
+    let grownText = base + " The next inspection began before sunrise."
+    let grown = parseMarkdownBlocksForStreaming(grownText, cacheKey: key)
+
+    XCTAssertGreaterThan(initial.count, 1)
+    XCTAssertEqual(grown, parseMarkdownBlocks(grownText))
+    for index in 0..<(initial.count - 1) {
+      XCTAssertEqual(
+        grown[index],
+        initial[index],
+        "an append may change only the still-growing final prose row"
+      )
+    }
+    XCTAssertEqual(
+      grown.map(\.id),
+      grown.indices.map { "markdown-block-\($0)" },
+      "the append path must retain positional block ids"
+    )
+
+    let whitespaceKey = "\(#function)-trailing-space"
+    _ = parseMarkdownBlocksForStreaming(base + " ", cacheKey: whitespaceKey)
+    let whitespaceGrown = parseMarkdownBlocksForStreaming(base + " next", cacheKey: whitespaceKey)
+    XCTAssertEqual(
+      whitespaceGrown,
+      parseMarkdownBlocks(base + " next"),
+      "trailing stream whitespace must not be dropped when the next token arrives"
+    )
+
+    let markdownText = grownText + "\n\n**A Markdown paragraph.**"
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(markdownText, cacheKey: key),
+      parseMarkdownBlocks(markdownText),
+      "Markdown must leave the plain-prose fast path"
+    )
+    let fencedText = markdownText + "\n\n```swift\nlet value = 1\n```"
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(fencedText, cacheKey: key),
+      parseMarkdownBlocks(fencedText),
+      "fences must keep using the full parser"
+    )
+  }
+
+  func testPlainProseAppendDoesNotDuplicateWhitespaceAcrossDeltas() {
+    let key = "\(#function)"
+    _ = parseMarkdownBlocksForStreaming("hello", cacheKey: key)
+    let trailingSpace = parseMarkdownBlocksForStreaming("hello ", cacheKey: key)
+    XCTAssertEqual(trailingSpace, parseMarkdownBlocks("hello "))
+    let grown = parseMarkdownBlocksForStreaming("hello  next", cacheKey: key)
+
+    XCTAssertEqual(grown, parseMarkdownBlocks("hello  next"))
+  }
+
+  func testOrderedListMarkerSplitAcrossStreamingDeltasFallsBackToMarkdownParser() {
+    let numericKey = "\(#function)-numeric"
+    _ = parseMarkdownBlocksForStreaming("1", cacheKey: numericKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming("1. item", cacheKey: numericKey),
+      parseMarkdownBlocks("1. item"),
+      "a numeric marker split after its digits must not be cached as prose"
+    )
+
+    let dottedKey = "\(#function)-dotted"
+    _ = parseMarkdownBlocksForStreaming("1.", cacheKey: dottedKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming("1. item", cacheKey: dottedKey),
+      parseMarkdownBlocks("1. item"),
+      "a numeric marker split after its dot must not be cached as prose"
+    )
+
+    let spacedNumericKey = "\(#function)-spaced-numeric"
+    _ = parseMarkdownBlocksForStreaming(" 1", cacheKey: spacedNumericKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(" 1. item", cacheKey: spacedNumericKey),
+      parseMarkdownBlocks(" 1. item"),
+      "leading spaces must not hide an ordered-list marker"
+    )
+
+    let spacedHeadingKey = "\(#function)-spaced-heading"
+    _ = parseMarkdownBlocksForStreaming(" ", cacheKey: spacedHeadingKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(" # Heading", cacheKey: spacedHeadingKey),
+      parseMarkdownBlocks(" # Heading"),
+      "leading spaces must not hide a heading marker"
+    )
+  }
+
+  func testStreamingParserKeepsUnicodePrefixFastPathAtGraphemeBoundary() {
+    let key = "\(#function)-unicode"
+    _ = parseMarkdownBlocksForStreaming("Cafe", cacheKey: key)
+    let grown = parseMarkdownBlocksForStreaming("Cafe\u{301}", cacheKey: key)
+
+    XCTAssertEqual(grown, parseMarkdownBlocks("Cafe\u{301}"))
+    XCTAssertEqual(grown.first?.kind, .paragraph("Cafe\u{301}"))
+  }
+
   func testStreamingDoesNotSplitInsideLongNestedLinkDestination() {
     let destination = "<https://example.test/path (one_(two)) \(String(repeating: "segment", count: 260))>"
     let text = "See [the long link](\(destination)) and then keep reading. "
@@ -173,6 +273,69 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
     }
     XCTAssertEqual(chunks.joined(), text)
     assertStreamingMatchesFullParse(text, deltaSizes: [17, 43, 89])
+  }
+
+  func testStreamingDoesNotSplitInsideEscapedParenthesesInLinkDestination() {
+    let destination = "https://example.test/path\\) (one_(two)) "
+      + String(repeating: "segment ", count: 260)
+    let text = "See [the long link](\(destination)) and then keep reading. "
+      + (1...90).map { "word\($0)" }.joined(separator: " ")
+    let chunks = workBoundedProseChunks(text)
+    let linkStart = text.firstIndex(of: "[")!
+    let linkEnd = text.range(of: ") and then")!.lowerBound
+
+    var boundary = text.startIndex
+    for chunk in chunks.dropLast() {
+      boundary = text.index(boundary, offsetBy: chunk.count)
+      XCTAssertFalse(
+        boundary > linkStart && boundary < linkEnd,
+        "an escaped close parenthesis must not end the link destination"
+      )
+    }
+    XCTAssertEqual(chunks.joined(), text)
+  }
+
+  func testIncompleteLongLinkDestinationHasHardProseCut() {
+    let text = "See [the unfinished link](https://example.test/"
+      + String(repeating: "segment ", count: 500)
+    let chunks = workBoundedProseChunks(text)
+
+    XCTAssertGreaterThan(chunks.count, 1, "an incomplete destination cannot create one unbounded row")
+    XCTAssertTrue(chunks.allSatisfy { $0.count <= workMarkdownProseRowCharacterLimit })
+    XCTAssertEqual(chunks.joined(), text, "the hard cut must preserve every source character")
+  }
+
+  func testLinkDestinationOpenedAfterBudgetEdgeStillHasHardProseCut() {
+    let text = "See [the unfinished link "
+      + String(repeating: "segment ", count: 180)
+      + "](https://example.test/"
+      + String(repeating: "tail ", count: 500)
+    let chunks = workBoundedProseChunks(text)
+
+    XCTAssertGreaterThan(chunks.count, 1, "a destination opened after the edge cannot create one unbounded row")
+    XCTAssertTrue(chunks.allSatisfy { $0.count <= workMarkdownProseRowCharacterLimit })
+    XCTAssertEqual(chunks.joined(), text, "the hard cut must preserve every source character")
+  }
+
+  func testAngleDelimitedLinkDestinationClosesDespiteLiteralUnmatchedParenthesis() {
+    let destination = "<https://example.test/path (literal "
+      + String(repeating: "segment ", count: 260)
+      + ">"
+    let text = "See [the long link](\(destination)) and then keep reading. "
+      + (1...90).map { "word\($0)" }.joined(separator: " ")
+    let chunks = workBoundedProseChunks(text)
+    let linkStart = text.firstIndex(of: "[")!
+    let linkEnd = text.range(of: ") and then")!.lowerBound
+
+    var boundary = text.startIndex
+    for chunk in chunks.dropLast() {
+      boundary = text.index(boundary, offsetBy: chunk.count)
+      XCTAssertFalse(
+        boundary > linkStart && boundary < linkEnd,
+        "an angle-delimited destination must close at `>` even when it contains `(`"
+      )
+    }
+    XCTAssertEqual(chunks.joined(), text)
   }
 
   func testStreamingRepeatedCallsWithSameTextReturnStableBlocks() {
@@ -309,6 +472,37 @@ final class WorkStreamingPreviewPerformanceTests: XCTestCase {
       format: "assistant preview streaming benchmark: %d deltas / %d chars; optimized %.1f ms, full-rescan baseline %.1f ms, speedup %.1fx",
       deltaCount,
       baselineText.count,
+      optimizedSeconds * 1000,
+      baselineSeconds * 1000,
+      baselineSeconds / max(optimizedSeconds, .leastNonzeroMagnitude)
+    ))
+  }
+
+  func testPlainProseStreamingParserCostIsReported() {
+    let deltaCount = 500
+    let delta = " The keeper walked the length of the gallery and counted the lamps again."
+    var optimizedText = "Seed."
+    let optimizedKey = "\(#function)-optimized"
+    let optimizedStart = Date()
+    for _ in 1...deltaCount {
+      optimizedText += delta
+      _ = parseMarkdownBlocksForStreaming(optimizedText, cacheKey: optimizedKey)
+    }
+    let optimizedSeconds = Date().timeIntervalSince(optimizedStart)
+
+    var baselineText = "Seed."
+    let baselineStart = Date()
+    for _ in 1...deltaCount {
+      baselineText += delta
+      _ = parseMarkdownBlocks(baselineText)
+    }
+    let baselineSeconds = Date().timeIntervalSince(baselineStart)
+
+    XCTAssertEqual(optimizedText, baselineText)
+    print(String(
+      format: "markdown parser streaming benchmark: %d deltas / %d chars; append-only %.1f ms, full-rescan baseline %.1f ms, speedup %.1fx",
+      deltaCount,
+      optimizedText.count,
       optimizedSeconds * 1000,
       baselineSeconds * 1000,
       baselineSeconds / max(optimizedSeconds, .leastNonzeroMagnitude)

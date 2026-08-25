@@ -452,6 +452,8 @@ struct WorkChatSessionView: View {
   let chatSummaryContext: WorkChatSummaryRenderContext
   let transcript: [WorkChatEnvelope]
   let transcriptRenderSignature: Int
+  let allowsIncrementalTranscriptUpdate: Bool
+  @Binding var transcriptIncrementalDelta: [WorkChatEnvelope]
   let fallbackEntries: [AgentChatTranscriptEntry]
   let fallbackEntriesRenderSignature: Int
   let artifacts: [ComputerUseArtifactSummary]
@@ -942,9 +944,14 @@ struct WorkChatSessionView: View {
   }
 
   @MainActor
-  func refreshTimelinePresentation(sourceTimeline: [WorkTimelineEntry]? = nil) {
+  func refreshTimelinePresentation(
+    sourceTimeline: [WorkTimelineEntry]? = nil,
+    rebuildToolActivityIndex: Bool = true
+  ) {
     let timeline = sourceTimeline ?? timelineSnapshot.timeline
-    turnToolActivity = workTurnToolActivityIndex(from: timeline)
+    if rebuildToolActivityIndex {
+      turnToolActivity = workTurnToolActivityIndex(from: timeline)
+    }
     let presentedTimeline = workPresentedTimelineEntries(timeline)
     var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(
@@ -2424,6 +2431,7 @@ private func workTimelinePresentationSignature(
       hasher.combine(model.totalLineCount)
       hasher.combine(model.canShowMore)
       hasher.combine(model.nextLineBudget)
+      hasher.combine(model.willRemainTruncatedAfterNextStep)
     }
   }
   return hasher.finalize()
@@ -2642,7 +2650,11 @@ func workTimelineRenderEntries(
       ))
     } else {
       let blocks = message.id == streamingAssistantMessageId
-        ? parseMarkdownBlocksForStreaming(preview.text, cacheKey: "\(message.id):preview")
+        ? parseMarkdownBlocksForStreaming(
+          preview.text,
+          cacheKey: "\(message.id):preview",
+          appendOnly: true
+        )
         : parseMarkdownBlocks(preview.text)
       rendered.reserveCapacity(rendered.count + blocks.count + (preview.isTruncated ? 1 : 0))
       let streamingTailBlockId = message.id == streamingAssistantMessageId ? blocks.last?.id : nil
@@ -2689,6 +2701,10 @@ func workTimelineRenderEntries(
         // message is rendered and this branch stops running.
         canShowMore: true,
         nextLineBudget: nextLineBudget,
+        willRemainTruncatedAfterNextStep: workAssistantMessageWillRemainTruncated(
+          preview,
+          nextLineBudget: nextLineBudget
+        ),
         // Only an explicit tap writes this map, so its presence *is* "the
         // reader already expanded this message once".
         hasExpandedInPlace: assistantLineBudgets[message.id] != nil

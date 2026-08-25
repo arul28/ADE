@@ -348,18 +348,183 @@ func parseMarkdownBlocks(_ markdown: String) -> [WorkMarkdownBlock] {
 /// tiny per-message cache for repeated SwiftUI evaluations, and let the normal
 /// parser remain the single source of truth for block identities.
 func parseMarkdownBlocksForStreaming(_ markdown: String, cacheKey: String) -> [WorkMarkdownBlock] {
+  parseMarkdownBlocksForStreaming(markdown, cacheKey: cacheKey, appendOnly: true)
+}
+
+/// Append-only variant used by the live assistant tail. The cache records the
+/// UTF-16 boundary where the next delta starts, so the successful path touches
+/// only the new suffix. The prefix guard is required because transport
+/// de-duplication can rewrite a message under the same cache key; such a
+/// rewrite must fall back to the authoritative parser instead of being treated
+/// as an append.
+func parseMarkdownBlocksForStreaming(
+  _ markdown: String,
+  cacheKey: String,
+  appendOnly: Bool
+) -> [WorkMarkdownBlock] {
   let key = cacheKey as NSString
   let cached = workStreamingMarkdownCache.object(forKey: key)
-  if let cached, cached.fullText == markdown {
-    return cached.blocks
+  if let cached {
+    if appendOnly {
+      if cached.appendBoundaryUTF16Count == markdown.utf16.count,
+         cached.fullText == markdown
+      {
+        return cached.blocks
+      }
+    } else if cached.fullText == markdown {
+      return cached.blocks
+    }
+  }
+
+  if let cached,
+     cached.isPlainProse,
+     appendOnly,
+     markdown.hasPrefix(cached.fullText),
+     let appended = workStreamingAppendText(from: markdown, after: cached)
+  {
+    let blocks = workAppendPlainProse(
+      cached.blocks,
+      replacingTrailingWhitespace: cached.trailingWhitespace,
+      appendedText: cached.trailingWhitespace + appended
+    )
+    workStreamingMarkdownCache.setObject(
+      WorkStreamingMarkdownCacheBox(
+        fullText: markdown,
+        blocks: blocks,
+        isPlainProse: true,
+        trailingWhitespace: workTrailingWhitespace(in: markdown)
+      ),
+      forKey: key
+    )
+    return blocks
   }
 
   let blocks = parseMarkdownBlocksInternal(markdown)
   workStreamingMarkdownCache.setObject(
-    WorkStreamingMarkdownCacheBox(fullText: markdown, blocks: blocks),
+    WorkStreamingMarkdownCacheBox(
+      fullText: markdown,
+      blocks: blocks,
+      isPlainProse: workIsPlainProse(markdown, blocks: blocks),
+      trailingWhitespace: workTrailingWhitespace(in: markdown)
+    ),
     forKey: key
   )
   return blocks
+}
+
+/// The append-only fast path is deliberately narrower than Markdown parsing:
+/// one paragraph, no line breaks, and no punctuation that can change block or
+/// inline interpretation. A cache hit is therefore safe to update by replacing
+/// only the last bounded prose row; headings, lists, links, tables, and fences
+/// all use `parseMarkdownBlocksInternal` instead.
+private let workPlainProseMarkdownPunctuation: Set<Character> = [
+  "#", "*", "_", "`", "[", "]", "|", ">", "~", "\\", "<",
+]
+
+private func workIsPlainProse(_ text: String, blocks: [WorkMarkdownBlock]) -> Bool {
+  guard !text.isEmpty,
+        !text.contains(where: { $0 == "\n" || $0 == "\r" }),
+        !blocks.isEmpty,
+        blocks.allSatisfy({
+          if case .paragraph = $0.kind { return true }
+          return false
+        })
+  else { return false }
+
+  return workHasPlainProseCharacters(text)
+}
+
+private func workHasPlainProseCharacters(_ text: String) -> Bool {
+  let markerText = text.drop { $0.isWhitespace }
+  if markerText.hasPrefix("#") || markerText.hasPrefix(">") || markerText.hasPrefix("-") || markerText.hasPrefix("+") {
+    return false
+  }
+  if markerText.first?.isNumber == true {
+    var index = markerText.startIndex
+    while index < markerText.endIndex, markerText[index].isNumber {
+      index = markerText.index(after: index)
+    }
+    // A streaming delta can leave an ordered-list marker split across
+    // updates: `"1"` then `". item"`, or `"1."` then `" item"`. Do not
+    // cache either partial marker as settled prose, otherwise the append
+    // fast path cannot recover the ordered-list block that the full parser
+    // would produce.
+    if index == markerText.endIndex {
+      return false
+    }
+    if index < markerText.endIndex, markerText[index] == "." {
+      let afterDot = markerText.index(after: index)
+      if afterDot == markerText.endIndex || markerText[afterDot].isWhitespace {
+        return false
+      }
+    }
+  }
+
+  // These characters are enough to enter a Markdown construct in the parser
+  // or in AttributedString's inline parser. Being conservative is important:
+  // a false negative only takes the existing safe path, while a false positive
+  // could change a block's kind or text.
+  return !text.contains(where: { workPlainProseMarkdownPunctuation.contains($0) })
+}
+
+private func workTrailingWhitespace(in text: String) -> String {
+  var start = text.endIndex
+  while start > text.startIndex {
+    let previous = text.index(before: start)
+    guard text[previous].isWhitespace else { break }
+    start = previous
+  }
+  return String(text[start...])
+}
+
+private func workStreamingAppendText(
+  from markdown: String,
+  after cached: WorkStreamingMarkdownCacheBox
+) -> String? {
+  guard markdown.utf16.count > cached.appendBoundaryUTF16Count else { return nil }
+  let start = String.Index(utf16Offset: cached.appendBoundaryUTF16Count, in: markdown)
+  let appended = String(markdown[start...])
+  guard workHasPlainProseCharacters(appended),
+        !appended.contains(where: { $0 == "\n" || $0 == "\r" }) else { return nil }
+  return appended
+}
+
+private func workAppendPlainProse(
+  _ blocks: [WorkMarkdownBlock],
+  replacingTrailingWhitespace: String,
+  appendedText: String
+) -> [WorkMarkdownBlock] {
+  guard !appendedText.isEmpty,
+        let last = blocks.last,
+        case .paragraph(let lastText) = last.kind
+  else { return blocks }
+
+  let baseCount = blocks.count - 1
+  let settledLastText: String
+  if !replacingTrailingWhitespace.isEmpty,
+     lastText.hasSuffix(replacingTrailingWhitespace) {
+    settledLastText = String(lastText.dropLast(replacingTrailingWhitespace.count))
+  } else {
+    settledLastText = lastText
+  }
+  // The canonical parser trims paragraph-edge whitespace. Keep source
+  // whitespace in the cache as the next token's append boundary, but do not
+  // render it while it is still trailing. Interior spaces remain lossless.
+  let candidate = settledLastText + appendedText
+  let trailingWhitespace = workTrailingWhitespace(in: candidate)
+  let renderedCandidate = trailingWhitespace.isEmpty
+    ? candidate
+    : String(candidate.dropLast(trailingWhitespace.count))
+  let replacement = workBoundedProseChunks(renderedCandidate)
+  var result = Array(blocks.dropLast())
+  result.reserveCapacity(baseCount + replacement.count)
+  for (offset, chunk) in replacement.enumerated() {
+    result.append(WorkMarkdownBlock(
+      id: "markdown-block-\(baseCount + offset)",
+      kind: .paragraph(chunk)
+    ))
+  }
+  return result
 }
 
 /// Most characters a single rendered prose row may carry.
@@ -452,9 +617,10 @@ func workBoundedProseChunks(
 /// the text is inside a span that has not closed yet, so the scan keeps going
 /// past the budget and takes the FIRST balanced boundary after it: appends can
 /// only add boundaries later than that one, so the cut settles the moment it is
-/// chosen. A chunk that runs over budget for a few deltas is the price of never
-/// moving a cut backwards. If the text ends first the remainder stays whole,
-/// which is no worse than the single tall row it would otherwise have been.
+/// chosen. An incomplete link destination is the exception: if input ends
+/// while that destination is still open, the hard edge bounds the malformed
+/// row rather than allowing it to grow without limit. A valid long destination
+/// still waits for its closing boundary.
 private func workProseChunkCut(
   in text: String,
   from start: String.Index,
@@ -466,6 +632,7 @@ private func workProseChunkCut(
   var wordGap: String.Index?
   var budgetEdge: String.Index?
   var overflow: String.Index?
+  var hardLinkDestinationEdge: String.Index?
 
   var index = start
   var previous: Character?
@@ -479,6 +646,9 @@ private func workProseChunkCut(
       if boundary == ceiling, markup.isBalanced {
         budgetEdge = boundary
       }
+      if boundary == ceiling, markup.hasOpenLinkDestination {
+        hardLinkDestinationEdge = boundary
+      }
       if character == " " || character == "\n", markup.isBalanced, boundary >= floor {
         wordGap = boundary
         if character == "\n" || previous == "." || previous == "!" || previous == "?" {
@@ -486,6 +656,13 @@ private func workProseChunkCut(
         }
       }
     } else {
+      if markup.hasOpenLinkDestination, hardLinkDestinationEdge == nil {
+        // The link destination may begin just after the frozen budget edge
+        // (for example, `[` is inside the window but `](` is not). Remember
+        // the edge as soon as that malformed destination becomes observable;
+        // otherwise an unfinished link can grow without a bounded row.
+        hardLinkDestinationEdge = ceiling
+      }
       // Everything past the budget is a last resort, and reading any of it
       // would tie this cut to text that has not finished arriving. Stop as soon
       // as the frozen window has answered.
@@ -499,7 +676,8 @@ private func workProseChunkCut(
     previous = character
     index = boundary
   }
-  return sentenceEnd ?? wordGap ?? budgetEdge ?? overflow
+  let hardCut = markup.hasOpenLinkDestination ? hardLinkDestinationEdge : nil
+  return sentenceEnd ?? wordGap ?? budgetEdge ?? overflow ?? hardCut
 }
 
 /// Running parity of the inline delimiters a cut must not land between.
@@ -518,6 +696,9 @@ private struct WorkInlineMarkupBalance {
   private var brackets = 0
   private var linkDestinationDepth = 0
   private var linkDestinationPending = false
+  private var linkDestinationAngleDelimited = false
+  private var linkDestinationFirstCharacter = false
+  private var linkDestinationEscapePending = false
   private var beforeEmphasisRun: Character?
 
   var isBalanced: Bool {
@@ -528,8 +709,34 @@ private struct WorkInlineMarkupBalance {
       && !linkDestinationPending
   }
 
+  var hasOpenLinkDestination: Bool {
+    linkDestinationDepth > 0
+  }
+
   mutating func consume(_ character: Character, previous: Character?, next: Character?) {
     if linkDestinationDepth > 0 {
+      if linkDestinationEscapePending {
+        linkDestinationEscapePending = false
+        return
+      }
+      if character == "\\" {
+        linkDestinationEscapePending = true
+        return
+      }
+      if linkDestinationFirstCharacter {
+        linkDestinationFirstCharacter = false
+        if character == "<" {
+          linkDestinationAngleDelimited = true
+          return
+        }
+      }
+      if linkDestinationAngleDelimited {
+        if character == ">" {
+          linkDestinationDepth = 0
+          linkDestinationAngleDelimited = false
+        }
+        return
+      }
       if character == "(" {
         linkDestinationDepth += 1
       } else if character == ")" {
@@ -541,6 +748,8 @@ private struct WorkInlineMarkupBalance {
       if character == "(" {
         linkDestinationDepth = 1
         linkDestinationPending = false
+        linkDestinationAngleDelimited = false
+        linkDestinationFirstCharacter = true
         return
       }
       linkDestinationPending = false
@@ -857,10 +1066,21 @@ private let workStreamingInlineMarkdownCache: NSCache<NSString, WorkMarkdownCach
 private final class WorkStreamingMarkdownCacheBox: NSObject {
   let fullText: String
   let blocks: [WorkMarkdownBlock]
+  let isPlainProse: Bool
+  let trailingWhitespace: String
+  let appendBoundaryUTF16Count: Int
 
-  init(fullText: String, blocks: [WorkMarkdownBlock]) {
+  init(
+    fullText: String,
+    blocks: [WorkMarkdownBlock],
+    isPlainProse: Bool = false,
+    trailingWhitespace: String = ""
+  ) {
     self.fullText = fullText
     self.blocks = blocks
+    self.isPlainProse = isPlainProse
+    self.trailingWhitespace = trailingWhitespace
+    self.appendBoundaryUTF16Count = fullText.utf16.count
   }
 }
 

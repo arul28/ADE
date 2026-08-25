@@ -435,6 +435,27 @@ final class WorkAssistantRenderingTests: XCTestCase {
     )
   }
 
+  func testLongSingleLineKeepsItsControlUntilTheNextRungIsActuallyComplete() {
+    let markdown = String(repeating: "x", count: 15_000)
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageInitialLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(
+        forLineBudget: workAssistantMessageInitialLineBudget
+      )
+    )
+
+    XCTAssertTrue(preview.isTruncated)
+    XCTAssertEqual(preview.totalLineCount, 1)
+    XCTAssertTrue(
+      workAssistantMessageWillRemainTruncated(
+        preview,
+        nextLineBudget: workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
+      )
+    )
+    XCTAssertFalse(workAssistantMessageWillRemainTruncated(preview, nextLineBudget: 240))
+  }
+
   /// End to end over the real preview slicer: a message that rendered in full as
   /// the tail is still rendered in full — with no "Show more" — after a newer
   /// message pushes it into head-anchoring.
