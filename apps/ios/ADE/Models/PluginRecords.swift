@@ -279,18 +279,28 @@ struct PluginActionMenuEntry: Equatable, Identifiable, Decodable {
   var id: String { actionId }
   var label: String
   var actionId: String
+  /// A token from the same 64-name list the button's own `icon` takes, resolved
+  /// through ``PluginSymbol``.
+  ///
+  /// Nil means the puzzle piece, which is what every entry drew before this
+  /// field existed — a two-entry menu showed the same generic mark twice and
+  /// neither row said what it did. An unknown token degrades to that same
+  /// puzzle piece rather than being refused, matching the button above it and
+  /// the desktop's own rule.
+  var icon: String?
   /// Styles the entry destructive, the same meaning `danger` has on a row menu
   /// item. It changes how the entry READS, never where it sits.
   var danger: Bool
 
-  init(label: String, actionId: String, danger: Bool) {
+  init(label: String, actionId: String, icon: String? = nil, danger: Bool) {
     self.label = label
     self.actionId = actionId
+    self.icon = icon
     self.danger = danger
   }
 
   private enum CodingKeys: String, CodingKey {
-    case label, actionId, danger
+    case label, actionId, icon, danger
   }
 
   /// Decoded off the manifest feed, where entries arrive as part of a
@@ -302,6 +312,7 @@ struct PluginActionMenuEntry: Equatable, Identifiable, Decodable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     label = ((try? container.decodeIfPresent(String.self, forKey: .label)) ?? nil) ?? ""
     actionId = ((try? container.decodeIfPresent(String.self, forKey: .actionId)) ?? nil) ?? ""
+    icon = (try? container.decodeIfPresent(String.self, forKey: .icon)) ?? nil
     danger = ((try? container.decodeIfPresent(Bool.self, forKey: .danger)) ?? nil) ?? false
   }
 }
@@ -327,6 +338,14 @@ struct PluginActionButtonPayload: Equatable {
   /// nothing in it". The alpha test wanted exactly this shape — a drink button
   /// whose arrow reveals sober-up — and had to reach a slash command instead.
   var menu: [PluginActionMenuEntry] = []
+  /// A hex tint for THIS button, already proven legible in both themes.
+  ///
+  /// Nil is the ordinary case and means the platform's own colour. The value is
+  /// only ever written by ``PluginContributionParser/sanitizeActionColor(_:)``,
+  /// which applies the same contrast rule as `sanitizePluginActionColor` on the
+  /// desktop — so a colour refused there is refused here, and a plugin does not
+  /// get a legible button on one client and an invisible one on the other.
+  var color: String?
 }
 
 /// A plugin's vocabulary panel, rendered inside a detail screen after the
@@ -669,8 +688,66 @@ enum PluginContributionParser {
       // that is not a JSON boolean, so a payload saying `"disabled": 1` leaves
       // the button live rather than silently dead.
       disabled: PluginPanelParser.boolValue(object["disabled"]) ?? false,
-      menu: parseActionMenu(object["menu"])
+      menu: parseActionMenu(object["menu"]),
+      color: sanitizeActionColor(object["color"])
     )
+  }
+
+  /// Narrow an untrusted button tint, or nil for "use the platform's own".
+  ///
+  /// A transcription of `sanitizePluginActionColor` in `shared/plugins/sockets.ts`,
+  /// and it has to stay one: the payload carries ONE colour while the user picks
+  /// the theme, so a colour that reads on dark and vanishes on light is a button
+  /// that is invisible for half the installs. Judging it here rather than
+  /// trusting the producer is the same rule the rest of this parser follows — a
+  /// row may have been published by an older or newer host than the one reading
+  /// it.
+  ///
+  /// Refused rather than nudged into range, for the desktop's reason: a host
+  /// that silently darkened a plugin's brand colour would paint something the
+  /// author never chose and never tell them.
+  static func sanitizeActionColor(_ raw: Any?) -> String? {
+    guard let value = PluginPanelParser.cleanString(raw, max: 7),
+          let (red, green, blue) = parseHexTriple(value) else { return nil }
+    let luminance = relativeLuminance(red: red, green: green, blue: blue)
+    // `--color-bg` for `dark` and `light` in the desktop's `index.css`, as WCAG
+    // relative luminance. Restated as numbers on both clients because neither
+    // has the other's stylesheet to ask.
+    for backdrop in [0.0035, 0.898] where contrastRatio(luminance, backdrop) < 3 {
+      return nil
+    }
+    return String(format: "#%02x%02x%02x", red, green, blue)
+  }
+
+  /// `#rgb` or `#rrggbb` to three 0-255 channels. Nil for anything else.
+  private static func parseHexTriple(_ value: String) -> (Int, Int, Int)? {
+    guard value.hasPrefix("#") else { return nil }
+    let digits = String(value.dropFirst())
+    guard digits.count == 3 || digits.count == 6,
+          digits.allSatisfy({ $0.isHexDigit }) else { return nil }
+    let expanded = digits.count == 3
+      ? digits.map { "\($0)\($0)" }.joined()
+      : digits
+    let scanned = Array(expanded)
+    func channel(_ start: Int) -> Int? {
+      Int(String(scanned[start ..< start + 2]), radix: 16)
+    }
+    guard let red = channel(0), let green = channel(2), let blue = channel(4) else { return nil }
+    return (red, green, blue)
+  }
+
+  /// WCAG relative luminance of an sRGB triple.
+  private static func relativeLuminance(red: Int, green: Int, blue: Int) -> Double {
+    func linearize(_ value: Int) -> Double {
+      let channel = Double(value) / 255
+      return channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
+  }
+
+  /// WCAG contrast ratio between two relative luminances.
+  private static func contrastRatio(_ a: Double, _ b: Double) -> Double {
+    (max(a, b) + 0.05) / (min(a, b) + 0.05)
   }
 
   /// The extra actions a split button carries.
@@ -684,11 +761,12 @@ enum PluginContributionParser {
   /// the whole control degrading over one bad row.
   ///
   /// Label ceiling, field set and cap all mirror `parsePluginActionButtonMenu`.
-  /// The field set is the part worth naming: an entry is a label and an action
-  /// and nothing else. Reading an `icon` or a `disabled` here would draw and
-  /// dim rows on the phone that the same payload leaves plain and live on the
-  /// desktop next to it — a parity gap invented by the client that was trying
-  /// to be generous.
+  /// The field set is the part worth naming: an entry is a label, an action, an
+  /// icon token and `danger`, and nothing else. `disabled` is deliberately still
+  /// absent — reading one here would dim rows on the phone that the same payload
+  /// leaves live on the desktop next to it, a parity gap invented by the client
+  /// that was trying to be generous. `icon` is read because the desktop reads
+  /// it, which is the same rule pointing the other way.
   private static func parseActionMenu(_ raw: Any?) -> [PluginActionMenuEntry] {
     guard let items = raw as? [Any] else { return [] }
     var entries: [PluginActionMenuEntry] = []
@@ -702,6 +780,10 @@ enum PluginContributionParser {
       entries.append(PluginActionMenuEntry(
         label: label,
         actionId: actionId,
+        // An over-long token costs the entry its glyph, never the entry: the
+        // row still has a label and an action, which is the part the user
+        // asked for.
+        icon: PluginPanelParser.cleanString(object["icon"], max: 40),
         danger: PluginPanelParser.boolValue(object["danger"]) ?? false
       ))
     }
@@ -1359,9 +1441,18 @@ struct PluginSocketDeclarations: Equatable {
       // follows when it passes `menu` through to be re-validated.
       if !wire.menu.isEmpty {
         object["menu"] = wire.menu.map { entry -> [String: Any] in
-          ["label": entry.label, "actionId": entry.actionId, "danger": entry.danger]
+          var item: [String: Any] = [
+            "label": entry.label,
+            "actionId": entry.actionId,
+            "danger": entry.danger,
+          ]
+          if let icon = entry.icon { item["icon"] = icon }
+          return item
         }
       }
+      // Loose like `menu`, and re-judged for the same reason: the contrast rule
+      // then lives in one place rather than being re-applied at every hop.
+      put("color", wire.color)
     case .rowMenuItem:
       put("label", wire.label)
       put("icon", wire.icon)

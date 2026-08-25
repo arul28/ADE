@@ -409,11 +409,74 @@ final class PluginContributionTests: XCTestCase {
     XCTAssertEqual(menu[0].actionId, "tipsy.sober")
     XCTAssertFalse(menu[0].danger)
     XCTAssertTrue(menu[1].danger)
-    // Only `danger` rides an entry. Desktop's `parsePluginActionButtonMenu`
-    // keeps label/actionId/danger and nothing else, and a phone that also drew
-    // the `icon` above would invent a difference between the two clients from a
-    // payload that did nothing wrong.
     XCTAssertEqual(menu[1].label, "Forget tonight")
+    // `icon` now rides an entry, because desktop's `parsePluginActionButtonMenu`
+    // keeps it: an entry could not carry a glyph at all, so every row in every
+    // plugin's dropdown drew the same puzzle piece. The two clients read the
+    // same field set — label, actionId, icon, danger — and a phone that ignored
+    // one of them would invent a difference from a payload that did nothing
+    // wrong.
+    XCTAssertEqual(menu[0].icon, "sparkle")
+    XCTAssertNil(menu[1].icon, "An entry that named no icon must not acquire one.")
+  }
+
+  /// A button's own tint, and the reason it is judged rather than trusted.
+  ///
+  /// The payload carries ONE colour while the user picks the theme, so a colour
+  /// that reads on dark and vanishes on light is a button that is invisible for
+  /// half the installs. The rule is transcribed from `sanitizePluginActionColor`
+  /// and has to stay identical: a colour refused on the desktop must be refused
+  /// here, or a plugin gets a legible button on one client and a blank one on
+  /// the other.
+  func testButtonColourIsTakenOnlyWhenItReadsInBothThemes() throws {
+    func colour(_ raw: String) throws -> String? {
+      try XCTUnwrap(PluginContributionParser.parse(
+        entityKind: "session", entityId: "sess-1", pluginId: "ade-tipsy",
+        socket: "chat-header-action",
+        payloadJSON: #"{ "label": "Take a drink", "actionId": "tipsy.drink", "color": \#(raw) }"#,
+        updatedAt: ""
+      ), "colour \(raw) must never cost the plugin its button").chatHeaderAction?.color
+    }
+
+    /// The JSON literal for a string value, quotes included.
+    func quoted(_ value: String) -> String { "\"\(value)\"" }
+
+    // ADE's own accent, and a mid grey: both clear 3:1 against dark AND light.
+    XCTAssertEqual(try colour(quoted("#7C6FF0")), "#7c6ff0")
+    XCTAssertEqual(try colour(quoted("#888")), "#888888", "The 3-digit form expands.")
+
+    // Legal hex, unreadable on one of the two backgrounds.
+    for illegible in ["#ffffff", "#ffff00", "#000000", "#0000ff"] {
+      XCTAssertNil(try colour(quoted(illegible)), "\(illegible) is invisible on one theme")
+    }
+
+    // Not plainly a colour at all — refused before contrast is considered.
+    for junk in [quoted("red"), quoted("rgb(1,2,3)"), quoted("#12345"), quoted("7C6FF0"), "7", "null"] {
+      XCTAssertNil(try colour(junk))
+    }
+  }
+
+  /// A declared colour rides the same path a published one does, and a refused
+  /// one costs the plugin the tint, never the button.
+  func testDeclaredButtonColourIsJudgedTheSameWay() throws {
+    func declared(_ colour: String) throws -> PluginContribution? {
+      let record = try JSONDecoder().decode(
+        PluginInstallRecordEntry.self,
+        from: Data(#"""
+        { "pluginId": "ade-tipsy", "enabled": true, "sockets": [
+            { "socket": "chat-header-action", "surface": "work", "id": "drink",
+              "label": "Take a drink", "actionId": "tipsy.drink", "color": "\#(colour)" }
+        ] }
+        """#.utf8)
+      )
+      let index = PluginContributionIndex(declarations: PluginSocketDeclarations(records: [record]))
+      return index.chatHeaderActions(sessionId: "sess-1").first
+    }
+
+    XCTAssertEqual(try declared("#7C6FF0")?.chatHeaderAction?.color, "#7c6ff0")
+    let refused = try XCTUnwrap(try declared("#ffffff"))
+    XCTAssertEqual(refused.chatHeaderAction?.label, "Take a drink")
+    XCTAssertNil(refused.chatHeaderAction?.color)
   }
 
   /// A `menu` this build cannot read must never cost the plugin its PRIMARY

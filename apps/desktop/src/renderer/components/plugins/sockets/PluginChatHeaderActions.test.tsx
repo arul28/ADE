@@ -79,12 +79,25 @@ beforeAll(() => {
               label: "Drink",
               actionId: "takeDrink",
               order: 1,
+              // ADE's own accent, which the sanitizer accepts.
+              color: "#7C6FF0",
               menu: [
-                { label: "Sober up", actionId: "soberUp" },
-                { label: "Reset count", actionId: "reset", danger: true },
+                { label: "Sober up", actionId: "soberUp", icon: "beer" },
+                // An icon token this build has never heard of. It must degrade
+                // to the same puzzle piece an entry with no icon draws.
+                { label: "Reset count", actionId: "reset", danger: true, icon: "not-a-real-token" },
               ],
             },
-            { socket: "chat-header-action", surface: "work", id: "pour", label: "Pour", actionId: "pour", order: 2 },
+            {
+              socket: "chat-header-action",
+              surface: "work",
+              id: "pour",
+              label: "Pour",
+              actionId: "pour",
+              order: 2,
+              // Pure yellow: legal hex, unreadable on the light background.
+              color: "#FFFF00",
+            },
             {
               socket: "chat-header-action",
               surface: "work",
@@ -326,5 +339,124 @@ describe("the split button on a chat-header action", () => {
     });
     expect(invoked.map((entry) => entry.action)).toEqual(["mopUp"]);
     expect((invoked[0]?.args.context as { id: string }).id).toBe("chat-1");
+  });
+
+  /**
+   * The chevron read as a second, detached pill.
+   *
+   * The two halves are one control — one contribution, one busy key, one
+   * primary press — and were drawn as siblings of the row's own `gap-1` flex,
+   * so the product said "two buttons" while the code said "one". They now share
+   * a wrapper with no gap, and the primary half carries only its LEFT corners so
+   * the seam is a single hairline rather than two butted outlines.
+   */
+  it("draws the two halves as one joined control, not two spaced pills", async () => {
+    render(<PluginChatHeaderActions session={SESSION} />);
+    await waitFor(() => expect(screen.getByText("Drink")).toBeTruthy());
+
+    const primary = screen.getByText("Drink").closest("button");
+    const chevron = screen.getByRole("button", { name: "Drink — more actions" });
+    if (!primary) throw new Error("expected a contributed button");
+
+    // One parent, and it is not the row: a gap between them would be back.
+    expect(primary.parentElement).toBe(chevron.parentElement);
+    expect(primary.parentElement?.className ?? "").not.toContain("gap-");
+
+    // Left corners and left edge on the primary; the seam belongs to the
+    // chevron's own border, so the primary must not draw a right one.
+    expect(primary.className).toContain("rounded-l-md");
+    expect(primary.className).not.toContain("rounded-md");
+    expect(primary.className).toContain("border-l");
+    expect(chevron.className).toContain("rounded-r-md");
+
+    // A button with no menu is untouched: all four corners, as before.
+    const plain = screen.getByText("Pour").closest("button");
+    expect(plain?.className).toContain("rounded-md");
+    expect(plain?.className).not.toContain("rounded-l-md");
+  });
+
+  /**
+   * A dropdown entry could not carry a glyph at all, so every row in every
+   * plugin's menu drew the same puzzle piece. Asserted by comparing the drawn
+   * paths rather than a class, because what went wrong was the picture.
+   */
+  it("draws a menu entry's own icon, and puzzle-pieces an unknown token", async () => {
+    render(<PluginChatHeaderActions session={SESSION} />);
+    await waitFor(() => expect(screen.getByText("Drink")).toBeTruthy());
+    await openMenu("Drink");
+
+    const glyph = (label: string) =>
+      screen.getByText(label).closest("button")?.querySelector("svg")?.innerHTML ?? "";
+    // "Pour" declares no icon, so it draws the default — the reference.
+    const fallback = screen.getByText("Pour").closest("button")?.querySelector("svg")?.innerHTML ?? "";
+
+    expect(fallback).not.toBe("");
+    expect(glyph("Sober up")).not.toBe(fallback);
+    // The unknown token degrades to the same default rather than throwing or
+    // drawing nothing — the rule the primary button already followed.
+    expect(glyph("Reset count")).toBe(fallback);
+  });
+});
+
+/**
+ * "A plugin can't even tint its own button without shipping a full theme."
+ *
+ * The tint is accepted only if it survives BOTH themes, because the payload
+ * carries one colour and the user picks the theme. A refused colour leaves the
+ * button wearing the platform's own tone — visibly not the plugin's choice,
+ * which is the signal that sends the author to the rule.
+ */
+describe("a chat-header button's own colour", () => {
+  it("wears a legible hex, and falls back rather than going invisible", async () => {
+    render(<PluginChatHeaderActions session={SESSION} />);
+    await waitFor(() => expect(screen.getByText("Drink")).toBeTruthy());
+
+    // #7C6FF0 clears 3:1 against both backgrounds.
+    const tinted = screen.getByText("Drink").closest("button");
+    expect(tinted?.style.color).toBe("rgb(124, 111, 240)");
+
+    // #FFFF00 does not — it vanishes on the light background — so nothing is
+    // set inline and the button keeps its own class-driven colour.
+    const plain = screen.getByText("Pour").closest("button");
+    expect(plain?.style.color).toBe("");
+  });
+
+  /**
+   * Inline styles outrank classes, so a tint painted while an action runs would
+   * paint over the busy chrome — the one signal that says a minutes-long action
+   * is still working. The platform takes the control back for the duration.
+   */
+  it("gives the control back to the busy state while an action runs", async () => {
+    const pending: { release: () => void } = { release: () => {} };
+    const inFlight = new Promise<void>((resolve) => {
+      pending.release = resolve;
+    });
+    const ade = (window as unknown as { ade: { plugins: { invoke: unknown } } }).ade;
+    const original = ade.plugins.invoke;
+    ade.plugins.invoke = async () => {
+      await inFlight;
+      return {};
+    };
+
+    try {
+      render(<PluginChatHeaderActions session={SESSION} />);
+      await waitFor(() => expect(screen.getByText("Drink")).toBeTruthy());
+      const button = screen.getByText("Drink").closest("button");
+      if (!button) throw new Error("expected a contributed button");
+
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      expect(button.getAttribute("aria-busy")).toBe("true");
+      expect(button.style.color).toBe("");
+
+      await act(async () => {
+        pending.release();
+        await inFlight;
+      });
+      await waitFor(() => expect(button.style.color).toBe("rgb(124, 111, 240)"));
+    } finally {
+      ade.plugins.invoke = original;
+    }
   });
 });

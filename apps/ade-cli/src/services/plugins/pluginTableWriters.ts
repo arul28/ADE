@@ -486,6 +486,36 @@ export function replacePluginPresenceForMachine(
 }
 
 /**
+ * Drop one machine's presence row for one plugin.
+ *
+ * The uninstall counterpart to {@link replacePluginPresenceForMachine}, and it
+ * exists because the republish that normally carries a removal cannot be relied
+ * on to reach every database: presence publishes into the ONE project scope
+ * that currently owns the presence service, while a plugin's rows can sit in
+ * every project database this machine has attached. Rows left behind are not
+ * inert — another machine reading them sees this one as still having the plugin
+ * enabled, which is the exact stale signal the coverage matrix exists to avoid.
+ *
+ * `machineKey` is this machine's own key, never one taken from a payload: an
+ * uninstall here says nothing about what any other machine has installed, so it
+ * must not be able to delete another machine's row.
+ *
+ * A delete on a CRR table is itself a replicated change, so this removal
+ * reaches peers the same way the write did. Returns the number of rows removed.
+ */
+export function deletePluginPresenceForPlugin(
+  db: PluginWriterDb,
+  machineKey: string,
+  pluginId: string,
+): number {
+  if (!machineKey) return 0;
+  return inWriteTransaction(db, () => db.runChanged(
+    "delete from plugin_presence where machine_key = ? and plugin_id = ?",
+    [machineKey, pluginId],
+  ));
+}
+
+/**
  * The raw `plugin_contributions` row, string-typed fields and all — every
  * field here is exactly what SQLite returns, before `entityKind`/`socket` are
  * narrowed to their closed unions and joined against the declaring manifest.

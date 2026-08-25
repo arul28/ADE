@@ -13,6 +13,7 @@ import {
   pluginSocketInvokeTimeoutMs,
   pluginSocketKindsSupportedOn,
   pluginSocketSupportedOn,
+  sanitizePluginActionColor,
   splitPluginRowBadges,
   PLUGIN_ACTION_MENU_ITEM_LIMIT,
   PLUGIN_CLIENT_SURFACES,
@@ -317,6 +318,40 @@ describe("the split-button menu", () => {
     expect(Object.keys(parsed ?? {})).not.toContain("menu");
   });
 
+  /**
+   * The alpha test's "Sober up" row drew a puzzle piece because the entry type
+   * had no `icon` at all, so a two-entry dropdown showed the same generic mark
+   * twice. The token goes through the button's own ceiling and the button's own
+   * resolver, which is what keeps one list across both clients.
+   */
+  it("carries a menu entry's icon token, at the button's own ceiling", () => {
+    const parsed = parsePluginContributionPayload("chat-header-action", {
+      label: "Drink",
+      actionId: "takeDrink",
+      menu: [
+        { label: "Sober up", actionId: "soberUp", icon: "beer" },
+        { label: "Reset count", actionId: "reset" },
+      ],
+    });
+    expect(parsed?.menu?.[0]).toEqual({ label: "Sober up", actionId: "soberUp", icon: "beer" });
+    // Absent, not empty — a renderer reads "no icon declared" from the missing
+    // key, exactly as the button above it does.
+    expect(Object.keys(parsed?.menu?.[1] ?? {})).not.toContain("icon");
+    // Unknown tokens are NOT rejected here: the token lists live in the two
+    // renderers, and a shared parser that judged them would drop a glyph the
+    // other client can draw. Each client degrades its own unknowns.
+    expect(parsePluginContributionPayload("chat-header-action", {
+      label: "Drink",
+      actionId: "takeDrink",
+      menu: [{ label: "Sober up", actionId: "soberUp", icon: "not-a-real-token" }],
+    })?.menu?.[0]?.icon).toBe("not-a-real-token");
+    // An over-long token costs the entry its glyph, never the entry: the row
+    // still has a label and an action, which is the part the user asked for.
+    expect(parsePluginActionButtonMenu([
+      { label: "Sober up", actionId: "soberUp", icon: "x".repeat(41) },
+    ])).toEqual([{ label: "Sober up", actionId: "soberUp" }]);
+  });
+
   it("carries danger through, because the menu draws the product's own red", () => {
     const parsed = parsePluginContributionPayload("chat-header-action", {
       label: "Drink",
@@ -417,6 +452,103 @@ describe("the split-button menu", () => {
     }));
     expect(parsed.manifest?.sockets).toHaveLength(1);
     expect(parsed.manifest?.sockets[0]?.menu).toBeUndefined();
+  });
+});
+
+/**
+ * A per-button tint, and the reason it is not simply "whatever hex you sent".
+ *
+ * The alpha test's plugin could tint its button only by shipping a whole theme,
+ * which recolours the entire application. This field is the narrow version —
+ * and it is narrow in a second sense: one payload carries ONE colour while the
+ * user picks the theme, so a colour that cannot be read on both backgrounds is
+ * a button that is invisible for half the installs. That is the whole contract,
+ * and every assertion below is about it rather than about hex parsing.
+ */
+describe("a button's own colour", () => {
+  it("takes a legible hex, normalized, and expands the 3-digit form", () => {
+    // ADE's own accent. The intended calibration: a plugin's brand colour is
+    // expected to work, which is only a real claim if the product's does.
+    expect(sanitizePluginActionColor("#7C6FF0")).toBe("#7c6ff0");
+    expect(sanitizePluginActionColor("#808080")).toBe("#808080");
+    expect(sanitizePluginActionColor("#888")).toBe("#888888");
+  });
+
+  /**
+   * The failure this field exists to make impossible: a button nobody can see.
+   * Each of these is legal CSS and legal hex, and each disappears against one
+   * of the two backgrounds the same payload has to survive.
+   */
+  it("refuses a colour that cannot be read against one of the two themes", () => {
+    // Vanishes on the light background.
+    expect(sanitizePluginActionColor("#ffffff")).toBeNull();
+    expect(sanitizePluginActionColor("#ffff00")).toBeNull();
+    // Vanishes on the dark background.
+    expect(sanitizePluginActionColor("#000000")).toBeNull();
+    expect(sanitizePluginActionColor("#0000ff")).toBeNull();
+  });
+
+  it("refuses anything that is not plainly a hex colour", () => {
+    for (const value of [
+      "red",
+      "rgb(1,2,3)",
+      "#12345",
+      "7C6FF0",
+      "#7C6FF0;}",
+      "var(--color-accent)",
+      42,
+      null,
+      undefined,
+      {},
+    ]) {
+      expect(sanitizePluginActionColor(value)).toBeNull();
+    }
+  });
+
+  it("reaches the payload only through the sanitizer, on every button kind", () => {
+    for (const kind of ["toolbar-action", "composer-action", "chat-header-action", "command-palette-action"] as const) {
+      expect(parsePluginContributionPayload(kind, {
+        label: "Drink",
+        actionId: "takeDrink",
+        color: "#7C6FF0",
+      })).toEqual({ label: "Drink", actionId: "takeDrink", color: "#7c6ff0" });
+    }
+  });
+
+  /**
+   * A refused colour is never a refused button. Same bargain as `menu`: the
+   * label and the primary press are what the user asked for, and the tint is
+   * the bonus — so the field simply goes missing and the renderer draws the
+   * platform's own tone.
+   */
+  it("drops the field rather than the button when the colour is refused", () => {
+    const parsed = parsePluginContributionPayload("chat-header-action", {
+      label: "Drink",
+      actionId: "takeDrink",
+      color: "#ffff00",
+    });
+    expect(parsed).toEqual({ label: "Drink", actionId: "takeDrink" });
+    expect(Object.keys(parsed ?? {})).not.toContain("color");
+  });
+
+  it("is declarable in a plugin.json, and a refused one still installs", () => {
+    const declare = (color: string) => parsePluginManifestJson(JSON.stringify({
+      name: "tipsy",
+      version: "1.0.0",
+      displayName: "Tipsy",
+      sockets: [{
+        socket: "chat-header-action",
+        surface: "work",
+        id: "drink",
+        label: "Drink",
+        actionId: "takeDrink",
+        color,
+      }],
+    }));
+    expect(declare("#7C6FF0").manifest?.sockets[0]?.color).toBe("#7c6ff0");
+    const refused = declare("#ffffff");
+    expect(refused.manifest?.sockets).toHaveLength(1);
+    expect(refused.manifest?.sockets[0]?.color).toBeUndefined();
   });
 });
 

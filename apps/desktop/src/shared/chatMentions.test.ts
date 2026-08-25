@@ -13,6 +13,7 @@ import {
   renderChatMentionBlock,
   renderUnresolvedChatMentionBlock,
   truncateMentionPreview,
+  chatMentionKindFromToken,
 } from "./chatMentions";
 
 describe("chat mention grammar", () => {
@@ -54,6 +55,13 @@ describe("chat mention grammar", () => {
     expect(isChatMentionTokenBody("term:abc")).toBe(true);
     expect(isChatMentionTokenBody("src/chat.ts")).toBe(false);
     expect(isChatMentionTokenBody("chat:")).toBe(false);
+  });
+
+  it("reads the kind from a chip token", () => {
+    expect(chatMentionKindFromToken("@chat:abc-1")).toBe("chat");
+    expect(chatMentionKindFromToken("lane:l_2")).toBe("lane");
+    expect(chatMentionKindFromToken("@term:t.3")).toBe("terminal");
+    expect(chatMentionKindFromToken("@src/chat.ts")).toBeNull();
   });
 
   it("dedupes targets and caps fan-out per message", () => {

@@ -9,6 +9,7 @@ import { parsePluginPanel } from "../../../desktop/src/shared/plugins/vocabulary
 import {
   CliPluginUsageError,
   pluginCliUsageText,
+  resolveDevTarget,
   resolvePluginCliRoute,
   runPluginCommand,
   runPluginCommandAsync,
@@ -163,6 +164,72 @@ describe("ade plugin create", () => {
   it("rejects a name that is not a valid plugin id", () => {
     expect(() => runPluginCreate(["My_Plugin", "--dir", adeHome])).toThrowError(/Invalid plugin id/);
     expect(() => runPluginCreate(["--dir", adeHome])).toThrowError(/ade plugin create/);
+  });
+
+  it("demonstrates the real argv and context shapes in the starter actions", () => {
+    // Both shapes cost the round-2 alpha author a debugging session apiece
+    // (findings #6 and #7): `argv` is a PROPERTY of the one args object, and a
+    // context object carries its fields directly rather than under a `.session`
+    // key. A scaffold nobody can copy a working example from is how a whole
+    // class of first-plugin mistakes stays reachable.
+    const created = JSON.parse(runPluginCreate(["my-plugin", "--dir", adeHome]).output) as { root: string };
+    const entry = fs.readFileSync(path.join(created.root, "index.js"), "utf8");
+
+    expect(entry).toContain("const argv = args.argv");
+    expect(entry).not.toMatch(/async\s+status\s*\(\s*argv\s*\)/);
+    expect(entry).toContain("const context = args.context;");
+    // The wrong form appears once, named as wrong, in a comment. Nowhere else.
+    expect(entry).toContain("never\n// `args.context.session.id`");
+    const code = entry.split("\n").filter((line) => !line.trim().startsWith("//"));
+    expect(code.join("\n")).not.toContain("args.context.session");
+
+    // The starter declares a socket, so `hello` is a press someone can make.
+    const parsed = parsePluginManifestJson(
+      fs.readFileSync(path.join(created.root, "plugin.json"), "utf8"),
+    );
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.manifest!.sockets).toEqual([
+      { socket: "toolbar-action", surface: "app", id: "hello", label: "My Plugin", actionId: "hello" },
+    ]);
+  });
+});
+
+describe("ade plugin dev target", () => {
+  it("watches the folder a local install came from, never the installed copy", () => {
+    // Watching the installed copy is a reload loop now that a reload rewrites
+    // that copy from the source: the write wakes the watcher, which reloads,
+    // which writes again.
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-src-"));
+    fs.writeFileSync(
+      path.join(source, "plugin.json"),
+      JSON.stringify(manifestFixture("graph")),
+      "utf8",
+    );
+    writePlugin("graph", manifestFixture("graph"));
+    const statePath = path.join(adeHome, "plugins", "state.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      plugins: Record<string, { source: unknown }>;
+    };
+    state.plugins.graph!.source = { kind: "local", path: source };
+    fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+
+    expect(resolveDevTarget("graph")).toEqual({ pluginId: "graph", root: source });
+    fs.rmSync(source, { recursive: true, force: true });
+  });
+
+  it("falls back to the installed copy for a source that is not a local folder", () => {
+    writePlugin("graph", manifestFixture("graph"));
+    const statePath = path.join(adeHome, "plugins", "state.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      plugins: Record<string, { source: unknown }>;
+    };
+    state.plugins.graph!.source = { kind: "git", url: "https://example.test/graph.git" };
+    fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+
+    expect(resolveDevTarget("graph")).toEqual({
+      pluginId: "graph",
+      root: path.join(adeHome, "plugins", "graph"),
+    });
   });
 });
 

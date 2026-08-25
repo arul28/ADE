@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
 import {
   PluginSdkError,
+  type PluginDetail,
+  type PluginDomainService,
   type PluginEventPayload,
   type PluginHostFrame,
   type PluginRuntimeHookPayload,
@@ -15,7 +17,11 @@ import {
 } from "../../../shared/plugins/sdk";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { requirePluginInstallService } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
-import { publishPluginContribution } from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
+import {
+  publishPluginContribution,
+  readAllPluginPresence,
+  replacePluginPresenceForMachine,
+} from "../../../../../ade-cli/src/services/plugins/pluginTableWriters";
 import type { createPluginChildSupervisor, PluginChildSupervisor } from "./pluginChildSupervisor";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { emitPluginChange } from "./pluginEvents";
@@ -116,10 +122,23 @@ function recordingSupervisors() {
  * Copied to a scratch directory rather than edited in place: the checked-in
  * fixture declares exactly one socket and several tests above depend on that.
  */
-function fixtureWithSockets(sockets: unknown[]): string {
+/**
+ * A private, writable copy of the fixture, for a test that edits its SOURCE.
+ *
+ * A reload re-copies a `local` plugin from the folder it was installed from, so
+ * a test that wants a reload to see an edit has to make that edit at the source
+ * — and it cannot make it in the checked-in fixture directory every other test
+ * installs from.
+ */
+function copyFixture(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-fixture-"));
   scratchDirs.push(dir);
   fs.cpSync(fixtureRoot, dir, { recursive: true });
+  return dir;
+}
+
+function fixtureWithSockets(sockets: unknown[]): string {
+  const dir = copyFixture();
   const manifestPath = path.join(dir, "plugin.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
   manifest.sockets = sockets;
@@ -440,17 +459,19 @@ describe("plugin start and panel materialization", () => {
   });
 
   it("leaves a panel the plugin published alone until the code changes", async () => {
-    const { plugins, store, pluginsRoot } = await hostWithFixture();
+    const source = copyFixture();
+    const { plugins, store } = await hostWithFixture({ source });
 
     // What a running plugin publishes outranks its shipped default.
     store!.updatePanel("hello-plugin", "main", { schema: { v: 1, title: "Live" }, vocabVersion: 1 });
     await plugins.enable({ pluginId: "hello-plugin" });
     expect(store!.readPanel("hello-plugin", "main")?.schema).toMatchObject({ title: "Live" });
 
-    // A reload is the `ade plugin dev` loop: the file on disk is now newer than
-    // anything the last run published, so it replaces it.
+    // A reload is the `ade plugin dev` loop: the author edits the SOURCE, the
+    // reload copies it over the installed tree, and the file on disk is then
+    // newer than anything the last run published, so it replaces it.
     fs.writeFileSync(
-      path.join(pluginsRoot, "hello-plugin", "panels", "main.json"),
+      path.join(source, "panels", "main.json"),
       JSON.stringify({ v: 1, title: "Edited", fallback: { title: "Edited", text: "x" }, body: [] }),
       "utf8",
     );
@@ -459,13 +480,14 @@ describe("plugin start and panel materialization", () => {
   });
 
   it("restarts the child on reload and runs the manifest that is on disk now", async () => {
-    const { plugins, pluginsRoot, supervisors } = await hostWithFixture();
+    const source = copyFixture();
+    const { plugins, pluginsRoot, supervisors } = await hostWithFixture({ source });
     const before = supervisors.latest("hello-plugin")!;
     expect(before.disposals).toBe(0);
 
-    // The `ade plugin dev` loop edits the installed tree in place. Nothing has
-    // re-read it yet, so the registry still records what was installed.
-    const manifestPath = path.join(pluginsRoot, "hello-plugin", "plugin.json");
+    // The `ade plugin dev` loop edits the SOURCE tree. Nothing has copied it
+    // over the install yet, so the registry still records what was installed.
+    const manifestPath = path.join(source, "plugin.json");
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
     manifest.version = "0.2.0";
     manifest.sockets = [
@@ -496,6 +518,47 @@ describe("plugin start and panel materialization", () => {
     expect(recordedVersion()).toBe("0.2.0");
     const sockets = (await plugins.getManifest({ pluginId: "hello-plugin" }))?.sockets ?? [];
     expect(sockets.map((socket) => socket.id)).toEqual(["greeting", "pr-greeting"]);
+
+    // (c) The other half of the split: the SOURCE is the truth for a local
+    // install, so an edit made directly in the install directory does not
+    // survive the next reload — the copy is a full replace, as an install is.
+    fs.writeFileSync(
+      path.join(pluginsRoot, "hello-plugin", "plugin.json"),
+      JSON.stringify({ ...manifest, version: "0.9.9-hand-edited" }, null, 2),
+      "utf8",
+    );
+    expect((await plugins.reload({ pluginId: "hello-plugin" })).version).toBe("0.2.0");
+  });
+
+  it("re-reads the install directory in place for a plugin with no local source", async () => {
+    // The behaviour SPLIT, pinned. A `git` or bundled install has no folder on
+    // this machine to re-copy from and nothing fetches on a reload, so the
+    // install directory stays the truth for it and an edit there is what runs.
+    // Reading the source kind wrong in either direction is a silent bug: a
+    // local plugin serving stale bytes, or a git plugin losing its own tree.
+    const { plugins, pluginsRoot, supervisors } = await hostWithFixture();
+    const before = supervisors.latest("hello-plugin")!;
+
+    // Rewrite the record as a git install, the way a clone would have left it.
+    const statePath = path.join(pluginsRoot, "state.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      plugins: Record<string, { source: unknown }>;
+    };
+    state.plugins["hello-plugin"]!.source = { kind: "git", url: "https://example.test/hello.git" };
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+
+    const manifestPath = path.join(pluginsRoot, "hello-plugin", "plugin.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.version = "0.3.0";
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+    const summary = await plugins.reload({ pluginId: "hello-plugin" });
+
+    expect(summary.version).toBe("0.3.0");
+    expect(summary.warnings).toEqual([]);
+    // Still a real reload: the child is replaced either way.
+    expect(before.disposals).toBe(1);
+    expect(supervisors.latest("hello-plugin")).not.toBe(before);
   });
 
   it("stops the running child before an install replaces its directory", async () => {
@@ -1335,5 +1398,162 @@ describe("uninstall sweeps a plugin's schedules", () => {
     await plugins.uninstall({ pluginId: "hello-plugin" });
 
     expect(readSchedules(pluginsRoot).map((row) => row.pluginId)).toEqual(["other-plugin"]);
+  });
+});
+
+/**
+ * Presence is the one leftover another COMPUTER can see.
+ *
+ * Collections, contributions and panels left behind are inert clutter in a
+ * database only this machine reads. A surviving `plugin_presence` row is a
+ * statement broadcast to the account: this machine still has that plugin,
+ * enabled — which is the exact stale signal the coverage matrix exists to
+ * prevent. The republish the uninstall action already runs cannot be relied on
+ * to reach here: it goes through the presence service, which holds ONE
+ * project's database, while these rows sit in every project this machine has
+ * attached.
+ */
+describe("uninstall clears this machine's presence rows", () => {
+  afterEach(closeScratch);
+
+  const otherPlugin = {
+    pluginId: "other-plugin",
+    version: "1.0.0",
+    enabled: true,
+    displayName: "Other",
+    icon: "",
+    accent: "",
+  };
+
+  const presenceIn = (db: AdeDb, machineKey: string): string[] =>
+    readAllPluginPresence(db)
+      .filter((row) => row.machineKey === machineKey)
+      .map((row) => row.pluginId);
+
+  it("drops the uninstalled plugin's row and leaves other plugins and other machines alone", async () => {
+    const { host, plugins, db } = await hostWithFixture();
+    host.setMachineContext({ localMachineKey: () => "machine-a" });
+    replacePluginPresenceForMachine(
+      db!,
+      "machine-a",
+      [{ ...otherPlugin, pluginId: "hello-plugin", displayName: "Hello" }, otherPlugin],
+      "2026-08-14T07:19:03.919Z",
+    );
+    replacePluginPresenceForMachine(
+      db!,
+      "machine-b",
+      [{ ...otherPlugin, pluginId: "hello-plugin", displayName: "Hello" }],
+      "2026-08-14T07:19:03.919Z",
+    );
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(presenceIn(db!, "machine-a")).toEqual(["other-plugin"]);
+    // Another machine having the plugin is not this uninstall's business.
+    expect(presenceIn(db!, "machine-b")).toEqual(["hello-plugin"]);
+  });
+
+  it("records the removal as a replicated change, so peers stop reporting the plugin", async () => {
+    const { host, plugins, db } = await hostWithFixture();
+    host.setMachineContext({ localMachineKey: () => "machine-a" });
+    replacePluginPresenceForMachine(
+      db!,
+      "machine-a",
+      [{ ...otherPlugin, pluginId: "hello-plugin", displayName: "Hello" }],
+      "2026-08-14T07:19:03.919Z",
+    );
+    const changes = (): number => db!.get<{ count: number }>(
+      "select count(*) as count from crsql_changes where \"table\" = 'plugin_presence'",
+    )?.count ?? 0;
+    const before = changes();
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(changes()).not.toBe(before);
+    expect(changes()).toBeGreaterThan(0);
+  });
+
+  it("leaves every machine's rows alone when this machine has no account key", async () => {
+    // An unpaired machine has no key. Sweeping by plugin id alone would delete
+    // rows belonging to computers that never uninstalled anything.
+    const { host, plugins, db } = await hostWithFixture();
+    host.setMachineContext({ localMachineKey: () => null });
+    replacePluginPresenceForMachine(
+      db!,
+      "machine-b",
+      [{ ...otherPlugin, pluginId: "hello-plugin", displayName: "Hello" }],
+      "2026-08-14T07:19:03.919Z",
+    );
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(presenceIn(db!, "machine-b")).toEqual(["hello-plugin"]);
+  });
+});
+
+/**
+ * The last invoke per action, on `plugin.get`.
+ *
+ * Round-2 alpha finding #6: an action that silently did nothing and an action
+ * that was never reached were indistinguishable from outside the host, so
+ * `ade plugin doctor` could only report "0 rows published right now" for both
+ * and the reader had to reproduce the press by hand to tell them apart.
+ */
+describe("plugin.get reports the last invoke per action", () => {
+  afterEach(closeScratch);
+
+  const lastInvokes = async (
+    plugins: PluginDomainService,
+  ): Promise<NonNullable<PluginDetail["lastInvokes"]>> => {
+    const detail = await plugins.get({ pluginId: "hello-plugin" });
+    return detail?.lastInvokes ?? [];
+  };
+
+  it("starts empty, then records the action that ran", async () => {
+    const { plugins } = await hostWithFixture();
+    expect(await lastInvokes(plugins)).toEqual([]);
+
+    await plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" });
+
+    const recorded = await lastInvokes(plugins);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ action: "openIssue", ok: true });
+    expect(recorded[0]!.errorCode).toBeUndefined();
+    expect(Number.isFinite(Date.parse(recorded[0]!.at))).toBe(true);
+  });
+
+  it("records a REFUSED invoke with its code — a refusal is an attempt", async () => {
+    const { plugins } = await hostWithFixture({
+      source: fixtureWithSockets([
+        { socket: "row-badge", surface: "lanes", id: "risk", label: "Risk", actionId: "openIssue" },
+      ]),
+    });
+    await plugins.setContributionEnabled({ pluginId: "hello-plugin", socketId: "risk", enabled: false });
+
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" })).rejects.toThrow();
+
+    expect(await lastInvokes(plugins)).toEqual([
+      expect.objectContaining({ action: "openIssue", ok: false, errorCode: "not_permitted" }),
+    ]);
+  });
+
+  it("keeps one row per action, newest first", async () => {
+    const { plugins } = await hostWithFixture();
+    await plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" });
+    await plugins.invoke({ pluginId: "hello-plugin", action: "syncNow" });
+    await plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" });
+
+    expect((await lastInvokes(plugins)).map((entry) => entry.action)).toEqual(["openIssue", "syncNow"]);
+  });
+
+  it("forgets a plugin's history when it is uninstalled", async () => {
+    // A reinstall that inherited the old history would answer "yes, it ran"
+    // about code that is no longer on the machine.
+    const { plugins } = await hostWithFixture();
+    await plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" });
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+    await plugins.install({ source: fixtureRoot });
+
+    expect(await lastInvokes(plugins)).toEqual([]);
   });
 });

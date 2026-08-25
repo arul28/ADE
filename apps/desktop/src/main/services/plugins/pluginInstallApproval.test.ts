@@ -111,6 +111,43 @@ describe("plugin install approval", () => {
     expect(card.body).toContain("Runs code on this machine");
   });
 
+  it("hands the disclosure to the card as its description, not just as a body nothing reads", async () => {
+    // The bug this pins: the card's description used to fall back to the first
+    // question, which is the title again, so every word above was discarded and
+    // the person approving filesystem and network access read only a name.
+    const source = pluginDir(tipsyManifest());
+    const { chat, calls } = chatMock({});
+
+    await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    const card = calls[0]!;
+    expect(card.description).toBe(card.body);
+    expect(card.description).toContain("A drink counter.");
+    expect(card.description).toContain(`From this computer: ${source}`);
+    expect(card.description).toContain("Adds:");
+    expect(card.description).toContain("Runs code on this machine");
+  });
+
+  it("names its own buttons, and says which decision each one answers", async () => {
+    // Without `decision` the card falls back to Accept / Accept all / Decline,
+    // and "Accept all" reads as a standing grant this gate never offered.
+    const source = pluginDir(tipsyManifest());
+    const { chat, calls } = chatMock({});
+
+    await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    const options = calls[0]!.questions?.[0]?.options ?? [];
+    expect(options.map((option) => option.label)).toEqual(["Install", "Don't install"]);
+    expect(options.map((option) => option.decision)).toEqual(["accept", "decline"]);
+    expect(options[0]?.value).toBe("install");
+    expect(options[1]?.value).toBe("deny");
+    expect(options[0]?.description).toBe("Runs with the same access as tools you install yourself.");
+  });
+
   it("tells the reader when a skill lands, in the same words every other surface uses", async () => {
     // The retrospective's sharpest confusion: the plugin installed, the state
     // changed, and the agent in the visible chat stayed sober. Said BEFORE the

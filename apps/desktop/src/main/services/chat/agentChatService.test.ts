@@ -40519,6 +40519,120 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
   });
 
+  it("keeps a caller's written body as the card description, and its option decisions with it", async () => {
+    // The plugin install gate's shape: a rich body AND its own questions. The
+    // description used to fall back to the first question — which that caller
+    // sets to the title — so the whole disclosure was dropped every time.
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const body = "A drink counter.\nFrom this computer: /tmp/tipsy\n\nAdds:\n- Tipsy tab";
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Install Tipsy 0.3.0?",
+      body,
+      description: body,
+      kind: "approval",
+      allowsFreeform: false,
+      questions: [{
+        id: "plugin_install",
+        header: "Plugin install",
+        question: "Install Tipsy 0.3.0?",
+        allowsFreeform: false,
+        options: [
+          { label: "Install", value: "install", decision: "accept", description: "Runs with the same access as tools you install yourself." },
+          { label: "Don't install", value: "deny", decision: "decline" },
+        ],
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Install Tipsy 0.3.0?";
+      },
+    );
+
+    const request = (approvalEvent.event.detail as { request: PendingInputRequest }).request;
+    expect(request.description).toBe(body);
+    expect(request.questions[0]?.options?.map((option) => [option.label, option.decision])).toEqual([
+      ["Install", "accept"],
+      ["Don't install", "decline"],
+    ]);
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      answers: { plugin_install: "install" },
+    });
+    const result = await requestPromise;
+    expect(result.answers.plugin_install).toEqual(["install"]);
+  });
+
+  it("still describes an ordinary question card by its question, not its body", async () => {
+    // The other half of the same branch: a caller that supplies no description
+    // keeps the old fallback, so question cards read exactly as before.
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Fallback question",
+      body: "Body prose nobody chose to show.",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which path should we take?",
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Fallback question";
+      },
+    );
+
+    const request = (approvalEvent.event.detail as { request: PendingInputRequest }).request;
+    expect(request.description).toBe("Which path should we take?");
+    expect(request.questions[0]?.options).toBeUndefined();
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "decline",
+    });
+    await requestPromise;
+  });
+
   it("persists awaitingInput while chat input is pending and clears it after resolution", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({

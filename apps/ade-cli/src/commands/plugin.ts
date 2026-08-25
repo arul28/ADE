@@ -80,7 +80,7 @@ const HELP_PLUGIN = [
   "  ade plugin install <source> [--ref <r>]   Install from a git URL or local path",
   "  ade plugin remove <id>                    Uninstall a plugin",
   "  ade plugin enable <id> | disable <id>     Turn a plugin on or off",
-  "  ade plugin reload <id>                    Re-read the manifest and restart it",
+  "  ade plugin reload <id>                    Re-copy a local source, then restart it",
   "  ade plugin logs <id> [--limit <n>]        Show a plugin's recent log lines",
   "  ade plugin doctor <id>                    Check every layer between installed and visible",
   "  ade plugin dev [<id>|<path>]              Watch a plugin directory and reload on change",
@@ -346,6 +346,20 @@ function scaffoldManifest(pluginId: string, displayName: string): string {
       entry: "index.js",
       surfaces: [{ kind: "tab", id: pluginId, title: displayName, panelId: "main" }],
       panels: [{ id: "main", schemaFile: "panels/main.json", title: displayName }],
+      // A socket, so the scaffold has one action a person can actually PRESS
+      // and one handler that reads a real context object. Both shapes — the
+      // context on a socket press and `argv` on a CLI word — have now cost an
+      // author a debugging session apiece for being guessed at rather than
+      // copied, so the starter demonstrates each of them working.
+      sockets: [
+        {
+          socket: "toolbar-action",
+          surface: "app",
+          id: "hello",
+          label: displayName,
+          actionId: "hello",
+        },
+      ],
       cli: ["status"],
       official: false,
     },
@@ -366,11 +380,39 @@ function scaffoldEntry(pluginId: string, displayName: string): string {
     `  ade.log("info", "${pluginId} activated");`,
     "};",
     "",
+    "// Every action takes ONE object. What is in it depends on how the action was",
+    "// reached, and neither shape is nested under a further key:",
+    "//",
+    "//   a socket press  ->  { context: { kind: \"surface\", surface: \"app\" } }",
+    "//   an `ade` word   ->  { argv: [\"status\", \"--json\"] }",
+    "//",
+    "// The context object IS the subject — a session context is",
+    "// { kind: \"session\", id, title, ... }, so it is `args.context.id` and never",
+    "// `args.context.session.id`. argv is a property of the same object, so it is",
+    "// `args.argv`, never the parameter itself.",
     "exports.actions = {",
-    "  status: async () => ({",
-    `    plugin: "${pluginId}",`,
-    "    ok: true,",
-    "  }),",
+    "  // Reached from the toolbar button this plugin declares in plugin.json.",
+    "  hello: async (args) => {",
+    "    const context = args.context;",
+    `    ade.log("info", "${pluginId} pressed", { surface: context.surface });`,
+    "    // Send the user to this plugin's own tab. Return nothing to stay put.",
+    '    return { navigate: { panelId: "main" } };',
+    "  },",
+    "",
+    `  // Reached as \`ade ${pluginId} status [...]\`. Every word after the plugin`,
+    "  // id arrives in args.argv, and that INCLUDES \"status\" itself — so drop the",
+    "  // first non-flag word to get your own arguments. Parsing the flags is",
+    "  // yours: ADE hands over the words untouched.",
+    "  status: async (args) => {",
+    "    const argv = args.argv || [];",
+    '    const words = argv.filter((word) => !word.startsWith("-"));',
+    "    const rest = words.slice(1);",
+    "    return {",
+    `      plugin: "${pluginId}",`,
+    "      ok: true,",
+    "      arguments: rest,",
+    "    };",
+    "  },",
     "};",
     "",
   ].join("\n");
@@ -408,7 +450,7 @@ function scaffoldReadme(pluginId: string, displayName: string): string {
     "",
     "## Layout",
     "",
-    "- `plugin.json` — manifest: identity, surfaces, panels, CLI words.",
+    "- `plugin.json` — manifest: identity, surfaces, panels, sockets, CLI words.",
     "- `index.js` — plugin code, run on the owning machine in a supervised child process.",
     "- `panels/main.json` — the panel's declarative vocabulary schema.",
     "",
@@ -416,10 +458,24 @@ function scaffoldReadme(pluginId: string, displayName: string): string {
     "",
     "```sh",
     "ade plugin install .",
-    `ade plugin dev ${pluginId}`,
+    `ade plugin dev .`,
     "```",
     "",
-    `\`ade plugin dev\` watches this directory and reloads the plugin on every save.`,
+    "`ade plugin dev` watches this directory and reloads the plugin on every save.",
+    "A reload re-copies this folder into the install directory first, so what you",
+    "just edited is what runs.",
+    "",
+    "## Check an action without clicking anything",
+    "",
+    "```sh",
+    `ade actions run plugin.invoke --input-json '{"pluginId":"${pluginId}","action":"hello","args":{"context":{"kind":"surface","surface":"app"}}}'`,
+    `ade ${pluginId} status`,
+    `ade plugin doctor ${pluginId} --text`,
+    "```",
+    "",
+    "The first line presses the button without a button: it is the fastest way to",
+    "find out whether a handler runs at all. `doctor`'s \"Last run\" line then says",
+    "when each declared action last ran and how it ended.",
     "",
   ].join("\n");
 }
@@ -453,7 +509,7 @@ export function runPluginCreate(args: string[]): PluginCliResult {
         `Created ${displayName} at ${root}`,
         ...written.map((relative) => `  ${relative}`),
         "",
-        `Next: ade plugin install ${root} && ade plugin dev ${pluginId}`,
+        `Next: ade plugin install ${root} && ade plugin dev ${root}`,
         "",
       ].join("\n"),
       exitCode: 0,
@@ -541,7 +597,18 @@ async function runPluginLifecycle(
       exitCode: 0,
     };
   }
-  return daemonResult(result, format);
+  const summary = daemonResult(result, format);
+  if (action !== "reload" || format !== "text") return summary;
+  // A reload re-copies a local source before it restarts the child, and the one
+  // thing the reader must never miss is a resync that was REFUSED — the whole
+  // point of the re-copy is that "reloaded" cannot quietly mean "ran the old
+  // bytes again". The warnings carry that sentence; printing only the summary
+  // line would put it back where it was.
+  const warnings = isRecord(result) && Array.isArray(result.warnings)
+    ? result.warnings.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  if (warnings.length === 0) return summary;
+  return { ...summary, output: `${summary.output}${warnings.map((line) => `${line}\n`).join("")}` };
 }
 
 async function runPluginLogs(
@@ -661,6 +728,9 @@ async function runPluginDoctor(
     // "Installed here" line already answers better.
     manifestErrors: record ? parsed.errors : [],
     live,
+    sourcePresent: record?.source.kind === "local"
+      ? fs.existsSync(path.resolve(record.source.path))
+      : null,
   });
   if (format === "text") return { output: formatPluginDoctorReport(report), exitCode: 0 };
   return jsonOutput(report);
@@ -672,7 +742,14 @@ async function runPluginDoctor(
 
 const DEV_DEBOUNCE_MS = 300;
 
-function resolveDevTarget(target: string | undefined): { pluginId: string; root: string } {
+/**
+ * Which directory `ade plugin dev` watches.
+ *
+ * Exported for the test that pins the local-source rule: watching the installed
+ * copy of a `local` plugin is a reload loop, because a reload rewrites that copy
+ * from the source on every pass.
+ */
+export function resolveDevTarget(target: string | undefined): { pluginId: string; root: string } {
   const fromDirectory = (directory: string): { pluginId: string; root: string } => {
     const root = path.resolve(directory);
     const { manifest } = readPluginManifestAt(root);
@@ -692,9 +769,17 @@ function resolveDevTarget(target: string | undefined): { pluginId: string; root:
     throw new CliPluginUsageError(`${target} is neither a plugin directory nor a plugin id.`);
   }
   const pluginsRoot = resolvePluginsRoot();
-  if (!readPluginInstallRecords(pluginsRoot).has(target)) {
+  const record = readPluginInstallRecords(pluginsRoot).get(target);
+  if (!record) {
     throw new CliPluginUsageError(`Plugin ${target} is not installed on this machine.`);
   }
+  // A `local` install watches the folder it came FROM, never the copy under the
+  // plugins root. Two reasons, and the second is not optional: a reload
+  // re-copies that folder over the installed copy, so watching the copy would
+  // watch bytes nobody edits — and every reload would rewrite the very files
+  // the watcher is watching, which is a reload loop that never settles.
+  const source = record.source.kind === "local" ? path.resolve(record.source.path) : null;
+  if (source && fs.existsSync(path.join(source, PLUGIN_MANIFEST_FILE))) return fromDirectory(source);
   return fromDirectory(path.join(pluginsRoot, target));
 }
 

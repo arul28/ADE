@@ -10,7 +10,9 @@ import {
   SocketMenuRow,
   SocketMenuSubRows,
   SocketOverflow,
+  SocketSplitGroup,
   SocketSplitMenu,
+  socketTintStyle,
 } from "./socketUi";
 
 /**
@@ -32,11 +34,24 @@ import {
 const VISIBLE_LIMIT = 2;
 
 /** Matches the accessory row's own icon buttons — see `AgentChatComposer`. */
-const BUTTON_CLASS =
-  "inline-flex h-7 max-w-[132px] shrink-0 items-center gap-1 rounded-lg px-1.5"
+const BUTTON_BASE =
+  "inline-flex h-7 max-w-[132px] shrink-0 items-center gap-1 px-1.5"
   + " font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45"
   + " transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
   + " disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent";
+
+/** A button with no menu: the rounded pill the accessory row always drew. */
+const BUTTON_CLASS = `${BUTTON_BASE} rounded-lg`;
+
+/**
+ * The primary half of a split button: left corners only.
+ *
+ * These are ghost buttons with no border of their own, so the seam is the
+ * chevron's hairline `border-l` rather than a shared outline — but the
+ * arrangement is the chat header's exactly: no gap, one radius across the pair,
+ * and the pressable areas butted together so the control reads as one.
+ */
+const BUTTON_SPLIT_CLASS = `${BUTTON_BASE} rounded-l-lg`;
 
 /**
  * Running, and the button says so by looking ON rather than dimmed.
@@ -52,10 +67,16 @@ const BUTTON_BUSY_CLASS =
   + " text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
   + " hover:text-[var(--chat-accent)]";
 
-/** The chevron half, sized to the accessory row rather than to a toolbar. */
+/**
+ * The chevron half, sized to the accessory row rather than to a toolbar.
+ *
+ * The divider is `fg`-alpha rather than white-alpha: it is the seam of a joined
+ * control, so it has to be visible in BOTH themes, and `--color-fg` flips with
+ * the theme where a white wash only reads on dark.
+ */
 const CHEVRON_CLASS =
-  "inline-flex h-7 shrink-0 items-center rounded-lg px-0.5 text-muted-fg/45"
-  + " transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60";
+  "inline-flex h-7 shrink-0 items-center rounded-r-lg border-l border-fg/[0.10] px-1"
+  + " text-muted-fg/45 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60";
 
 export function PluginComposerActions({
   surface = "work",
@@ -148,36 +169,46 @@ export function PluginComposerActions({
         const key = contributionKey(contribution);
         const busy = busyKeys.includes(key);
         const menu = contribution.payload.menu ?? [];
+        const split = menu.length > 0;
+        /* A running button keeps the platform's busy chrome rather than the
+           plugin's tint: inline styles outrank classes, so painting the colour
+           here would paint over the only signal that says it is working. */
+        const tint = busy ? {} : socketTintStyle(contribution.payload.color);
+        const base = split ? BUTTON_SPLIT_CLASS : BUTTON_CLASS;
         return (
           <SocketBoundary key={key}>
-            <button
-              type="button"
-              data-tour={dataTour}
-              data-busy={busy || undefined}
-              className={busy ? `${BUTTON_CLASS} ${BUTTON_BUSY_CLASS}` : BUTTON_CLASS}
-              title={busy ? `${contribution.payload.label} — running…` : contribution.payload.label}
-              aria-busy={busy || undefined}
-              // Only the plugin's own `disabled` greys the button out. A running
-              // one stays enabled and refuses re-entry in `run` instead — see
-              // BUTTON_BUSY_CLASS for why a minutes-long action must not look
-              // like a dead control.
-              disabled={contribution.payload.disabled === true}
-              onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
-            >
-              <SocketIcon name={contribution.payload.icon} size={12} />
-              <span className="truncate">{contribution.payload.label}</span>
-            </button>
-            {/* Menu actions share the BUTTON's busy key on purpose: the two
-                halves are one control, so a menu action that records for two
-                minutes lights the button the user is looking at and refuses a
-                second press from either half. */}
-            <SocketSplitMenu
-              items={menu}
-              label={contribution.payload.label}
-              dataTour={`${dataTour}-menu`}
-              className={CHEVRON_CLASS}
-              onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
-            />
+            <SocketSplitGroup>
+              <button
+                type="button"
+                data-tour={dataTour}
+                data-busy={busy || undefined}
+                className={busy ? `${base} ${BUTTON_BUSY_CLASS}` : base}
+                style={tint}
+                title={busy ? `${contribution.payload.label} — running…` : contribution.payload.label}
+                aria-busy={busy || undefined}
+                // Only the plugin's own `disabled` greys the button out. A running
+                // one stays enabled and refuses re-entry in `run` instead — see
+                // BUTTON_BUSY_CLASS for why a minutes-long action must not look
+                // like a dead control.
+                disabled={contribution.payload.disabled === true}
+                onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
+              >
+                <SocketIcon name={contribution.payload.icon} size={12} />
+                <span className="truncate">{contribution.payload.label}</span>
+              </button>
+              {/* Menu actions share the BUTTON's busy key on purpose: the two
+                  halves are one control, so a menu action that records for two
+                  minutes lights the button the user is looking at and refuses a
+                  second press from either half. */}
+              <SocketSplitMenu
+                items={menu}
+                label={contribution.payload.label}
+                dataTour={`${dataTour}-menu`}
+                className={busy ? `${CHEVRON_CLASS} ${BUTTON_BUSY_CLASS}` : CHEVRON_CLASS}
+                style={tint}
+                onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
+              />
+            </SocketSplitGroup>
           </SocketBoundary>
         );
       })}

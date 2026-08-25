@@ -1,8 +1,19 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { ArrowClockwise, LinkSimple, MagnifyingGlass } from "@phosphor-icons/react";
+import * as Popover from "@radix-ui/react-popover";
+import { ArrowClockwise, DotsThree, LinkSimple, MagnifyingGlass } from "@phosphor-icons/react";
 
-import { COLORS, RADII, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import {
+  COLORS,
+  RADII,
+  SANS_FONT,
+  dangerButton,
+  outlineButton,
+  primaryButton,
+} from "../lanes/laneDesignTokens";
+import { LaneDialogShell } from "../lanes/LaneDialogShell";
+import { builtinSurfaceOwner } from "../../../shared/plugins/builtinSurfaces";
+import { restartPlugin, setPluginEnabled, uninstallPlugin } from "../../lib/pluginRuntimeBridge";
 import { useRootAppStore } from "../../state/appStore";
 import { pluginIdentity } from "./pluginIcons";
 import { MarketplaceDetailPage } from "./MarketplaceDetailPage";
@@ -84,8 +95,15 @@ function MarketplaceGallery() {
   const installed = useRootAppStore((state) => state.installedPlugins);
   const presence = usePluginPresence(true);
 
+  const refreshInstalledPlugins = useRootAppStore((state) => state.refreshInstalledPlugins);
+
   const [query, setQuery] = React.useState<MarketplaceQuery>(DEFAULT_MARKETPLACE_QUERY);
   const [installTarget, setInstallTarget] = React.useState<InstallDialogTarget | null>(null);
+  /* The quick-action menu's own state, kept on the page rather than in each row
+     so a removal confirm survives the row re-rendering under it. */
+  const [rowBusy, setRowBusy] = React.useState<string | null>(null);
+  const [rowError, setRowError] = React.useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = React.useState<MarketplaceListing | null>(null);
 
   /* A host with no install action is not a broken Marketplace — it is a window
      with no project attached, which is most of what "this button does nothing"
@@ -131,6 +149,32 @@ function MarketplaceGallery() {
     [navigate],
   );
 
+  /**
+   * One plugin operation, from a row.
+   *
+   * Deliberately the SAME bridge calls the detail page makes — `setPluginEnabled`,
+   * `restartPlugin`, `uninstallPlugin` — rather than a shortcut of its own. Every
+   * gate those calls answer to still answers: `plugin.uninstall` stays CTO-only
+   * and approval-gated in `adeActions`, so an agent-bound context is refused here
+   * exactly as it is refused at the CLI, and the refusal arrives as the error
+   * this reports. A row menu is a shorter route to an action, never a wider one.
+   */
+  const runRowAction = React.useCallback(
+    async (pluginId: string, work: () => Promise<void>) => {
+      setRowBusy(pluginId);
+      setRowError(null);
+      try {
+        await work();
+        await refreshInstalledPlugins();
+      } catch (cause) {
+        setRowError(cause instanceof Error ? cause.message : "That didn’t work.");
+      } finally {
+        setRowBusy(null);
+      }
+    },
+    [refreshInstalledPlugins],
+  );
+
   const filtersActive = query.chip !== "all" || query.surfaces.length > 0 || query.search.trim().length > 0;
 
   return (
@@ -156,6 +200,11 @@ function MarketplaceGallery() {
             Open a project to manage plugins on this machine.
           </InlineNotice>
         )}
+
+        {/* Where a refused removal lands. The uninstall gate answers with a
+            role denial rather than silence, and a menu that swallowed it would
+            look like a button that does nothing. */}
+        {rowError ? <InlineNotice>{rowError}</InlineNotice> : null}
 
         {catalogue.loading ? (
           <ListingSkeleton rows={5} />
@@ -196,18 +245,33 @@ function MarketplaceGallery() {
                 data-tour="plugin:marketplace.list"
                 style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 2 }}
               >
-                {visible.map((listing) => (
-                  <ListingRow
-                    key={listing.pluginId}
-                    listing={listing}
-                    state={installStateFor(listing, installed)}
-                    coverage={coverageFor(listing)}
-                    stars={stars.get(listing.pluginId) ?? null}
-                    canManage={canManage}
-                    onOpen={() => openListing(listing)}
-                    onInstall={() => setInstallTarget({ kind: "listing", listing })}
-                  />
-                ))}
+                {visible.map((listing) => {
+                  const installedPlugin = installed
+                    .find((plugin) => plugin.pluginId === listing.pluginId) ?? null;
+                  return (
+                    <ListingRow
+                      key={listing.pluginId}
+                      listing={listing}
+                      state={installStateFor(listing, installed)}
+                      coverage={coverageFor(listing)}
+                      stars={stars.get(listing.pluginId) ?? null}
+                      canManage={canManage}
+                      installedPlugin={installedPlugin}
+                      busy={rowBusy === listing.pluginId}
+                      onOpen={() => openListing(listing)}
+                      onInstall={() => setInstallTarget({ kind: "listing", listing })}
+                      onToggleEnabled={() => void runRowAction(
+                        listing.pluginId,
+                        () => setPluginEnabled(listing.pluginId, !(installedPlugin?.enabled ?? false)),
+                      )}
+                      onRestart={() => void runRowAction(
+                        listing.pluginId,
+                        () => restartPlugin(listing.pluginId),
+                      )}
+                      onRemove={() => setConfirmRemove(listing)}
+                    />
+                  );
+                })}
               </ul>
             )}
           </>
@@ -219,6 +283,49 @@ function MarketplaceGallery() {
         onOpenChange={(open) => { if (!open) setInstallTarget(null); }}
         onInstalled={(pluginId) => navigate(`/marketplace/${pluginId}`)}
       />
+
+      {/* The same confirmation the detail page asks for, word for word. A
+          shorter route to a removal must not also be a quieter one — the
+          Linear line especially, since that removal deletes credentials. */}
+      <LaneDialogShell
+        open={confirmRemove !== null}
+        onOpenChange={(open) => { if (!open) setConfirmRemove(null); }}
+        title={confirmRemove ? `Remove ${confirmRemove.displayName}?` : "Remove this plugin?"}
+        description="Its tabs, panels and commands disappear from this machine. Anything it stored is deleted with it."
+        widthClassName="w-[min(460px,calc(100vw-1rem))]"
+        footer={
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setConfirmRemove(null)}
+              style={outlineButton({ height: 30, fontSize: 12 })}
+            >
+              Keep it
+            </button>
+            <button
+              type="button"
+              data-tour="plugin:marketplace.row-uninstall-confirm"
+              onClick={() => {
+                const target = confirmRemove;
+                setConfirmRemove(null);
+                if (target) void runRowAction(target.pluginId, () => uninstallPlugin(target.pluginId));
+              }}
+              style={dangerButton({ height: 30, fontSize: 12 })}
+            >
+              Remove
+            </button>
+          </div>
+        }
+      >
+        {confirmRemove?.pluginId === builtinSurfaceOwner("linear").ownerPluginId ? (
+          <p style={{ margin: "0 0 8px", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, lineHeight: 1.6 }}>
+            This disconnects Linear. You will sign in again if you reinstall it.
+          </p>
+        ) : null}
+        <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+          Other machines keep their own copy. You can install it again at any time.
+        </p>
+      </LaneDialogShell>
     </div>
   );
 }
@@ -593,21 +700,39 @@ function ListingRow({
   coverage,
   stars,
   canManage,
+  installedPlugin,
+  busy,
   onOpen,
   onInstall,
+  onToggleEnabled,
+  onRestart,
+  onRemove,
 }: {
   listing: MarketplaceListing;
   state: ListingInstallState;
   coverage: ReturnType<typeof deriveMachineCoverage>;
   stars: number | null;
   canManage: boolean;
+  /** Null for a plugin the catalogue lists but this machine does not have. */
+  installedPlugin: InstalledPlugin | null;
+  busy: boolean;
   onOpen: () => void;
   onInstall: () => void;
+  onToggleEnabled: () => void;
+  onRestart: () => void;
+  onRemove: () => void;
 }) {
   const identity = pluginIdentity(listing);
   // A row whose install cannot run does not offer one. The page says why once,
   // at the top, rather than every row having to explain itself.
   const actionable = canManage && (state.kind === "available" || state.kind === "update");
+  /* The quick-action menu, controlled rather than trigger-driven, because the
+     row opens it two ways: the kebab, and a right-click anywhere on the row.
+     Both anchor on the kebab, so the menu appears in the same place either way
+     — a context menu that lands under the pointer on one route and at the row's
+     edge on the other reads as two different menus. */
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const manageable = canManage && installedPlugin !== null;
 
   return (
     <li>
@@ -622,6 +747,10 @@ function ListingRow({
             onOpen();
           }
         }}
+        onContextMenu={manageable ? (event) => {
+          event.preventDefault();
+          setMenuOpen(true);
+        } : undefined}
         data-tour={`plugin:marketplace.row-${listing.pluginId}`}
         className="hover:bg-fg/[0.03]"
         style={{
@@ -726,9 +855,174 @@ function ListingRow({
               {state.kind === "available" ? "" : installActionLabel(state)}
             </span>
           )}
+
+          {manageable ? (
+            <RowQuickActions
+              open={menuOpen}
+              onOpenChange={setMenuOpen}
+              pluginId={listing.pluginId}
+              busy={busy}
+              enabled={installedPlugin?.enabled ?? false}
+              /* A plugin with no child process has nothing to restart, and
+                 `status: "none"` is that fact without a manifest round trip. */
+              showRestart={(installedPlugin?.status ?? "none") !== "none"}
+              onToggleEnabled={onToggleEnabled}
+              onRestart={onRestart}
+              onRemove={onRemove}
+            />
+          ) : null}
         </span>
       </div>
     </li>
+  );
+}
+
+/**
+ * Remove, turn off, restart — without opening the detail page.
+ *
+ * The alpha test's explicit ask: every single-plugin operation lived one
+ * navigation away, so turning a plugin off meant leaving the list, acting, and
+ * coming back to a list that had scrolled. These are the detail page's own
+ * three verbs, wired to the detail page's own bridge calls, at the row.
+ *
+ * What it is NOT is a second permission surface. `onRemove` opens the same
+ * confirmation and then calls the same `uninstallPlugin`, which stays CTO-only
+ * and approval-gated in `adeActions` — a context that cannot uninstall from the
+ * CLI cannot uninstall from here either, and the row reports the refusal rather
+ * than hiding it.
+ */
+function RowQuickActions({
+  open,
+  onOpenChange,
+  pluginId,
+  busy,
+  enabled,
+  showRestart,
+  onToggleEnabled,
+  onRestart,
+  onRemove,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  pluginId: string;
+  busy: boolean;
+  enabled: boolean;
+  showRestart: boolean;
+  onToggleEnabled: () => void;
+  onRestart: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          aria-label="More actions"
+          disabled={busy}
+          onClick={(event) => event.stopPropagation()}
+          data-tour={`plugin:marketplace.row-menu-${pluginId}`}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 26,
+            height: 26,
+            color: COLORS.textDim,
+            background: "transparent",
+            border: "1px solid transparent",
+            borderRadius: RADII.sm,
+            cursor: busy ? "default" : "pointer",
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          <DotsThree size={16} weight="bold" aria-hidden />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 outline-none"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div
+            style={{
+              display: "grid",
+              gap: 2,
+              minWidth: 170,
+              padding: 4,
+              background: "var(--color-card)",
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: RADII.md,
+              boxShadow: "var(--shadow-panel)",
+            }}
+          >
+            <RowMenuItem
+              label={enabled ? "Turn off" : "Turn on"}
+              tour={`plugin:marketplace.row-toggle-${pluginId}`}
+              onClick={onToggleEnabled}
+            />
+            {showRestart ? (
+              <RowMenuItem
+                label="Restart"
+                tour={`plugin:marketplace.row-restart-${pluginId}`}
+                onClick={onRestart}
+              />
+            ) : null}
+            <RowMenuItem
+              label="Remove…"
+              danger
+              tour={`plugin:marketplace.row-remove-${pluginId}`}
+              onClick={onRemove}
+            />
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+/** A row in the quick-action menu. Mirrors the detail page's `MenuItem`. */
+function RowMenuItem({
+  label,
+  danger = false,
+  tour,
+  onClick,
+}: {
+  label: string;
+  danger?: boolean;
+  tour: string;
+  onClick: () => void;
+}) {
+  return (
+    <Popover.Close asChild>
+      <button
+        type="button"
+        data-tour={tour}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        className="hover:bg-fg/[0.06]"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          height: 28,
+          padding: "0 8px",
+          fontFamily: SANS_FONT,
+          fontSize: 12,
+          textAlign: "left",
+          color: danger ? COLORS.danger : COLORS.textSecondary,
+          background: "transparent",
+          border: "none",
+          borderRadius: RADII.sm,
+          cursor: "pointer",
+        }}
+      >
+        {label}
+      </button>
+    </Popover.Close>
   );
 }
 

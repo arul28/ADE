@@ -1504,6 +1504,17 @@ export type PendingInputOption = {
   recommended?: boolean;
   preview?: string;
   previewFormat?: "markdown" | "html";
+  /**
+   * The approval decision this option stands for, on an `approval` card.
+   *
+   * An approval card renders its own buttons rather than a radio list, so it
+   * cannot show a caller's options unless it knows what each one answers. When
+   * every option of the first question carries this, the card renders those
+   * options as its buttons — the caller's words, not "Accept"/"Decline". Absent,
+   * the card keeps its generic buttons, so a caller that does not set it is
+   * unaffected.
+   */
+  decision?: AgentChatApprovalDecision;
 };
 
 export type PendingInputQuestion = {

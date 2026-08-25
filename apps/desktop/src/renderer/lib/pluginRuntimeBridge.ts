@@ -219,18 +219,52 @@ export function resetPluginBridgeAvailability(): void {
   hostReportedUnavailable = false;
 }
 
-/** Installed plugins on this machine. Empty on a host with no plugin support. */
-export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
+/** Why a load produced no answer the registry may commit. */
+export type InstalledPluginsLoadFailure =
+  /** The host answered the typed `plugins_unavailable` — no plugin host yet. */
+  | "unavailable"
+  /** The call rejected, or answered something that is not a list. */
+  | "error";
+
+/**
+ * One installed-plugins load, with "it failed" kept apart from "there are none".
+ *
+ * {@link listInstalledPlugins} collapses the two, which is right for a caller
+ * asking one question about one plugin — a failed probe and an absent plugin
+ * both mean "do not offer it". It is wrong for the REGISTRY: committing a
+ * failed load as an empty registry showed "0 installed" in the Marketplace with
+ * four plugins installed, and dropped the user's plugin theme to the built-in
+ * palette, until an unrelated install event happened to force a re-fetch.
+ */
+export type InstalledPluginsLoad =
+  | { ok: true; plugins: InstalledPlugin[] }
+  | { ok: false; reason: InstalledPluginsLoadFailure };
+
+/**
+ * Installed plugins on this machine, or why the answer is not trustworthy.
+ *
+ * A host with no `plugins` namespace at all resolves as a confirmed EMPTY, not
+ * a failure: an older host and the hosted web client publish no namespace and
+ * never will within this session, so there is nothing a retry could reach, and
+ * every plugin surface is already gated off by {@link pluginsAvailable}.
+ */
+export async function loadInstalledPlugins(): Promise<InstalledPluginsLoad> {
   const plugins = bridge()?.list;
-  if (!plugins) return [];
+  if (!plugins) return { ok: true, plugins: [] };
   try {
     const result = await plugins();
-    if (Array.isArray(result)) hostReportedUnavailable = false;
-    return Array.isArray(result) ? result : [];
+    if (!Array.isArray(result)) return { ok: false, reason: "error" };
+    hostReportedUnavailable = false;
+    return { ok: true, plugins: result };
   } catch (error) {
-    noteUnavailable(error);
-    return [];
+    return { ok: false, reason: noteUnavailable(error) ? "unavailable" : "error" };
   }
+}
+
+/** Installed plugins on this machine. Empty on a host with no plugin support. */
+export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
+  const load = await loadInstalledPlugins();
+  return load.ok ? load.plugins : [];
 }
 
 export async function readPluginPanel(

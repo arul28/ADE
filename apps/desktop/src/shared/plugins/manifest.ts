@@ -33,6 +33,7 @@ import {
   isPluginDialogKind,
   normalizePluginSlashCommand,
   parsePluginActionButtonMenu,
+  sanitizePluginActionColor,
   type PluginActionButtonMenuItem,
   type PluginDialogKind,
   type PluginSocketExtraField,
@@ -233,6 +234,16 @@ export type PluginManifestSocket = {
    * `menu` degrades to no menu here, exactly as it does on a published row.
    */
   menu?: PluginActionButtonMenuItem[];
+  /**
+   * The three action-BUTTON kinds only: a hex tint for this one control.
+   *
+   * Not a `manifestExtra` and never a reason to drop the entry, for the same
+   * reason `menu` is not: a button whose colour was refused is still a
+   * perfectly good button wearing the platform's own tone. Judged by
+   * {@link sanitizePluginActionColor}, so a value that cannot be read in one
+   * of the two themes never reaches the field.
+   */
+  color?: string;
   /** `file-viewer` only: lowercase extensions including the dot. */
   extensions?: string[];
   /** `filter-chip` only. */
@@ -694,6 +705,10 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
     // split button and a published one are capped and bounded identically. A
     // malformed menu yields `[]` and the entry stays a plain button.
     const menu = parsePluginActionButtonMenu(entry.menu);
+    // Through the shared sanitizer for the same reason: one gate decides what
+    // a legible button tint is, so a declared colour and a published one are
+    // accepted or refused identically.
+    const color = sanitizePluginActionColor(entry.color);
     // Read for every entry, meaningful to one kind each. A malformed value is
     // dropped to null here and then refused below by the same requirement loop
     // the four core fields go through, so `command: "Fix It!"` fails with the
@@ -738,6 +753,7 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       ...(panelId ? { panelId } : {}),
       ...(actionId ? { actionId } : {}),
       ...(menu.length > 0 ? { menu } : {}),
+      ...(color ? { color } : {}),
       ...(extensions && extensions.length ? { extensions } : {}),
       ...(trimmedString(entry.filterKey) ? { filterKey: trimmedString(entry.filterKey)! } : {}),
       ...(command ? { command } : {}),

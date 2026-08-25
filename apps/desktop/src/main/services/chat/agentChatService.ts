@@ -47520,6 +47520,17 @@ export function createAgentChatService(args: {
     chatSessionId: string;
     title: string;
     body: string;
+    /**
+     * The card's body text, for a caller whose prose is richer than its first
+     * question.
+     *
+     * Without it the description falls back to that question, which is the right
+     * text only when the questions were inferred from `body`. A caller that
+     * supplies both a written body AND its own questions — the plugin install
+     * gate, whose body is the whole disclosure — has to say so here, or the
+     * disclosure is dropped in favour of the question, which is the title again.
+     */
+    description?: string;
     source?: PendingInputSource;
     kind?: PendingInputKind;
     allowsFreeform?: boolean;
@@ -47549,6 +47560,8 @@ export function createAgentChatService(args: {
         recommended?: boolean;
         preview?: string;
         previewFormat?: string;
+        /** What this option answers on an approval card. See `PendingInputOption`. */
+        decision?: AgentChatApprovalDecision;
       }>;
       multiSelect?: boolean;
       allowsFreeform?: boolean;
@@ -47653,6 +47666,7 @@ export function createAgentChatService(args: {
             ...(o.recommended === true ? { recommended: true } : {}),
             ...(typeof o.preview === "string" && o.preview.trim().length ? { preview: o.preview } : {}),
             ...(o.previewFormat === "markdown" || o.previewFormat === "html" ? { previewFormat: o.previewFormat } : {}),
+            ...(o.decision ? { decision: o.decision } : {}),
           })),
         } : {}),
       }),
@@ -47663,7 +47677,9 @@ export function createAgentChatService(args: {
       source: args.source ?? "ade",
       kind: args.kind ?? (questions.some((q) => q.options?.length) ? "structured_question" : "question"),
       title: args.title,
-      description: args.kind === "plan_approval" ? args.body : (questions[0]?.question ?? args.body),
+      description: typeof args.description === "string" && args.description.trim().length
+        ? args.description
+        : args.kind === "plan_approval" ? args.body : (questions[0]?.question ?? args.body),
       questions,
       allowsFreeform: args.allowsFreeform ?? true,
       blocking: true,

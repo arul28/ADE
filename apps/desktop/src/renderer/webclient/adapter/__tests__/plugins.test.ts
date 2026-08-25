@@ -12,6 +12,7 @@ import {
   installPlugin,
   invokePluginAction,
   listInstalledPlugins,
+  loadInstalledPlugins,
   readPluginContributionRows,
   readPluginManifest,
   readPluginCollection,
@@ -709,6 +710,34 @@ describe("web plugin namespace", () => {
       code: "plugins_unavailable",
     }));
     await expect(list?.()).rejects.toThrow(/not available on this computer/);
+  });
+
+  /**
+   * The registry's bootstrap reads this apart; every other caller does not.
+   *
+   * Collapsing the two is right for a caller asking about ONE plugin — a failed
+   * probe and an absent plugin both mean "do not offer it". It is wrong for the
+   * registry: committing a failed load as an empty one showed the Marketplace
+   * "0 installed" with four plugins installed, and repainted the user's plugin
+   * theme with the built-in palette.
+   */
+  it("separates a failed installed-plugins load from a genuinely empty one", async () => {
+    mounted = mountAdapter(fake);
+    fake.commandErrors.set("plugins.list", Object.assign(
+      new Error("Plugins are not available on this computer."),
+      { code: "plugins_unavailable" },
+    ));
+
+    await expect(loadInstalledPlugins()).resolves.toEqual({ ok: false, reason: "unavailable" });
+    // A host that is up but failing the call is a failure too, not an answer.
+    fake.commandErrors.set("plugins.list", new Error("the machine went away mid-call"));
+    await expect(loadInstalledPlugins()).resolves.toEqual({ ok: false, reason: "error" });
+    // The lenient reader keeps its old contract for one-plugin questions.
+    await expect(listInstalledPlugins()).resolves.toEqual([]);
+
+    fake.commandErrors.delete("plugins.list");
+    fake.commandResults.set("plugins.list", { plugins: [] });
+    await expect(loadInstalledPlugins()).resolves.toEqual({ ok: true, plugins: [] });
   });
 
   it("tells its own subscribers about an install it just made", async () => {

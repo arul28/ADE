@@ -345,6 +345,35 @@ extension View {
   }
 }
 
+/// One split-button menu entry, drawn with its own glyph when it names one.
+///
+/// A row that names NO icon stays plain text here, where the desktop draws its
+/// puzzle-piece default. That is deliberate and it is not a parity gap: rows
+/// without images are ordinary in a system menu, and stamping a generic mark on
+/// every one of them would look broken on iOS in a way it does not in a
+/// popover. A row that names an icon this build cannot resolve DOES draw the
+/// puzzle piece, matching the desktop exactly — an unknown token degrades
+/// identically on both clients, which is the promise the token list makes.
+@ViewBuilder
+private func pluginMenuEntryLabel(_ entry: PluginActionMenuEntry) -> some View {
+  if let icon = entry.icon {
+    Label(entry.label, systemImage: PluginSymbol.resolve(icon, fallback: "puzzlepiece.extension"))
+  } else {
+    Text(entry.label)
+  }
+}
+
+/// A button's declared tint, or the platform's own.
+///
+/// The payload's `color` was already proven legible against both themes by
+/// ``PluginContributionParser/sanitizeActionColor(_:)``, so there is nothing
+/// left to judge here — an illegible hex never became a field value in the
+/// first place, and this falls through to `textSecondary` because the field is
+/// absent, not because it was caught late.
+private func pluginActionTint(_ action: PluginActionButtonPayload) -> Color {
+  action.color.flatMap(ADEColor.pluginAccent(hex:)) ?? ADEColor.textSecondary
+}
+
 // MARK: - toolbar-action
 
 /// Contributed buttons on a surface's top bar, grouped after the surface's own.
@@ -385,7 +414,7 @@ struct PluginToolbarActions: View {
                   Button(role: entry.danger ? .destructive : nil) {
                     invoke(contribution, actionId: entry.actionId)
                   } label: {
-                    Text(entry.label)
+                    pluginMenuEntryLabel(entry)
                   }
                   .disabled(!syncService.canInvokePluginActions)
                 }
@@ -414,7 +443,7 @@ struct PluginToolbarActions: View {
                   Button(role: entry.danger ? .destructive : nil) {
                     invoke(contribution, actionId: entry.actionId)
                   } label: {
-                    Text(entry.label)
+                    pluginMenuEntryLabel(entry)
                   }
                   .disabled(!syncService.canInvokePluginActions)
                 }
@@ -443,7 +472,7 @@ struct PluginToolbarActions: View {
   private func toolbarGlyph(_ action: PluginActionButtonPayload) -> some View {
     Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
       .font(.system(size: 15, weight: .semibold))
-      .foregroundStyle(ADEColor.textSecondary)
+      .foregroundStyle(pluginActionTint(action))
       .frame(width: 38, height: 34)
       .contentShape(Rectangle())
   }
@@ -878,7 +907,10 @@ struct PluginComposerActions: View {
             .lineLimit(1)
             .truncationMode(.tail)
         }
-        .foregroundStyle(ADEColor.textSecondary)
+        // The plugin's own tint when it declared a legible one, and the
+        // platform's otherwise. Both halves of a split button take it, because
+        // the two are one control.
+        .foregroundStyle(pluginActionTint(action))
         .padding(.leading, 9)
         .padding(.trailing, action.menu.isEmpty ? 9 : 6)
         .frame(height: 28)
@@ -898,14 +930,14 @@ struct PluginComposerActions: View {
             Button(role: entry.danger ? .destructive : nil) {
               invoke(contribution, actionId: entry.actionId)
             } label: {
-              Text(entry.label)
+              pluginMenuEntryLabel(entry)
             }
             .disabled(isDisabled(contribution, disabled: false))
           }
         } label: {
           Image(systemName: "chevron.down")
             .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(ADEColor.textMuted)
+            .foregroundStyle(pluginActionTint(action).opacity(0.75))
             .frame(width: 20, height: 28)
             .contentShape(Rectangle())
         }
@@ -953,7 +985,7 @@ struct PluginComposerActions: View {
           Button(role: entry.danger ? .destructive : nil) {
             invoke(contribution, actionId: entry.actionId)
           } label: {
-            Text(entry.label)
+            pluginMenuEntryLabel(entry)
           }
           .disabled(isDisabled(contribution, disabled: false))
         }
@@ -1057,7 +1089,7 @@ struct PluginChatHeaderMenuItems: View {
           Button(role: entry.danger ? .destructive : nil) {
             onInvoke(contribution, entry.actionId)
           } label: {
-            Text(entry.label)
+            pluginMenuEntryLabel(entry)
           }
           .disabled(!isEnabled)
         }

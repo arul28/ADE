@@ -445,6 +445,18 @@ export type PluginActionButtonMenuItem = {
   label: string;
   actionId: string;
   /**
+   * A token from the same 64-name list the primary button's `icon` takes.
+   *
+   * Absent means the puzzle piece, which is what EVERY menu row drew before
+   * this field existed: the alpha test's "Sober up" entry could not carry a
+   * glyph at all, so a two-entry dropdown showed the same generic mark twice
+   * and neither row said what it did. Resolved through `pluginIcon` on desktop
+   * and `PluginSymbol` on iOS — the same resolver, the same list, the same
+   * degradation — so an unknown token puzzle-pieces here exactly as it does on
+   * the button above it.
+   */
+  icon?: string;
+  /**
    * The product's own destructive styling, as `row-menu-item` already spends it.
    *
    * Honoured only alongside the attribution the same menu draws — a red row that
@@ -488,7 +500,116 @@ export type PluginActionButtonPayload = {
    * from the search that is the palette's whole point.
    */
   menu?: PluginActionButtonMenuItem[];
+  /**
+   * A hex tint for THIS button, already proven legible in both themes.
+   *
+   * The alpha test's ask: a plugin that wanted its own button tinted had to
+   * ship a whole `theme`, which recolours the entire application — a per-plugin
+   * accent could not reach a socket, and panel `tone` is a four-value enum that
+   * buttons never had. This is the narrow version of that: one control, one
+   * colour, and no reach beyond the control.
+   *
+   * Only ever written by {@link sanitizePluginActionColor}, which is why the
+   * field is safe for a renderer to drop straight into a style: anything that
+   * is not a plain hex, or that cannot be read against BOTH the light and the
+   * dark background, never becomes a value here at all. A renderer that reads
+   * this field must never re-derive it from raw payload text.
+   */
+  color?: string;
 };
+
+/**
+ * The two backgrounds every action button has to be legible against.
+ *
+ * `--color-bg` for `dark` and `light` in `renderer/index.css`, as WCAG relative
+ * luminance. A payload carries ONE colour and the user picks the theme, so the
+ * host cannot re-tint per theme the way a `theme` plugin does — which is
+ * exactly why a button colour is judged against both and a theme token is not.
+ *
+ * Restated as numbers rather than read from CSS because this runs in the
+ * daemon, the TUI and iOS as well as in a browser, where there is no computed
+ * style to ask. They move only when the product's own palette does.
+ */
+const PLUGIN_BUTTON_BACKDROP_LUMINANCE = { dark: 0.0035, light: 0.898 } as const;
+
+/**
+ * The floor a button tint has to clear against both backdrops.
+ *
+ * 3:1 is WCAG 2.1's non-text contrast minimum (SC 1.4.11) — the bar for a UI
+ * component's own boundary and glyph, not for body copy. A tint is spent on a
+ * label, an icon and a hairline border, so this is the applicable threshold
+ * rather than the 4.5:1 one for prose.
+ */
+const PLUGIN_BUTTON_MIN_CONTRAST = 3;
+
+/** One sRGB channel, linearized. */
+function linearizeChannel(value: number): number {
+  const channel = value / 255;
+  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+/** WCAG relative luminance of an `#rrggbb` triple. */
+function relativeLuminance(red: number, green: number, blue: number): number {
+  return 0.2126 * linearizeChannel(red)
+    + 0.7152 * linearizeChannel(green)
+    + 0.0722 * linearizeChannel(blue);
+}
+
+/** WCAG contrast ratio between two relative luminances. */
+function contrastRatio(a: number, b: number): number {
+  const lighter = Math.max(a, b);
+  const darker = Math.min(a, b);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * Mirrors `PLUGIN_ACCENT_PATTERN` in `manifest.ts`.
+ *
+ * Restated rather than imported because `manifest.ts` imports THIS file, and a
+ * cycle for one regex would trade a real initialization hazard for a saved
+ * line. The two are pinned together by a test.
+ */
+const PLUGIN_HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/**
+ * Narrow an untrusted button tint, or `null` for "use the platform's own".
+ *
+ * Two gates, and the second is the one that matters. The first is the same hex
+ * shape a manifest `accent` takes, so nothing but a colour ever reaches a
+ * stylesheet — the lesson `sanitizePluginThemeTokens` already learned, where a
+ * value carrying `}` could close the rule and inject arbitrary CSS. The second
+ * is legibility: the colour has to clear {@link PLUGIN_BUTTON_MIN_CONTRAST}
+ * against BOTH entries in {@link PLUGIN_BUTTON_BACKDROP_LUMINANCE}, which
+ * leaves a mid-tone band. Near-white, near-black and the fully saturated
+ * primaries at the ends of that band are refused.
+ *
+ * Refused, deliberately, rather than nudged into range. A host that silently
+ * darkened a plugin's brand colour would paint something the author never
+ * chose and never told them, and the author's next move — picking a different
+ * hex — would change nothing they could see. Falling back to the platform's own
+ * tone is the visible answer: the button is plainly not wearing the colour, so
+ * the rule in the skill is the next thing the author reads.
+ *
+ * ADE's own accent (`#7C6FF0`) passes, which is the intended calibration: a
+ * plugin's brand colour is expected to work, and a colour that cannot be read
+ * on half the installs is expected not to.
+ */
+export function sanitizePluginActionColor(raw: unknown): string | null {
+  const value = bounded(raw, 7);
+  if (!value || !PLUGIN_HEX_COLOR_PATTERN.test(value)) return null;
+  const digits = value.slice(1);
+  const expanded = digits.length === 3
+    ? digits.split("").map((digit) => `${digit}${digit}`).join("")
+    : digits;
+  const red = Number.parseInt(expanded.slice(0, 2), 16);
+  const green = Number.parseInt(expanded.slice(2, 4), 16);
+  const blue = Number.parseInt(expanded.slice(4, 6), 16);
+  const luminance = relativeLuminance(red, green, blue);
+  for (const backdrop of Object.values(PLUGIN_BUTTON_BACKDROP_LUMINANCE)) {
+    if (contrastRatio(luminance, backdrop) < PLUGIN_BUTTON_MIN_CONTRAST) return null;
+  }
+  return `#${expanded.toLowerCase()}`;
+}
 
 /**
  * Narrow a split button's menu. Always an array — `[]` means "no menu".
@@ -518,9 +639,17 @@ export function parsePluginActionButtonMenu(raw: unknown): PluginActionButtonMen
     const label = bounded(entry.label, 40);
     const actionId = bounded(entry.actionId, 64);
     if (!label || !actionId) continue;
+    // The same 40 the button's own `icon` takes. Kept as raw text rather than
+    // checked against the token list, exactly as every other `icon` in this
+    // file is: the list lives in a renderer (Phosphor here, SF Symbols on the
+    // phone) and the resolver on each client degrades an unknown token to the
+    // puzzle piece. A shared parser that rejected tokens would have to know
+    // both lists and would drop a glyph the OTHER client can draw.
+    const icon = bounded(entry.icon, 40);
     items.push({
       label,
       actionId,
+      ...(icon ? { icon } : {}),
       ...(entry.danger === true ? { danger: true } : {}),
     });
   }
@@ -851,12 +980,16 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
         const actionId = bounded(raw.actionId, 64);
         if (!label || !actionId) return null;
         const menu = parsePluginActionButtonMenu(raw.menu);
+        // An illegible or malformed tint drops to `null` here and the field is
+        // simply absent, so a renderer never has to decide whether to trust it.
+        const color = sanitizePluginActionColor(raw.color);
         return {
           label,
           actionId,
           ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
           ...(raw.disabled === true ? { disabled: true } : {}),
           ...(menu.length > 0 ? { menu } : {}),
+          ...(color ? { color } : {}),
         };
       }
       case "row-badge": {

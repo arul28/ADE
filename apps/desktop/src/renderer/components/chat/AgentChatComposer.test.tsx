@@ -972,30 +972,37 @@ describe("AgentChatComposer", () => {
     view.rerender(<AgentChatComposer {...props} draft="@a b c" />);
 
     await waitFor(() => expect(onSearchMentions).toHaveBeenCalledWith("a b c"));
-    fireEvent.click(await screen.findByText("a b c"));
+    fireEvent.click(await waitFor(() => {
+      const row = document.querySelector<HTMLElement>("[data-menu-index='0']");
+      expect(row?.textContent).toContain("a b c");
+      return row!;
+    }));
 
     expect(props.onDraftChange).toHaveBeenLastCalledWith("@chat:chat-1 ");
-    view.rerender(<AgentChatComposer {...props} draft="@chat:chat-1 " />);
+    view.rerender(<AgentChatComposer {...props} draft="@chat:chat-1 " mentionLabels={{ "@chat:chat-1": "a b c" }} />);
 
-    const chip = await screen.findByText("a b c");
-    expect(chip.textContent).toBe("a b c");
-    expect(chip.closest("[aria-hidden]")).not.toBeNull();
-    expect(view.container.querySelector("[data-composer-mention-layout]")?.textContent).toBe("@chat:chat-1");
-    expect(view.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+    const chip = await waitFor(() => {
+      const node = view.container.querySelector<HTMLElement>("[data-composer-chip='mention']");
+      expect(node?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
+      return node!;
+    });
+    expect(chip.dataset.composerChipKind).toBe("chat");
+    expect(chip.className).toContain("max-w-[10.5rem]");
+    expect(chip.querySelector("[data-composer-chip-icon]")).not.toBeNull();
   });
 
-  it("restores persisted mention titles after a plain composer remount", () => {
+  it("restores persisted mention titles after a composer remount", () => {
     const props = buildComposerProps({
       turnActive: false,
       draft: "@chat:chat-1 ",
       mentionLabels: { "@chat:chat-1": "a b c" },
     });
     const first = render(<AgentChatComposer {...props} />);
-    expect(first.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+    expect(first.container.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
 
     first.unmount();
     const second = render(<AgentChatComposer {...props} />);
-    expect(second.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+    expect(second.container.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
   });
 
   it("restores persisted mention titles after a rich composer remount", () => {
@@ -1016,11 +1023,11 @@ describe("AgentChatComposer", () => {
       iosElementContextItems: [iosContext],
     });
     const first = render(<AgentChatComposer {...props} />);
-    expect(first.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
+    expect(first.container.querySelector("[data-composer-chip='mention']")?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
 
     first.unmount();
     const second = render(<AgentChatComposer {...props} />);
-    expect(second.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
+    expect(second.container.querySelector("[data-composer-chip='mention']")?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
   });
 
   it("falls back to the canonical mention token when a persisted rich mention label is cleared", () => {
@@ -1033,10 +1040,10 @@ describe("AgentChatComposer", () => {
     const view = render(<AgentChatComposer {...props} />);
     const chip = () => view.container.querySelector<HTMLElement>("[data-composer-chip='mention']");
 
-    expect(chip()?.textContent).toBe("a b c");
+    expect(chip()?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
     view.rerender(<AgentChatComposer {...props} mentionLabels={{}} />);
 
-    expect(chip()?.textContent).toBe("@chat:chat-1");
+    expect(chip()?.querySelector("[data-composer-chip-label]")?.textContent).toBe("@chat:chat-1");
     expect(chip()?.title).toBe("@chat:chat-1");
   });
 
@@ -1060,7 +1067,11 @@ describe("AgentChatComposer", () => {
     });
     view.rerender(<AgentChatComposer {...props} draft={draft} />);
 
-    fireEvent.click(await screen.findByText("a b c"));
+    fireEvent.click(await waitFor(() => {
+      const row = document.querySelector<HTMLElement>("[data-menu-index='0']");
+      expect(row?.textContent).toContain("a b c");
+      return row!;
+    }));
 
     expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @chat:chat-1 about this");
   });
@@ -2329,6 +2340,95 @@ describe("AgentChatComposer", () => {
     expect(props.onApproval).toHaveBeenNthCalledWith(1, "accept");
     expect(props.onApproval).toHaveBeenNthCalledWith(2, "accept_for_session");
     expect(props.onApproval).toHaveBeenNthCalledWith(3, "decline");
+  });
+
+  it("shows a plugin install its whole disclosure and its own buttons", () => {
+    const body = [
+      "A drink counter.",
+      "From this computer: /tmp/tipsy",
+      "Community plugin. It runs with the same access as tools you install yourself.",
+      "",
+      "Adds:",
+      "- Tipsy tab",
+    ].join("\n");
+    const props = renderComposer({
+      pendingInput: {
+        requestId: "plugin-install-1",
+        itemId: "plugin-install-1",
+        source: "ade",
+        kind: "approval",
+        title: "Install Tipsy 0.3.0?",
+        description: body,
+        questions: [{
+          id: "plugin_install",
+          header: "Plugin install",
+          question: "Install Tipsy 0.3.0?",
+          allowsFreeform: false,
+          options: [
+            { label: "Install", value: "install", decision: "accept", description: "Runs with the same access as tools you install yourself." },
+            { label: "Don't install", value: "deny", decision: "decline" },
+          ],
+        }],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: "turn-1",
+      },
+    });
+
+    // Every part of the disclosure, not the title repeated back.
+    const disclosure = screen.getByText((_, node) => node?.textContent === body && node.tagName === "DIV");
+    expect(disclosure).toBeTruthy();
+    expect(disclosure.className).toContain("whitespace-pre-wrap");
+
+    // The caller's words, and none of the generic trio — "Accept all" in
+    // particular would read as a standing grant this gate never offered.
+    const install = screen.getByRole("button", { name: "Install" });
+    expect(install.getAttribute("title")).toBe("Runs with the same access as tools you install yourself.");
+    expect(screen.getByRole("button", { name: "Don't install" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Accept all" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Decline" })).toBeNull();
+
+    // Both halves go back: the gate reads the decision AND the option value,
+    // and treats either one alone as no consent.
+    fireEvent.click(install);
+    expect(props.onApproval).toHaveBeenNthCalledWith(1, "accept", null, { plugin_install: "install" });
+    fireEvent.click(screen.getByRole("button", { name: "Don't install" }));
+    expect(props.onApproval).toHaveBeenNthCalledWith(2, "decline", null, { plugin_install: "deny" });
+  });
+
+  it("keeps the generic approval buttons when the options carry no decision", () => {
+    // A structured question that happens to arrive as an approval still has no
+    // mapping from an option to a decision, so the card must not guess one.
+    renderComposer({
+      pendingInput: {
+        requestId: "approval-no-decision",
+        itemId: "approval-no-decision",
+        source: "ade",
+        kind: "approval",
+        description: "Run the migration?",
+        questions: [{
+          id: "answer",
+          header: "Question 1",
+          question: "Run the migration?",
+          options: [
+            { label: "Yes", value: "yes" },
+            { label: "No", value: "no" },
+          ],
+          allowsFreeform: false,
+        }],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Accept all" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Decline" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Yes" })).toBeNull();
   });
 
   it.each([

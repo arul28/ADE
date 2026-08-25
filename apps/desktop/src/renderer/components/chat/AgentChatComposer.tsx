@@ -27,6 +27,7 @@ import {
   type IosElementContextItem,
   type LaneLinearIssue,
   type OpenProjectBinding,
+  type PendingInputOption,
   type PendingInputRequest,
   type AgentChatModelCatalogRefreshProvider,
   type PromptStashEntry,
@@ -59,6 +60,7 @@ import {
   formatChatMentionToken,
   isChatMentionTokenBody,
   parseChatMentions,
+  chatMentionKindFromToken,
 } from "../../../shared/chatMentions";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import {
@@ -89,6 +91,7 @@ import {
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
+import { mentionChipMarkSvg, type ComposerAtChipKind } from "./mentionChipMark";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
@@ -156,6 +159,12 @@ const SMART_LINK_ICON_MARK_CLASS =
   "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-violet-100/85";
 const SMART_LINK_ICON_GLYPH_CLASS =
   "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
+const COMPOSER_TOKEN_CHIP_ICON_CLASS =
+  "inline-flex h-3 w-3 shrink-0 items-center justify-center text-violet-100/75";
+const COMPOSER_MENTION_CHIP_CLASS =
+  "mx-0.5 inline-flex max-w-[10.5rem] translate-y-px items-center gap-1 rounded border border-violet-300/22 bg-violet-500/12 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-4 text-violet-100/88 align-baseline";
+const COMPOSER_TOKEN_CHIP_CLASS =
+  "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
 
 const insertShimmerStyleId = "ade-composer-insert-shimmer-effects";
 
@@ -1936,7 +1945,7 @@ export function AgentChatComposer({
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
   const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
-    () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft),
+    () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft) || parseChatMentions(draft).length > 0,
   );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
   const activeTurnSendCapability = useMemo(
@@ -1970,7 +1979,9 @@ export function AgentChatComposer({
   const activeTurnSendMenuEnabled = Boolean(onSendSteerNow || onSendSteerInterrupt);
 
   useEffect(() => {
-    if (hasChatOutputContext(draft)) setSmartLinkEditorEnabled(true);
+    if (hasChatOutputContext(draft) || parseChatMentions(draft).length > 0) {
+      setSmartLinkEditorEnabled(true);
+    }
   }, [draft]);
 
   useEffect(() => {
@@ -2358,22 +2369,33 @@ export function AgentChatComposer({
         ? mentionLabels?.[tokenText]?.trim() || mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
         : tokenText;
       const isLabeledMention = token.kind === "mention" && displayText !== tokenText;
+      const mentionKind = token.kind === "mention" ? chatMentionKindFromToken(tokenText) : null;
       segments.push(
         <span
           key={`chip-${index}-${token.start}`}
-          className="rounded-[4px] bg-violet-500/14 text-violet-100/92 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.18)]"
+          className={isLabeledMention
+            ? undefined
+            : "rounded-[4px] bg-violet-500/14 text-violet-100/92 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.18)]"}
         >
           {isLabeledMention ? (
-            // Keep the textarea's canonical token as an invisible layout slot.
-            // The visible title is positioned inside that slot so a longer or
-            // shorter label cannot move the caret or following prose out of
-            // alignment with the real textarea value.
-            <span className="relative inline-block align-baseline" title={displayText}>
+            // Size the overlay to the title, not the `@chat:<uuid>` token, so
+            // the painted chip stays compact even before the rich editor mounts.
+            <span className="relative inline-block max-w-[10.5rem] align-baseline" title={displayText}>
               <span className="invisible whitespace-pre" data-composer-mention-layout>
-                {tokenText}
-              </span>
-              <span className="absolute inset-0 overflow-hidden text-ellipsis whitespace-nowrap" data-composer-mention-display>
                 {displayText}
+              </span>
+              <span
+                className="absolute left-0 top-1/2 inline-flex max-w-full -translate-y-1/2 items-center gap-0.5 overflow-hidden rounded bg-violet-500/14 px-1 py-px text-violet-100/92 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.18)]"
+                data-composer-mention-display
+              >
+                {mentionKind ? (
+                  <span
+                    className="inline-flex h-3 w-3 shrink-0"
+                    aria-hidden="true"
+                    dangerouslySetInnerHTML={{ __html: mentionChipMarkSvg(mentionKind) }}
+                  />
+                ) : null}
+                <span className="truncate">{displayText}</span>
               </span>
             </span>
           ) : displayText}
@@ -3085,12 +3107,24 @@ export function AgentChatComposer({
     chip.contentEditable = "false";
     chip.dataset.composerChip = kind;
     chip.dataset.composerChipText = text;
-    chip.className = "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
+    const mentionKind = kind === "mention" ? chatMentionKindFromToken(text) : null;
+    const iconKind: ComposerAtChipKind | null = kind === "file" ? "file" : mentionKind;
+    chip.className = iconKind && kind !== "command" ? COMPOSER_MENTION_CHIP_CLASS : COMPOSER_TOKEN_CHIP_CLASS;
+    if (iconKind) chip.dataset.composerChipKind = iconKind;
     // An untitled entity can produce an empty displayLabel; fall back to the
     // serialized token so a chip is never visually blank.
     const chipLabel = displayLabel?.trim() || null;
     chip.title = chipLabel && chipLabel !== text ? `${chipLabel} — ${text}` : text;
+    if (iconKind) {
+      const icon = document.createElement("span");
+      icon.dataset.composerChipIcon = "true";
+      icon.className = COMPOSER_TOKEN_CHIP_ICON_CLASS;
+      icon.setAttribute("aria-hidden", "true");
+      icon.innerHTML = mentionChipMarkSvg(iconKind);
+      chip.appendChild(icon);
+    }
     const label = document.createElement("span");
+    label.dataset.composerChipLabel = "true";
     label.className = "truncate";
     label.textContent = chipLabel ?? text;
     chip.appendChild(label);
@@ -3107,7 +3141,8 @@ export function AgentChatComposer({
       const token = chip.dataset.composerChipText;
       if (!token) return;
       const label = labels.get(token)?.trim() || token;
-      const labelNode = chip.firstElementChild;
+      const labelNode = chip.querySelector<HTMLElement>("[data-composer-chip-label]")
+        ?? chip.lastElementChild;
       if (labelNode && labelNode.textContent !== label) {
         labelNode.textContent = label;
         changed = true;
@@ -3115,6 +3150,21 @@ export function AgentChatComposer({
       const title = label === token ? token : `${label} — ${token}`;
       if (chip.title !== title) {
         chip.title = title;
+        changed = true;
+      }
+      const mentionKind = chatMentionKindFromToken(token);
+      if (mentionKind && chip.dataset.composerChipKind !== mentionKind) {
+        chip.dataset.composerChipKind = mentionKind;
+        chip.className = COMPOSER_MENTION_CHIP_CLASS;
+        changed = true;
+      }
+      if (mentionKind && !chip.querySelector("[data-composer-chip-icon]")) {
+        const icon = document.createElement("span");
+        icon.dataset.composerChipIcon = "true";
+        icon.className = COMPOSER_TOKEN_CHIP_ICON_CLASS;
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML = mentionChipMarkSvg(mentionKind);
+        chip.insertBefore(icon, chip.firstChild);
         changed = true;
       }
     });
@@ -4628,6 +4678,9 @@ export function AgentChatComposer({
       const token = formatChatMentionToken(item.mention.kind, item.mention.id);
       mentionLabelsRef.current.set(token, item.mention.title);
       onMentionLabelChange?.(token, item.mention.title);
+      // Stay on the plain textarea until `draft` actually contains the token.
+      // Enabling the rich editor here remounts it against the still-uncommitted
+      // query (`@a b c`) and the hydrate effect writes that query back.
       if (useRichComposer) {
         if (!replaceRichTriggerWith({
           chipKind: "mention",
@@ -5035,6 +5088,25 @@ export function AgentChatComposer({
     && canOpenInAdeBrowser(pendingInput.providerMetadata.url)
     ? pendingInput.providerMetadata.url
     : null;
+  /**
+   * The caller's own buttons for this approval, when it supplied them.
+   *
+   * An approval card answers with a decision, so it can only offer a caller's
+   * options once each one says which decision it stands for. All or nothing:
+   * a partial set would silently drop the choices missing a decision, and the
+   * person would be reading one list while pressing another. Both halves go
+   * back — the decision the card is built on, and the option value the caller
+   * reads — because a gate that requires both cannot treat one as consent.
+   */
+  const approvalChoices = ((): { questionId: string; options: Array<PendingInputOption & { decision: AgentChatApprovalDecision }> } | null => {
+    const question = pendingInput?.questions?.[0];
+    const options = question?.options;
+    if (!question || !options?.length) return null;
+    const decided = options.flatMap((option) =>
+      option.decision ? [{ ...option, decision: option.decision }] : []);
+    if (decided.length !== options.length) return null;
+    return { questionId: question.id, options: decided };
+  })();
 
   return (
     <>
@@ -5162,18 +5234,40 @@ export function AgentChatComposer({
             </div>
             {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
               <>
-                <div className="mb-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
+                {/* `whitespace-pre-wrap`, because a body written as lines — the
+                    plugin-install disclosure's source, trust and "Adds:" list —
+                    reads as one run-on paragraph without it. */}
+                <div className="mb-2 whitespace-pre-wrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
                   {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {isMcpElicitation && mcpElicitationUrl ? (
                     <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-sky-300/25 bg-sky-400/[0.08] px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-sky-100/80 transition-colors hover:bg-sky-400/[0.14] disabled:pointer-events-none disabled:opacity-40" onClick={() => openUrlInAdeBrowser(mcpElicitationUrl)}>Open authorization</button>
                   ) : null}
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : isMcpElicitation ? "Allow once" : "Accept"}</button>
-                  {!isMcpElicitation || mcpElicitationSupportsPersistence ? (
-                    <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>{isMcpElicitation ? "Always allow" : "Accept all"}</button>
-                  ) : null}
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
+                  {approvalChoices ? (
+                    approvalChoices.options.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        disabled={approvalResponding}
+                        {...(option.description ? { title: option.description } : {})}
+                        className={option.decision === "decline" || option.decision === "cancel"
+                          ? "rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
+                          : "rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none"}
+                        onClick={() => onApproval(option.decision, null, { [approvalChoices.questionId]: option.value })}
+                      >
+                        {approvalResponding ? "Processing..." : option.label}
+                      </button>
+                    ))
+                  ) : (
+                    <>
+                      <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : isMcpElicitation ? "Allow once" : "Accept"}</button>
+                      {!isMcpElicitation || mcpElicitationSupportsPersistence ? (
+                        <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>{isMcpElicitation ? "Always allow" : "Accept all"}</button>
+                      ) : null}
+                      <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
+                    </>
+                  )}
                 </div>
               </>
             ) : (

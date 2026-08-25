@@ -89,9 +89,13 @@ function detail(overrides: Partial<PluginDetail> = {}): PluginDetail {
     config: {},
     root: "/Users/arul/.ade-alpha/plugins/ade-tipsy",
     logs: [],
+    lastInvokes: [{ action: "drink", at: "2026-08-25T11:58:00.000Z", ok: true }],
     ...overrides,
   };
 }
+
+/** Two minutes after the healthy fixture's last invoke. */
+const NOW = Date.parse("2026-08-25T12:00:00.000Z");
 
 function contribution(): PluginContributionRecord {
   return {
@@ -131,7 +135,7 @@ function healthy(overrides: Partial<PluginDoctorSnapshot> = {}): PluginDoctorSna
 }
 
 function layer(snapshot: PluginDoctorSnapshot, key: PluginDoctorLayerKey) {
-  const found = buildPluginDoctorReport(snapshot).layers.find((entry) => entry.key === key);
+  const found = buildPluginDoctorReport(snapshot, NOW).layers.find((entry) => entry.key === key);
   if (!found) throw new Error(`no ${key} layer`);
   return found;
 }
@@ -262,9 +266,91 @@ describe("buildPluginDoctorReport", () => {
     });
     expect(report.displayName).toBe("ade-tipsy");
     expect(report.version).toBeNull();
+    // Last run reads "unknown", not "no": ADE answered, but it has no plugin
+    // to have run anything, and claiming "nothing ran" would be an assertion
+    // about code that is not on this computer.
     expect(report.layers.map((entry) => entry.state)).toEqual([
-      "no", "no", "no", "na", "na", "no", "na",
+      "no", "no", "no", "na", "unknown", "na", "no", "na",
     ]);
+  });
+
+  it("separates an action that never fired from one that fired and did nothing", () => {
+    // Finding #6 of the round-2 alpha report: a press that silently did
+    // nothing looked exactly like a press that never happened, because Places
+    // said "1 row published right now" either way.
+    const neverRan = layer(healthy({ live: { ...healthy().live!, detail: detail({ lastInvokes: [] }) } }), "lastRun");
+    expect(neverRan.state).toBe("no");
+    expect(neverRan.detail).toContain("no action has run since ADE started");
+    // The suggestion has to be runnable as printed, action included.
+    expect(neverRan.detail).toContain('"action":"drink"');
+
+    const ran = layer(healthy(), "lastRun");
+    expect(ran.state).toBe("ok");
+    expect(ran.detail).toContain("drink ran 2 minutes ago");
+    // `sober` and `status` are declared and have never run; saying so is what
+    // stops "something ran" from reading as "everything ran".
+    expect(ran.detail).toContain("2 actions never run");
+  });
+
+  it("names the failing action and its error code", () => {
+    const failed = layer(
+      healthy({
+        live: {
+          ...healthy().live!,
+          detail: detail({
+            lastInvokes: [{ action: "sober", at: "2026-08-25T11:59:00.000Z", ok: false, errorCode: "invalid_args" }],
+          }),
+        },
+      }),
+      "lastRun",
+    );
+    expect(failed.state).toBe("no");
+    expect(failed.detail).toContain("sober failed 1 minute ago (invalid_args)");
+  });
+
+  it("says it cannot tell, rather than 'never', on a host that does not track runs", () => {
+    const older = layer(
+      healthy({ live: { ...healthy().live!, detail: detail({ lastInvokes: undefined }) } }),
+      "lastRun",
+    );
+    expect(older.state).toBe("unknown");
+    expect(older.detail).toContain("does not keep track");
+  });
+
+  it("counts every declared route to an action, not only sockets", () => {
+    const report = buildPluginDoctorReport(healthy({
+      manifest: manifest({
+        cli: ["status"],
+        tools: [{
+          name: "getDrunkLevel",
+          description: "How drunk?",
+          input: { type: "object", properties: {}, required: [] },
+          action: "level",
+        }],
+      }),
+    }), NOW);
+    const actions = Object.fromEntries(report.actions.map((entry) => [entry.action, entry.declaredBy]));
+    expect(actions.drink).toEqual(["composer-action"]);
+    expect(actions.status).toEqual(["cli"]);
+    expect(actions.level).toEqual(["agent tool"]);
+    expect(report.actions.find((entry) => entry.action === "drink")?.lastInvoke?.ok).toBe(true);
+    expect(report.actions.find((entry) => entry.action === "status")?.lastInvoke).toBeNull();
+  });
+
+  it("marks a local source that has moved away, because a reload cannot re-copy it", () => {
+    const gone = healthy({
+      record: record({ source: { kind: "local", path: "/src/tipsy" } }),
+      sourcePresent: false,
+    });
+    expect(layer(gone, "source").state).toBe("no");
+    expect(layer(gone, "source").detail).toContain("gone, so a reload keeps running the installed copy");
+
+    const present = healthy({
+      record: record({ source: { kind: "local", path: "/src/tipsy" } }),
+      sourcePresent: true,
+    });
+    expect(layer(present, "source").state).toBe("ok");
+    expect(layer(present, "source").detail).toBe("the folder /src/tipsy");
   });
 });
 

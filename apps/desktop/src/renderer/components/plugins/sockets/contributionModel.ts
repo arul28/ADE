@@ -110,9 +110,10 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
     // that is the point — a mapping that split them here would be claiming a
     // difference the contract does not have.
     //
-    // `menu` is passed through raw and re-validated by the parser, like every
-    // other field here: the manifest parser already capped and bounded it, and
-    // this mapping deliberately trusts nothing it is handed.
+    // `menu` and `color` are passed through raw and re-validated by the parser,
+    // like every other field here: the manifest parser already capped, bounded
+    // and contrast-checked them, and this mapping deliberately trusts nothing
+    // it is handed.
     case "toolbar-action":
     case "composer-action":
     case "chat-header-action":
@@ -122,6 +123,7 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
         icon: socket.icon,
         actionId: socket.actionId,
         ...(socket.menu ? { menu: socket.menu } : {}),
+        ...(socket.color ? { color: socket.color } : {}),
       };
     case "row-badge":
       // A manifest badge has no value of its own — it is the declaration a

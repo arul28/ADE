@@ -21,7 +21,8 @@ import {
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { composerFileSearchQuery, type ComposerTrigger } from "../../../shared/composerTriggers";
-import { CHAT_MENTION_KINDS, CHAT_MENTION_MAX_PER_KIND } from "../../../shared/chatMentions";
+import { CHAT_MENTION_KINDS, CHAT_MENTION_MAX_PER_KIND, CHAT_MENTION_MAX_RESULTS } from "../../../shared/chatMentions";
+import { composerAtFileRankFields, rankComposerAtMenuItems } from "../../../shared/composerAtMenuRanking";
 import type { ChatMentionKind, ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
 
@@ -101,16 +102,15 @@ function fuzzyMatch(target: string, query: string): boolean {
 
 /** Split a file path into dirname and basename for display. */
 function splitPath(filePath: string): { dir: string; base: string } {
-  const lastSlash = filePath.lastIndexOf("/");
-  if (lastSlash === -1) return { dir: "", base: filePath };
-  return { dir: filePath.slice(0, lastSlash + 1), base: filePath.slice(lastSlash + 1) };
+  const fields = composerAtFileRankFields(filePath);
+  return { dir: fields.subtitle, base: fields.title };
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-const MAX_FILE_RESULTS = 8;
+const MAX_FILE_RESULTS = 16;
 const MAX_COMMAND_RESULTS = 10;
 const MENU_WIDTH = 420;
 const MENU_HEIGHT = 328;
@@ -213,12 +213,6 @@ function useDebouncedSuggestions<T>(
   return { results: stale ? [] : state.results, loading: loading || stale };
 }
 
-
-const MENTION_SECTION_LABEL: Record<ChatMentionKind, string> = {
-  chat: "Chats",
-  lane: "Lanes",
-  terminal: "Terminals",
-};
 
 const MENTION_SECTION_ICON: Record<ChatMentionKind, PhosphorIcon> = {
   chat: ChatCircleDots,
@@ -359,28 +353,17 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         ];
       }
       const out: MenuSection[] = [];
-      if (fileResults.length) {
+      const mixed = rankComposerAtMenuItems(fileResults, mentionResults, atQuery, CHAT_MENTION_MAX_RESULTS);
+      if (mixed.length) {
         out.push({
-          key: "files",
-          label: "Files",
-          Icon: File,
-          rows: withIndices(fileResults.map((r) => ({ type: "file" as const, path: r.path }))),
-        });
-      }
-      for (const kind of CHAT_MENTION_KINDS) {
-        const mentions = mentionResults
-          .filter((entry) => entry.kind === kind)
-          .slice(0, CHAT_MENTION_MAX_PER_KIND);
-        if (!mentions.length) continue;
-        out.push({
-          key: kind,
-          label: MENTION_SECTION_LABEL[kind],
-          Icon: MENTION_SECTION_ICON[kind],
-          rows: withIndices(mentions.map((mention) => ({ type: "mention" as const, mention }))),
+          key: "at",
+          label: "Matches",
+          Icon: MagnifyingGlass,
+          rows: withIndices(mixed),
         });
       }
       return out;
-    }, [trigger, filteredCommands, fileResults, mentionResults]);
+    }, [trigger, filteredCommands, fileResults, mentionResults, atQuery]);
 
     const items: ChatCommandMenuItem[] = useMemo(
       () => sections.flatMap((section) => section.rows.map((row) => row.item)),
@@ -513,7 +496,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                 <>
                   <MagnifyingGlass size={12} weight="bold" className="text-violet-400/60" />
                   <span className="text-[10px] font-medium tracking-wide text-fg/46">
-                    {onMentionSearch ? "Files, chats, lanes & terminals" : "File search"}
+                    {onMentionSearch ? "Best match · files, chats, lanes, terminals" : "File search"}
                   </span>
                 </>
               ) : (
@@ -574,8 +557,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                     }
 
                     if (item.type === "mention") {
-                      // The section already resolved the per-kind icon.
-                      const MentionIcon = section.Icon;
+                      const MentionIcon = MENTION_SECTION_ICON[item.mention.kind];
                       return (
                         <MenuRow
                           key={`${item.mention.kind}:${item.mention.id}`}

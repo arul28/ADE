@@ -105,7 +105,13 @@ export type PluginInstallService = {
   setEnabled(pluginId: string, enabled: boolean): PluginInstalledPlugin;
   /** Persist one socket contribution's on/off state in the install registry. */
   setContributionEnabled(pluginId: string, socketId: string, enabled: boolean): PluginInstalledPlugin;
-  /** Re-read the manifest from disk (the `ade plugin dev` loop). */
+  /**
+   * Re-read the plugin from disk (the `ade plugin dev` loop).
+   *
+   * A `local`-source plugin is re-copied from the folder it was installed from
+   * first, so an edit there is what the restarted child runs. A resync that had
+   * to be refused arrives as a warning on the returned plugin, never silently.
+   */
   reload(pluginId: string): PluginInstalledPlugin;
   /**
    * The version of the package this ADE SHIPS for an id, or null if it ships
@@ -815,9 +821,108 @@ export function createPluginInstallService(deps: {
     return describe(next);
   };
 
+  /**
+   * Re-copy a `local`-source plugin from the folder it was installed from.
+   *
+   * `reload` used to restart the child over whatever already sat in the install
+   * directory, so editing a local source and reloading served the PREVIOUS
+   * bytes — silently, with no error and no changed behaviour, until a second
+   * `install` of the same path happened to push the edit. `ade plugin dev`
+   * inherited the whole trap, because its watcher calls `reload` too: it
+   * watched the source folder and then reloaded a copy nothing had updated.
+   *
+   * Staged and renamed exactly as `install` does, so a source that has grown
+   * past the copy ceilings, lost its manifest, or turned into a DIFFERENT
+   * plugin leaves the working install in place rather than half-copied.
+   *
+   * The directory checksum gate deliberately does not run here. That gate
+   * checks bytes which arrived over the NETWORK against what the plugin
+   * directory vouches for; these bytes come from a path on this machine that
+   * the user approved installing from, and anyone able to write there can
+   * already write into the install directory `reload` has always re-run.
+   *
+   * Returns the warnings to carry on the reloaded plugin: a refused resync must
+   * never read as a completed one.
+   */
+  const resyncLocalSource = (record: PluginInstallRecord): string[] => {
+    if (record.source.kind !== "local") return [];
+    const source = path.resolve(record.source.path);
+    const refused = (reason: string): string[] => {
+      deps.logger.warn("plugin.reload_resync_refused", { pluginId: record.pluginId, source, reason });
+      return [`Reload kept the installed copy: its source folder ${source} ${reason}.`];
+    };
+    let target: string;
+    try {
+      target = pluginRootWithin(root, record.pluginId);
+    } catch {
+      // A hand-edited registry naming an id that cannot resolve inside the
+      // plugins root. Reload still answers about what is installed; only the
+      // re-copy is off the table.
+      return refused("cannot be resolved to an install directory");
+    }
+    // Installed FROM the install directory. There is nothing to copy, and the
+    // rename below would open a window where neither copy exists.
+    if (source === target) return [];
+    if (!dirExists(source)) return refused("is gone");
+
+    const stagingDir = path.join(root, `.staging-${randomUUID()}`);
+    let staged: PluginManifest;
+    try {
+      copyPluginTree(source, stagingDir);
+      const parsed = readManifestAt(stagingDir);
+      if (!parsed.manifest || parsed.errors.length > 0) {
+        throw new Error(`has no readable ${PLUGIN_MANIFEST_FILE}: ${parsed.errors[0] ?? "it is missing"}`);
+      }
+      // A source that renamed itself is a different plugin now. Copying it in
+      // under the old id would run code the user installed under another name.
+      if (parsed.manifest.name !== record.pluginId) {
+        throw new Error(`now declares the id "${parsed.manifest.name}"`);
+      }
+      if (!isPluginSupportedByAdeVersion(parsed.manifest, deps.adeVersion)) {
+        throw new Error(`now requires ADE ${parsed.manifest.minAdeVersion} or newer`);
+      }
+      staged = parsed.manifest;
+    } catch (error) {
+      removeQuietly(stagingDir);
+      return refused(error instanceof Error ? error.message : String(error));
+    }
+
+    const previous = `${target}.previous-${randomUUID()}`;
+    const hadPrevious = dirExists(target);
+    try {
+      if (hadPrevious) fs.renameSync(target, previous);
+      fs.renameSync(stagingDir, target);
+    } catch (error) {
+      // Put the working install back before reporting: a failed resync must not
+      // leave the user with no plugin at all.
+      if (hadPrevious && !dirExists(target) && dirExists(previous)) {
+        try {
+          fs.renameSync(previous, target);
+        } catch {
+          // Nothing further to try; the warning below carries the real cause.
+        }
+      }
+      removeQuietly(stagingDir);
+      return refused(`could not be moved into place: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    removeQuietly(previous);
+    deps.logger.info("plugin.reload_resynced", {
+      pluginId: record.pluginId,
+      source,
+      version: staged.version,
+    });
+    return [];
+  };
+
   const reload = (pluginId: string): PluginInstalledPlugin => {
     const { registry, record } = requireRecord(pluginId);
-    const described = describe(record);
+    // Before the manifest read below, so every answer this function gives
+    // describes the tree a restarted child will actually run.
+    const resyncWarnings = resyncLocalSource(record);
+    const read = describe(record);
+    const described = resyncWarnings.length > 0
+      ? { ...read, warnings: [...resyncWarnings, ...read.warnings] }
+      : read;
     // `ade plugin dev` edits the manifest in place, so the registry's cached
     // version drifts from disk until something re-reads it. This is that read.
     if (described.manifest && described.manifest.version !== record.version) {

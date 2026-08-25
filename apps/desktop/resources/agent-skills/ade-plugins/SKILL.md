@@ -57,7 +57,7 @@ Nobody asks for a `composer-action`. They ask for "a button next to where I type
 |---|---|---|
 | "a button in the chat header" | `chat-header-action`, surface `work` | The header every chat surface shares, so an **existing** chat carries it. Desktop and web draw a button; iOS draws it as a row in the chat's overflow menu |
 | "on the phone's three-dot menu" | `chat-header-action`, surface `work` | The same declaration. The phone puts it in the chat's existing overflow menu, grouped per plugin — a nav bar holds a title and about two controls |
-| "a button with a little arrow / a dropdown on it" | `menu[]` on the button's payload — a split button | Works on `toolbar-action`, `composer-action` and `chat-header-action`. Max 6 entries |
+| "a button with a little arrow / a dropdown on it" | `menu[]` on the button's payload — a split button | Works on `toolbar-action`, `composer-action` and `chat-header-action`. Max 6 entries, each with its own `icon` |
 | "a button next to where I type" / "in the composer" | `composer-action`, surface `work` | Composer accessory row. Desktop, web and iOS; the TUI draws none |
 | "let me type a slash command" | `slash-command`, surface `work` | The composer's command menu. Desktop and web only |
 | "in ⌘K" / "the command palette" | `command-palette-action`, surface `app` | ⌘K. Desktop and web only |
@@ -78,6 +78,7 @@ Nobody asks for a `composer-action`. They ask for "a button next to where I type
 | "a whole new tab" | a `tab` surface | The tab rail, all four clients |
 | "an `ade` command for it" | a `cli` word | `ade <pluginId> <word>` |
 | "change the colours / a dark theme" | `theme` tokens | Token-backed surfaces. iOS applies the accent only |
+| "make MY button my colour" | `color` on the button's payload | One control only, and refused unless it reads in both themes — see *Tinting one button*. Do not reach for a `theme` to colour one button |
 | "make the agent behave differently" | `skills[]` + your own state | Loads at the start of the **next** turn — see *Timing* |
 | "something I can pan, zoom or drag" | a `webview` surface | Desktop only; three clients get the panel instead |
 
@@ -126,7 +127,7 @@ ade plugin dev my-thing                       # watch + reload on every save
 | Action | Agent calling it | What happens |
 |---|---|---|
 | `plugin.install` | **Yes — the user is asked** | Raises an approval card in your own chat and blocks until answered. The install then runs on the host's authority, and you get the normal install result |
-| `plugin.reload` | **Yes, ungated** | Re-reads `plugin.json` from disk, restarts the child, reconciles panels and contributions. Your authoring loop |
+| `plugin.reload` | **Yes, ungated** | Re-copies a `local` source over the installed copy, re-reads `plugin.json`, restarts the child, reconciles panels and contributions. Your authoring loop |
 | `plugin.uninstall`, `enable`, `disable` | **No — operator only** | Flat refusals with `kind: "plugin_role_denied"`. Removing a plugin or stopping its child is not worth interrupting someone for mid-turn, and an uninstall prompt is the kind people learn to dismiss |
 | `plugin.list`, `get`, `getPanel`, `getManifest`, `listContributions`, `openLogs`, `presence`, `usageSummary` | **Yes** | Every read-back in the verify section below |
 | `plugin.invoke` | **Yes** | Call an installed plugin's own handlers |
@@ -139,6 +140,8 @@ ade actions run plugin.reload  --input-json '{"pluginId":"my-thing"}'           
 ```
 
 `install` takes `{source, ref?, enable?}` — a directory holding a `plugin.json`, a bundled plugin id, or a git URL. `reload` takes a **plugin id, never a path**, and is synchronous: it completes or it throws.
+
+**A reload of a `local` plugin re-copies the folder it was installed from, first.** So editing your source and reloading runs the edit — that is the whole loop, and it needs no second `install`. Two consequences worth holding on to: the source folder is the truth, so an edit made directly in `~/.ade/plugins/<id>` is overwritten by the next reload; and a resync ADE had to refuse (the folder moved away, its `plugin.json` stopped parsing, it renamed itself to another plugin id) comes back as a **warning on the reload result**, with the previous copy left running. Read `warnings` on what `reload` returns — a reload that kept the old bytes says so there, and nowhere else. A `git` or bundled install re-reads the installed copy exactly as before; nothing fetches on a reload.
 
 Four things to know before you call `install`:
 
@@ -168,7 +171,7 @@ Two trapdoors worth knowing before you run any of it:
 ade plugin doctor <pluginId> --text
 ```
 
-One command walks the whole ladder with live checks — a rung each for **Source**, **Installed here**, **Running**, **Places**, **Panels**, **In this project** and **Agent skills** — then closes with a `Renders on:` line **derived from `PLUGIN_SOCKET_CLIENT_SUPPORT` itself**, so the per-client answer cannot drift from the table that decides it. Trust that line over any prose, including this skill's.
+One command walks the whole ladder with live checks — a rung each for **Source**, **Installed here**, **Running**, **Places**, **Last run**, **Panels**, **In this project** and **Agent skills** — then closes with a `Renders on:` line **derived from `PLUGIN_SOCKET_CLIENT_SUPPORT` itself**, so the per-client answer cannot drift from the table that decides it. Trust that line over any prose, including this skill's.
 
 ```
 Tipsy (ade-tipsy) 0.3.0
@@ -177,6 +180,7 @@ Tipsy (ade-tipsy) 0.3.0
   ✓ Installed here   version 0.3.0, turned on
   ✓ Running          the plugin's own process is up
   ✓ Places           composer-action in work, slash-command in work; 1 row published right now
+  ✓ Last run         drink ran 2 minutes ago; 1 action never run
   ✓ Panels           1 published of 1 panel in the manifest
   ✓ In this project  1 place, 1 panel, 4 stored rows
   ✓ Agent skills     1 skill · Affects agents from their next turn — running turns keep their current behavior.
@@ -188,6 +192,10 @@ Read that `Renders on:` line closely — it is the layer-6 answer per client and
 
 **Places is the contributions read-back.** It counts your declared sockets by kind and surface (`2× row-badge in lanes` when a kind is declared twice), then adds the live published count. Three variants to expect: `; 2 switched off here` when the user has disabled sockets — and if *all* of them are off the rung flips to `✗`, because the reader is here asking why they cannot see it; `; published rows unknown (ADE is not answering)` when the host is down; and `– Places  this plugin asks for no place in ADE's own screens` for a plugin that declares none, which is *not applicable*, never a failure.
 
+**Last run is the one rung about your own code.** Everything above it says the platform did its part; this one says whether a handler of yours was ever reached, and how the most recent attempt ended. It answers the question Places cannot: a button that is drawn and published still reads `✓ Places` when the action behind it never fires, so *"I pressed it and nothing happened"* used to need a reproduction before anyone could tell a wiring problem from a code problem. Read it as: `no action has run since ADE started` — nothing reached your code, so look at the declaration and the press path; `drink failed 4 minutes ago (invalid_args)` — your handler ran and threw, so look at the handler; `drink ran 4 minutes ago` — your handler ran and returned, so if the screen did not change, the bug is in what it did, not in whether it was called. Every route counts: a press, an `ade <id> <word>`, an agent tool, an automation step, a schedule. A refused invoke is an attempt too, and carries its code. It is **in memory**, so it says "since ADE started" and a restart empties it — and on a host too old to keep it, the rung reads `– Last run  this copy of ADE does not keep track of plugin action runs` rather than claiming nothing ever ran.
+
+**Source names a gone folder.** For a `local` install, `✗ Source  the folder /path — gone, so a reload keeps running the installed copy` is the state to catch early: reload has nothing to re-copy from, so every edit you make elsewhere is invisible no matter how many times you reload.
+
 A failing rung tells you the fix rather than the symptom:
 
 ```
@@ -198,7 +206,7 @@ It is written to be run when things are **already wrong**, so it degrades honest
 
 **Its exit code is always 0.** It is a report, not a gate, so a runbook step can read it without guarding against a non-zero exit — and a `✗` rung is information rather than a failed command.
 
-**Assert on it rather than grepping it.** JSON is the default output, and `--json` gives `{pluginId, displayName, version, layers[{key, label, state, detail}], clients[{client, label, drawn[], absent[], renders}], renders}`, where `state` is `"ok" | "no" | "na" | "unknown"` and `key` is the stable one of `source`, `installed`, `running`, `places`, `panels`, `synced`, `skills`. So the contributions check is one assertion:
+**Assert on it rather than grepping it.** JSON is the default output, and `--json` gives `{pluginId, displayName, version, layers[{key, label, state, detail}], clients[{client, label, drawn[], absent[], renders}], renders, actions[{action, declaredBy[], lastInvoke}]}`, where `state` is `"ok" | "no" | "na" | "unknown"` and `key` is the stable one of `source`, `installed`, `running`, `places`, `lastRun`, `panels`, `synced`, `skills`. `actions` is the per-action form of the Last run rung — one row for every action your manifest declares, with `lastInvoke` as `{action, at, ok, errorCode?}` or `null` for one that has never run. So the contributions check is one assertion:
 
 ```js
 report.layers.find((layer) => layer.key === "places").state === "ok"
@@ -206,13 +214,23 @@ report.layers.find((layer) => layer.key === "places").state === "ok"
 
 **Branch on the state, never on truthiness.** `na` and `unknown` both print `–`, and they mean opposite things: `na` is "this plugin declares no sockets", `unknown` is "ADE never answered". A truthy check reads those as the same thing, which is the exact conflation this command exists to break. Only `ok` is a pass, only `no` is a failure, and the two `–` states are questions you have not answered yet.
 
-The seven `key` values and the state union are a **stable contract**: a new rung would be appended, never renamed or reordered, so `find(l => l.key === "places")` keeps working.
+The eight `key` values and the state union are a **stable contract**: a rung is never renamed, so `find(l => l.key === "places")` keeps working. A NEW rung takes its place in the ladder where it belongs rather than at the end — `lastRun` arrived between `places` and `panels` — so read a rung by key and never by index.
+
+**Press your own buttons before you ask a person to.** `plugin.invoke` takes a synthetic context, so every action you declared is reachable from a shell — no click, no round trip through someone else's attention:
+
+```bash
+ade actions run plugin.invoke --input-json '{"pluginId":"ade-tipsy","action":"drink","args":{"context":{"kind":"session","id":"e755df3f-5d72-4af7-87ba-c842ca8bd37c","title":"Chat","provider":"claude","status":"idle"}}}'
+ade actions run plugin.invoke --input-json '{"pluginId":"ade-tipsy","action":"status","argv":["status","--json"]}'
+```
+
+Do this **first**, ahead of asking anyone to test in the UI. In the recorded round-2 run, an action that silently read the wrong field of its context cost a whole user round trip — *"I clicked it, nothing happened"* — that a ten-second invoke would have caught, and the author only reached for this partway through. A press by hand proves the chrome; an invoke proves the code, and the code is what you just wrote. Follow it with `ade plugin doctor <id> --text` and read the **Last run** rung: it says whether your handler ran and how it ended.
 
 Then confirm the specific claims you intend to make:
 
 | Check | How | What proves it |
 |---|---|---|
 | Installed and enabled here | `ade plugin doctor <id> --text`, or `plugin.list` | Your id, `enabled` |
+| Your handler actually runs | `plugin.invoke` with a synthetic context, then the **Last run** rung | The value it returned, and a rung reading `<action> ran just now` |
 | The child came up | The **Running** rung; `plugin.get {pluginId}` for manifest, effective config and recent log lines | An activation line and the action count; no `crashed` |
 | Contributions materialized | The **Places** rung's published-row count; `plugin.listContributions` for the rows | A row exists for the entity you published against |
 | The panel says what you think | `plugin.getPanel {pluginId, panelId}` | The **materialized** schema — what the plugin actually published, not what its manifest names. This is the real "did it work" |
@@ -243,6 +261,8 @@ These look like one thing to the person using the product. They are seven, and a
 ```
 
 `ade plugin doctor <pluginId> --text` prints all seven in one pass, which is why it is the first thing to run when something is not visible.
+
+These seven are about ADE reaching your plugin. They stop where your own code begins, and there is one more question worth asking on the same screen: **did a handler of yours ever actually run?** Doctor's **Last run** rung answers it, and it is the one that separates "the platform never called me" from "I was called and did nothing visible".
 
 Layer 3 says nothing about layer 5. Layer 5 says nothing about layer 6. Layer 6 says nothing about layer 7. "Installed and enabled at level seven" and "the phone shows nothing" are both true at the same time, routinely, and neither is a bug.
 
@@ -373,10 +393,10 @@ ade plugin dev my-thing                      # watch + reload on every save
 | `ade plugin install <source> [--ref <r>] [--no-enable]` | Install from a local path or git URL |
 | `ade plugin remove <id>` | Uninstall |
 | `ade plugin enable <id>` / `disable <id>` | Turn a plugin on or off |
-| `ade plugin reload <id>` | Re-read the manifest and restart the child |
+| `ade plugin reload <id>` | Re-copy a `local` source, re-read the manifest, restart the child |
 | `ade plugin logs <id> [--limit <n>]` | Recent log lines from the plugin's ring buffer |
 | `ade plugin doctor <id>` | Check every layer between installed and visible — see *Verify* |
-| `ade plugin dev [<id>\|<path>]` | Watch a directory; reload on every save |
+| `ade plugin dev [<id>\|<path>]` | Watch the source folder; reload on every save. Given an id, it watches the folder a `local` install came from, not the installed copy |
 
 JSON is the default output; pass `--text` for human-readable. `ade plugin dev` survives ADE being closed: it says so once, keeps watching, and reloads when the brain returns.
 
@@ -698,7 +718,7 @@ ade plugin install ~/plugins/board   # once
 ade plugin dev board                 # watch + reload on every save
 ```
 
-`ade plugin dev` reloads the plugin on every save — it re-reads the manifest and restarts the child. Page files are read off disk when the guest asks for them, so re-opening the surface picks up your edits. `ade plugin logs board --text` is still where the child's log lines are; `ade.log` from the child, not `console.log` from the page, is what lands there.
+`ade plugin dev` reloads the plugin on every save — it re-copies a `local` source over the installed copy, re-reads the manifest and restarts the child. Page files are read off disk when the guest asks for them, so re-opening the surface picks up your edits. `ade plugin logs board --text` is still where the child's log lines are; `ade.log` from the child, not `console.log` from the page, is what lands there.
 
 ### How it sits next to panels
 
@@ -711,15 +731,15 @@ Eight surfaces: the six list-shaped tabs — `work`, `lanes`, `files`, `prs`, `a
 
 | Socket kind | Surface | Payload | What it draws |
 |---|---|---|---|
-| `toolbar-action` | any | `{label, actionId, icon?, disabled?, menu?}` | A button in a surface's toolbar |
+| `toolbar-action` | any | `{label, actionId, icon?, disabled?, menu?, color?}` | A button in a surface's toolbar |
 | `row-badge` | any | `{text, tone, icon?, tooltip?}` | A badge on a row |
 | `row-menu-item` | any | `{label, actionId, icon?, danger?}` | An entry in a row's context menu |
 | `detail-section` | any | `{panelId, title?}` | A panel rendered as a section in a detail view |
 | `empty-state` | any | `{title, body?, actionId?, actionLabel?}` | Extra content on a surface's empty state |
 | `filter-chip` | any | `{label, filterKey, count?}` | A chip in a surface's filter row |
 | `file-viewer` | `files` | `{panelId, extensions[]}` | A viewer for matching files in the Files tab |
-| `composer-action` | `work` | `{label, actionId, icon?, disabled?, menu?}` | A button in the chat composer's accessory row. May run for minutes — see *Long-running actions* |
-| `chat-header-action` | `work` | `{label, actionId, icon?, disabled?, menu?}` | A button in the chat's header. Receives the **session**, not the surface — see below |
+| `composer-action` | `work` | `{label, actionId, icon?, disabled?, menu?, color?}` | A button in the chat composer's accessory row. May run for minutes — see *Long-running actions* |
+| `chat-header-action` | `work` | `{label, actionId, icon?, disabled?, menu?, color?}` | A button in the chat's header. Receives the **session**, not the surface — see below |
 | `chat-card` | `work` | `{panelId, title?, icon?}` | Your panel, drawn as a card in the chat transcript |
 | `slash-command` | `work` | `{command, actionId, description?, argumentHint?, icon?}` | A command the user types into the composer. Same long budget as `composer-action` |
 | `command-palette-action` | `app` | `{label, actionId, icon?, disabled?}` | An entry in the ⌘K palette |
@@ -755,8 +775,9 @@ The call site reads misleadingly — `useSurfaceContributions("work", "chat-head
   "menu": [{ "label": "Sober up", "actionId": "soberUp" }] }
 ```
 
-- Each entry is `{label, actionId, danger?}` — `label` capped at 40, `actionId` at 64, both required or that entry is skipped.
+- Each entry is `{label, actionId, icon?, danger?}` — `label` capped at 40, `actionId` at 64, both required or that entry is skipped.
 - **Six entries maximum.** Over-cap entries are **truncated, not dropped**, so a plugin that grew a seventh still renders its first six and its primary press. A plugin needing more than six related verbs wants a panel, where it owns the layout.
+- `icon` is a token from the same 64-name list the button's own `icon` takes, and degrades the same way: an unknown token draws the puzzle piece on both clients. Absent means the puzzle piece too, so a two-entry menu that names no icons shows the same generic mark twice — name them.
 - `danger` spends the product's destructive styling, and is honoured only alongside the plugin attribution the same menu draws.
 - **The primary press is unchanged.** It still invokes `actionId`. Absent `menu` renders byte-identically to a button written before the field existed, so adding a dropdown to an existing plugin is additive and removing one is safe.
 - **Degradation is per entry, and never costs you the button.** A malformed entry drops alone; a `menu` that is not an array, or one whose every entry is malformed, degrades to a plain button. The contribution itself is never dropped — which is why `menu` is an ordinary optional manifest field rather than a `manifestExtra`: a split button with a broken menu is still a perfectly good button.
@@ -770,6 +791,31 @@ Two behaviours to design around, because neither is what an author would guess:
 - **The two halves are one control, and they share a busy state.** The busy key is the *contribution*, not the individual action, so pressing "Sober up" from the dropdown lights the "Drink" button — and while it runs neither half will start a second invocation. A plugin author reading "menu items are separate actions" would reasonably expect separate busy states; they do not exist. Drive any start/stop pairing from your own state, exactly as with a plain long-running button.
 - **In the "+N" overflow, the chevron goes away and the menu flattens.** A button that folded into the overflow cannot also open a dropdown, so its entries are drawn as **indented rows beneath their primary** inside the popover instead of vanishing at that width. Every action a plugin declared stays reachable at every window width. Same on all three button kinds — so do not design a menu whose entries only make sense next to a visible chevron.
 - **On iOS a split button is a submenu, and its first row is your primary action.** Inside a menu there is no press-versus-chevron to split, so the button's own `actionId` has to be listed or it would be unreachable. Write a `label` that reads correctly both as a button and as the top row of its own menu — "Take a drink" works, "More…" does not.
+
+On desktop the chevron and the button are drawn as **one joined control** — a shared outline, one hairline seam, no gap — because that is what they are: one contribution, one busy key, one primary press. Both halves light up together while an action runs.
+
+### Tinting one button
+
+`toolbar-action`, `composer-action` and `chat-header-action` take an optional `color`: a 3- or 6-digit hex that tints **that one button** — its label, its icon and a hairline border, over a faint fill of the same colour.
+
+```json
+{ "socket": "chat-header-action", "surface": "work", "id": "tipsy",
+  "label": "Take a drink", "icon": "beer", "actionId": "drink",
+  "color": "#7C6FF0" }
+```
+
+This is the narrow answer to "I want my button to look like mine". The wide one — a `theme` — recolours the whole application, and a plugin that only wanted its own button coloured should not have to repaint ADE to get it. `accent` in the manifest does not reach a socket at all; panel `tone` is a four-value enum and buttons never had one.
+
+**The colour has to be legible in both themes, or it is refused.** The rule, and why it is a rule:
+
+- The payload carries **one** colour and the **user** picks the theme. There is no per-theme form of this field, so the host cannot re-tint the way a theme plugin can — a colour that only works on dark is a button that is invisible for every user on light.
+- So `color` must clear a **3:1 contrast ratio** (WCAG 2.1 SC 1.4.11, the non-text minimum) against **both** ADE backgrounds, dark and light. In practice that is a mid-tone band: near-white, near-black and the fully saturated primaries at the ends of it do not pass. `#7C6FF0` — ADE's own accent — does, and is the calibration to aim near.
+- A refused colour is **dropped, never nudged**. The host does not darken your brand colour into range: it would paint something you never chose and never tell you, and your next hex would change nothing you could see. Instead the field goes missing and the button wears the platform's own tone — visibly not your colour, which is the signal that sends you back to this rule.
+- **A refused colour never costs you the button.** Same bargain as `menu`: the label and the primary press are what the user asked for. `sanitizePluginActionColor` in `sockets.ts` is the single gate, so a declared colour and a published one are judged identically, and a colour arriving over the sync wire is re-judged on arrival rather than trusted.
+- Anything that is not plainly a hex colour is refused before contrast is even considered — no named colours, no `rgb()`, no `var(--…)`. A token value is text that ends up in a stylesheet, and this is the same lesson theme tokens already learned.
+- **While an action runs, the platform takes the button back.** The busy state's own colour outranks yours for the duration, because "this is working" is a signal the user must be able to read on any plugin's button.
+
+`command-palette-action` parses `color` — one arm, one ceiling — and the palette ignores it, exactly as it ignores `menu`.
 
 **Every payload above may also carry three cross-kind fields**, whatever its own shape: `filterKey` tags the entity for a filter chip, `id` says which of your declarations the row fills, and `order` sorts the row among your own. All three are optional and none is listed per-kind in the table, because none belongs to a kind — they describe the ROW. `filterKey` and `id` are capped at 64 characters; `order` is any finite number. See *How a filter chip actually filters* and the `id` and `order` notes below.
 
@@ -796,9 +842,26 @@ Publish against an entity on the surface you declared the socket for. A row for 
 
 **One published value per kind, per entity.** A contribution row is keyed by `(entity kind, entity id, plugin, socket kind)`, so publishing a second row for the same entity and the same kind REPLACES the first. If you declare two same-kind sockets on one surface, only one of them can carry a per-entity value — `id` decides which — and the other shows its manifest declaration and nothing more. Declare two of a kind only when the second needs no published value; otherwise use one socket and vary its payload. A composer and a chat header both belong to their chat, so publish a `composer-action` or `chat-header-action` row against `session` to change what your button says for one conversation. Row badges cap at **2 visible** per row with the rest behind a "+N", and composer buttons do the same in the accessory row; a single plugin may place at most **8** contributions in one socket slot.
 
-Your action receives a typed, read-only context object — a projection, not a handle:
+Your action receives a typed, read-only context object — a projection, not a handle.
 
-| Context | Fields |
+**Read this before the table.** The table below lists the fields that sit **directly on the context object**. The row named `session` is the context's own `kind`, not a key holding the fields — there is no `.session`, no `.lane`, no `.pr` inside it. Here is the literal `args` object a `chat-header-action` handler is called with:
+
+```js
+// exports.actions.drink = async (args) => { ... }
+{
+  context: {
+    kind: "session",                                // which row of the table below
+    id: "e755df3f-5d72-4af7-87ba-c842ca8bd37c",
+    title: "Fix the flaky lane test",
+    provider: "claude",
+    status: "idle"
+  }
+}
+```
+
+So it is `args.context.id`. `args.context.session.id` is `undefined`, and a handler that reads it fails **silently** — it returns without writing anything, no toast, no log line, nothing on screen. That exact misreading of this table cost the round-2 alpha author most of a session. Every kind follows the same shape: a `lane` context is `{kind: "lane", id, name, branch, machineKey, dirty}` on `args.context`, and so on down the table.
+
+| Context | Fields, directly on `args.context` |
 |---|---|
 | `pr` | `number`, `title`, `branch`, `state` (`open`\|`closed`\|`merged`\|`draft`\|`unknown`), `ciStatus` (`passing`\|`failing`\|`pending`\|`none`\|`unknown`) |
 | `lane` | `id`, `name`, `branch`, `machineKey`, `dirty` |
@@ -1155,7 +1218,20 @@ Only these token namespaces are accepted; anything else is dropped with a warnin
 
 ### A CLI command
 
-Add the word to `cli`, add a handler of the same name to `exports.actions`, and it is reachable as `ade <pluginId> <word>`. The plugin receives the raw `argv`, so it owns its own usage text.
+Add the word to `cli`, add a handler of the same name to `exports.actions`, and it is reachable as `ade <pluginId> <word>`. ADE parses none of it — the words are passed through untouched, so the plugin owns its own flags and its own usage text.
+
+**`argv` is a property of the one args object, not the parameter itself.** The handler signature is the same as every other action's — one object — and the words arrive on `args.argv`:
+
+```js
+// $ ade my-thing status ISS-14 --json
+exports.actions.status = async (args) => {
+  const argv = args.argv || [];           // ["status", "ISS-14", "--json"]
+  const words = argv.filter((w) => !w.startsWith("-"));
+  const id = words[1];                    // "ISS-14"
+};
+```
+
+Two things that shape is easy to get wrong, and both were got wrong on the first plugin written against this page. Writing `async status(argv)` treats the object as the array, and every index then reads `undefined`. And **`argv` still contains the command word itself** — `words[0]` is `"status"` — so taking the first non-flag token hands you the word you already knew instead of the argument you wanted. The word is not always at index 0 either (`ade my-thing --json status` puts it second), which is why the example filters the flags out and then skips one, rather than slicing.
 
 ### Contributing an agent skill
 
@@ -1187,7 +1263,7 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 
 ## Troubleshooting
 
-**Run `ade plugin doctor <id> --text` first.** It walks all seven layers, names the failing one, and prints the command that fixes it — most of the rows below are what it tells you, and it tells you which one applies. Reach for a specific row when doctor points at a layer and you want the detail behind it.
+**Run `ade plugin doctor <id> --text` first.** It walks all eight rungs, names the failing one, and prints the command that fixes it — most of the rows below are what it tells you, and it tells you which one applies. Reach for a specific row when doctor points at a layer and you want the detail behind it.
 
 | Symptom | Cause and fix |
 |---|---|
@@ -1205,6 +1281,8 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 | The webview surface shows a panel instead of the page | You are not on the desktop. iOS, the web client, and the TUI render the surface's `panelId` — that is the design, so make that panel say something useful |
 | `adePlugin.collections.put` fails with `plugins_unavailable` | A page can only write where the plugin host runs in the same process. Call your own action with `adePlugin.invoke(...)` and write from the child instead |
 | Contribution never appears | Check `manifest.sockets` declares the kind on that surface, the payload validates for that kind, and you published from the machine that owns the entity |
+| The button is there, the press does nothing, no error anywhere | Read doctor's **Last run** rung. `no action has run` means nothing reached your handler — check `actionId` against the name in `exports.actions`. `<action> ran` means it did, so the bug is inside it: the usual one is reading the context through a key that is not there (`args.context.session.id` — there is no `.session`; see *Your action receives a typed, read-only context object*), which returns without writing and without throwing. Reproduce it in one call with `plugin.invoke` and a synthetic context rather than asking anyone to click again |
+| An edit to the plugin does not take effect after a reload | Reload re-copies a `local` source, so check its `warnings` and doctor's **Source** rung — a source folder that moved away leaves reload running the installed copy. For a `git` or bundled install there is no source to re-copy: install again from the source you changed |
 | Composer button is there but nothing lands in the draft | Look for `[plugin composer]` in the renderer console. "no composer on screen" means the action was invoked from a surface with no composer; "malformed" means the verb was not a string, was an empty `insertText`, or was over the 32 KiB ceiling |
 | Composer button never appears in the TUI | Expected — see the support table. It DOES appear on the phone and on the web, declared or published. Give the same action a panel button if it has to be reachable everywhere |
 | The icon draws as a puzzle piece | The name is not one of the 64 tokens. Both clients resolve `icon` against the same list and puzzle-piece anything else, so this reproduces everywhere rather than on one client — pick a token from *Per-client honesty*. A raw SF Symbol name is not a token and does not work on the phone |

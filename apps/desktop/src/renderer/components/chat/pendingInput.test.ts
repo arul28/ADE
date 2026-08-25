@@ -785,6 +785,43 @@ describe("derivePendingInputRequests", () => {
     expect(opts[2]!.preview).toBeUndefined();
   });
 
+  it("carries an option's approval decision through, and drops one it does not recognize", () => {
+    // The approval card renders a caller's options only when each says which
+    // decision it answers. An unrecognized string would reach `onApproval`
+    // verbatim and be answered as nothing, so it must not survive the read.
+    const installRequest = {
+      requestId: "req-plugin-install",
+      source: "ade",
+      kind: "approval",
+      questions: [
+        {
+          id: "plugin_install",
+          question: "Install Tipsy 0.3.0?",
+          options: [
+            { label: "Install", value: "install", decision: "accept" },
+            { label: "Don't install", value: "deny", decision: "decline" },
+            { label: "Later", value: "later", decision: "postpone" },
+          ],
+        },
+      ],
+    };
+    const events: AgentChatEventEnvelope[] = [
+      envelope({
+        type: "approval_request",
+        itemId: "item-plugin-install",
+        kind: "tool_call",
+        description: "Install Tipsy 0.3.0?",
+        turnId: "turn-1",
+        detail: { request: installRequest },
+      }),
+    ];
+
+    const opts = derivePendingInputRequests(events)[0]!.request.questions[0]!.options!;
+    expect(opts[0]!.decision).toBe("accept");
+    expect(opts[1]!.decision).toBe("decline");
+    expect(opts[2]!.decision).toBeUndefined();
+  });
+
   // ---- Question parsing with optional fields ----------------------------
 
   it("parses question with all optional fields", () => {

@@ -10,7 +10,9 @@ import {
   SocketMenuRow,
   SocketMenuSubRows,
   SocketOverflow,
+  SocketSplitGroup,
   SocketSplitMenu,
+  socketTintStyle,
 } from "./socketUi";
 
 /**
@@ -47,16 +49,34 @@ const VISIBLE_LIMIT = 2;
  * saved line. Kept adjacent in review by this comment, the way
  * `PluginComposerActions` restates the accessory row's own button chrome.
  */
-const BUTTON_CLASS =
-  "relative inline-flex h-6 max-w-[140px] shrink-0 items-center gap-1 rounded-md border px-2"
+const BUTTON_BASE =
+  "relative inline-flex h-6 max-w-[140px] shrink-0 items-center gap-1 px-2"
   + " font-sans text-[10px] font-medium transition-colors"
   + " border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65"
   + " disabled:cursor-default disabled:opacity-50 disabled:hover:border-white/[0.06]";
+
+/** A button with no menu: four corners, four edges. */
+const BUTTON_CLASS = `${BUTTON_BASE} rounded-md border`;
+
+/**
+ * The primary half of a split button: left corners, and no right EDGE.
+ *
+ * The seam belongs to the chevron's left border, so the joint is one hairline
+ * rather than two butted against each other. Radius and edges are named
+ * per-side instead of layering `rounded-r-none` over `rounded-md`, which would
+ * make the joint depend on Tailwind's utility ordering.
+ */
+const BUTTON_SPLIT_CLASS = `${BUTTON_BASE} rounded-l-md border-y border-l`;
 
 /**
  * Running, and the button says so by looking ON rather than dimmed — see
  * `PluginComposerActions`, which learned this the same way: a control greyed
  * out for the two minutes it is legitimately working reads as broken.
+ *
+ * Worn by BOTH halves of a split button, because the busy state is the
+ * contribution's: lighting only the left half of one control while its own
+ * chevron stayed grey would say the two are separate things, which is exactly
+ * the reading the joint above exists to remove.
  */
 const BUTTON_BUSY_CLASS =
   "border-violet-400/25 bg-violet-500/[0.10] text-violet-200/80"
@@ -64,7 +84,7 @@ const BUTTON_BUSY_CLASS =
 
 /** The chevron half of a split button, sized to the 24px header row. */
 const CHEVRON_CLASS =
-  "inline-flex h-6 shrink-0 items-center rounded-md border border-white/[0.06]"
+  "inline-flex h-6 shrink-0 items-center rounded-r-md border border-white/[0.06]"
   + " bg-white/[0.02] px-1 text-muted-fg/40 transition-colors"
   + " hover:border-white/[0.10] hover:text-fg/65";
 
@@ -150,29 +170,39 @@ export function PluginChatHeaderActions({
         const key = contributionKey(contribution);
         const busy = busyKeys.includes(key);
         const menu = contribution.payload.menu ?? [];
+        const split = menu.length > 0;
+        /* The platform's own busy chrome outranks a plugin's tint, and inline
+           styles outrank classes — so a running button drops the colour rather
+           than painting over the one signal that says it is working. */
+        const tint = busy ? {} : socketTintStyle(contribution.payload.color);
+        const base = split ? BUTTON_SPLIT_CLASS : BUTTON_CLASS;
         return (
           <SocketBoundary key={key}>
-            <button
-              type="button"
-              data-tour={dataTour}
-              data-busy={busy || undefined}
-              className={busy ? `${BUTTON_CLASS} ${BUTTON_BUSY_CLASS}` : BUTTON_CLASS}
-              title={busy ? `${contribution.payload.label} — running…` : contribution.payload.label}
-              aria-busy={busy || undefined}
-              disabled={contribution.payload.disabled === true}
-              onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
-            >
-              <SocketIcon name={contribution.payload.icon} size={11} />
-              <span className="truncate">{contribution.payload.label}</span>
-            </button>
-            {/* Menu actions share the button's busy key: two halves, one control. */}
-            <SocketSplitMenu
-              items={menu}
-              label={contribution.payload.label}
-              dataTour={`${dataTour}-menu`}
-              className={CHEVRON_CLASS}
-              onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
-            />
+            <SocketSplitGroup>
+              <button
+                type="button"
+                data-tour={dataTour}
+                data-busy={busy || undefined}
+                className={busy ? `${base} ${BUTTON_BUSY_CLASS}` : base}
+                style={tint}
+                title={busy ? `${contribution.payload.label} — running…` : contribution.payload.label}
+                aria-busy={busy || undefined}
+                disabled={contribution.payload.disabled === true}
+                onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
+              >
+                <SocketIcon name={contribution.payload.icon} size={11} />
+                <span className="truncate">{contribution.payload.label}</span>
+              </button>
+              {/* Menu actions share the button's busy key: two halves, one control. */}
+              <SocketSplitMenu
+                items={menu}
+                label={contribution.payload.label}
+                dataTour={`${dataTour}-menu`}
+                className={busy ? `${CHEVRON_CLASS} ${BUTTON_BUSY_CLASS}` : CHEVRON_CLASS}
+                style={tint}
+                onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
+              />
+            </SocketSplitGroup>
           </SocketBoundary>
         );
       })}

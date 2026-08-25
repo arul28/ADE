@@ -118,7 +118,19 @@ export type SyncPluginRecordSocket = {
    * phone — and a split button that arrived there without its menu would be the
    * silent half-render the taxonomy promises never happens.
    */
-  menu?: { label: string; actionId: string; danger?: boolean }[];
+  menu?: { label: string; actionId: string; icon?: string; danger?: boolean }[];
+  /**
+   * A button's own tint, already contrast-checked by the producer.
+   *
+   * On the wire for the same reason `menu` is: the readers are the clients with
+   * no manifest on disk, and a plugin's button arriving there in the platform's
+   * default grey while the same button is tinted on the machine that installed
+   * it is exactly the per-client divergence the taxonomy promises never
+   * happens. Loose here — the reader re-validates through
+   * `sanitizePluginActionColor`, so an old or tampered record cannot land an
+   * illegible colour on a surface just because it reached it over sync.
+   */
+  color?: string;
   extensions?: string[];
   filterKey?: string;
   command?: string;

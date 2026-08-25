@@ -154,6 +154,23 @@ one supervised child process:
   `ade plugin logs` reads.
 - Errors cross the boundary as structural objects with a `code`, never as
   stringified stacks.
+- **A reload of a `local` install re-copies the source folder first**, staged
+  and renamed exactly as an install is, and only then restarts the child. Before
+  that, `reload` re-read whatever already sat in the install directory, so an
+  edit at the source and a reload silently ran the previous bytes until someone
+  installed the same path again — the round-2 alpha report's finding #8, which
+  cost five identical reload cycles. A resync the host has to refuse (the folder
+  moved away, its `plugin.json` stopped parsing, it renamed itself to another
+  plugin id) comes back as a **warning on the reload result** and leaves the
+  previous copy running. `git` and bundled installs re-read the installed copy
+  as before; nothing fetches on a reload.
+- **The host records the last invoke attempt per plugin, per action**, in
+  memory, capped at 32 actions per plugin and dropped on uninstall. Every route
+  funnels through the one `plugin.invoke`, and a refusal counts as an attempt
+  and carries its code. It rides `plugin.get` as `lastInvokes` and is what
+  `ade plugin doctor`'s **Last run** rung reads — the rung that separates "the
+  action never fired" from "it fired and published nothing", which the ladder
+  could not do before.
 
 ### Storage: four tables, frozen shapes
 

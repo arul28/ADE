@@ -120,6 +120,7 @@ export type PluginInstallApprovalChat = {
     chatSessionId: string;
     title: string;
     body: string;
+    description?: string;
     source?: "ade";
     kind?: "approval";
     allowsFreeform?: boolean;
@@ -133,7 +134,13 @@ export type PluginInstallApprovalChat = {
       header?: string;
       question: string;
       allowsFreeform?: boolean;
-      options?: Array<{ label: string; value?: string; description?: string; recommended?: boolean }>;
+      options?: Array<{
+        label: string;
+        value?: string;
+        description?: string;
+        recommended?: boolean;
+        decision?: AgentChatApprovalDecision;
+      }>;
     }>;
   }): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null }>;
   respondToInput(args: {
@@ -236,6 +243,10 @@ export async function requestPluginInstallApproval(args: {
     chatSessionId: args.chatSessionId,
     title,
     body,
+    // The disclosure IS the card. Without this the card falls back to the first
+    // question, which is the title again, and the person approving filesystem
+    // and network access for third-party code reads nothing but its name.
+    description: body,
     source: "ade",
     kind: "approval",
     allowsFreeform: false,
@@ -268,15 +279,19 @@ export async function requestPluginInstallApproval(args: {
       header: "Plugin install",
       question: title,
       allowsFreeform: false,
+      // `decision` is what makes these the card's actual buttons rather than
+      // the generic Accept/Accept all/Decline trio. "Accept all" has no meaning
+      // here — one install is not a standing grant — so it is simply not offered.
       options: [
         {
           label: "Install",
           value: APPROVE_VALUE,
+          decision: "accept",
           description: disclosure.trust === "official"
             ? "Ships with ADE."
             : "Runs with the same access as tools you install yourself.",
         },
-        { label: "Don't install", value: DENY_VALUE },
+        { label: "Don't install", value: DENY_VALUE, decision: "decline" },
       ],
     }],
   });

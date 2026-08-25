@@ -22,9 +22,16 @@ import {
  *
  * The theme half is deliberately derived rather than stored twice. The store
  * persists a plugin *id*; the tokens live in the registry entry. So a theme
- * whose plugin was uninstalled — or which has not loaded yet — resolves to
- * nothing and the built-in palette stays in effect, instead of a dangling id
- * painting a half-remembered palette.
+ * whose plugin was uninstalled resolves to nothing and the built-in palette
+ * stays in effect, instead of a dangling id painting a half-remembered palette.
+ *
+ * Deriving it requires a registry that has actually ANSWERED, which is why both
+ * halves here hang off `pluginsLoaded` rather than off the array alone. A load
+ * that failed or raced the plugin host leaves an empty array that means "not
+ * known", not "none installed"; treating it as fact showed the Marketplace zero
+ * installed plugins and repainted the user's theme with the built-in palette,
+ * until an unrelated install event forced the next fetch. A failed load retries
+ * on a capped backoff instead of committing anything.
  */
 
 function themeDefinitionFor(
@@ -41,8 +48,29 @@ function themeDefinitionFor(
   };
 }
 
+/** First retry delay after a failed registry load. */
+export const PLUGIN_REGISTRY_RETRY_BASE_MS = 400;
+/** Ceiling the backoff climbs to and stays at. */
+export const PLUGIN_REGISTRY_RETRY_MAX_MS = 15_000;
+
+/**
+ * Backoff for a registry load that failed.
+ *
+ * It never gives up, and that is deliberate: the failure this exists for is a
+ * boot-time race against a plugin host that is not bound YET, so the state it
+ * is waiting on is one that arrives on its own. Stopping after N tries would
+ * put the app back in the state this fixes — an empty registry nobody asked
+ * for — with the added cost of having spun first. The ceiling is what keeps an
+ * indefinite retry cheap; each attempt is one IPC call.
+ */
+export function pluginRegistryRetryDelayMs(failures: number): number {
+  const attempt = Math.max(1, failures);
+  return Math.min(PLUGIN_REGISTRY_RETRY_MAX_MS, PLUGIN_REGISTRY_RETRY_BASE_MS * 2 ** (attempt - 1));
+}
+
 export function usePluginRegistrySync(): void {
   const plugins = useRootAppStore((state) => state.installedPlugins);
+  const pluginsLoaded = useRootAppStore((state) => state.pluginsLoaded);
   const pluginThemeId = useRootAppStore((state) => state.pluginThemeId);
   // Bumped by the web client whenever its federated adapter swaps target
   // (machine connect, project/tab switch). That swap carries no install or
@@ -52,16 +80,56 @@ export function usePluginRegistrySync(): void {
   const pluginAdapterGeneration = useRootAppStore((state) => state.pluginAdapterGeneration);
 
   React.useEffect(() => {
-    void rootAppStoreApi.getState().refreshInstalledPlugins();
-    return subscribeToPluginChanges((event) => {
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
+
+    const clearRetry = (): void => {
+      if (!retryTimer) return;
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    };
+
+    /**
+     * One load, and a retry armed if it failed.
+     *
+     * A pending retry is cleared first, so a change event arriving mid-backoff
+     * loads NOW rather than queueing a second timer behind the first.
+     */
+    const load = (): void => {
+      clearRetry();
+      void rootAppStoreApi.getState().refreshInstalledPlugins().then((loaded) => {
+        if (cancelled) return;
+        if (loaded) {
+          failures = 0;
+          return;
+        }
+        failures += 1;
+        retryTimer = setTimeout(load, pluginRegistryRetryDelayMs(failures));
+      });
+    };
+
+    load();
+    const unsubscribe = subscribeToPluginChanges((event) => {
       // Panel and collection writes are the panel host's business; the registry
       // only cares about what is installed and whether it is alive.
       if (event.kind !== "installs" && event.kind !== "status") return;
-      void rootAppStoreApi.getState().refreshInstalledPlugins();
+      failures = 0;
+      load();
     });
+    return () => {
+      cancelled = true;
+      clearRetry();
+      unsubscribe();
+    };
   }, [pluginAdapterGeneration]);
 
   React.useEffect(() => {
+    // Nothing to derive from a registry that has not answered yet. Deriving
+    // anyway is what dropped a user's plugin theme at boot: an unloaded
+    // registry is empty, the persisted id matched nothing in it, and the
+    // built-in palette applied as though the theme's plugin were gone.
+    if (!pluginsLoaded) return;
     const next = themeDefinitionFor(plugins, pluginThemeId);
     // The registry hands back a fresh array on every refresh, so this effect
     // re-runs far more often than the applied theme changes. Re-applying an
@@ -71,7 +139,7 @@ export function usePluginRegistrySync(): void {
     // a background poll would have silently reverted it.
     if (isPreviewingPluginTheme() && sameThemeDefinition(appliedPluginTheme(), next)) return;
     applyPluginTheme(next);
-  }, [plugins, pluginThemeId]);
+  }, [plugins, pluginsLoaded, pluginThemeId]);
 }
 
 function sameThemeDefinition(

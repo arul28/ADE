@@ -9,7 +9,7 @@ import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
-import { listInstalledPlugins, type InstalledPlugin } from "../lib/pluginRuntimeBridge";
+import { loadInstalledPlugins, type InstalledPlugin } from "../lib/pluginRuntimeBridge";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
@@ -1207,7 +1207,14 @@ export type AppState = {
   // per-project store would go stale the moment a plugin is installed or
   // enabled, which is exactly when the rail needs to change.
   installedPlugins: InstalledPlugin[];
-  /** False until the first `refreshInstalledPlugins` resolves. */
+  /**
+   * False until a load the store TRUSTS has landed.
+   *
+   * A rejected or raced call does not set it: `installedPlugins` is empty in
+   * that state too, and a reader that could not tell the two apart showed the
+   * Marketplace "0 installed" and dropped the user's plugin theme. Every
+   * consumer therefore gates on this before reading the array as fact.
+   */
   pluginsLoaded: boolean;
   /**
    * Bumped whenever the web client's federated adapter swaps to a different
@@ -1373,8 +1380,12 @@ export type AppState = {
   setPromptStashButtonEnabled: (enabled: boolean) => void;
   /** Replace the registry from a host snapshot. Root store only. */
   setInstalledPlugins: (plugins: InstalledPlugin[]) => void;
-  /** Pull the registry from the host. Resolves even when the host has no plugin surface. */
-  refreshInstalledPlugins: () => Promise<void>;
+  /**
+   * Pull the registry from the host. Resolves true when the answer was
+   * committed — including the confirmed empty a host with no plugin surface
+   * gives — and false when the load failed and the registry was left alone.
+   */
+  refreshInstalledPlugins: () => Promise<boolean>;
   /** See `pluginAdapterGeneration`. */
   bumpPluginAdapterGeneration: () => void;
   setPluginThemeId: (pluginId: string | null) => void;
@@ -2192,11 +2203,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }),
   setInstalledPlugins: (plugins) => set({ installedPlugins: plugins, pluginsLoaded: true }),
   refreshInstalledPlugins: async () => {
-    // `listInstalledPlugins` already absorbs a missing namespace and a rejected
-    // call, so this resolves to an empty registry on a host with no plugin
-    // support rather than leaving `pluginsLoaded` false forever.
-    const plugins = await listInstalledPlugins();
-    set({ installedPlugins: plugins, pluginsLoaded: true });
+    // A host with no plugin namespace resolves as a confirmed empty registry —
+    // it cannot answer and never will — so `pluginsLoaded` still settles there.
+    // A REJECTED call is different, and the difference is the whole point: it
+    // leaves the previous registry and `pluginsLoaded` exactly as they were, so
+    // a failed or raced load cannot be read as "no plugins are installed". The
+    // caller retries; see `usePluginRegistrySync`.
+    const load = await loadInstalledPlugins();
+    if (!load.ok) return false;
+    set({ installedPlugins: load.plugins, pluginsLoaded: true });
+    return true;
   },
   bumpPluginAdapterGeneration: () =>
     set((prev) => ({ pluginAdapterGeneration: prev.pluginAdapterGeneration + 1 })),

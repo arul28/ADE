@@ -501,9 +501,16 @@ struct PluginManifestSocketWire: Decodable, Equatable {
   /// `SyncPluginRecordSocket.menu`. Empty for every kind that is not one of the
   /// action-button kinds, and for the older hosts that send no `menu` at all.
   var menu: [PluginActionMenuEntry] = []
+  /// A declared button's own tint, mirroring `SyncPluginRecordSocket.color`.
+  ///
+  /// Carried loose, like `menu`: the contrast rule is applied once, by
+  /// ``PluginContributionParser/sanitizeActionColor(_:)``, when the declaration
+  /// becomes a payload. Nil for every kind that is not an action button, and for
+  /// the older hosts that send no `color` at all.
+  var color: String?
 
   private enum CodingKeys: String, CodingKey {
-    case socket, surface, id, order, label, icon, panelId, actionId, extensions, filterKey, menu
+    case socket, surface, id, order, label, icon, panelId, actionId, extensions, filterKey, menu, color
   }
 
   init(
@@ -517,7 +524,8 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     actionId: String? = nil,
     extensions: [String] = [],
     filterKey: String? = nil,
-    menu: [PluginActionMenuEntry] = []
+    menu: [PluginActionMenuEntry] = [],
+    color: String? = nil
   ) {
     self.socket = socket
     self.surface = surface
@@ -530,6 +538,7 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     self.extensions = extensions
     self.filterKey = filterKey
     self.menu = menu
+    self.color = color
   }
 
   init(from decoder: Decoder) throws {
@@ -552,5 +561,6 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     // Whole-array `try?`: a menu whose JSON this build cannot read costs the
     // declaration its extra actions, never its primary one.
     menu = (try? container.decodeIfPresent([PluginActionMenuEntry].self, forKey: .menu)) ?? [] ?? []
+    color = (try? container.decodeIfPresent(String.self, forKey: .color)) ?? nil
   }
 }

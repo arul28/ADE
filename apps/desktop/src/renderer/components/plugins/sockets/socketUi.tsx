@@ -23,6 +23,50 @@ export const SOCKET_TONE_COLOR: Record<PluginBadgeTone, string> = {
   warning: COLORS.warning,
 };
 
+/**
+ * A button's declared tint, spent the way `SocketBadge` already spends a tone.
+ *
+ * The colour reaches the label, the icon (which inherits `currentColor`) and a
+ * hairline border, over a fill at 12% — a plugin gets a button that is visibly
+ * ITS button, not a block of brand colour sitting in ADE's chrome. The same
+ * three percentages as the badge, so a plugin's tinted button and its tinted
+ * badge on the row below read as the same object.
+ *
+ * `null` in, nothing out: the caller spreads `{}` and keeps every class it
+ * already had. The colour itself was proven legible against both themes by
+ * `sanitizePluginActionColor` before it ever became a payload field, so there
+ * is nothing left for this function to judge.
+ */
+export function socketTintStyle(color: string | null | undefined): React.CSSProperties {
+  if (!color) return {};
+  return {
+    color,
+    background: `color-mix(in srgb, ${color} 12%, transparent)`,
+    borderColor: `color-mix(in srgb, ${color} 34%, transparent)`,
+  };
+}
+
+/**
+ * The two halves of a split button, joined.
+ *
+ * The alpha test read "Take a drink" and its chevron as two detached pills,
+ * because they were: two independently bordered controls with a flex `gap`
+ * between them. They are one control — one contribution, one busy state, one
+ * primary press — so they get one outline, and the seam between them is the
+ * chevron's own left border rather than a gap.
+ *
+ * A wrapper rather than a class on each caller because the joint is a LAYOUT
+ * fact (no gap, shared baseline) that has to survive whatever chrome the three
+ * button kinds wear. `PluginToolbarActions` had already built this inline; this
+ * is that arrangement made shared so the composer and the chat header cannot
+ * drift back apart.
+ */
+export function SocketSplitGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center" }}>{children}</span>
+  );
+}
+
 /** A plugin's declared icon, or the puzzle-piece default. */
 export function SocketIcon({ name, size = 11, color }: { name?: string; size?: number; color?: string }) {
   const Icon = pluginIcon(name);
@@ -167,7 +211,7 @@ export function SocketButton({
   disabled?: boolean;
   onClick: () => void;
   dataTour?: string;
-  /** Overrides, for the one caller that butts a split-menu chevron against it. */
+  /** Overrides: the split-button joint, and a plugin's own sanitized tint. */
   style?: React.CSSProperties;
 }) {
   return (
@@ -273,6 +317,7 @@ export function SocketSplitMenu({
               <div>
                 <SocketMenuRow
                   label={item.label}
+                  {...(item.icon ? { icon: item.icon } : {})}
                   {...(item.danger ? { danger: true } : {})}
                   onClick={() => onSelect(item)}
                 />
@@ -307,6 +352,7 @@ export function SocketMenuSubRows({
         <SocketMenuRow
           key={`${item.actionId} ${item.label}`}
           label={item.label}
+          {...(item.icon ? { icon: item.icon } : {})}
           {...(item.danger ? { danger: true } : {})}
           onClick={() => onSelect(item)}
         />

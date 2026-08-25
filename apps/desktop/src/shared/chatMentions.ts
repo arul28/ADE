@@ -30,10 +30,17 @@ const PREFIX_TO_KIND: Record<string, ChatMentionKind> = Object.fromEntries(
 
 const TOKEN_PREFIX_ALTERNATION = Object.values(CHAT_MENTION_TOKEN_PREFIX).join("|");
 
-/** Canonical kind order (menu sections, suggestion payloads, mocks). */
+/** Canonical kind order (suggestion payloads, mocks). */
 export const CHAT_MENTION_KINDS = Object.keys(CHAT_MENTION_TOKEN_PREFIX) as ChatMentionKind[];
 
-/** Max rows the suggestion action will ever return for a single kind. */
+/** Max rows the @ menu returns after mixing files, chats, lanes, and terminals. */
+export const CHAT_MENTION_MAX_RESULTS = 16;
+
+/**
+ * Per-source fetch budget before the mixed ranker runs. Kept so a single
+ * noisy kind cannot starve the candidate pool of other kinds, while the
+ * visible list is still ordered by match quality rather than kind.
+ */
 export const CHAT_MENTION_MAX_PER_KIND = 8;
 
 /** Hard cap on the preview body of a single expansion block, in characters. */
@@ -64,6 +71,15 @@ const MENTION_TOKEN_BODY_RE = new RegExp(
  */
 export function isChatMentionTokenBody(body: string): boolean {
   return MENTION_TOKEN_BODY_RE.test(body);
+}
+
+/** Kind encoded in a chip token such as `@chat:abc` or `lane:xyz`. */
+export function chatMentionKindFromToken(token: string): ChatMentionKind | null {
+  const body = token.startsWith("@") ? token.slice(1) : token;
+  const separator = body.indexOf(":");
+  if (separator <= 0) return null;
+  if (!MENTION_TOKEN_BODY_RE.test(body)) return null;
+  return PREFIX_TO_KIND[body.slice(0, separator)] ?? null;
 }
 
 export type ParsedChatMention = {
@@ -244,7 +260,7 @@ export function carryChatMentionBlocks(source: string, target: string): string {
  * `null` means "no match, drop the row". Mirrors the tiering the ⌘K palette
  * uses: exact > prefix > substring > subsequence.
  */
-type ChatMentionMatch = {
+export type ChatMentionMatch = {
   score: number;
   /** Length of a confirmed title prefix, used to prefer the longest label. */
   titlePrefixLength: number;
@@ -277,42 +293,53 @@ function scoreChatMentionMatch(
   return { score: 3, titlePrefixLength: 0 };
 }
 
+/** Score one title/subtitle pair. `null` means the query does not match. */
+export function scoreChatMentionCandidate(
+  item: { title: string; subtitle?: string },
+  query: string,
+): ChatMentionMatch | null {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed.length) return { score: 0, titlePrefixLength: 0 };
+  const titleScore = scoreChatMentionMatch(item.title, trimmed, true);
+  const subtitleScore = item.subtitle
+    ? scoreChatMentionMatch(item.subtitle, trimmed)
+    : null;
+  // A subtitle hit is always weaker than any title hit.
+  return titleScore ?? (subtitleScore === null
+    ? null
+    : { score: subtitleScore.score + 4, titlePrefixLength: 0 });
+}
+
+export function compareChatMentionRanks<T extends { id: string; lastActivityAt?: number | null }>(
+  a: { item: T; score: number; titlePrefixLength: number },
+  b: { item: T; score: number; titlePrefixLength: number },
+): number {
+  if (a.score !== b.score) return a.score - b.score;
+  if (a.titlePrefixLength !== b.titlePrefixLength) {
+    return b.titlePrefixLength - a.titlePrefixLength;
+  }
+  const aAt = a.item.lastActivityAt ?? 0;
+  const bAt = b.item.lastActivityAt ?? 0;
+  if (aAt !== bAt) return bAt - aAt;
+  return a.item.id < b.item.id ? -1 : a.item.id > b.item.id ? 1 : 0;
+}
+
 /**
- * Rank suggestions for one kind: recency-first for an empty query, fuzzy match
+ * Rank suggestions across kinds: recency-first for an empty query, fuzzy match
  * tier + recency tie-break when typing. Deterministic (id asc) as a final
- * tie-break so repeated keystrokes never reshuffle equal rows.
+ * tie-break so repeated keystrokes never reshuffle equal rows. Callers mix
+ * files with chats/lanes/terminals and pass one list — kind is not a sort key.
  */
 export function rankChatMentionSuggestions<
   T extends { id: string; title: string; subtitle?: string; lastActivityAt?: number | null },
 >(candidates: T[], query: string, limit: number): T[] {
-  const trimmed = query.trim().toLowerCase();
   const scored: Array<{ item: T; score: number; titlePrefixLength: number }> = [];
   for (const item of candidates) {
-    if (!trimmed.length) {
-      scored.push({ item, score: 0, titlePrefixLength: 0 });
-      continue;
-    }
-    const titleScore = scoreChatMentionMatch(item.title, trimmed, true);
-    const subtitleScore = item.subtitle
-      ? scoreChatMentionMatch(item.subtitle, trimmed)
-      : null;
-    // A subtitle hit is always weaker than any title hit.
-    const match = titleScore ?? (subtitleScore === null
-      ? null
-      : { score: subtitleScore.score + 4, titlePrefixLength: 0 });
+    const match = scoreChatMentionCandidate(item, query);
     if (match === null) continue;
     scored.push({ item, score: match.score, titlePrefixLength: match.titlePrefixLength });
   }
-  scored.sort((a, b) => {
-    if (a.score !== b.score) return a.score - b.score;
-    if (a.titlePrefixLength !== b.titlePrefixLength) {
-      return b.titlePrefixLength - a.titlePrefixLength;
-    }
-    const aAt = a.item.lastActivityAt ?? 0;
-    const bAt = b.item.lastActivityAt ?? 0;
-    if (aAt !== bAt) return bAt - aAt;
-    return a.item.id < b.item.id ? -1 : a.item.id > b.item.id ? 1 : 0;
-  });
+  scored.sort(compareChatMentionRanks);
   return scored.slice(0, Math.max(0, limit)).map((entry) => entry.item);
 }
 

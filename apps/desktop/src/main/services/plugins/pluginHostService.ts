@@ -8,6 +8,7 @@ import {
 import { getPluginPresenceService } from "../../../../../ade-cli/src/services/plugins/pluginPresenceService";
 import type { PluginSyncMeter } from "../../../../../ade-cli/src/services/plugins/pluginSyncMeter";
 import {
+  deletePluginPresenceForPlugin,
   readAllPluginPresence,
   readPluginContributions,
   type PluginPresenceRow,
@@ -25,7 +26,7 @@ import {
   type PluginManifest,
   type PluginManifestSetting,
 } from "../../../shared/plugins/manifest";
-import { writeTextAtomic } from "../shared/utils";
+import { nowIso, writeTextAtomic } from "../shared/utils";
 import { isRecord } from "../../../shared/plugins/parse";
 import { pluginActionIsFullyDisabled } from "../../../shared/plugins/disabledContributions";
 import {
@@ -34,6 +35,7 @@ import {
   isPluginEventName,
   isPluginRuntimeHookName,
   PluginSdkError,
+  type PluginActionInvokeRecord,
   type PluginAudioClip,
   type PluginRuntimeHookName,
   type PluginRuntimeHookPayload,
@@ -558,6 +560,10 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
    * exactly as thoroughly as one run from this desktop's own UI.
    */
   const cleanupUninstalledPluginData = async (pluginId: string): Promise<void> => {
+    // The invoke history goes with the install. A reinstall that inherited the
+    // old plugin's last-run line would answer "yes, it ran" about code that is
+    // no longer on the machine.
+    lastInvokes.delete(pluginId);
     // Rows outlive the install otherwise: `plugin_collections` is keyed by
     // plugin id and nothing else would ever collect them.
     for (const attached of projects.values()) {
@@ -569,6 +575,32 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           projectId: attached.binding.projectId,
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+    }
+    // This machine's presence row for the plugin, in every attached project.
+    //
+    // Not covered by the republish `uninstall` already runs: that publishes
+    // through the presence service, which holds ONE project's database — the
+    // scope that happened to bind it last — while presence rows exist in every
+    // project database this machine has attached. Rows left behind are the one
+    // kind of leftover another COMPUTER can see: the coverage matrix reads them
+    // and reports this machine as still having the plugin, enabled, forever.
+    //
+    // Keyed by this machine's own key. An uninstall here is a statement about
+    // this computer only, and a sweep by plugin id alone would delete peers'
+    // rows — asserting something about machines that never uninstalled.
+    const localMachineKey = machine.localMachineKey?.() ?? null;
+    if (localMachineKey) {
+      for (const attached of projects.values()) {
+        try {
+          deletePluginPresenceForPlugin(attached.binding.db, localMachineKey, pluginId);
+        } catch (error) {
+          logger.warn("plugin.presence_cleanup_failed", {
+            pluginId,
+            projectId: attached.binding.projectId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     }
     // The automation ingress log this plugin's firings wrote. Same reasoning
@@ -710,6 +742,55 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
    * problem the single `plugin` action domain does not yet express.
    */
   const activeProjectByPlugin = new Map<string, string>();
+  /**
+   * The last invoke attempt per plugin, per action.
+   *
+   * The gap this closes: a contribution that published no rows and a
+   * contribution whose action was never reached both looked identical from
+   * outside the host — `ade plugin doctor` could only say "0 rows published
+   * right now" for either, so "I pressed it and nothing happened" cost a manual
+   * reproduction before anyone could tell which half was broken.
+   *
+   * In memory, and that is the honest scope: this answers "since ADE started",
+   * which is the window a person debugging a press is asking about. Persisting
+   * it would put a write on the hot path of every agent tool call to buy an
+   * answer nobody asks after a restart.
+   *
+   * Bounded per plugin, oldest action evicted, because a plugin's action names
+   * come from its own manifest and its own CLI words — a plugin that generates
+   * them would otherwise grow this map for as long as ADE runs.
+   */
+  const lastInvokes = new Map<string, Map<string, PluginActionInvokeRecord>>();
+  const PLUGIN_LAST_INVOKE_MAX_ACTIONS = 32;
+
+  const recordInvoke = (pluginId: string, action: string, errorCode: string | null): void => {
+    let byAction = lastInvokes.get(pluginId);
+    if (!byAction) {
+      byAction = new Map<string, PluginActionInvokeRecord>();
+      lastInvokes.set(pluginId, byAction);
+    }
+    // Deleted before it is set so a repeat invoke moves to the END of the
+    // insertion order: eviction below drops the least recently ATTEMPTED
+    // action, which a plain size check would not do for a hot action inserted
+    // long ago.
+    byAction.delete(action);
+    byAction.set(action, {
+      action,
+      at: nowIso(),
+      ok: errorCode === null,
+      ...(errorCode === null ? {} : { errorCode }),
+    });
+    while (byAction.size > PLUGIN_LAST_INVOKE_MAX_ACTIONS) {
+      const oldest = byAction.keys().next();
+      if (oldest.done) break;
+      byAction.delete(oldest.value);
+    }
+  };
+
+  /** Newest attempt first, which is the order a reader scans it in. */
+  const lastInvokesFor = (pluginId: string): PluginActionInvokeRecord[] =>
+    [...(lastInvokes.get(pluginId)?.values() ?? [])].reverse();
+
   let disposed = false;
 
   /** Any attached project, for callers with no reason to prefer one. */
@@ -1070,6 +1151,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       config: configFor(installed.record.pluginId, installed.manifest),
       root: installed.root,
       logs: supervisor ? supervisor.logs() : ([] as PluginLogEntry[]),
+      lastInvokes: lastInvokesFor(installed.record.pluginId),
     };
   };
 
@@ -1084,6 +1166,59 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       }
       return value;
     };
+
+    /**
+     * One invoke, from the gates through to the child's answer.
+     *
+     * Split out of `invoke` only so the attempt can be recorded around ALL of
+     * it — a refusal is an attempt someone is trying to account for, and one
+     * recorded only where the child answers reports "switched off" as though
+     * nothing ever fired.
+     */
+    const runInvoke = async (
+      pluginId: string,
+      action: string,
+      invokeArgs: { args?: Record<string, unknown>; argv?: string[]; timeoutMs?: number },
+    ): Promise<unknown> => {
+      const installed = requireInstalled(pluginId);
+      if (!installed.record.enabled) {
+        throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
+      }
+      if (!installed.manifest || !pluginHasRuntimeEntry(installed.manifest)) {
+        throw new PluginSdkError("plugin_no_entry", `Plugin "${pluginId}" ships no runtime entry.`);
+      }
+      // The per-contribution toggle has to hold HERE, not only where the
+      // contribution is drawn. A menu that hides a disabled item stops one
+      // route to the action; every other client, the phone, the CLI and a
+      // stale renderer all reach this method directly, so a toggle enforced
+      // only in the menu is a suggestion. See `pluginActionIsFullyDisabled`
+      // for why a single disabled contribution is not enough to refuse.
+      if (pluginActionIsFullyDisabled(
+        installed.manifest,
+        installed.record.disabledContributions,
+        action,
+      )) {
+        throw new PluginSdkError(
+          "not_permitted",
+          `"${action}" is turned off for ${installed.manifest.displayName || pluginId} in its plugin settings.`,
+        );
+      }
+      if (projectId) activeProjectByPlugin.set(pluginId, projectId);
+      const supervisor = ensureSupervisor(installed);
+      // Clamped again rather than trusted from the caller: this service is
+      // also reached from the phone and the CLI, which do not go through the
+      // desktop's preload normalizer.
+      const timeoutMs = clampPluginInvokeTimeoutMs(invokeArgs.timeoutMs);
+      return await supervisor.invoke(
+        action,
+        {
+          ...(invokeArgs.args ?? {}),
+          ...(invokeArgs.argv ? { argv: invokeArgs.argv } : {}),
+        },
+        timeoutMs ? { timeoutMs } : undefined,
+      );
+    };
+
     return {
       async invoke(invokeArgs) {
         const pluginId = invokeArgs?.pluginId;
@@ -1094,43 +1229,14 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         if (typeof action !== "string" || !action) {
           throw new PluginSdkError("invalid_args", '"action" is required.');
         }
-        const installed = requireInstalled(pluginId);
-        if (!installed.record.enabled) {
-          throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
+        try {
+          const result = await runInvoke(pluginId, action, invokeArgs);
+          recordInvoke(pluginId, action, null);
+          return result;
+        } catch (error) {
+          recordInvoke(pluginId, action, error instanceof PluginSdkError ? error.code : "plugin_error");
+          throw error;
         }
-        if (!installed.manifest || !pluginHasRuntimeEntry(installed.manifest)) {
-          throw new PluginSdkError("plugin_no_entry", `Plugin "${pluginId}" ships no runtime entry.`);
-        }
-        // The per-contribution toggle has to hold HERE, not only where the
-        // contribution is drawn. A menu that hides a disabled item stops one
-        // route to the action; every other client, the phone, the CLI and a
-        // stale renderer all reach this method directly, so a toggle enforced
-        // only in the menu is a suggestion. See `pluginActionIsFullyDisabled`
-        // for why a single disabled contribution is not enough to refuse.
-        if (pluginActionIsFullyDisabled(
-          installed.manifest,
-          installed.record.disabledContributions,
-          action,
-        )) {
-          throw new PluginSdkError(
-            "not_permitted",
-            `"${action}" is turned off for ${installed.manifest.displayName || pluginId} in its plugin settings.`,
-          );
-        }
-        if (projectId) activeProjectByPlugin.set(pluginId, projectId);
-        const supervisor = ensureSupervisor(installed);
-        // Clamped again rather than trusted from the caller: this service is
-        // also reached from the phone and the CLI, which do not go through the
-        // desktop's preload normalizer.
-        const timeoutMs = clampPluginInvokeTimeoutMs(invokeArgs.timeoutMs);
-        return await supervisor.invoke(
-          action,
-          {
-            ...(invokeArgs.args ?? {}),
-            ...(invokeArgs.argv ? { argv: invokeArgs.argv } : {}),
-          },
-          timeoutMs ? { timeoutMs } : undefined,
-        );
       },
 
       async list(listArgs) {

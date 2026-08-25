@@ -10,7 +10,9 @@ import {
   SocketMenuRow,
   SocketMenuSubRows,
   SocketOverflow,
+  SocketSplitGroup,
   SocketSplitMenu,
+  socketTintStyle,
 } from "./socketUi";
 import { COLORS, RADII } from "../../lanes/laneDesignTokens";
 
@@ -92,13 +94,17 @@ export function PluginToolbarActions({
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, ...style }}>
       {visible.map((contribution) => {
         const menu = contribution.payload.menu ?? [];
+        // A toolbar action has no busy state to compete with, so the tint is
+        // unconditional here — unlike the composer and chat-header buttons,
+        // where the platform's running chrome takes the control back.
+        const tint = socketTintStyle(contribution.payload.color);
         const button = (
           <SocketButton
             dataTour={dataTour}
             label={contribution.payload.label}
             {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
             {...(contribution.payload.disabled ? { disabled: true } : {})}
-            {...(menu.length > 0 ? { style: SPLIT_BUTTON_STYLE } : {})}
+            style={{ ...(menu.length > 0 ? SPLIT_BUTTON_STYLE : {}), ...tint }}
             onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
           />
         );
@@ -107,16 +113,16 @@ export function PluginToolbarActions({
             {/* No menu, no wrapper: a plain button renders exactly what it
                 rendered before the field existed. */}
             {menu.length === 0 ? button : (
-              <span style={{ display: "inline-flex", alignItems: "center" }}>
+              <SocketSplitGroup>
                 {button}
                 <SocketSplitMenu
                   items={menu}
                   label={contribution.payload.label}
                   dataTour={`${dataTour}-menu`}
-                  style={SPLIT_CHEVRON_STYLE}
+                  style={{ ...SPLIT_CHEVRON_STYLE, ...tint }}
                   onSelect={(item) => invoke(contribution.pluginId, item.actionId, resolvedContext)}
                 />
-              </span>
+              </SocketSplitGroup>
             )}
           </SocketBoundary>
         );

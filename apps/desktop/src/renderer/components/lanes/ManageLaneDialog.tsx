@@ -31,6 +31,16 @@ import type {
   LaneSummary,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { LaneDialogShell } from "./LaneDialogShell";
+import {
+  LABEL_CLASS_NAME,
+  INPUT_CLASS_NAME,
+  SELECT_CLASS_NAME
+} from "./laneDialogTokens";
+import { LaneColorPicker } from "./LaneColorPicker";
+import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
+import { PluginDialogSections, reportPluginDialogRefusal } from "../plugins/sockets";
+import type { PluginDialogField } from "../../../shared/plugins/sockets";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -48,16 +58,6 @@ export const EMPTY_LANE_DELETE_SELECTION: LaneDeleteSelection = {
 function laneDeleteSelectionHasAny(selection: LaneDeleteSelection): boolean {
   return selection.worktree || selection.localBranch || selection.remoteBranch;
 }
-import { LaneDialogShell } from "./LaneDialogShell";
-import { PluginDialogSections, reportPluginDialogRefusal } from "../plugins/sockets";
-import type { PluginDialogField } from "../../../shared/plugins/sockets";
-import {
-  LABEL_CLASS_NAME,
-  INPUT_CLASS_NAME,
-  SELECT_CLASS_NAME
-} from "./laneDialogTokens";
-import { LaneColorPicker } from "./LaneColorPicker";
-import { colorsInUse, laneColorName } from "./laneColorPalette";
 
 function formatBytesCompact(bytes: number): string {
   const safe = Math.max(0, bytes);
@@ -86,14 +86,17 @@ const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   database_cleanup: "Updating database"
 };
 
+const MANAGE_LANE_TITLE_CLASS = "truncate text-xl font-semibold tracking-tight sm:text-2xl";
+
 /**
  * A dialog field a contributed section may prefill, and how to write it.
  *
  * Manage-lane's three writable fields live in two sub-components with their own
- * local state — the rename control and the restack panel — so the dialog cannot
- * write them directly. Each registers its own setter here instead, and the
- * dialog routes a `{dialog:{setField}}` response to whichever is on screen.
- * Returning `false` from a setter means the control refused the value.
+ * local state — the rename control in the dialog title and the restack panel —
+ * so the dialog cannot write them directly. Each registers its own setter here
+ * instead, and the dialog routes a `{dialog:{setField}}` response to whichever
+ * is on screen. Returning `false` from a setter means the control refused the
+ * value.
  */
 type ManageLanePluginFieldRegister = (
   field: PluginDialogField<"manage-lane">,
@@ -105,12 +108,14 @@ function ManageLaneRenameControls({
   allLanes,
   onRenamed,
   runtimePin,
+  nameColor,
   registerPluginField,
 }: {
   lane: LaneSummary;
   allLanes: LaneSummary[];
   onRenamed?: () => void | Promise<void>;
   runtimePin?: OpenProjectBinding | null;
+  nameColor: string;
   registerPluginField?: ManageLanePluginFieldRegister;
 }) {
   const [editing, setEditing] = useState(false);
@@ -175,14 +180,14 @@ function ManageLaneRenameControls({
 
   if (!canRename) {
     return (
-      <span className="text-base font-semibold tracking-tight text-accent">{lane.name}</span>
+      <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{lane.name}</span>
     );
   }
 
   if (!editing) {
     return (
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="truncate text-base font-semibold tracking-tight text-accent">{lane.name}</span>
+        <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{lane.name}</span>
         <button
           type="button"
           aria-label="Rename lane"
@@ -251,22 +256,13 @@ function ManageLaneRenameControls({
 function ManageLaneHeaderDetails({
   lanes,
   isBatch,
-  allLanes,
-  onRenamed,
-  runtimePin,
-  registerPluginField,
 }: {
   lanes: LaneSummary[];
   isBatch: boolean;
-  allLanes: LaneSummary[];
-  onRenamed?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
-  registerPluginField?: ManageLanePluginFieldRegister;
 }) {
   if (isBatch) {
     return (
       <div data-tour="lanes.manageDialog.laneInfo" className="space-y-2">
-        <div className="text-xs text-muted-fg/80">{lanes.length} lanes selected</div>
         <div className="max-h-[min(28vh,160px)] space-y-1.5 overflow-y-auto pr-1">
           {lanes.map((lane) => (
             <div key={lane.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
@@ -294,22 +290,12 @@ function ManageLaneHeaderDetails({
 
   return (
     <div data-tour="lanes.manageDialog.laneInfo" className="min-w-0">
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <LaneIcon size={14} weight="duotone" className="shrink-0 text-accent/80" />
-        <ManageLaneRenameControls
-          lane={lane}
-          allLanes={allLanes}
-          onRenamed={onRenamed}
-          runtimePin={runtimePin}
-          {...(registerPluginField ? { registerPluginField } : {})}
-        />
-        {lane.status.dirty ? (
-          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
-            dirty
-          </span>
-        ) : null}
-      </div>
-      <dl className="mt-2.5 space-y-1.5 text-xs">
+      {lane.status.dirty ? (
+        <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
+          dirty
+        </span>
+      ) : null}
+      <dl className={`space-y-1.5 text-xs${lane.status.dirty ? " mt-2.5" : ""}`}>
         <div className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5">
           <dt className="text-muted-fg/60">Branch</dt>
           <dd className="min-w-0 truncate font-mono text-fg/85">{lane.branchRef}</dd>
@@ -667,9 +653,28 @@ export function ManageLaneDialog({
           <ManageLaneHeaderDetails
             lanes={lanes}
             isBatch={isBatch}
+          />
+        )
+      : undefined;
+
+  const laneAccent = singleLane
+    ? getLaneAccent(singleLane, Math.max(0, allLanes.findIndex((candidate) => candidate.id === singleLane.id)))
+    : undefined;
+  const dialogTitle = isBatch
+    ? `${lanes.length} lanes`
+    : singleLane?.name ?? "Lane";
+  const titleContent = isBatch
+    ? (
+        <span className={MANAGE_LANE_TITLE_CLASS}>{dialogTitle}</span>
+      )
+    : singleLane && laneAccent
+      ? (
+          <ManageLaneRenameControls
+            lane={singleLane}
             allLanes={allLanes}
             onRenamed={onAppearanceChanged}
             runtimePin={runtimePin}
+            nameColor={laneAccent}
             registerPluginField={registerPluginField}
           />
         )
@@ -679,8 +684,8 @@ export function ManageLaneDialog({
     <LaneDialogShell
       open={open}
       onOpenChange={onOpenChange}
-      title={isBatch ? `Manage ${lanes.length} Lanes` : "Manage Lane"}
-      icon={LaneIcon}
+      title={dialogTitle}
+      titleContent={titleContent}
       headerExtra={headerExtra}
       widthClassName="w-[calc(100vw-1rem)] max-w-[720px] sm:max-w-[min(720px,calc(100vw-2rem))]"
       busy={laneActionBusy}
@@ -980,59 +985,55 @@ function DeleteTargetChecklist({
   ];
 
   return (
-    <div
-      data-tour="lanes.manageDialog.tabs"
-      className="mt-4 overflow-hidden rounded-xl border border-white/[0.08] bg-black/25"
-    >
+    <div data-tour="lanes.manageDialog.tabs" className="mt-4 space-y-2">
       <button
         type="button"
         disabled={disabled}
         onClick={onToggleAll}
         aria-pressed={allSelected}
-        className="flex w-full items-center gap-3 border-b border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-left transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-60"
+        className="flex h-8 w-full items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-left transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
       >
         <DeleteCheckbox checked={allSelected} indeterminate={someSelected && !allSelected} />
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-semibold text-fg">Select everything</div>
-          <div className="text-[11px] text-muted-fg/60">Worktree, local &amp; remote branch</div>
-        </div>
+        <div className="min-w-0 flex-1 text-[11px] font-medium text-fg">Select everything</div>
         {allSelected ? (
-          <span className="shrink-0 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-200">All</span>
+          <span className="shrink-0 rounded-full bg-red-500/15 px-1.5 py-px text-[10px] font-medium text-red-200">All</span>
         ) : null}
       </button>
 
-      <div className="divide-y divide-white/[0.04]">
-        {rows.map((row) => {
-          const checked = selection[row.key];
-          return (
-            <button
-              key={row.key}
-              type="button"
-              role="checkbox"
-              aria-checked={checked}
-              disabled={disabled}
-              onClick={() => onToggle(row.key, !checked)}
-              className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                checked ? "bg-red-500/[0.08]" : "hover:bg-white/[0.03]"
-              }`}
-            >
-              <DeleteCheckbox checked={checked} />
-              <span
-                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
-                  checked
-                    ? "border-red-400/30 bg-red-500/15 text-red-200"
-                    : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70"
+      <div className="ml-3 overflow-hidden rounded-xl border border-white/[0.08] bg-black/25">
+        <div className="divide-y divide-white/[0.04]">
+          {rows.map((row) => {
+            const checked = selection[row.key];
+            return (
+              <button
+                key={row.key}
+                type="button"
+                role="checkbox"
+                aria-checked={checked}
+                disabled={disabled}
+                onClick={() => onToggle(row.key, !checked)}
+                className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  checked ? "bg-red-500/[0.08]" : "hover:bg-white/[0.03]"
                 }`}
               >
-                {row.icon}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className={`block text-xs font-medium ${checked ? "text-red-100" : "text-fg"}`}>{row.title}</span>
-                <span className={`block truncate text-[11px] text-muted-fg/60 ${row.mono ? "font-mono" : ""}`}>{row.hint}</span>
-              </span>
-            </button>
-          );
-        })}
+                <DeleteCheckbox checked={checked} />
+                <span
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
+                    checked
+                      ? "border-red-400/30 bg-red-500/15 text-red-200"
+                      : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70"
+                  }`}
+                >
+                  {row.icon}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className={`block text-xs font-medium ${checked ? "text-red-100" : "text-fg"}`}>{row.title}</span>
+                  <span className={`block truncate text-[11px] text-muted-fg/60 ${row.mono ? "font-mono" : ""}`}>{row.hint}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

@@ -12,6 +12,7 @@ import {
 } from "../../../../desktop/src/main/services/state/dbMaintenanceApi";
 import {
   deletePluginCollectionValue,
+  deletePluginPresenceForPlugin,
   isPluginBudgetExceeded,
   publishPluginContribution,
   putPluginCollectionValue,
@@ -470,5 +471,57 @@ describe("plugin table writers", () => {
     replacePluginPresenceForMachine(db, "machine-b", rows, NOW);
     expect(forMachine("machine-b")).toHaveLength(2);
     expect(forMachine("machine-a")).toHaveLength(1);
+  });
+
+  /**
+   * Uninstall's counterpart. These rows are the one leftover another COMPUTER
+   * can see: a surviving row reports this machine as still having the plugin
+   * enabled, which is exactly what the coverage matrix is built to avoid.
+   */
+  it("removes one machine's presence row for an uninstalled plugin and leaves the rest", () => {
+    const rows = [
+      { pluginId: "graph", version: "1.0.0", enabled: true, displayName: "Graph", icon: "graph", accent: "#000" },
+      { pluginId: "video", version: "2.0.0", enabled: true, displayName: "Video", icon: "play", accent: "#111" },
+    ];
+    const forMachine = (machineKey: string) =>
+      readAllPluginPresence(db).filter((row) => row.machineKey === machineKey);
+    replacePluginPresenceForMachine(db, "machine-a", rows, NOW);
+    replacePluginPresenceForMachine(db, "machine-b", rows, NOW);
+
+    expect(deletePluginPresenceForPlugin(db, "machine-a", "graph")).toBe(1);
+    expect(forMachine("machine-a").map((row) => row.pluginId)).toEqual(["video"]);
+    // Uninstalling here says nothing about the other machine's installs.
+    expect(forMachine("machine-b")).toHaveLength(2);
+
+    // Idempotent: the remote-command adapter and the local action both clean up.
+    expect(deletePluginPresenceForPlugin(db, "machine-a", "graph")).toBe(0);
+    // An unpaired machine has no key, and a blank one must not sweep by plugin.
+    expect(deletePluginPresenceForPlugin(db, "", "video")).toBe(0);
+    expect(forMachine("machine-a")).toHaveLength(1);
+    expect(forMachine("machine-b")).toHaveLength(2);
+  });
+
+  /**
+   * The delete has to REPLICATE, not just disappear locally: a peer that never
+   * receives it keeps showing the plugin as present on this machine. On a CRR
+   * a delete is a change like any other, and `crsql_changes` is where that is
+   * visible — so this asserts the mechanism, not just the local row count.
+   */
+  it("records the presence delete as a replicated change", () => {
+    replacePluginPresenceForMachine(
+      db,
+      "machine-a",
+      [{ pluginId: "graph", version: "1.0.0", enabled: true, displayName: "Graph", icon: "graph", accent: "#000" }],
+      NOW,
+    );
+    const changesFor = (): number => db.get<{ count: number }>(
+      "select count(*) as count from crsql_changes where \"table\" = 'plugin_presence'",
+    )?.count ?? 0;
+    const before = changesFor();
+
+    deletePluginPresenceForPlugin(db, "machine-a", "graph");
+
+    expect(changesFor()).toBeGreaterThan(0);
+    expect(changesFor()).not.toBe(before);
   });
 });

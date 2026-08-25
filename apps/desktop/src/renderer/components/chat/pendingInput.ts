@@ -36,6 +36,14 @@ function readPendingInputOption(value: unknown): PendingInputOption | null {
     ...(record.previewFormat === "html" || record.previewFormat === "markdown"
       ? { previewFormat: record.previewFormat }
       : {}),
+    // Only the four decisions the approval card can send. An unknown string
+    // would reach `onApproval` verbatim and be answered as nothing.
+    ...(record.decision === "accept"
+      || record.decision === "accept_for_session"
+      || record.decision === "decline"
+      || record.decision === "cancel"
+      ? { decision: record.decision }
+      : {}),
   };
 }
 

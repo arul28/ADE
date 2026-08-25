@@ -1551,12 +1551,43 @@ export type PluginPanelRecord = {
   updatedAt: string | null;
 };
 
+/**
+ * The last time one plugin action was asked to run on this machine.
+ *
+ * Kept because "nothing happened when I pressed it" had no answer: a socket
+ * that published no rows and a socket whose action never fired both read as
+ * "0 rows published right now", so the only way to tell them apart was to
+ * reproduce the press by hand. One row per action says which of the two it is.
+ *
+ * Every route is recorded — a press, a CLI word, an agent tool, a schedule —
+ * because they all funnel through the one `plugin.invoke` the host owns. A
+ * REFUSED invoke counts as an attempt and carries its code: "the action is
+ * switched off" is the answer someone is looking for at that moment, and
+ * dropping it would leave the same silence this exists to break.
+ */
+export type PluginActionInvokeRecord = {
+  action: string;
+  /** ISO timestamp of the attempt. */
+  at: string;
+  ok: boolean;
+  /** The `PluginSdkError` code, when the attempt failed. Absent when it did not. */
+  errorCode?: string;
+};
+
 export type PluginDetail = PluginSummary & {
   manifest: PluginManifest | null;
   settings: PluginManifestSetting[];
   config: Record<string, string | number | boolean | null>;
   root: string;
   logs: PluginLogEntry[];
+  /**
+   * The most recent attempt per action, newest first, since ADE started.
+   *
+   * Optional on the wire for the usual reason: a host that predates the field
+   * reports the plugin without it, and a client must then say it cannot tell
+   * rather than draw "never run" over a host that simply never counted.
+   */
+  lastInvokes?: PluginActionInvokeRecord[];
 };
 
 export type PluginLogEntry = {
