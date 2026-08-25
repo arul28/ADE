@@ -2,7 +2,7 @@ import SwiftUI
 import XCTest
 @testable import ADE
 
-/// Equivalence tests for the tail-only streaming markdown parser: replaying a
+/// Equivalence tests for the bounded streaming markdown parser: replaying a
 /// document as a stream of appended deltas must produce, at EVERY snapshot,
 /// exactly the same blocks (kinds and ids) as the whole-text parser.
 final class WorkMarkdownStreamingParsingTests: XCTestCase {
@@ -142,7 +142,7 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
     assertStreamingMatchesFullParse(text, deltaSizes: [2, 5])
   }
 
-  /// An oversized paragraph becomes several blocks, and the tail-only parser
+  /// An oversized paragraph becomes several blocks, and the bounded parser
   /// has to agree with the whole-text parser about every one of them. It can:
   /// the split is a function of one paragraph's text, and a paragraph never
   /// crosses the blank line the streaming parser splits at, so both paths chunk
@@ -153,6 +153,26 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
       .map { "\($0). The keeper walked the length of the gallery and counted the lamps again." }
       .joined(separator: " ")
     assertStreamingMatchesFullParse("Short opener.\n\n\(wall)\n\nShort closer.", deltaSizes: [23, 61])
+  }
+
+  func testStreamingDoesNotSplitInsideLongNestedLinkDestination() {
+    let destination = "<https://example.test/path (one_(two)) \(String(repeating: "segment", count: 260))>"
+    let text = "See [the long link](\(destination)) and then keep reading. "
+      + (1...90).map { "word\($0)" }.joined(separator: " ")
+    let chunks = workBoundedProseChunks(text)
+    let linkStart = text.firstIndex(of: "[")!
+    let linkEnd = text.range(of: ") and then")!.lowerBound
+
+    var boundary = text.startIndex
+    for chunk in chunks.dropLast() {
+      boundary = text.index(boundary, offsetBy: chunk.count)
+      XCTAssertFalse(
+        boundary > linkStart && boundary < linkEnd,
+        "A prose chunk must not end inside a Markdown link destination"
+      )
+    }
+    XCTAssertEqual(chunks.joined(), text)
+    assertStreamingMatchesFullParse(text, deltaSizes: [17, 43, 89])
   }
 
   func testStreamingRepeatedCallsWithSameTextReturnStableBlocks() {

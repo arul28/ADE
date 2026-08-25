@@ -418,8 +418,13 @@ private func combineLongTextSignature(_ text: String, into hasher: inout Hasher)
     hasher.combine(text)
     return
   }
-  hasher.combine(text.prefix(512))
-  hasher.combine(text.suffix(512))
+  // The incremental path uses WorkChatMessage.markdownRevision, but this is
+  // the full snapshot fold. Prefix/suffix sampling can collide when a host
+  // replaces the middle of a same-length response, leaving the old timeline
+  // snapshot in place. The exact digest is linear in the text and runs off the
+  // main actor during a full rebuild, where correctness is more important than
+  // the bounded live-delta shortcut.
+  hasher.combine(workStableDigest(text))
 }
 
 private func combineAgentChatFileRefs(_ refs: [AgentChatFileRef]?, into hasher: inout Hasher) {
@@ -2430,6 +2435,24 @@ private func workResolvedInlineItemIds(from transcript: [WorkChatEnvelope]) -> S
     }
   }
   return ids
+}
+
+func workIncrementalEventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
+  eventCard(for: envelope)
+}
+
+func workIncrementalMergedEventCard(
+  _ existing: WorkEventCardModel,
+  with incoming: WorkEventCardModel
+) -> WorkEventCardModel? {
+  mergedWorkEventCard(existing, with: incoming)
+}
+
+func workIncrementalEventCards(from timeline: [WorkTimelineEntry]) -> [WorkEventCardModel] {
+  timeline.compactMap { entry in
+    guard case .eventCard(let card) = entry.payload else { return nil }
+    return card
+  }
 }
 
 func buildWorkEventCards(

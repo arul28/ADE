@@ -305,8 +305,8 @@ struct WorkChatMessageBubble: View, Equatable {
 
   let message: WorkChatMessage
   /// True only for the assistant message still receiving streaming deltas.
-  /// Switches its markdown block parsing to the tail-only streaming parser so
-  /// each delta re-parses just the growing tail instead of the whole message.
+  /// Switches its markdown block parsing to the bounded streaming parser so
+  /// each delta re-parses only the visible preview instead of the full message.
   var isStreaming: Bool = false
   /// Computed once by the parent transcript view. Avoids installing one
   /// GeometryReader per user row while preserving the desktop-style max width.

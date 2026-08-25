@@ -19258,7 +19258,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(rendered.count, 3)
     XCTAssertTrue(rendered.allSatisfy { $0.sourceEntryId == entry.id })
     XCTAssertEqual(Set(rendered.map(\.id)).count, rendered.count)
-    XCTAssertTrue(rendered.allSatisfy { $0.id.hasPrefix("message-assistant-1-markdown-block-") })
+    XCTAssertEqual(rendered.first?.id, entry.id)
+    XCTAssertTrue(rendered.dropFirst().allSatisfy { $0.id.hasPrefix("message-assistant-1-markdown-block-") })
     for row in rendered {
       guard case .assistantMarkdownBlock(let block) = row.payload else {
         return XCTFail("Expected assistant markdown block render rows.")
@@ -24273,6 +24274,70 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(card.id, "tool-1")
   }
 
+  func testIncrementalReasoningMetadataUpdatesOneVisibleCard() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    var timeline: [WorkTimelineEntry] = []
+
+    XCTAssertTrue(workIncrementalApplyLiveMetadata(first, to: &timeline))
+    XCTAssertTrue(workIncrementalApplyLiveMetadata(second, to: &timeline))
+    XCTAssertEqual(timeline.count, 1)
+    guard case .eventCard(let card) = timeline.first?.payload else {
+      return XCTFail("Expected the reasoning envelope to own an event card")
+    }
+    XCTAssertEqual(card.kind, "reasoning")
+    XCTAssertTrue(card.body?.contains("First thought.") == true)
+    XCTAssertTrue(card.body?.contains("Second thought.") == true)
+    XCTAssertEqual(workIncrementalEventCards(from: timeline), [card])
+  }
+
+  func testLongMiddleReplacementChangesFullTimelineSnapshotSignature() {
+    let prefix = String(repeating: "a", count: 700)
+    let suffix = String(repeating: "b", count: 700)
+    let firstText = prefix + "A" + suffix
+    let secondText = prefix + "B" + suffix
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .assistantText(text: firstText, turnId: "turn-1", itemId: "message-1")
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: first.timestamp,
+      sequence: first.sequence,
+      event: .assistantText(text: secondText, turnId: "turn-1", itemId: "message-1")
+    )
+
+    let firstSnapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let secondSnapshot = buildWorkChatTimelineSnapshot(
+      transcript: [second],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertNotEqual(
+      firstSnapshot.signature,
+      secondSnapshot.signature,
+      "A same-length middle replacement must invalidate the full snapshot"
+    )
+  }
+
   func testBuildWorkTimelineKeepsMalformedAskUserFallbackOnMobile() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(
@@ -25103,11 +25168,70 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(
       mergeWorkTranscriptEntries(older: [cachedRow], newer: [refreshedRow]),
-      [cachedRow]
+      [refreshedRow]
     )
     XCTAssertEqual(
       mergeWorkTranscriptPageOccurrences(older: [cachedRow], newer: [refreshedRow]),
-      [cachedRow]
+      [refreshedRow]
+    )
+  }
+
+  func testWorkTranscriptStableUpgradeMatchesFrameWhenTextChanges() {
+    let cachedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "draft answer",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let refreshedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed answer",
+      timestamp: cachedRow.timestamp,
+      turnId: cachedRow.turnId,
+      messageId: "message-a"
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [cachedRow], newer: [refreshedRow]),
+      [refreshedRow]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [cachedRow], newer: [refreshedRow]),
+      [refreshedRow]
+    )
+  }
+
+  func testWorkTranscriptStableUpgradeDoesNotCollapseRepeatedIdlessFrames() {
+    let first = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same frame",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let second = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same frame",
+      timestamp: first.timestamp,
+      turnId: first.turnId
+    )
+    let refreshed = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed frame",
+      timestamp: first.timestamp,
+      turnId: first.turnId,
+      messageId: "message-a"
+    )
+
+    // The global merge intentionally deduplicates identical id-less legacy
+    // rows. Page-occurrence merging below is the physical-row-preserving path
+    // used for repeated transcript pages.
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [first, second], newer: [refreshed]),
+      [refreshed]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [first, second], newer: [refreshed]),
+      [first, second, refreshed]
     )
   }
 

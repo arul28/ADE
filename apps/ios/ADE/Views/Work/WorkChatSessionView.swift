@@ -2624,7 +2624,9 @@ func workTimelineRenderEntries(
     // flips into the tiny whole-message monospace renderer while paginating.
     if preview.usesMonospacedRendering {
       let model = WorkAssistantMonospacedRenderModel(
-        id: "\(entry.id)-assistant-monospace",
+        // Keep the first rendered row anchored to the source timeline entry so
+        // Show More can restore it after the preview changes anchor.
+        id: entry.id,
         messageId: message.id,
         turnId: message.turnId,
         itemId: message.itemId,
@@ -2651,7 +2653,7 @@ func workTimelineRenderEntries(
         : [:]
       for block in blocks {
         let model = WorkAssistantMarkdownBlockRenderModel(
-          id: "\(entry.id)-\(block.id)",
+          id: block.id == blocks.first?.id ? entry.id : "\(entry.id)-\(block.id)",
           messageId: message.id,
           turnId: message.turnId,
           itemId: message.itemId,

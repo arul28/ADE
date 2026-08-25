@@ -20,10 +20,10 @@ struct WorkInlineMarkdownText: View {
 struct WorkMarkdownRenderer: View {
   let markdown: String
   /// Non-nil while this markdown is still receiving streaming deltas. Routes
-  /// block parsing through the tail-only streaming parser (stable prefix
-  /// cached under this key — the message id) instead of the whole-text block
-  /// cache, which misses on every delta because the text keeps growing.
-  /// Completed messages keep the default whole-text cache path.
+  /// block parsing through the bounded streaming parser, which caches the
+  /// latest preview under this key instead of asking the whole-text cache to
+  /// retain throwaway revisions. Completed messages keep the default
+  /// whole-text cache path.
   var streamingCacheKey: String? = nil
   /// The whole message this markdown was sliced from, when `markdown` is a
   /// bounded preview of it. Copying a fenced block resolves against this, so a

@@ -6,7 +6,7 @@ extension WorkChatSessionView {
   /// Id of the assistant message still receiving streaming deltas, or nil
   /// when no turn is active. Only the LAST message qualifies, and only while
   /// the session is actively streaming — that message's bubble parses its
-  /// markdown through the tail-only streaming parser; every completed message
+  /// markdown through the bounded streaming parser; every completed message
   /// keeps the whole-text block cache path.
   var streamingAssistantMessageId: String? {
     guard shouldShowInterruptControl else { return nil }
@@ -48,6 +48,10 @@ extension WorkChatSessionView {
           expandAssistantMessage(
             messageId: model.messageId,
             nextLineBudget: model.nextLineBudget,
+            proxy: proxy,
+            restoreRowId: model.nextLineBudget < model.totalLineCount
+              ? entry.id
+              : entry.sourceEntryId,
           )
         },
         onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
@@ -66,11 +70,24 @@ extension WorkChatSessionView {
   @MainActor
   func expandAssistantMessage(
     messageId: String,
-    nextLineBudget: Int
+    nextLineBudget: Int,
+    proxy: ScrollViewProxy,
+    restoreRowId: String
   ) {
     assistantLineBudgets[messageId] = nextLineBudget
     assistantHeadAnchorOverrides.insert(messageId)
     refreshTimelinePresentation()
+
+    // The expansion changes a tail slice into a head slice. Keep the row the
+    // reader acted on at the same viewport edge instead of allowing SwiftUI to
+    // choose the newly-created first block and teleport to the beginning.
+    DispatchQueue.main.async {
+      var transaction = Transaction()
+      transaction.disablesAnimations = true
+      withTransaction(transaction) {
+        proxy.scrollTo(restoreRowId, anchor: .bottom)
+      }
+    }
   }
 
   /// Second rung of the message-level ladder: the whole answer, on its own
@@ -126,7 +143,9 @@ extension WorkChatSessionView {
               messageId: message.id,
               nextLineBudget: workAssistantMessageShowMoreLineBudget(
                 current: assistantLineBudgets[message.id] ?? assistantBudgetFloors[message.id]
-              )
+              ),
+              proxy: proxy,
+              restoreRowId: entry.id
             )
           }
           : nil,

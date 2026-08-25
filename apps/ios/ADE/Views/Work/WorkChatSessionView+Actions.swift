@@ -110,15 +110,25 @@ private func workSnapshotByApplyingAssistantTextTail(
   }
 
   var timeline = snapshot.timeline
+  var refreshEventCards = false
   for envelope in candidateEnvelopes {
     guard workIncrementalApplyEnvelope(envelope, to: &timeline) else {
       return nil
+    }
+    if case .reasoning = envelope.event {
+      refreshEventCards = true
     }
   }
   timeline = workIncrementalSortTimeline(timeline)
 
   var nextSnapshot = snapshot
   nextSnapshot.timeline = timeline
+  if refreshEventCards {
+    // `eventCards` is also the source for live-reasoning presentation state;
+    // keep it in lockstep with the timeline when the append-only path accepts
+    // a reasoning envelope. Other incremental deltas avoid this O(n) fold.
+    nextSnapshot.eventCards = workIncrementalEventCards(from: timeline)
+  }
   nextSnapshot.latestTranscriptTimestamp = workIncrementalLatestTimestamp(
     existing: snapshot.latestTranscriptTimestamp,
     envelopes: candidateEnvelopes
@@ -232,7 +242,7 @@ private func workIncrementalApplyEnvelope(
   to timeline: inout [WorkTimelineEntry]
 ) -> Bool {
   if workIncrementalEnvelopeIsLiveMetadata(envelope) {
-    return true
+    return workIncrementalApplyLiveMetadata(envelope, to: &timeline)
   }
   if case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, let processed) = envelope.event {
     guard deliveryState != "queued" || steerId == nil else { return false }
@@ -293,6 +303,43 @@ private func workIncrementalApplyEnvelope(
     rank: workIncrementalNextMessageRank(in: timeline),
     payload: .message(message)
   ))
+  return true
+}
+
+/// Applies the metadata envelopes that the append-only path is allowed to
+/// accept without a full snapshot rebuild. Reasoning owns a visible card and
+/// therefore has to merge into that card; the remaining accepted metadata
+/// envelopes intentionally have no mobile timeline payload.
+func workIncrementalApplyLiveMetadata(
+  _ envelope: WorkChatEnvelope,
+  to timeline: inout [WorkTimelineEntry]
+) -> Bool {
+  guard let incomingCard = workIncrementalEventCard(for: envelope), incomingCard.kind == "reasoning" else {
+    return true
+  }
+
+  let entryId = "event-\(incomingCard.id)"
+  if let existingIndex = timeline.lastIndex(where: { $0.id == entryId }) {
+    guard case .eventCard(let existingCard) = timeline[existingIndex].payload,
+          let mergedCard = workIncrementalMergedEventCard(existingCard, with: incomingCard)
+    else { return false }
+    timeline[existingIndex] = WorkTimelineEntry(
+      id: entryId,
+      timestamp: mergedCard.timestamp,
+      rank: timeline[existingIndex].rank,
+      payload: .eventCard(mergedCard)
+    )
+  } else {
+    let eventRank = 1_500 + timeline.reduce(into: 0) { count, entry in
+      if case .eventCard = entry.payload { count += 1 }
+    }
+    timeline.append(WorkTimelineEntry(
+      id: entryId,
+      timestamp: incomingCard.timestamp,
+      rank: eventRank,
+      payload: .eventCard(incomingCard)
+    ))
+  }
   return true
 }
 
@@ -491,31 +538,30 @@ private func workIncrementalSnapshotSignature(
     hasher.combine(workIncrementalEnvelopeKey(tail))
     hasher.combine(tail.timestamp)
     hasher.combine(tail.sequence)
-    if case .assistantText(let text, let turnId, let itemId) = tail.event {
-      workCombineBoundedTextSignature(text, into: &hasher)
+    if case .assistantText(_, let turnId, let itemId) = tail.event {
       hasher.combine(turnId)
       hasher.combine(itemId)
+      if let latestAssistantId = workIncrementalLatestAssistantId(timeline),
+         let message = timeline.reversed().compactMap({ entry -> WorkChatMessage? in
+           guard entry.id == "message-\(latestAssistantId)",
+                 case .message(let message) = entry.payload
+           else { return nil }
+           return message
+         }).first {
+        // The live message owns an exact monotonic revision. It distinguishes
+        // same-length middle replacements without hashing the growing answer
+        // on the main actor for every token batch.
+        hasher.combine(message.markdownRevision)
+        hasher.combine(message.markdownCharacterCount)
+        hasher.combine(message.markdownLineCount)
+        hasher.combine(message.markdownTrailingBacktickRun)
+      }
     }
   }
   if let latestAssistantId = workIncrementalLatestAssistantId(timeline) {
     hasher.combine(latestAssistantId)
   }
   return hasher.finalize()
-}
-
-/// Keep the incremental snapshot signature proportional to a small fixed
-/// window. The live path already has the envelope's sequence and byte count;
-/// the ends distinguish edits/replays without hashing a growing response on
-/// the main actor for every delta.
-func workCombineBoundedTextSignature(_ text: String, into hasher: inout Hasher) {
-  let utf8Count = text.utf8.count
-  hasher.combine(utf8Count)
-  guard utf8Count > 1_024 else {
-    hasher.combine(text)
-    return
-  }
-  hasher.combine(text.prefix(512))
-  hasher.combine(text.suffix(512))
 }
 
 private func workIncrementalFallbackSignature(_ fallbackEntries: [AgentChatTranscriptEntry], transcriptIsEmpty: Bool) -> Int {

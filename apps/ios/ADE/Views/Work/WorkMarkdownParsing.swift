@@ -338,92 +338,28 @@ func parseMarkdownBlocks(_ markdown: String) -> [WorkMarkdownBlock] {
   return parsed
 }
 
-/// Tail-only block parsing for the actively-streaming assistant message.
+/// Block parsing for the actively-streaming assistant preview.
 ///
-/// While a turn streams, the message text grows with every delta, so the
-/// whole-text cache in `parseMarkdownBlocks` misses on every rebuild and the
-/// entire (ever longer) message re-parses each frame. This entry point splits
-/// the text at the last "stable boundary" — the last empty line that is not
-/// inside an unclosed ``` fence. Everything before that boundary can never be
-/// re-interpreted by text that arrives later (every non-code construct in the
-/// parser terminates at a blank line and never looks past one), so the prefix
-/// is parsed once and cached under `cacheKey` (the message id); only the small
-/// growing tail re-parses per delta.
-///
-/// The combined output is exactly `parseMarkdownBlocks(fullText)` — same
-/// kinds, same ids — so views can switch between the streaming and completed
-/// paths without any visual or identity churn.
+/// The caller deliberately supplies only the bounded head/tail slice that can
+/// be rendered in the transcript. Re-scanning that slice is predictable and
+/// safe; attempting to find a stable boundary in the growing authoritative
+/// response added a second full-text scan and copied a prefix on every delta,
+/// while tail slices can change their boundary as the response grows. Keep a
+/// tiny per-message cache for repeated SwiftUI evaluations, and let the normal
+/// parser remain the single source of truth for block identities.
 func parseMarkdownBlocksForStreaming(_ markdown: String, cacheKey: String) -> [WorkMarkdownBlock] {
-  let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
   let key = cacheKey as NSString
   let cached = workStreamingMarkdownCache.object(forKey: key)
-  if let cached, cached.fullText == normalized {
+  if let cached, cached.fullText == markdown {
     return cached.blocks
   }
 
-  guard let boundary = workStreamingStableBoundaryIndex(in: normalized) else {
-    // No stable prefix yet (still inside the first block, or everything sits
-    // in one unclosed leading fence) — parse the whole text fresh.
-    let blocks = parseMarkdownBlocksInternal(normalized)
-    workStreamingMarkdownCache.setObject(
-      WorkStreamingMarkdownCacheBox(prefixText: "", prefixBlocks: [], fullText: normalized, blocks: blocks),
-      forKey: key
-    )
-    return blocks
-  }
-
-  let prefixText = String(normalized[..<boundary])
-  let prefixBlocks: [WorkMarkdownBlock]
-  if let cached, cached.prefixText == prefixText {
-    prefixBlocks = cached.prefixBlocks
-  } else {
-    prefixBlocks = parseMarkdownBlocksInternal(prefixText)
-  }
-
-  let tailBlocks = parseMarkdownBlocksInternal(String(normalized[boundary...]))
-  var blocks = prefixBlocks
-  blocks.reserveCapacity(prefixBlocks.count + tailBlocks.count)
-  for tailBlock in tailBlocks {
-    // Re-id the tail blocks so indices continue from the prefix — the parser
-    // bakes the running block index into each id, and ids must match the
-    // whole-text parse exactly.
-    blocks.append(WorkMarkdownBlock(
-      id: "markdown-block-\(blocks.count)",
-      kind: tailBlock.kind,
-      digest: tailBlock.digest
-    ))
-  }
+  let blocks = parseMarkdownBlocksInternal(markdown)
   workStreamingMarkdownCache.setObject(
-    WorkStreamingMarkdownCacheBox(prefixText: prefixText, prefixBlocks: prefixBlocks, fullText: normalized, blocks: blocks),
+    WorkStreamingMarkdownCacheBox(fullText: markdown, blocks: blocks),
     forKey: key
   )
   return blocks
-}
-
-/// Finds the position just past the last empty line that is NOT inside an
-/// unclosed ``` fence (fence state is tracked by toggling on every line whose
-/// trimmed text starts with "```", mirroring the parser's open/close rule).
-/// Splitting there is safe because blank lines terminate every non-code
-/// construct in `parseMarkdownBlocksInternal`, and the parser's only lookahead
-/// (the table-header check) never crosses a blank line.
-private func workStreamingStableBoundaryIndex(in normalized: String) -> String.Index? {
-  var boundary: String.Index?
-  var insideFence = false
-  var lineStart = normalized.startIndex
-  while lineStart < normalized.endIndex {
-    let newlineIndex = normalized[lineStart...].firstIndex(of: "\n")
-    let lineEnd = newlineIndex ?? normalized.endIndex
-    if lineStart == lineEnd {
-      if !insideFence {
-        boundary = newlineIndex.map { normalized.index(after: $0) } ?? lineEnd
-      }
-    } else if normalized[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-      insideFence.toggle()
-    }
-    guard let newlineIndex else { break }
-    lineStart = normalized.index(after: newlineIndex)
-  }
-  return boundary
 }
 
 /// Most characters a single rendered prose row may carry.
@@ -580,13 +516,36 @@ private struct WorkInlineMarkupBalance {
   private var backtickRuns = 0
   private var emphasisRuns = 0
   private var brackets = 0
+  private var linkDestinationDepth = 0
+  private var linkDestinationPending = false
   private var beforeEmphasisRun: Character?
 
   var isBalanced: Bool {
-    backtickRuns.isMultiple(of: 2) && emphasisRuns.isMultiple(of: 2) && brackets == 0
+    backtickRuns.isMultiple(of: 2)
+      && emphasisRuns.isMultiple(of: 2)
+      && brackets == 0
+      && linkDestinationDepth == 0
+      && !linkDestinationPending
   }
 
   mutating func consume(_ character: Character, previous: Character?, next: Character?) {
+    if linkDestinationDepth > 0 {
+      if character == "(" {
+        linkDestinationDepth += 1
+      } else if character == ")" {
+        linkDestinationDepth = max(0, linkDestinationDepth - 1)
+      }
+      return
+    }
+    if linkDestinationPending {
+      if character == "(" {
+        linkDestinationDepth = 1
+        linkDestinationPending = false
+        return
+      }
+      linkDestinationPending = false
+    }
+
     switch character {
     case "`":
       if previous != "`" { backtickRuns += 1 }
@@ -606,7 +565,15 @@ private struct WorkInlineMarkupBalance {
     case "]":
       // A close with no open is malformed text, not a span. Clamping stops one
       // stray "]" from making every later boundary read as unbalanced.
-      brackets = max(0, brackets - 1)
+      if brackets > 0 {
+        brackets -= 1
+        if brackets == 0 {
+          // A link destination starts only when the next character is `(`;
+          // keep this pending so nested parentheses in the URL cannot become
+          // an accidental prose cut.
+          linkDestinationPending = true
+        }
+      }
     default:
       break
     }
@@ -888,14 +855,10 @@ private let workStreamingInlineMarkdownCache: NSCache<NSString, WorkMarkdownCach
 /// readers never observe a half-updated entry. Only one message streams at a
 /// time per session, so the limit stays tiny.
 private final class WorkStreamingMarkdownCacheBox: NSObject {
-  let prefixText: String
-  let prefixBlocks: [WorkMarkdownBlock]
   let fullText: String
   let blocks: [WorkMarkdownBlock]
 
-  init(prefixText: String, prefixBlocks: [WorkMarkdownBlock], fullText: String, blocks: [WorkMarkdownBlock]) {
-    self.prefixText = prefixText
-    self.prefixBlocks = prefixBlocks
+  init(fullText: String, blocks: [WorkMarkdownBlock]) {
     self.fullText = fullText
     self.blocks = blocks
   }

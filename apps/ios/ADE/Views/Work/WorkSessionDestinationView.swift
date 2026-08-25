@@ -218,6 +218,14 @@ private func workTranscriptEntryLegacyIdentity(_ entry: AgentChatTranscriptEntry
   ].joined(separator: "\u{1F}")
 }
 
+private func workTranscriptEntryLegacyFrame(_ entry: AgentChatTranscriptEntry) -> String {
+  [
+    entry.timestamp,
+    entry.role,
+    entry.turnId ?? ""
+  ].joined(separator: "\u{1F}")
+}
+
 private func workTranscriptEntryStableIdentity(_ entry: AgentChatTranscriptEntry) -> String? {
   if let messageId = entry.messageId?.trimmingCharacters(in: .whitespacesAndNewlines), !messageId.isEmpty {
     return "message:\(messageId)"
@@ -245,6 +253,21 @@ private func workTranscriptEntriesRepresentSameOccurrence(
   return workTranscriptEntryLegacyIdentity(lhs) == workTranscriptEntryLegacyIdentity(rhs)
 }
 
+private func workTranscriptEntriesAreStableUpgrade(
+  _ lhs: AgentChatTranscriptEntry,
+  _ rhs: AgentChatTranscriptEntry,
+  uniqueIdlessFrameCount: Int
+) -> Bool {
+  guard workTranscriptEntryStableIdentity(lhs) == nil
+    || workTranscriptEntryStableIdentity(rhs) == nil
+  else { return false }
+  guard workTranscriptEntryStableIdentity(lhs) != nil
+    || workTranscriptEntryStableIdentity(rhs) != nil
+  else { return false }
+  return uniqueIdlessFrameCount == 1
+    && workTranscriptEntryLegacyFrame(lhs) == workTranscriptEntryLegacyFrame(rhs)
+}
+
 func mergeWorkTranscriptEntries(
   older: [AgentChatTranscriptEntry],
   newer: [AgentChatTranscriptEntry]
@@ -258,9 +281,38 @@ func mergeWorkTranscriptEntries(
     let legacyIdentity = workTranscriptEntryLegacyIdentity(entry)
     if let stableIdentity = workTranscriptEntryStableIdentity(entry) {
       guard !seenStableOccurrences.contains(stableIdentity) else { continue }
-      // A later refresh can add a stable id to a row that was already kept
-      // from the id-less page. Keep the first occurrence and avoid a duplicate.
-      guard !seenLegacyOnlyOccurrences.contains(legacyIdentity) else { continue }
+      // A later refresh can add a stable id while also completing the text of
+      // a row that was cached without one. Match that upgrade by the physical
+      // transcript frame, not the mutable text, but only when the frame is
+      // unique; repeated id-less rows must never be collapsed accidentally.
+      let matchingIdlessIndices = result.indices.filter { index in
+        workTranscriptEntryStableIdentity(result[index]) == nil
+          && workTranscriptEntryLegacyFrame(result[index]) == workTranscriptEntryLegacyFrame(entry)
+      }
+      if matchingIdlessIndices.count == 1,
+         workTranscriptEntriesAreStableUpgrade(
+           result[matchingIdlessIndices[0]],
+           entry,
+           uniqueIdlessFrameCount: matchingIdlessIndices.count
+         ) {
+        result[matchingIdlessIndices[0]] = entry
+        seenStableOccurrences.insert(stableIdentity)
+        seenStableLegacyOccurrences.insert(legacyIdentity)
+        continue
+      }
+      // If the frame is repeated, retain every physical row and append the
+      // newly identified one instead of deleting an occurrence. For the
+      // ordinary same-text case with no stable upgrade target, preserve the
+      // existing id-less row rather than duplicating it.
+      let hasStableFrame = result.contains { existing in
+        workTranscriptEntryStableIdentity(existing) != nil
+          && workTranscriptEntryLegacyFrame(existing) == workTranscriptEntryLegacyFrame(entry)
+      }
+      if matchingIdlessIndices.isEmpty,
+         !hasStableFrame,
+         seenLegacyOnlyOccurrences.contains(legacyIdentity) {
+        continue
+      }
       seenStableOccurrences.insert(stableIdentity)
       seenStableLegacyOccurrences.insert(legacyIdentity)
       result.append(entry)
@@ -290,10 +342,18 @@ func mergeWorkTranscriptPageOccurrences(
       let olderStart = older.count - candidate
       var matches = true
       for index in 0..<candidate {
-        if !workTranscriptEntriesRepresentSameOccurrence(
-          older[olderStart + index],
-          newer[index]
-        ) {
+        let cached = older[olderStart + index]
+        let refreshed = newer[index]
+        let sameOccurrence = workTranscriptEntriesRepresentSameOccurrence(cached, refreshed)
+          || workTranscriptEntriesAreStableUpgrade(
+            cached,
+            refreshed,
+            uniqueIdlessFrameCount: older.filter {
+              workTranscriptEntryStableIdentity($0) == nil
+                && workTranscriptEntryLegacyFrame($0) == workTranscriptEntryLegacyFrame(cached)
+            }.count
+          )
+        if !sameOccurrence {
           matches = false
           break
         }
@@ -307,19 +367,32 @@ func mergeWorkTranscriptPageOccurrences(
   guard overlap > 0 else { return older + newer }
 
   // A page refresh can carry the completed payload for a row that was cached
-  // while it was still streaming. Replace only stable-ID overlap entries;
-  // id-less rows may represent repeated physical occurrences and must keep
-  // the payload/order already established by the older page.
+  // while it was still streaming. Replace stable-ID overlap entries and a
+  // unique id-less → stable upgrade. Id-less rows may represent repeated
+  // physical occurrences and must keep the payload/order already established
+  // by the older page when the frame is ambiguous.
   var mergedOlder = older
   for index in 0..<overlap {
     let olderIndex = older.count - overlap + index
     let cached = older[olderIndex]
     let refreshed = newer[index]
-    guard let cachedStableId = workTranscriptEntryStableIdentity(cached),
-          let refreshedStableId = workTranscriptEntryStableIdentity(refreshed),
-          cachedStableId == refreshedStableId
-    else { continue }
-    mergedOlder[olderIndex] = refreshed
+    if let cachedStableId = workTranscriptEntryStableIdentity(cached),
+       let refreshedStableId = workTranscriptEntryStableIdentity(refreshed),
+       cachedStableId == refreshedStableId {
+      mergedOlder[olderIndex] = refreshed
+      continue
+    }
+    let uniqueIdlessFrameCount = older.filter {
+      workTranscriptEntryStableIdentity($0) == nil
+        && workTranscriptEntryLegacyFrame($0) == workTranscriptEntryLegacyFrame(cached)
+    }.count
+    if workTranscriptEntriesAreStableUpgrade(
+      cached,
+      refreshed,
+      uniqueIdlessFrameCount: uniqueIdlessFrameCount
+    ) {
+      mergedOlder[olderIndex] = refreshed
+    }
   }
   return mergedOlder + newer.dropFirst(overlap)
 }
