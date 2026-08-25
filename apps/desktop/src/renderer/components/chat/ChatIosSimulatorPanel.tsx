@@ -202,7 +202,6 @@ const WINDOW_SOURCE_ATTEMPTS = 3;
  * The "a start is wanted but none owns the live view yet" value of
  * `captureStartRef` — see the ref's own comment for the three states.
  */
-const WINDOW_CAPTURE_ARMED = Symbol("ios-simulator-capture-armed");
 /** Window-state poll cadence: fast while the state is moving, slow once settled. */
 const WINDOW_POLL_FAST_MS = 2_000;
 const WINDOW_POLL_SLOW_MS = 10_000;
@@ -836,11 +835,15 @@ export function ChatIosSimulatorPanel({
    *   already in flight learns two things at once: it has been cancelled, and
    *   nobody has taken over the host stream it brought up, so stopping that
    *   stream is its own job.
-   * - `WINDOW_CAPTURE_ARMED` — the live-view effect wants a start and is about
-   *   to make one. A start in flight reading this has been superseded, and must
-   *   *not* stop the host stream: its replacement stops the old stream itself,
-   *   and a stop issued from here could land on top of the new one.
-   * - any other symbol — the start that currently owns the live view.
+   * - an arm symbol — a caller wants a start and is about to make one. A start
+   *   in flight reading this has been superseded, and must *not* stop the host
+   *   stream: its replacement stops the old stream itself, and a stop issued
+   *   from here could land on top of the new one.
+   * - a start symbol — the start that currently owns the live view.
+   *
+   * Arm symbols are unique per run, and every caller passes the value it armed
+   * or read before its own prelude. That is what stops a cancelled prelude from
+   * waking up, reading a *later* run's token, and claiming after its successor.
    *
    * This replaced three per-call-site cancellation predicates, two of which only
    * asked whether the panel had unmounted. A start superseded by a mode switch
@@ -1324,8 +1327,15 @@ export function ChatIosSimulatorPanel({
    * runs, and starting anyway spawns Simulator.app for a panel that no longer
    * exists.
    */
-  const startWindowCaptureVisual = useCallback(async (device: { udid: string; name: string }) => {
-    if (captureStartRef.current === null) return;
+  const startWindowCaptureVisual = useCallback(async (
+    device: { udid: string; name: string },
+    expected: symbol | null,
+  ) => {
+    // `expected` is the token the caller armed, or read, before its own
+    // prelude. Comparing against it — rather than merely against null — is what
+    // stops a cancelled prelude from waking up, reading a token the NEXT run
+    // armed, and claiming after its own successor.
+    if (expected === null || captureStartRef.current !== expected) return;
     const myStart = Symbol("ios-simulator-capture-start");
     captureStartRef.current = myStart;
     const superseded = (): boolean => captureStartRef.current !== myStart;
@@ -1532,6 +1542,9 @@ export function ChatIosSimulatorPanel({
     setMessage(`${reason} Restoring the live view...`);
     windowCaptureRecoveryTimerRef.current = window.setTimeout(() => {
       windowCaptureRecoveryTimerRef.current = null;
+      // Read the token before the prelude below: if anything replaces or
+      // cancels this run while it stops the old stream, the start declines.
+      const armedForRecovery = captureStartRef.current;
       void (async () => {
         try {
           stopRendererLiveVisual();
@@ -1541,7 +1554,7 @@ export function ChatIosSimulatorPanel({
           // same cancellation token, so a drawer that closed or switched out of
           // Interact during the stop above stops this run before it starts
           // anything.
-          await startWindowCaptureVisual(activeDevice);
+          await startWindowCaptureVisual(activeDevice, armedForRecovery);
           void refreshSnapshot({ silent: true, priority: true });
         } catch (windowError) {
           // Same dead end as the effect's give-up path: nothing retries a
@@ -1746,12 +1759,13 @@ export function ChatIosSimulatorPanel({
       streamStartedByPanelRef.current = false;
       return;
     }
-    // Arm before the prelude below, not after it: the token is the whole
-    // cancellation story for a start, and arming synchronously here means no
-    // start can slip in between this run deciding to start one and the cleanup
-    // that cancels it. A start still in flight from a previous run reads this as
-    // "you have been replaced, and the replacement stops your stream".
-    captureStartRef.current = WINDOW_CAPTURE_ARMED;
+    // Arm before the prelude below, not after it, so a start still in flight
+    // from a previous run reads a non-null token and knows its replacement
+    // stops the stream. The armed value is unique per run: a cancelled prelude
+    // that wakes up later compares against the value IT armed, so it declines
+    // instead of claiming on top of the run that replaced it.
+    const myArm = Symbol("ios-simulator-capture-arm");
+    captureStartRef.current = myArm;
     const device = { udid: activeDeviceUdid, name: activeDeviceName ?? "" };
     void (async () => {
       try {
@@ -1763,7 +1777,7 @@ export function ChatIosSimulatorPanel({
         // zero.
         await releaseParkingHold();
         streamStartedByPanelRef.current = false;
-        await startWindowCaptureVisual(device);
+        await startWindowCaptureVisual(device, myArm);
       } catch (streamError) {
         // No cancellation check here: a start that was superseded or torn down
         // returns quietly and cleans up after itself, so reaching this catch
@@ -2792,10 +2806,13 @@ export function ChatIosSimulatorPanel({
   const restartLiveView = useCallback(async () => {
     const device = activeDevice;
     if (!device) return;
+    // Same as the recovery path: the token is read before the prelude, so a
+    // drawer that moves on during the stop below cancels this restart.
+    const armedForRestart = captureStartRef.current;
     try {
       stopRendererLiveVisual();
       await window.ade.iosSimulator.stopStream().catch(() => {});
-      await startWindowCaptureVisual({ udid: device.udid, name: device.name });
+      await startWindowCaptureVisual({ udid: device.udid, name: device.name }, armedForRestart);
       void refreshSnapshot({ silent: true, priority: true });
     } catch (error) {
       // The same terminal give-up as the effect's catch: nothing retries a
