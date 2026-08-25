@@ -728,7 +728,7 @@ func workModelCatalogGroups(
 ) -> [WorkModelCatalogGroup] {
   let groups = hostCatalog.groups.map { group in
     let isPiGroup = group.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "pi"
-    let providers: [WorkModelProvider]
+    var providers: [WorkModelProvider]
     if isPiGroup {
       // A Pi subsection carries the profile/provider identity. Flattening all
       // subsections into one provider makes two profiles with the same
@@ -766,48 +766,26 @@ func workModelCatalogGroups(
         }
       }
     } else {
-      // `WorkModelProvider.id` is its key, so two providers sharing a key would
-      // produce duplicate SwiftUI ForEach ids. The Pi branch above already guards
-      // this; do the same here by merging same-key providers instead.
-      var seenProviderKeys: [String: Int] = [:]
-      var merged: [WorkModelProvider] = []
-      for provider in group.providers {
-        let models = provider.subsections
-          .flatMap(\.models)
-          .map { model in
-            workCatalogModelOption(
-              from: model,
-              topLevelProvider: group.key,
-              providerKey: provider.key
-            )
-          }
-        if let existing = seenProviderKeys[provider.key] {
-          merged[existing] = WorkModelProvider(
-            key: provider.key,
-            displayName: merged[existing].displayName,
-            models: workPrioritizeCodex56Models(
-              workDeduplicatedModelOptions(merged[existing].models + models),
-              groupKey: group.key,
-              providerKey: provider.key
-            )
-          )
-          continue
-        }
-        seenProviderKeys[provider.key] = merged.count
-        merged.append(
-          WorkModelProvider(
-            key: provider.key,
-            displayName: provider.displayName,
-            models: workPrioritizeCodex56Models(
-              workDeduplicatedModelOptions(models),
-              groupKey: group.key,
-              providerKey: provider.key
-            )
-          )
+      providers = group.providers.map { provider in
+        WorkModelProvider(
+          key: provider.key,
+          displayName: provider.displayName,
+          models: provider.subsections
+            .flatMap(\.models)
+            .map { model in
+              workCatalogModelOption(
+                from: model,
+                topLevelProvider: group.key,
+                providerKey: provider.key
+              )
+            }
         )
       }
-      providers = merged
     }
+    // Uniqueness by key belongs to the group, not to either branch. Pi derives its
+    // key from subsection/model metadata rather than from `provider.key`, so it can
+    // collide across providers just as the plain branch can.
+    providers = workMergedProvidersByKey(providers, groupKey: group.key)
 
     return WorkModelCatalogGroup(
       key: group.key,
@@ -822,6 +800,41 @@ func workModelCatalogGroups(
     currentModelId: currentModelId,
     currentProvider: currentProvider
   )
+}
+
+/// `WorkModelProvider.id` is its key, so a group must never emit two providers with
+/// the same key — SwiftUI traps on duplicate `ForEach` ids. Both catalog branches can
+/// produce collisions: the plain branch passes host provider keys straight through,
+/// and Pi derives its key from subsection or model metadata rather than from
+/// `provider.key`. Merge same-key providers, keeping first-seen order and label.
+private func workMergedProvidersByKey(
+  _ providers: [WorkModelProvider],
+  groupKey: String
+) -> [WorkModelProvider] {
+  var order: [String] = []
+  var modelsByKey: [String: [WorkModelOption]] = [:]
+  var labelsByKey: [String: String] = [:]
+  for provider in providers {
+    if modelsByKey[provider.key] == nil {
+      order.append(provider.key)
+    }
+    // First non-empty label wins, so a blank leading block cannot hide a real one.
+    if (labelsByKey[provider.key] ?? "").isEmpty {
+      labelsByKey[provider.key] = provider.displayName
+    }
+    modelsByKey[provider.key, default: []] += provider.models
+  }
+  return order.map { key in
+    WorkModelProvider(
+      key: key,
+      displayName: labelsByKey[key] ?? key,
+      models: workPrioritizeCodex56Models(
+        workDeduplicatedModelOptions(modelsByKey[key] ?? []),
+        groupKey: groupKey,
+        providerKey: key
+      )
+    )
+  }
 }
 
 private func workCatalogModelOption(
@@ -919,11 +932,7 @@ private func workCuratedModelLookupMatch(
   return nil
 }
 
-/// Canonical comparison keys for a model id. Two ids are equivalent when their key
-/// sets intersect. Internal (not file-private) so callers filtering a whole catalog
-/// can hoist one key set out of the loop instead of paying `workModelIdsEquivalent`
-/// — and its two Set allocations — per comparison.
-func workModelLookupKeys(_ raw: String?) -> [String] {
+private func workModelLookupKeys(_ raw: String?) -> [String] {
   let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   guard !trimmed.isEmpty else { return [] }
 
@@ -1071,7 +1080,26 @@ func workModelIdsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
   guard !lhsKeys.isEmpty else { return false }
   let rhsKeys = workModelLookupKeys(rhs)
   guard !rhsKeys.isEmpty else { return false }
-  return lhsKeys.contains(where: rhsKeys.contains)
+  return lhsKeys.contains { rhsKeys.contains($0) }
+}
+
+/// Prebuilt "is this id equivalent to any of these ids" matcher. Equivalence is
+/// "the two ids share a lookup key", so hoisting the needle keys into one set makes
+/// filtering a whole catalog O(models) instead of O(models x ids) — and avoids the
+/// two Set allocations `workModelIdsEquivalent` would pay per comparison. Keeping
+/// this here means the equivalence rule stays owned by one file.
+struct WorkModelIdMatcher {
+  private let keys: Set<String>
+
+  init(ids: [String]) {
+    keys = Set(ids.flatMap { workModelLookupKeys($0) })
+  }
+
+  var isEmpty: Bool { keys.isEmpty }
+
+  func matches(_ id: String?) -> Bool {
+    workModelLookupKeys(id).contains { keys.contains($0) }
+  }
 }
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
