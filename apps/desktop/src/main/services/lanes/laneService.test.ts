@@ -1448,6 +1448,14 @@ describe("laneService list repairs", () => {
       );
       db.run(
         `
+          insert into session_github_issues(
+            id, project_id, session_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["sess-gh-link-on-dup", "proj-repair-dup", "session-on-dup", artifactId, "acme/ade#42", "{}", "worked", "chat_attach", "2026-06-11T17:57:30.000Z", "2026-06-11T17:57:30.000Z"],
+      );
+      db.run(
+        `
           insert into lane_branch_profiles(
             id, project_id, lane_id, branch_ref, normalized_branch_ref, base_ref,
             parent_lane_id, source_branch_ref, created_at, updated_at, last_checked_out_at
@@ -1500,6 +1508,9 @@ describe("laneService list repairs", () => {
       // The session-scoped Linear issue moved to the keeper instead of being deleted.
       expect(
         db.get<{ lane_id: string }>("select lane_id from session_linear_issues where id = ?", ["sess-link-on-dup"])?.lane_id,
+      ).toBe(keeperId);
+      expect(
+        db.get<{ lane_id: string }>("select lane_id from session_github_issues where id = ?", ["sess-gh-link-on-dup"])?.lane_id,
       ).toBe(keeperId);
       expect(
         db.get<{ lane_id: string }>("select lane_id from lane_branch_profiles where id = ?", ["profile-on-dup"])?.lane_id,

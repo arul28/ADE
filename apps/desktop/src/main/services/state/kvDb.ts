@@ -1376,6 +1376,9 @@ function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
   if (rawHasTable(db, "session_linear_issues")) {
     runStatement(db, `delete from session_linear_issues where session_id in (${placeholders})`, retiredSessionIds);
   }
+  if (rawHasTable(db, "session_github_issues")) {
+    runStatement(db, `delete from session_github_issues where session_id in (${placeholders})`, retiredSessionIds);
+  }
   if (rawHasTable(db, "pull_request_chat_sessions")) {
     runStatement(db, `delete from pull_request_chat_sessions where session_id in (${placeholders})`, retiredSessionIds);
   }
@@ -2144,6 +2147,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   } catch {
     // best-effort migration; duplicates will be coalesced on the next upsert.
   }
+
+  db.run(`
+    create table if not exists session_github_issues (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      lane_id text,
+      issue_id text not null,
+      issue_json text not null,
+      role text not null,
+      source text not null,
+      include_in_pr integer not null default 1,
+      close_on_merge integer not null default 1,
+      evidence_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_session_github_issues_session on session_github_issues(project_id, session_id)");
+  db.run("create index if not exists idx_session_github_issues_lane on session_github_issues(project_id, lane_id)");
+  db.run("create index if not exists idx_session_github_issues_issue on session_github_issues(project_id, issue_id)");
 
   db.run(`
     create table if not exists lane_branch_profiles (

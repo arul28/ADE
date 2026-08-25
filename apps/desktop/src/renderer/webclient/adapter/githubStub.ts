@@ -69,7 +69,9 @@ export function createGithubNamespace(deps: {
       failureKind: null,
       retryAt: null,
     }),
-    detectRepo: async () => null,
+    detectRepo: () => call("github.detectRepo", {}, null),
+    listRepoIssues: (args?: unknown) => call("github.listRepoIssues", args ?? {}, []),
+    getIssue: (args?: unknown) => call("github.getIssue", args ?? {}, null),
     listRepoAutolinks: async () => [],
     getAppInstallationStatus: async () => ({
       installed: false,

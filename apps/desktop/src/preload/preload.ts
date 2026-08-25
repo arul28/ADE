@@ -472,9 +472,11 @@ import type {
   OnboardingDetectionResult,
   OnboardingHelpState,
   OnboardingStatus,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   ListOverlapsArgs,
   ListLanesArgs,
@@ -779,6 +781,7 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -5709,6 +5712,29 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "listLinearIssuesForLaneSessions", { args }, () =>
         ipcRenderer.invoke(IPC.lanesListLinearIssuesForLaneSessions, args),
       ),
+    attachGitHubIssueToSession: async (args: {
+      chatSessionId: string;
+      issues: LaneGitHubIssue[];
+      role?: string;
+      source?: string;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+    }): Promise<SessionGitHubIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "attachGitHubIssueToSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesAttachGitHubIssueToSession, args),
+      ),
+    detachGitHubIssueFromSession: async (args: { chatSessionId: string; issueId?: string }): Promise<boolean> =>
+      callProjectRuntimeActionOr("lane", "detachGitHubIssueFromSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDetachGitHubIssueFromSession, args),
+      ),
+    listGitHubIssuesForSession: async (args: { chatSessionId: string }): Promise<SessionGitHubIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listGitHubIssuesForSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListGitHubIssuesForSession, args),
+      ),
+    listGitHubIssuesForLaneSessions: async (args: { laneId: string }): Promise<SessionGitHubIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listGitHubIssuesForLaneSessions", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListGitHubIssuesForLaneSessions, args),
+      ),
     unlinkLinearIssues: async (args: { laneId: string; issueId?: string }): Promise<boolean> =>
       callProjectRuntimeActionOr("lane", "unlinkLinearIssues", { args }, () =>
         ipcRenderer.invoke(IPC.lanesUnlinkLinearIssues, args),
@@ -9328,6 +9354,23 @@ const adeBridge = {
       const status = await githubStatusCache.get();
       return status.repo;
     },
+    listRepoIssues: async (args: {
+      owner?: string;
+      name?: string;
+      state?: "open" | "closed" | "all";
+      since?: string;
+    } = {}): Promise<GitHubIssueLike[]> =>
+      callProjectRuntimeActionOr("github", "listRepoIssues", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoIssues, args),
+      ),
+    getIssue: async (args: {
+      owner?: string;
+      name?: string;
+      number: number;
+    }): Promise<GitHubIssueLike | null> =>
+      callProjectRuntimeActionOr("github", "getIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubGetIssue, args),
+      ),
     listRepoAutolinks: async (args: {
       owner?: string;
       name?: string;

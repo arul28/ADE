@@ -29,6 +29,7 @@ export type CommandCategory =
   | "Steer"
   | "PRs"
   | "Linear"
+  | "Issues"
   | "Model"
   | "Nav"
   | "System";
@@ -39,6 +40,7 @@ export const COMMAND_CATEGORY_ORDER: CommandCategory[] = [
   "Steer",
   "PRs",
   "Linear",
+  "Issues",
   "Model",
   "Nav",
   "System",
@@ -157,6 +159,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/linear comments", description: "Show comments on a Linear ticket", placement: "right", argumentHint: "<id>", category: "Linear" },
   { name: "/linear status", description: "Show Linear status", placement: "right", category: "Linear" },
   { name: "/linear assign", description: "Assign a Linear ticket", placement: "right", argumentHint: "<id> <user>", category: "Linear" },
+  { name: "/issue", description: "Attach, list, or detach Linear and GitHub issues", placement: "right", argumentHint: "<attach|list|detach> [id]", category: "Issues" },
+  { name: "/issue attach", description: "Attach a Linear or GitHub issue to this chat", placement: "right", argumentHint: "<ADE-123|owner/repo#42|#42>", category: "Issues" },
+  { name: "/issue list", description: "List issues attached to this chat", placement: "right", category: "Issues" },
+  { name: "/issue detach", description: "Detach a Linear or GitHub issue from this chat", placement: "right", argumentHint: "<ADE-123|owner/repo#42|#42>", category: "Issues" },
   { name: "/feedback", description: "Submit ADE feedback to GitHub issues", placement: "right", category: "Nav" },
   { name: "/chats", description: "List chats in the active lane", placement: "right", argumentHint: "[filter]", category: "Chats" },
   { name: "/switch", description: "Switch lane or chat", placement: "right", argumentHint: "[lane|chat]", category: "Chats" },

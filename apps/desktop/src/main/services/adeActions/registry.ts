@@ -316,6 +316,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "archive",
     "archiveAndReclaim",
     "attachLinearIssueToSession",
+    "attachGitHubIssueToSession",
     "cancelDelete",
     "create",
     "createChild",
@@ -324,6 +325,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "delete",
     "deleteTemplate",
     "detachLinearIssueFromSession",
+    "detachGitHubIssueFromSession",
     "diagnosticsActivateFallback",
     "diagnosticsDeactivateFallback",
     "diagnosticsGetLaneHealth",
@@ -352,6 +354,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listTemplates",
     "listLinearIssuesForLaneSessions",
     "listLinearIssuesForSession",
+    "listGitHubIssuesForLaneSessions",
+    "listGitHubIssuesForSession",
     "linkLinearIssues",
     "oauthDecodeState",
     "oauthEncodeState",
@@ -785,6 +789,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createRepoAutolink",
     "listRepoAutolinks",
     "listRepoCollaborators",
+    "listRepoIssues",
+    "getIssue",
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
@@ -3755,6 +3761,31 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       return githubService.listRepoCollaborators(
         requireNonEmptyString(actionArgs.owner, "owner"),
         requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async listRepoIssues(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const state = actionArgs.state;
+      return githubService.listRepoIssues(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        {
+          state: state === "open" || state === "closed" || state === "all" ? state : "open",
+        },
+      );
+    },
+    async getIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = typeof actionArgs.number === "number"
+        ? actionArgs.number
+        : Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.getIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
       );
     },
     async publishCurrentProject(args?: unknown) {

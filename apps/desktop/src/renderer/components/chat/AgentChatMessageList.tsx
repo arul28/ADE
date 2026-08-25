@@ -86,7 +86,8 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { transcriptRowGapPx, useChatChromeTint } from "./chatAppearance";
-import { ChatAttachmentTray } from "./ChatAttachmentTray";
+import { UserMessageIssueContext } from "./UserMessageIssueContext";
+import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
@@ -832,7 +833,7 @@ function UserMessageSendConfirmations({
   const contextAttachments = event.contextAttachments ?? [];
   const hasImage = attachments.some((a) => a.type === "image");
   const hasFile = attachments.some((a) => a.type === "file");
-  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue");
+  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue" || a.type === "github_issue");
   const showFilesRow = hasImage || hasFile;
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
@@ -2798,11 +2799,11 @@ function renderEvent(
             return <CollapsibleUserMessageBody rowKey={envelope.key}>{body}</CollapsibleUserMessageBody>;
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
-            <ChatAttachmentTray
+            <UserMessageIssueContext
               attachments={event.attachments ?? []}
               contextAttachments={event.contextAttachments ?? []}
               mode={options?.surfaceMode ?? "standard"}
-              className="mt-1 px-0 py-0"
+              sessionId={options?.sessionId}
             />
           ) : null}
           <UserMessageSendConfirmations event={event} />

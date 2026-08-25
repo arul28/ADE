@@ -454,6 +454,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingHelpState,
   OnboardingStatus,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
@@ -526,6 +527,7 @@ import type {
   RunTestSuiteArgs,
   SessionDeltaSummary,
   SessionLifecycleSettings,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   StackChainItem,
   StopTestRunArgs,
@@ -6716,6 +6718,38 @@ export function registerIpc({
     return ctx.laneService.listLinearIssuesForLaneSessions(arg);
   });
 
+  ipcMain.handle(IPC.lanesAttachGitHubIssueToSession, async (
+    _event,
+    arg: { chatSessionId: string; issues: LaneGitHubIssue[] },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.attachGitHubIssueToSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesDetachGitHubIssueFromSession, async (
+    _event,
+    arg: { chatSessionId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.detachGitHubIssueFromSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListGitHubIssuesForSession, async (
+    _event,
+    arg: { chatSessionId: string },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listGitHubIssuesForSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListGitHubIssuesForLaneSessions, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listGitHubIssuesForLaneSessions(arg);
+  });
+
   ipcMain.handle(IPC.lanesUnlinkLinearIssues, async (
     _event,
     arg: { laneId: string; issueId?: string },
@@ -9990,6 +10024,12 @@ export function registerIpc({
       state: arg?.state ?? "all",
       since: arg?.since,
     });
+  });
+
+  ipcMain.handle(IPC.githubGetIssue, async (_event, arg: { owner?: string; name?: string; number: number }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.getIssue(owner, name, arg.number);
   });
 
   ipcMain.handle(

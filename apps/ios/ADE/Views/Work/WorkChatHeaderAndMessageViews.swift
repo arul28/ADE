@@ -106,6 +106,7 @@ struct WorkChatHeaderMenuModel: Equatable {
   var showsProof: Bool = true
   var showsPinAction: Bool = true
   var showsSessionLink: Bool = true
+  var canAttachIssue: Bool = false
 }
 
 /// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
@@ -132,6 +133,7 @@ struct WorkChatHeaderMenu: View, Equatable {
   var onCopySessionId: () -> Void
   var onCopySessionDeepLink: () -> Void
   var onTogglePinned: () -> Void
+  var onAttachIssue: (() -> Void)? = nil
 
   static func == (lhs: WorkChatHeaderMenu, rhs: WorkChatHeaderMenu) -> Bool {
     lhs.model == rhs.model
@@ -144,6 +146,12 @@ struct WorkChatHeaderMenu: View, Equatable {
           Label("Chat Info", systemImage: "info.circle")
         } else {
           Label("Chat Info (\(model.chatInfoCount))", systemImage: "info.circle")
+        }
+      }
+
+      if model.canAttachIssue {
+        Button(action: { onAttachIssue?() }) {
+          Label("Attach issue", systemImage: "link.badge.plus")
         }
       }
 

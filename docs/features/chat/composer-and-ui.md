@@ -301,24 +301,7 @@ that could not work without it.
   the full base64 payload through the renderer; the legacy
   `ade.agentChat.saveTempAttachment` path remains as the fallback.
   Temp images keep the 10 MB cap and provider-specific MIME validation.
-- **Linear issue context.** A Linear-branded chip in the composer
-  opens `LinearIssueContextDialog`, which mounts the shared
-  `LinearIssueBrowser` so the user can attach a Linear issue as
-  chat context. Each attachment is an
-  `AgentChatLinearIssueContextAttachment` (`type: "linear_issue"`)
-  built by `makeLinearIssueContextAttachment(issue, source)` from
-  `shared/chatContextAttachments.ts`. When the chat opens on a
-  lane that already has a connected Linear issue, `AgentChatPane`
-  automatically attaches the lane's issue with
-  `source: "lane_link"` and pins it inside the dialog so the user
-  can see what's already linked. The dialog also exposes a deep
-  link to Settings > Integrations > Linear when the workspace
-  isn't connected. When a turn is dispatched, `agentChatService`
-  records every attached Linear issue back onto the lane through
-  `laneService.linkLinearIssues({ role: "worked", source:
-  "chat_attach", includeInPr: true, evidence: { chatSessionId } })`
-  so the issue appears in the next PR body's "Linked Linear issues"
-  block — see [features/linear-integration/README.md](../linear-integration/README.md).
+- **Issue context.** The composer attach menu (~180px, opaque, Linear and GitHub rows, no subtitle) opens `LinearIssueSelectModal` or `GitHubIssueSelectModal`. GitHub is offered only when `detectRepo()` returns this project's repository; personal chats hide GitHub and still allow Linear. Each attachment is a `linear_issue` or `github_issue` context item built by `makeLinearIssueContextAttachment` / `makeGitHubIssueContextAttachment` from `chatContextAttachments.ts`. Sending the turn persists the issue on the chat session (`attachLinearIssueToSession` / `attachGitHubIssueToSession`); mixed Linear + GitHub attachments are allowed. GitHub PRs are not attachable. Clicking a chip reopens the same pane in details mode (Open + Remove). On send, the composer chip moves onto that user message. TUI `/issue attach ADE-123|owner/repo#42|#42` (slash-only on Windows) attaches without a picker. iOS **Attach issue** in the chat overflow menu reuses the Linear pane in attach mode when `lane.attachLinearIssueToSession` is advertised. PR bodies get Linear `Refs ADE-123` (`closeOnMerge: false`) and GitHub `Closes owner/repo#42` (`closeOnMerge: true`) — see [features/linear-integration/README.md](../linear-integration/README.md).
 - **Typed triggers anywhere.** `detectComposerTrigger(text, cursorPos)`
   (`shared/composerTriggers.ts`) finds an in-progress `/command` or
   `@file` or multi-word `@chat` token that ends at the cursor — at any position

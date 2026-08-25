@@ -8257,6 +8257,35 @@ export function createAgentChatService(args: {
     }
   };
 
+  const recordGitHubIssueContextForLane = (
+    managed: ManagedChatSession,
+    contextAttachments: AgentChatContextAttachment[],
+  ): void => {
+    if (contextAttachments.length === 0) return;
+    const issues = contextAttachments
+      .filter((attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> =>
+        attachment.type === "github_issue")
+      .map((attachment) => attachment.issue);
+    if (!issues.length) return;
+    try {
+      laneService.attachGitHubIssueToSession?.({
+        chatSessionId: managed.session.id,
+        issues,
+        role: "worked",
+        source: "chat_attach",
+        includeInPr: true,
+        closeOnMerge: true,
+        evidence: { chatSessionId: managed.session.id },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.github_issue_session_link_failed", {
+        sessionId: managed.session.id,
+        issueCount: issues.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /** Interrupt arrived while the Pi SDK worker was still being acquired. */
@@ -38287,6 +38316,7 @@ export function createAgentChatService(args: {
     } = prepared;
 
     recordLinearIssueContextForLane(managed, contextAttachments);
+    recordGitHubIssueContextForLane(managed, contextAttachments);
 
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {
