@@ -292,11 +292,21 @@ struct WorkChatHeaderMenu: View, Equatable {
 /// the centered turn separator). User messages stay right-aligned but size to
 /// their content so short replies don't look like banner ads, and they drop
 /// the per-message timestamp for the same reason.
-struct WorkChatMessageBubble: View {
+struct WorkChatMessageBubble: View, Equatable {
+  /// Rows are compared, not re-rendered. Closures are excluded on purpose: they
+  /// are rebuilt on every parent body pass and never change what is drawn.
+  static func == (lhs: WorkChatMessageBubble, rhs: WorkChatMessageBubble) -> Bool {
+    lhs.message == rhs.message
+      && lhs.isStreaming == rhs.isStreaming
+      && lhs.maxUserBubbleWidth == rhs.maxUserBubbleWidth
+      && lhs.hasExpandedInPlace == rhs.hasExpandedInPlace
+      && (lhs.onShowMore == nil) == (rhs.onShowMore == nil)
+  }
+
   let message: WorkChatMessage
   /// True only for the assistant message still receiving streaming deltas.
-  /// Switches its markdown block parsing to the tail-only streaming parser so
-  /// each delta re-parses just the growing tail instead of the whole message.
+  /// Switches its markdown block parsing to the bounded streaming parser so
+  /// each delta re-parses only the visible preview instead of the full message.
   var isStreaming: Bool = false
   /// Computed once by the parent transcript view. Avoids installing one
   /// GeometryReader per user row while preserving the desktop-style max width.
@@ -304,7 +314,18 @@ struct WorkChatMessageBubble: View {
   var onRunUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
   var onEditUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
   var onDismissUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
-  @State private var assistantLineBudget = workAssistantMessageInitialLineBudget
+  /// One "Show more" step for this message, owned by the transcript.
+  ///
+  /// The bubble used to keep its own `@State` budget and re-slice the message
+  /// itself, so the two show-more paths (this one and the split-row controls)
+  /// disagreed about how much of a message was on screen, and the bubble's half
+  /// was lost whenever the `LazyVStack` recycled the row. The transcript's
+  /// shared budget map is now the only owner; the preview on `message` already
+  /// reflects it.
+  var onShowMore: (() -> Void)? = nil
+  /// The reader has already taken one "Show more" step here, so the next rung
+  /// of the ladder is the full-screen viewer instead of another step.
+  var hasExpandedInPlace = false
 
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
   /// Injected via `.environment(\.workChatProvider, ...)` by the session view.
@@ -393,7 +414,10 @@ struct WorkChatMessageBubble: View {
         } else {
           WorkMarkdownRenderer(
             markdown: preview.text,
-            streamingCacheKey: isStreaming ? message.id : nil
+            streamingCacheKey: isStreaming ? message.id : nil,
+            fullMarkdown: message.markdown,
+            previewAnchor: preview.anchor,
+            fullMarkdownIdentity: "\(message.markdownDigest ?? workStableDigest(message.markdown)):\(message.markdownRevision)"
           )
             .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
         }
@@ -423,21 +447,33 @@ struct WorkChatMessageBubble: View {
             Label("Copy full", systemImage: "doc.on.doc")
               .labelStyle(.titleAndIcon)
               .font(.caption2.weight(.semibold))
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           .foregroundStyle(ADEColor.textSecondary)
 
-          // Anything still truncated can still be expanded: one more step per
-          // tap, with no ceiling to strand the reader partway through.
-          Button {
-            assistantLineBudget += workAssistantMessageLineBudgetStep
-          } label: {
-            Label("Show more", systemImage: "chevron.down")
-              .labelStyle(.titleAndIcon)
-              .font(.caption2.weight(.semibold))
+          // Hybrid ladder: the first tap expands downward in place; anything
+          // still truncated after that goes to the full-screen viewer rather
+          // than paginating the reader through a thousand more lines.
+          if let onShowMore, !hasExpandedInPlace {
+            Button(action: onShowMore) {
+              Label("Show more", systemImage: "chevron.down")
+                .labelStyle(.titleAndIcon)
+                .font(.caption2.weight(.semibold))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(ADEColor.accent)
+          } else {
+            WorkOpenFullOutputButton(
+              title: "Response",
+              text: message.markdown,
+              label: "Open full output",
+              prominent: true
+            )
           }
-          .buttonStyle(.plain)
-          .foregroundStyle(ADEColor.accent)
         }
       }
     }
@@ -543,18 +579,11 @@ struct WorkChatMessageBubble: View {
     )
   }
 
+  /// Always the preview the transcript computed for this message. Re-slicing it
+  /// here would be a second, disagreeing source of truth — and O(message) on the
+  /// main thread for every body pass.
   private var assistantPreview: WorkAssistantMessagePreview {
-    if assistantLineBudget == workAssistantMessageInitialLineBudget,
-       let preview = message.assistantPreview {
-      return preview
-    }
-    return workAssistantMessagePreview(
-      message.markdown,
-      lineBudget: assistantLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget),
-      anchor: .head,
-      classification: message.assistantPreview?.usesMonospacedRendering
-    )
+    message.assistantPreview ?? workInitialAssistantMessagePreview(message.markdown)
   }
 
   private var userMessageAccessibilityLabel: String {
@@ -668,7 +697,7 @@ let workAssistantMessageWideInitialLineBudget = 24
 let workAssistantMessageWideLineBudgetStep = 24
 let workChatAccessibilityPreviewLimit = 800
 
-enum WorkAssistantMessagePreviewAnchor: Equatable {
+enum WorkAssistantMessagePreviewAnchor: Hashable {
   case head
   case tail
 }
@@ -687,29 +716,95 @@ struct WorkAssistantMessagePreview: Equatable {
   let anchor: WorkAssistantMessagePreviewAnchor
 }
 
+/// Previews for the visible assistant messages, keyed by message id.
+///
+/// Every entry is invalidated by identity, never by re-hashing: the message's
+/// stamped `markdownDigest` (a short string) decides a hit, so a cache HIT costs
+/// nothing proportional to the message. The previous version recomputed
+/// `markdown.utf8.count` and `markdown.hashValue` on every lookup, so the hot
+/// path — presentation refresh, several times a second, over every visible
+/// message — was O(total visible text) even when nothing had changed.
+///
+/// Previews are held per line budget, not just for the initial one. A message
+/// expanded through "Show more", or held at the tail-full budget after its turn
+/// ended, would otherwise re-slice its whole text on every refresh.
 final class WorkAssistantPreviewCache {
-  private struct Entry {
-    let utf8Count: Int
-    let textHash: Int
-    let anchor: WorkAssistantMessagePreviewAnchor
-    let preview: WorkAssistantMessagePreview
+  private final class Entry {
+    var identity: String
+    var anchor: WorkAssistantMessagePreviewAnchor
+    var previewsByLineBudget: [Int: WorkAssistantMessagePreview]
+
+    init(identity: String, anchor: WorkAssistantMessagePreviewAnchor) {
+      self.identity = identity
+      self.anchor = anchor
+      self.previewsByLineBudget = [:]
+    }
   }
 
   private var entries: [String: Entry] = [:]
+  /// Cheap stand-in for the message text. Prefers the digest stamped by the
+  /// snapshot fold; messages built outside it use their streaming revision or
+  /// a raw fallback only until the next snapshot fold.
+  private func identity(for message: WorkChatMessage) -> String {
+    if let digest = message.markdownDigest {
+      return "\(digest):revision=\(message.markdownRevision)"
+    }
+    if message.markdownRevision > 0 {
+      // Incremental messages have not gone through the snapshot fold yet. Do
+      // not interpolate the growing markdown here: the revision already gives
+      // this cache a unique content identity for the current message.
+      return "streaming:\(message.id):revision=\(message.markdownRevision)"
+    }
+    return "raw:\(message.markdown.utf8.count):\(message.markdown.hashValue)"
+  }
 
-  func preview(for message: WorkChatMessage, anchor: WorkAssistantMessagePreviewAnchor = .head) -> WorkAssistantMessagePreview {
-    let utf8Count = message.markdown.utf8.count
-    let textHash = message.markdown.hashValue
-    if let entry = entries[message.id],
-       entry.utf8Count == utf8Count,
-       entry.textHash == textHash,
-       entry.anchor == anchor,
-       entry.preview.anchor == anchor {
-      return entry.preview
+  func preview(
+    for message: WorkChatMessage,
+    anchor: WorkAssistantMessagePreviewAnchor = .head
+  ) -> WorkAssistantMessagePreview {
+    preview(
+      for: message,
+      anchor: anchor,
+      lineBudget: workAssistantMessageInitialLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(
+        forLineBudget: workAssistantMessageInitialLineBudget
+      ),
+      classification: nil
+    )
+  }
+
+  func preview(
+    for message: WorkChatMessage,
+    anchor: WorkAssistantMessagePreviewAnchor,
+    lineBudget: Int,
+    characterBudget: Int,
+    classification: Bool?
+  ) -> WorkAssistantMessagePreview {
+    let identity = identity(for: message)
+    let entry: Entry
+    if let existing = entries[message.id], existing.identity == identity, existing.anchor == anchor {
+      entry = existing
+      if let cached = entry.previewsByLineBudget[lineBudget] {
+        return cached
+      }
+    } else {
+      entry = Entry(identity: identity, anchor: anchor)
+      entries[message.id] = entry
     }
 
-    let preview = workInitialAssistantMessagePreview(message.markdown, anchor: anchor)
-    entries[message.id] = Entry(utf8Count: utf8Count, textHash: textHash, anchor: anchor, preview: preview)
+    let preview = workAssistantMessagePreview(
+      message.markdown,
+      lineBudget: lineBudget,
+      characterBudget: characterBudget,
+      anchor: anchor,
+      classification: classification ?? message.markdownMonospacedClassifier?.usesMonospacedRendering,
+      knownLineCount: message.markdownLineCount,
+      knownCharacterCount: message.markdownCharacterCount,
+      knownMarkdownHasCarriageReturn: message.markdownHasCarriageReturn,
+      knownMarkdownContainsFence: message.markdownContainsFence,
+      knownMarkdownOpeningFence: message.markdownOpenFenceMarker
+    )
+    entry.previewsByLineBudget[lineBudget] = preview
     return preview
   }
 
@@ -730,6 +825,13 @@ func workInitialAssistantMessagePreview(
   )
 }
 
+/// The budget one "Show more" tap asks for, given what the message is rendering
+/// under now. Shared by both show-more paths so a tap steps the same distance
+/// wherever it is made.
+func workAssistantMessageShowMoreLineBudget(current: Int?) -> Int {
+  max(current ?? 0, workAssistantMessageInitialLineBudget) + workAssistantMessageLineBudgetStep
+}
+
 func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int) -> Int {
   let extraSteps = max((lineBudget - workAssistantMessageInitialLineBudget) / workAssistantMessageLineBudgetStep, 0)
   let steppedBudget = workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
@@ -746,14 +848,56 @@ func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int, tailCanR
   return tailCanRenderFull ? max(steppedBudget, workAssistantMessageTailFullCharacterBudget) : steppedBudget
 }
 
+/// Whether the next bounded preview rung will still need its own control row.
+///
+/// The decision must use the same effective line/character budgets as
+/// `workAssistantMessagePreview`. Comparing the requested line budget with the
+/// message's line count is not enough: a single very long line can remain
+/// character-truncated after the final line budget, leaving a Show More row
+/// whose source entry has already replaced it.
+func workAssistantMessageWillRemainTruncated(
+  _ preview: WorkAssistantMessagePreview,
+  nextLineBudget: Int
+) -> Bool {
+  let requestedLineBudget = max(nextLineBudget, 1)
+  let effectiveLineBudget = workAssistantMessageEffectiveLineBudget(
+    requestedLineBudget: requestedLineBudget,
+    usesMonospacedPreview: preview.usesMonospacedRendering
+  )
+  let requestedCharacterBudget = workAssistantMessageCharacterBudget(forLineBudget: requestedLineBudget)
+  let characterBudget = max(
+    preview.usesMonospacedRendering
+      ? max(
+        requestedCharacterBudget,
+        workAssistantMessageWideCharacterBudget(forLineBudget: effectiveLineBudget)
+      )
+      : requestedCharacterBudget,
+    256
+  )
+  let smallFullCharacterBudget = max(characterBudget, workAssistantMessageSmallFullCharacterBudget)
+  return preview.totalLineCount > effectiveLineBudget
+    || preview.totalCharacterCount > smallFullCharacterBudget
+}
+
 func workAssistantMessagePreview(
   _ markdown: String,
   lineBudget: Int,
   characterBudget: Int,
   anchor: WorkAssistantMessagePreviewAnchor = .head,
-  classification: Bool? = nil
+  classification: Bool? = nil,
+  knownLineCount: Int? = nil,
+  knownCharacterCount: Int? = nil,
+  knownMarkdownHasCarriageReturn: Bool? = nil,
+  knownMarkdownContainsFence: Bool? = nil,
+  knownMarkdownOpeningFence: String? = nil
 ) -> WorkAssistantMessagePreview {
-  let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+  // `replacingOccurrences` allocates a second copy of the whole message even
+  // when there is nothing to replace, which is the overwhelmingly common case
+  // (host transcripts are LF). Scan first, copy only when it would change
+  // something.
+  let normalized = (knownMarkdownHasCarriageReturn ?? markdown.utf8.contains(0x0D))
+    ? markdown.replacingOccurrences(of: "\r\n", with: "\n")
+    : markdown
   guard !normalized.isEmpty else {
     return WorkAssistantMessagePreview(
       text: markdown,
@@ -778,10 +922,10 @@ func workAssistantMessagePreview(
       : characterBudget,
     256
   )
-  let totalLineCount = workAssistantMessageLineCount(normalized)
-  let totalCharacterCount = normalized.count
+  let totalLineCount = knownLineCount ?? workAssistantMessageLineCount(normalized)
+  let totalCharacterCount = knownCharacterCount ?? normalized.count
   let smallFullCharacterBudget = max(clampedCharacterBudget, workAssistantMessageSmallFullCharacterBudget)
-  if totalLineCount <= clampedLineBudget && normalized.count <= smallFullCharacterBudget {
+  if totalLineCount <= clampedLineBudget && totalCharacterCount <= smallFullCharacterBudget {
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
@@ -801,12 +945,14 @@ func workAssistantMessagePreview(
       characterBudget: clampedCharacterBudget,
       totalLineCount: totalLineCount,
       totalCharacterCount: totalCharacterCount,
-      usesMonospacedRendering: usesMonospacedPreview
+      usesMonospacedRendering: usesMonospacedPreview,
+      containsFence: knownMarkdownContainsFence,
+      openingFence: knownMarkdownOpeningFence
     )
   }
 
   var rendered = String()
-  rendered.reserveCapacity(min(normalized.count, clampedCharacterBudget))
+  rendered.reserveCapacity(min(totalCharacterCount, clampedCharacterBudget))
   var usedCharacters = 0
   var visibleLineCount = 0
   var lineStart = normalized.startIndex
@@ -841,7 +987,7 @@ func workAssistantMessagePreview(
 
   return WorkAssistantMessagePreview(
     text: rendered,
-    isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
+    isTruncated: visibleLineCount < totalLineCount || rendered.count < totalCharacterCount,
     usesMonospacedRendering: usesMonospacedPreview,
     visibleLineCount: visibleLineCount,
     totalLineCount: totalLineCount,
@@ -857,19 +1003,49 @@ private func workAssistantMessageTailPreview(
   characterBudget: Int,
   totalLineCount: Int,
   totalCharacterCount: Int,
-  usesMonospacedRendering: Bool
+  usesMonospacedRendering: Bool,
+  containsFence: Bool? = nil,
+  openingFence: String? = nil
 ) -> WorkAssistantMessagePreview {
+  // A long one-line answer is the common streaming shape for prose. Searching
+  // backwards for a newline would scan the entire growing line on every delta;
+  // the known line count makes the tail a direct bounded suffix instead.
+  if totalLineCount == 1, containsFence != true {
+    let visibleCharacterCount = min(characterBudget, totalCharacterCount)
+    let suffixStart = normalized.index(normalized.endIndex, offsetBy: -visibleCharacterCount)
+    let sourceRendered = String(normalized[suffixStart...])
+    return WorkAssistantMessagePreview(
+      text: sourceRendered,
+      isTruncated: visibleCharacterCount < totalCharacterCount,
+      usesMonospacedRendering: usesMonospacedRendering,
+      visibleLineCount: 1,
+      totalLineCount: totalLineCount,
+      visibleCharacterCount: visibleCharacterCount,
+      totalCharacterCount: totalCharacterCount,
+      anchor: .tail
+    )
+  }
+
   var segments: [Substring] = []
   segments.reserveCapacity(min(lineBudget, 16))
   var usedCharacters = 0
   var visibleLineCount = 0
   var lineEnd = normalized.endIndex
+  var searchCursor = normalized.endIndex
 
   while lineEnd >= normalized.startIndex, visibleLineCount < lineBudget {
-    let lineStart = normalized[..<lineEnd]
-      .lastIndex(of: "\n")
-      .map { normalized.index(after: $0) }
-      ?? normalized.startIndex
+    var lineStart = normalized.startIndex
+    var newlineIndex: String.Index?
+    var cursor = searchCursor
+    while cursor > normalized.startIndex {
+      let previous = normalized.index(before: cursor)
+      if normalized[previous] == "\n" {
+        newlineIndex = previous
+        lineStart = normalized.index(after: previous)
+        break
+      }
+      cursor = previous
+    }
     let newlineCost = segments.isEmpty ? 0 : 1
     let remaining = characterBudget - usedCharacters - newlineCost
     guard remaining > 0 else { break }
@@ -887,19 +1063,25 @@ private func workAssistantMessageTailPreview(
     usedCharacters += lineLength + newlineCost
     visibleLineCount += 1
 
-    guard lineStart > normalized.startIndex else { break }
-    lineEnd = normalized.index(before: lineStart)
+    guard let newlineIndex else { break }
+    lineEnd = newlineIndex
+    searchCursor = newlineIndex
   }
 
   let sourceRendered = segments.reversed().joined(separator: "\n")
-  let openingFence = workOpeningMarkdownFenceBeforeTail(
-    in: normalized,
-    tailStart: segments.last?.startIndex ?? normalized.endIndex
-  )
-  let rendered = openingFence.map { "\($0)\n\(sourceRendered)" } ?? sourceRendered
+  let resolvedOpeningFence: String?
+  if containsFence == false {
+    resolvedOpeningFence = nil
+  } else {
+    resolvedOpeningFence = openingFence ?? workOpeningMarkdownFenceBeforeTail(
+      in: normalized,
+      tailStart: segments.last?.startIndex ?? normalized.endIndex
+    )
+  }
+  let rendered = resolvedOpeningFence.map { "\($0)\n\(sourceRendered)" } ?? sourceRendered
   return WorkAssistantMessagePreview(
     text: rendered,
-    isTruncated: visibleLineCount < totalLineCount || sourceRendered.count < normalized.count,
+    isTruncated: visibleLineCount < totalLineCount || sourceRendered.count < totalCharacterCount,
     usesMonospacedRendering: usesMonospacedRendering,
     visibleLineCount: visibleLineCount,
     totalLineCount: totalLineCount,

@@ -113,6 +113,14 @@ struct WorkChatMessage: Identifiable, Equatable {
   let id: String
   let role: String
   var markdown: String
+  /// Digest of `markdown`, stamped once by the (off-main) snapshot fold.
+  ///
+  /// Change detection used to hash the full text of every visible message on
+  /// every presentation refresh — main-thread work proportional to the whole
+  /// visible transcript, several times a second during a streaming turn. Nil
+  /// only for messages built outside the fold, where the callers below fall
+  /// back to hashing the text.
+  var markdownDigest: String? = nil
   var assistantPreview: WorkAssistantMessagePreview? = nil
   let timestamp: String
   let turnId: String?
@@ -124,6 +132,33 @@ struct WorkChatMessage: Identifiable, Equatable {
   var processed: Bool? = nil
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
+  /// Monotonic content revision for the incremental streaming path. The
+  /// off-main snapshot fold stamps `markdownDigest` once, but live deltas
+  /// mutate the same message on the main actor and must invalidate preview
+  /// caches without hashing the entire growing response again.
+  var markdownRevision: UInt64 = 0
+  /// Exact counts for the append-only streaming path. They are updated from
+  /// the incoming delta, so preview summaries do not recount the whole answer
+  /// on every token batch. Completed snapshot messages leave these nil and
+  /// continue to derive their values from the authoritative markdown.
+  var markdownCharacterCount: Int? = nil
+  /// Exact UTF-8 byte count for the authoritative markdown. The streaming
+  /// merger uses this to avoid rescanning the entire growing response before
+  /// deciding whether an incoming provider payload is a fragment or replay.
+  var markdownUTF8Count: Int? = nil
+  var markdownLineCount: Int? = nil
+  var markdownHasCarriageReturn: Bool? = nil
+  var markdownContainsFence: Bool? = nil
+  /// Number of backticks at the authoritative text's end. This lets a fence
+  /// split across two live deltas be recognized without rescanning the full
+  /// response.
+  var markdownTrailingBacktickRun: Int? = nil
+  /// Opening marker for the currently unclosed fence, if the response ends
+  /// inside one. Tail previews use it to avoid a full-prefix fence scan.
+  var markdownOpenFenceMarker: String? = nil
+  /// Incremental fixed-column classification state for the append-only live
+  /// path. Completed snapshot messages leave this nil and classify normally.
+  var markdownMonospacedClassifier: WorkStreamingMonospacedClassifierState? = nil
 }
 
 struct WorkLocalEchoMessage: Identifiable, Equatable {
@@ -700,6 +735,9 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
   /// The one block still receiving deltas. Its renders are throwaway, so they
   /// are kept out of the shared inline-markdown cache.
   var isStreamingTail = false
+  /// Set on fenced code blocks of a message the transcript is only rendering a
+  /// slice of, so Copy and the viewer reach the whole block.
+  var codeSource: WorkCodeBlockSource? = nil
 
   static func == (lhs: WorkAssistantMarkdownBlockRenderModel, rhs: WorkAssistantMarkdownBlockRenderModel) -> Bool {
     lhs.id == rhs.id
@@ -707,6 +745,7 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
       && lhs.isStreamingTail == rhs.isStreamingTail
+      && lhs.codeSource == rhs.codeSource
       && lhs.block == rhs.block
   }
 }
@@ -718,12 +757,16 @@ struct WorkAssistantMonospacedRenderModel: Identifiable, Equatable {
   let itemId: String?
   let text: String
   let accessibilityLabel: String
+  /// Digest of the source message. Lets change detection separate two slices of
+  /// two different messages without hashing either slice.
+  var sourceDigest: String = ""
 
   static func == (lhs: WorkAssistantMonospacedRenderModel, rhs: WorkAssistantMonospacedRenderModel) -> Bool {
     lhs.id == rhs.id
       && lhs.messageId == rhs.messageId
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
+      && lhs.sourceDigest == rhs.sourceDigest
       && lhs.text == rhs.text
       && lhs.accessibilityLabel == rhs.accessibilityLabel
   }
@@ -737,6 +780,10 @@ struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
   let totalLineCount: Int
   let canShowMore: Bool
   let nextLineBudget: Int
+  let willRemainTruncatedAfterNextStep: Bool
+  /// The reader has already taken one "Show more" step on this message, so the
+  /// ladder's next rung is the full-screen viewer rather than another step.
+  var hasExpandedInPlace = false
 
   static func == (lhs: WorkAssistantMessageControlsModel, rhs: WorkAssistantMessageControlsModel) -> Bool {
     lhs.id == rhs.id
@@ -746,6 +793,8 @@ struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
       && lhs.totalLineCount == rhs.totalLineCount
       && lhs.canShowMore == rhs.canShowMore
       && lhs.nextLineBudget == rhs.nextLineBudget
+      && lhs.willRemainTruncatedAfterNextStep == rhs.willRemainTruncatedAfterNextStep
+      && lhs.hasExpandedInPlace == rhs.hasExpandedInPlace
   }
 }
 
@@ -854,6 +903,26 @@ func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
     }
   }
   return nil
+}
+
+/// Entries that arrived after the most recent turn-end marker — i.e. the rows
+/// belonging to the turn currently in flight.
+///
+/// Position, not `turnId`, is the attribution rule: not every payload carries a
+/// turn id, and the marker is itself a timeline row, so "after the last marker"
+/// is both cheaper and total. Combined with `isStreamingTurn` it answers the one
+/// question every collapsible card asks — "is my turn still going?" — and it
+/// answers "no" for the whole transcript when nothing is streaming, which is
+/// what makes a reopened chat render entirely collapsed.
+func workEntryIdsAfterLatestTurnEnd(in timeline: [WorkTimelineEntry]) -> Set<String> {
+  var ids = Set<String>()
+  for entry in timeline.reversed() {
+    if case .turnEndMarker = entry.payload {
+      return ids
+    }
+    ids.insert(entry.id)
+  }
+  return ids
 }
 
 struct WorkTimelineEntry: Identifiable, Equatable {
@@ -1011,7 +1080,10 @@ struct WorkChatTimelineSnapshot: Equatable {
   var transcriptHasInterruptibleActivity: Bool
   var latestTranscriptTimestamp: String?
   var latestMessageAssistantId: String?
+  var latestMessageAssistantItemId: String?
   var latestTurnEndTurnId: String?
+  /// Rows belonging to the turn in flight. Empty once every turn has ended.
+  var liveTurnEntryIds: Set<String>
   var timeline: [WorkTimelineEntry]
 
   static let empty = WorkChatTimelineSnapshot(
@@ -1029,7 +1101,9 @@ struct WorkChatTimelineSnapshot: Equatable {
     transcriptHasInterruptibleActivity: false,
     latestTranscriptTimestamp: nil,
     latestMessageAssistantId: nil,
+    latestMessageAssistantItemId: nil,
     latestTurnEndTurnId: nil,
+    liveTurnEntryIds: [],
     timeline: []
   )
 

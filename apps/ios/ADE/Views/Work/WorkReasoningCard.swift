@@ -8,12 +8,14 @@ import SwiftUI
 struct WorkReasoningCard: View {
   let card: WorkEventCardModel
   let isLive: Bool
-
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   // Default collapsed — reasoning is the model's scratchpad, not the answer.
   // We no longer auto-expand while live: thoughts should not fill the view
-  // unless the user explicitly opts in by tapping the pill.
-  @State private var isExpanded: Bool = false
+  // unless the user explicitly opts in by tapping the pill. Expansion is owned
+  // by the session's central set so it survives list recycling.
+  let isExpanded: Bool
+  let onToggle: () -> Void
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var bodyText: String? {
     guard let body = card.body else { return nil }
@@ -54,7 +56,7 @@ struct WorkReasoningCard: View {
   private var compactPill: some View {
     Button {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-        isExpanded.toggle()
+        onToggle()
       }
     } label: {
       HStack(spacing: 6) {

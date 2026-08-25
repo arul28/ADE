@@ -287,14 +287,14 @@ private func duplicateAssistantFragmentIndex(
 }
 
 private func assistantTurnIdsAreCompatible(_ lhs: String?, _ rhs: String?) -> Bool {
-  let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let left = lhs.map(workStreamingTrimmedView) ?? ""
+  let right = rhs.map(workStreamingTrimmedView) ?? ""
   return !left.isEmpty && left == right
 }
 
 private func mergedDuplicateAssistantText(existing: String, incoming: String) -> String? {
-  let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-  let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedExisting = workStreamingTrimmedView(existing)
+  let normalizedIncoming = workStreamingTrimmedView(incoming)
   guard !normalizedExisting.isEmpty, !normalizedIncoming.isEmpty else { return nil }
   if normalizedExisting == normalizedIncoming || normalizedExisting.hasSuffix(normalizedIncoming) {
     return existing
@@ -307,50 +307,337 @@ private func mergedDuplicateAssistantText(existing: String, incoming: String) ->
   return merged == existing + incoming ? nil : merged
 }
 
-func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
-  if existing.isEmpty { return incoming }
-  if incoming.isEmpty { return existing }
-  if existing == incoming { return existing }
-  if incoming.hasPrefix(existing) { return incoming }
-  if existing.hasPrefix(incoming),
-     workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: existing, incoming: incoming) {
-    return incoming
+private enum WorkStreamingMergeResult {
+  case unchanged
+  case appended(String)
+  case replaced(String)
+}
+
+private func workStreamingMergeResult(
+  _ existing: String,
+  _ incoming: String,
+  existingUTF8Length: Int? = nil,
+  existingTrailingBacktickRun: Int = 0
+) -> WorkStreamingMergeResult {
+  if existing.isEmpty { return .appended(incoming) }
+  if incoming.isEmpty { return .unchanged }
+
+  // Live events are append fragments. Compare byte lengths before asking
+  // `hasPrefix` to inspect either string so the ordinary delta path does not
+  // rescan the entire accumulated response. Cumulative snapshots and replay
+  // recovery still take the bounded fallback paths below.
+  let existingByteCount = existingUTF8Length ?? existing.utf8.count
+  let incomingByteCount = incoming.utf8.count
+  if existingByteCount == incomingByteCount {
+    if existing == incoming { return .unchanged }
+  } else if incomingByteCount > existingByteCount, incoming.hasPrefix(existing) {
+    return .appended(String(incoming.dropFirst(existing.count)))
   }
-  if existing.hasPrefix(incoming) { return existing }
-  let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-  let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+  if existingByteCount > incomingByteCount {
+    // This is bounded by the incoming delta in the normal path. Reuse the
+    // result so replay handling does not perform this scan twice.
+    let existingStartsWithIncoming = existing.hasPrefix(incoming)
+    if existingStartsWithIncoming,
+       workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: existing, incoming: incoming) {
+      return .replaced(incoming)
+    }
+    if existingStartsWithIncoming { return .unchanged }
+  }
+  // Keep these as views. `trimmingCharacters` creates a second String copy of
+  // the complete assistant response even when only its edges are whitespace.
+  // The replay checks below only need the trimmed bounds.
+  let normalizedExisting = workStreamingTrimmedView(existing)
+  let normalizedIncoming = workStreamingTrimmedView(incoming)
   if !normalizedIncoming.isEmpty,
      normalizedExisting.hasSuffix(normalizedIncoming) {
-    return existing
+    return .unchanged
   }
   if !normalizedExisting.isEmpty,
      normalizedIncoming.hasPrefix(normalizedExisting) {
-    return incoming
+    return .replaced(incoming)
+  }
+
+  // A provider may split an opening fence between deltas (` `` ` then
+  // `` `swift``). The bounded overlap fallback would otherwise treat the
+  // shared backtick as replay and drop it, turning a valid fence into prose.
+  // Preserve the incoming fragment whenever its leading backticks complete
+  // the existing run; cumulative snapshots have already taken the fast
+  // prefix path above.
+  let incomingLeadingBacktickRun = workMarkdownLeadingBacktickRun(incoming)
+  if existingTrailingBacktickRun > 0,
+     incomingLeadingBacktickRun > 0,
+     existingTrailingBacktickRun + incomingLeadingBacktickRun >= 3,
+     incomingLeadingBacktickRun < 3 {
+    return .appended(incoming)
   }
   if workStreamingTextHasMultiwordReplayShape(incoming),
      existing.hasSuffix(incoming) {
-    return existing
+    return .unchanged
   }
   if let mergedReplay = mergeWorkStreamingReplayText(existing: existing, incoming: incoming) {
-    return workStreamingTextByCollapsingRepeatedTail(mergedReplay)
+    let collapsed = workStreamingTextByCollapsingRepeatedTail(mergedReplay)
+    if collapsed == existing { return .unchanged }
+    return .replaced(collapsed)
   }
 
-  let maxOverlap = min(min(existing.count, incoming.count), workStreamingMergeMaxScanCharacters)
+  let existingOverlapWindow = existing.suffix(workStreamingMergeMaxScanCharacters)
+  let maxOverlap = min(existingOverlapWindow.count, incoming.count)
   guard maxOverlap > 0 else {
-    return existing + incoming
+    return .appended(incoming)
   }
 
   // The hasPrefix checks above handle the common streaming-duplication cases, so this
   // overlap scan is capped to keep long transcript rebuilds bounded.
   for length in stride(from: maxOverlap, through: 1, by: -1) {
-    let existingSuffix = existing.suffix(length)
+    let existingSuffix = existingOverlapWindow.suffix(length)
     let incomingPrefix = incoming.prefix(length)
     if existingSuffix == incomingPrefix {
-      return existing + incoming.dropFirst(length)
+      let suffix = String(incoming.dropFirst(length))
+      return suffix.isEmpty ? .unchanged : .appended(suffix)
     }
   }
 
-  return existing + incoming
+  return .appended(incoming)
+}
+
+private func workStreamingTrimmedView(_ text: String) -> Substring {
+  var start = text.startIndex
+  while start < text.endIndex, text[start].isWhitespace {
+    start = text.index(after: start)
+  }
+
+  var end = text.endIndex
+  while end > start {
+    let previous = text.index(before: end)
+    guard text[previous].isWhitespace else { break }
+    end = previous
+  }
+  return text[start..<end]
+}
+
+func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
+  switch workStreamingMergeResult(existing, incoming) {
+  case .unchanged:
+    return existing
+  case .appended(let suffix):
+    return existing + suffix
+  case .replaced(let text):
+    return text
+  }
+}
+
+/// Applies one live assistant delta while keeping the preview identity cheap.
+/// The canonical snapshot fold replaces the revision with a full digest on
+/// its next pass; until then, the revision is enough to invalidate the cache
+/// without rescanning the whole response on every token batch.
+@discardableResult
+func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkChatMessage) -> Bool {
+  // Keep the source string scoped to the merge decision. Once the result is
+  // known, the append case can mutate `message.markdown` in place instead of
+  // retaining an alias and forcing `existing + suffix` to copy the entire
+  // response for every token batch.
+  let (
+    existingCharacterCount,
+    existingUTF8Length,
+    existingLineCount,
+    existingHasCarriageReturn,
+    existingContainsFence,
+    existingTrailingBacktickRun,
+    existingTrailingRegionalIndicatorRun,
+    existingLastCharacter,
+    mergeResult
+  ): (Int, Int, Int, Bool, Bool, Int, Int, Character?, WorkStreamingMergeResult) = {
+    let existing = message.markdown
+    return (
+      message.markdownCharacterCount ?? existing.count,
+      message.markdownUTF8Count ?? existing.utf8.count,
+      message.markdownLineCount ?? workAssistantMessageLineCount(existing),
+      message.markdownHasCarriageReturn ?? existing.contains("\r"),
+      message.markdownContainsFence ?? existing.contains("```"),
+      message.markdownTrailingBacktickRun ?? workMarkdownTrailingBacktickRun(existing),
+      workTrailingRegionalIndicatorRun(existing),
+      existing.last,
+      workStreamingMergeResult(
+        existing,
+        incoming,
+        existingUTF8Length: message.markdownUTF8Count ?? existing.utf8.count,
+        existingTrailingBacktickRun: message.markdownTrailingBacktickRun
+          ?? workMarkdownTrailingBacktickRun(existing)
+      )
+    )
+  }()
+
+  switch mergeResult {
+  case .unchanged:
+    return false
+  case .appended(let suffix):
+    message.markdown.append(contentsOf: suffix)
+  case .replaced(let replacement):
+    message.markdown = replacement
+  }
+  message.markdownRevision &+= 1
+  let mergedHasCarriageReturn = existingHasCarriageReturn || incoming.contains("\r")
+  message.markdownHasCarriageReturn = mergedHasCarriageReturn
+  message.markdownContainsFence = switch mergeResult {
+  case .appended:
+    existingContainsFence || workStreamingDeltaContainsFence(
+      incoming,
+      precedingBacktickRun: existingTrailingBacktickRun
+    )
+  case .replaced:
+    message.markdown.contains("```")
+  case .unchanged:
+    existingContainsFence
+  }
+  if !mergedHasCarriageReturn, case .appended(let appended) = mergeResult {
+    message.markdownUTF8Count = existingUTF8Length + appended.utf8.count
+    message.markdownCharacterCount = workStreamingMergedCharacterCount(
+      existingLastCharacter: existingLastCharacter,
+      existingTrailingRegionalIndicatorRun: existingTrailingRegionalIndicatorRun,
+      appended: appended,
+      existingCharacterCount: existingCharacterCount
+    )
+    message.markdownLineCount = existingLineCount + appended.reduce(into: 0) { count, character in
+      if character == "\n" { count += 1 }
+    }
+    if var classifier = message.markdownMonospacedClassifier {
+      classifier.append(appended)
+      message.markdownMonospacedClassifier = classifier
+      message.markdownOpenFenceMarker = classifier.openFenceMarker
+    } else {
+      let classifier = WorkStreamingMonospacedClassifierState(text: message.markdown)
+      message.markdownMonospacedClassifier = classifier
+      message.markdownOpenFenceMarker = classifier.openFenceMarker
+    }
+    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRunAfterAppending(
+      appended,
+      precedingRun: existingTrailingBacktickRun
+    )
+  } else {
+    // Dedup/replay can rewrite rather than append. That path is uncommon, but
+    // keeping its counts authoritative is more important than preserving the
+    // fast path's assumption.
+    let normalized = mergedHasCarriageReturn
+      ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
+      : message.markdown
+    message.markdownUTF8Count = message.markdown.utf8.count
+    message.markdownCharacterCount = normalized.count
+    message.markdownLineCount = workAssistantMessageLineCount(normalized)
+    let classifier = WorkStreamingMonospacedClassifierState(text: normalized)
+    message.markdownMonospacedClassifier = classifier
+    message.markdownOpenFenceMarker = classifier.openFenceMarker
+    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalized)
+  }
+  message.assistantPreview = nil
+  return true
+}
+
+/// Appending a delta normally makes the grapheme count additive. The only
+/// exception is when the first grapheme of that delta joins the previous tail
+/// (combining marks, regional-indicator flags, emoji modifiers, or a similar
+/// Unicode boundary). Detect that boundary with a tiny string, and pay for a
+/// full count only on that uncommon path; the ordinary ASCII stream remains
+/// O(delta) with no full-response scan.
+private func workStreamingMergedCharacterCount(
+  existingLastCharacter: Character?,
+  existingTrailingRegionalIndicatorRun: Int,
+  appended: String,
+  existingCharacterCount: Int
+) -> Int {
+  guard let existingLast = existingLastCharacter,
+        let appendedFirst = appended.first
+  else {
+    return existingCharacterCount + appended.count
+  }
+
+  let existingTail = String(existingLast)
+  // `String.first` is a grapheme, not a scalar. A delta beginning with an
+  // odd run of regional indicators can therefore start with a paired
+  // `Character` even though its first scalar still needs to pair with the
+  // previous message tail. Handle that boundary explicitly before the
+  // general combining-mark/emoji check below.
+  if existingTrailingRegionalIndicatorRun % 2 == 1,
+     let appendedFirstScalar = appended.unicodeScalars.first,
+     workIsRegionalIndicator(appendedFirstScalar) {
+    // Swift groups regional indicators in pairs. When the existing run is
+    // odd, the incoming run only reduces the grapheme delta by one when it is
+    // odd too; an even incoming run simply pairs with the existing singleton
+    // and leaves the incoming grapheme count additive.
+    let incomingRegionalIndicatorRun = workLeadingRegionalIndicatorRun(in: appended)
+    if incomingRegionalIndicatorRun % 2 == 1 {
+      return existingCharacterCount + appended.count - 1
+    }
+  }
+
+  let appendedHead = String(appendedFirst)
+  let detachedBoundaryCount = existingTail.count + appendedHead.count
+  let mergedBoundaryCount = (existingTail + appendedHead).count
+  guard mergedBoundaryCount < detachedBoundaryCount else {
+    return existingCharacterCount + appended.count
+  }
+
+  // The prefix is the only part whose grapheme segmentation can change when
+  // it is joined to the existing message tail. Preserve the already-counted
+  // prefix and replace that one boundary cluster with its authoritative count.
+  return existingCharacterCount - 1
+    + (existingTail + appended).count
+}
+
+private func workTrailingRegionalIndicatorRun(_ text: String) -> Int {
+  var count = 0
+  for scalar in text.unicodeScalars.reversed() {
+    guard workIsRegionalIndicator(scalar) else { break }
+    count += 1
+  }
+  return count
+}
+
+private func workLeadingRegionalIndicatorRun(in text: String) -> Int {
+  var count = 0
+  for scalar in text.unicodeScalars {
+    guard workIsRegionalIndicator(scalar) else { break }
+    count += 1
+  }
+  return count
+}
+
+private func workIsRegionalIndicator(_ scalar: UnicodeScalar?) -> Bool {
+  guard let scalar else { return false }
+  return (0x1F1E6...0x1F1FF).contains(scalar.value)
+}
+
+private func workMarkdownTrailingBacktickRunAfterAppending(_ appended: String, precedingRun: Int) -> Int {
+  var count = precedingRun
+  for character in appended {
+    if character == "`" {
+      count += 1
+    } else {
+      count = 0
+    }
+  }
+  return count
+}
+
+private func workMarkdownLeadingBacktickRun(_ text: String) -> Int {
+  var count = 0
+  for character in text {
+    guard character == "`" else { break }
+    count += 1
+  }
+  return count
+}
+
+private func workStreamingDeltaContainsFence(_ incoming: String, precedingBacktickRun: Int) -> Bool {
+  var run = precedingBacktickRun
+  for character in incoming {
+    if character == "`" {
+      run += 1
+      if run >= 3 { return true }
+    } else {
+      run = 0
+    }
+  }
+  return false
 }
 
 private func workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: String, incoming: String) -> Bool {
@@ -397,16 +684,12 @@ private func workStreamingNormalizedWords(_ text: String) -> [String] {
 }
 
 private func mergeWorkStreamingReplayText(existing: String, incoming: String) -> String? {
-  let existingCount = existing.count
   let incomingCount = incoming.count
-  guard existingCount >= workStreamingMergeMinimumReplayAnchorLength,
-        incomingCount >= workStreamingMergeMinimumReplayAnchorLength else {
+  guard incomingCount >= workStreamingMergeMinimumReplayAnchorLength else {
     return nil
   }
 
-  let searchWindowLength = min(existingCount, workStreamingMergeReplaySearchWindowCharacters)
-  let searchStart = existing.index(existing.endIndex, offsetBy: -searchWindowLength)
-  let searchableExisting = existing[searchStart...]
+  let searchableExisting = existing.suffix(workStreamingMergeReplaySearchWindowCharacters)
   let maxAnchorLength = min(
     min(incomingCount, searchableExisting.count),
     workStreamingMergeMaxScanCharacters

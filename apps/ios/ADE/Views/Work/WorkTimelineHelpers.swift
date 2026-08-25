@@ -46,6 +46,7 @@ func buildWorkChatTimelineSnapshot(
     artifacts: artifacts,
     localEchoMessages: localEchoMessages
   )
+  let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
 
   return WorkChatTimelineSnapshot(
     signature: signature,
@@ -61,8 +62,10 @@ func buildWorkChatTimelineSnapshot(
     transcriptLatestTurnEnded: transcriptLatestTurnEnded,
     transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
     latestTranscriptTimestamp: latestTranscriptTimestamp,
-    latestMessageAssistantId: latestWorkTimelineMessageAssistantId(timeline),
+    latestMessageAssistantId: latestAssistantTail?.id,
+    latestMessageAssistantItemId: latestAssistantTail?.itemId,
     latestTurnEndTurnId: workLatestTurnEndTurnId(in: timeline),
+    liveTurnEntryIds: workEntryIdsAfterLatestTurnEnd(in: timeline),
     timeline: timeline
   )
 }
@@ -417,8 +420,13 @@ private func combineLongTextSignature(_ text: String, into hasher: inout Hasher)
     hasher.combine(text)
     return
   }
-  hasher.combine(text.prefix(512))
-  hasher.combine(text.suffix(512))
+  // The incremental path uses WorkChatMessage.markdownRevision, but this is
+  // the full snapshot fold. Prefix/suffix sampling can collide when a host
+  // replaces the middle of a same-length response, leaving the old timeline
+  // snapshot in place. The exact digest is linear in the text and runs off the
+  // main actor during a full rebuild, where correctness is more important than
+  // the bounded live-delta shortcut.
+  hasher.combine(workStableDigest(text))
 }
 
 private func combineAgentChatFileRefs(_ refs: [AgentChatFileRef]?, into hasher: inout Hasher) {
@@ -487,10 +495,18 @@ private func latestWorkTranscriptTimestamp(_ transcript: [WorkChatEnvelope]) -> 
   return latest
 }
 
-private func latestWorkTimelineMessageAssistantId(_ timeline: [WorkTimelineEntry]) -> String? {
+private struct WorkTimelineAssistantTail {
+  let id: String?
+  let itemId: String?
+}
+
+private func latestWorkTimelineAssistantTail(_ timeline: [WorkTimelineEntry]) -> WorkTimelineAssistantTail? {
   for entry in timeline.reversed() {
     guard case .message(let message) = entry.payload else { continue }
-    return message.role == "assistant" ? message.id : nil
+    return WorkTimelineAssistantTail(
+      id: message.role == "assistant" ? message.id : nil,
+      itemId: message.role == "assistant" ? message.itemId : nil
+    )
   }
   return nil
 }
@@ -1495,7 +1511,25 @@ func buildWorkTimeline(
     : buildWorkChatMessages(from: transcript)
 
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
-    WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
+    // Stamped here, at the end of the fold, rather than at construction: the
+    // builders above merge streaming fragments by mutating `markdown` in place,
+    // so this is the first point where a message's text is final.
+    var message = message
+    message.markdownDigest = workStableDigest(message.markdown)
+    message.markdownUTF8Count = message.markdown.utf8.count
+    let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
+    let normalizedMarkdown = hasCarriageReturn
+      ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
+      : message.markdown
+    message.markdownCharacterCount = normalizedMarkdown.count
+    message.markdownLineCount = workAssistantMessageLineCount(normalizedMarkdown)
+    message.markdownHasCarriageReturn = hasCarriageReturn
+    message.markdownContainsFence = normalizedMarkdown.contains("```")
+    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalizedMarkdown)
+    let classifier = WorkStreamingMonospacedClassifierState(text: normalizedMarkdown)
+    message.markdownMonospacedClassifier = classifier
+    message.markdownOpenFenceMarker = classifier.openFenceMarker
+    return WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
   // Counted, not set-membership: two identical echoes must not both vanish on
   // one matching row. Built from `messages` rather than the transcript so the
@@ -1591,6 +1625,7 @@ func buildWorkTimeline(
       id: echo.id,
       role: "user",
       markdown: echo.text,
+      markdownDigest: workStableDigest(echo.text),
       timestamp: echo.timestamp,
       turnId: nil,
       itemId: nil,
@@ -1678,6 +1713,24 @@ private func isInterruptStoppedSubagentResultEntry(_ entry: WorkTimelineEntry) -
     return row.kind == .result && row.snapshot.status == .stopped
   }
   return false
+}
+
+/// The rows the transcript actually draws, from the rows the timeline holds.
+///
+/// This is the seam where a presentation-only rule belongs — and for a while it
+/// held one that swallowed whole turns: every normalized `.toolGroup` row was
+/// dropped here, so a turn whose only work was one `Read` and one approved shell
+/// command rendered no trace of either. The turn-end marker's 8pt chevron was
+/// the sole way back to them.
+///
+/// That filter dated from when a cluster had no compact form and N stacked tool
+/// cards ate the phone viewport. A finished cluster is now a single 44pt row in
+/// the same one-liner grammar `WorkChangedFilesPanelView` already uses right
+/// beside it, so there is nothing left to protect the viewport from — and
+/// hiding tool calls while showing file changes made the transcript disagree
+/// with itself about what a cluster is.
+func workPresentedTimelineEntries(_ timeline: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  timeline
 }
 
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into
@@ -2393,6 +2446,24 @@ private func workResolvedInlineItemIds(from transcript: [WorkChatEnvelope]) -> S
     }
   }
   return ids
+}
+
+func workIncrementalEventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
+  eventCard(for: envelope)
+}
+
+func workIncrementalMergedEventCard(
+  _ existing: WorkEventCardModel,
+  with incoming: WorkEventCardModel
+) -> WorkEventCardModel? {
+  mergedWorkEventCard(existing, with: incoming)
+}
+
+func workIncrementalEventCards(from timeline: [WorkTimelineEntry]) -> [WorkEventCardModel] {
+  timeline.compactMap { entry in
+    guard case .eventCard(let card) = entry.payload else { return nil }
+    return card
+  }
 }
 
 func buildWorkEventCards(

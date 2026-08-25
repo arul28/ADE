@@ -355,7 +355,415 @@ final class WorkAssistantRenderingTests: XCTestCase {
     }
   }
 
+  // MARK: - Budget stability
+
+  /// The regression this rule exists for: the newest assistant answer renders
+  /// tail-anchored under the generous budget, and the moment a newer message
+  /// arrives it flips to head-anchoring. That flip used to drop the budget back
+  /// to 48 lines, so a message the reader had already read in full grew a
+  /// "Show more" behind their back.
+  func testBudgetSurvivesTheFlipOutOfTailAnchoring() {
+    let asTail = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: nil,
+      isTail: true,
+      headAnchorOverride: false,
+      tailCanRenderFull: true
+    )
+    XCTAssertEqual(asTail.lineBudget, workAssistantMessageTailFullLineBudget)
+    XCTAssertEqual(asTail.anchor, .tail)
+
+    // A newer message arrived. Same message, no longer the tail.
+    let afterFlip = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: asTail.lineBudget,
+      isTail: false,
+      headAnchorOverride: false,
+      tailCanRenderFull: false
+    )
+    XCTAssertEqual(afterFlip.lineBudget, workAssistantMessageTailFullLineBudget)
+    XCTAssertEqual(afterFlip.anchor, .head)
+  }
+
+  func testBudgetNeverShrinksBelowWhatWasAlreadyRendered() {
+    let expanded = workAssistantMessageInitialLineBudget + (4 * workAssistantMessageLineBudgetStep)
+    for isTail in [true, false] {
+      let budget = workAssistantRenderBudget(
+        userLineBudget: nil,
+        floorLineBudget: expanded,
+        isTail: isTail,
+        headAnchorOverride: false,
+        tailCanRenderFull: false
+      )
+      XCTAssertEqual(budget.lineBudget, expanded)
+    }
+    // The floor is a floor, not a ceiling: a further expansion still applies.
+    XCTAssertEqual(
+      workAssistantRenderBudget(
+        userLineBudget: expanded + workAssistantMessageLineBudgetStep,
+        floorLineBudget: expanded,
+        isTail: false,
+        headAnchorOverride: true,
+        tailCanRenderFull: false
+      ).lineBudget,
+      expanded + workAssistantMessageLineBudgetStep
+    )
+  }
+
+  func testExpandingTheTailMessageAnchorsItAtItsHead() {
+    let budget = workAssistantRenderBudget(
+      userLineBudget: workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep,
+      floorLineBudget: workAssistantMessageTailFullLineBudget,
+      isTail: true,
+      headAnchorOverride: true,
+      tailCanRenderFull: true
+    )
+    XCTAssertEqual(budget.anchor, .head)
+    XCTAssertEqual(budget.lineBudget, workAssistantMessageTailFullLineBudget)
+  }
+
+  func testShowMoreStepsFromTheBudgetTheMessageIsRenderingUnder() {
+    XCTAssertEqual(
+      workAssistantMessageShowMoreLineBudget(current: nil),
+      workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
+    )
+    // A message held at the tail-full floor steps up from that floor, not back
+    // down to the initial budget.
+    XCTAssertEqual(
+      workAssistantMessageShowMoreLineBudget(current: workAssistantMessageTailFullLineBudget),
+      workAssistantMessageTailFullLineBudget + workAssistantMessageLineBudgetStep
+    )
+  }
+
+  func testLongSingleLineKeepsItsControlUntilTheNextRungIsActuallyComplete() {
+    let markdown = String(repeating: "x", count: 15_000)
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageInitialLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(
+        forLineBudget: workAssistantMessageInitialLineBudget
+      )
+    )
+
+    XCTAssertTrue(preview.isTruncated)
+    XCTAssertEqual(preview.totalLineCount, 1)
+    XCTAssertTrue(
+      workAssistantMessageWillRemainTruncated(
+        preview,
+        nextLineBudget: workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
+      )
+    )
+    XCTAssertFalse(workAssistantMessageWillRemainTruncated(preview, nextLineBudget: 240))
+  }
+
+  /// End to end over the real preview slicer: a message that rendered in full as
+  /// the tail is still rendered in full — with no "Show more" — after a newer
+  /// message pushes it into head-anchoring.
+  func testMessageRenderedFullyAsTailIsNeverTruncatedLater() {
+    let markdown = (1...100).map { "Line \($0): the agent explained another step." }
+      .joined(separator: "\n")
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+
+    func preview(_ budget: WorkAssistantRenderBudget) -> WorkAssistantMessagePreview {
+      workAssistantMessagePreview(
+        markdown,
+        lineBudget: budget.lineBudget,
+        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: budget.lineBudget),
+        anchor: budget.anchor
+      )
+    }
+
+    let asTail = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: nil,
+      isTail: true,
+      headAnchorOverride: false,
+      tailCanRenderFull: true
+    )
+    let tailPreview = preview(asTail)
+    XCTAssertFalse(tailPreview.isTruncated)
+
+    let afterFlip = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: asTail.lineBudget,
+      isTail: false,
+      headAnchorOverride: false,
+      tailCanRenderFull: false
+    )
+    let headPreview = preview(afterFlip)
+    XCTAssertFalse(headPreview.isTruncated, "Show more reappeared on a message the reader already read in full")
+    XCTAssertEqual(headPreview.text, markdown)
+
+    // And the same message WITHOUT the floor is exactly the regression: it
+    // truncates. This is what the floor is protecting against.
+    let withoutFloor = workAssistantRenderBudget(
+      userLineBudget: nil,
+      floorLineBudget: nil,
+      isTail: false,
+      headAnchorOverride: false,
+      tailCanRenderFull: false
+    )
+    XCTAssertTrue(preview(withoutFloor).isTruncated)
+  }
+
+  // MARK: - Position-stable block ids
+
+  func testMarkdownBlockIdsAreIndexBasedAndSurviveContentEdits() {
+    let before = parseMarkdownBlocks("First paragraph.\n\n## Heading\n\nSecond paragraph.")
+    let after = parseMarkdownBlocks("First paragraph, revised.\n\n## Heading\n\nSecond paragraph.")
+
+    XCTAssertEqual(before.map(\.id), after.map(\.id))
+    XCTAssertEqual(before.map(\.id), (0..<before.count).map { "markdown-block-\($0)" })
+    // Identity is stable, but the change is still visible to change detection.
+    XCTAssertNotEqual(before[0].digest, after[0].digest)
+    XCTAssertEqual(before[1].digest, after[1].digest)
+    XCTAssertNotEqual(before[0], after[0])
+  }
+
+  func testStreamingBlockIdsMatchTheWholeTextParse() {
+    let markdown = "Intro paragraph.\n\n```swift\nlet x = 1\n```\n\nClosing paragraph."
+    let streamed = parseMarkdownBlocksForStreaming(markdown, cacheKey: "streaming-id-parity")
+    let whole = parseMarkdownBlocks(markdown)
+    XCTAssertEqual(streamed.map(\.id), whole.map(\.id))
+    XCTAssertEqual(streamed.map(\.digest), whole.map(\.digest))
+  }
+
+  /// A streaming message grows one delta at a time. Every already-rendered row
+  /// has to keep its identity across those deltas, or the LazyVStack rebuilds
+  /// the whole subtree on every frame instead of updating the tail.
+  func testStreamingDeltasDoNotChurnEarlierBlockIds() {
+    let head = "Intro paragraph.\n\n## Findings\n\n"
+    let first = parseMarkdownBlocksForStreaming(head + "Partial", cacheKey: "streaming-churn")
+    let second = parseMarkdownBlocksForStreaming(head + "Partial answer, now longer.", cacheKey: "streaming-churn")
+    XCTAssertGreaterThanOrEqual(first.count, 2)
+    XCTAssertEqual(Array(first.prefix(2)).map(\.id), Array(second.prefix(2)).map(\.id))
+    XCTAssertEqual(Array(first.prefix(2)), Array(second.prefix(2)))
+  }
+
+  // MARK: - Copy is always the full content
+
+  /// The transcript renders a bounded slice, so the code a block view holds can
+  /// be a prefix of the real block. Copy has to reach past the slice.
+  func testHeadSlicedCodeBlocksCopyTheWholeBlock() {
+    let markdown = codeBlockMarkdown(blockCount: 3, linesPerBlock: 60)
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageInitialLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget),
+      anchor: .head
+    )
+    XCTAssertTrue(preview.isTruncated)
+
+    let fullCode = codeBlockPayloads(of: markdown)
+    let rendered = renderedCodeBlocks(markdown: markdown, preview: preview, id: "assistant-head-code")
+    XCTAssertFalse(rendered.isEmpty)
+    for (ordinal, block) in rendered.enumerated() {
+      XCTAssertNotNil(block.source)
+      XCTAssertEqual(block.source?.ordinal, ordinal)
+      XCTAssertEqual(block.source?.countsFromEnd, false)
+      XCTAssertEqual(block.source?.resolvedCode(fallback: block.code), fullCode[ordinal])
+    }
+    // The slice really was partial — otherwise this proves nothing.
+    XCTAssertNotEqual(rendered.last?.code, fullCode[rendered.count - 1])
+  }
+
+  /// A tail slice can start *inside* a fence, and the preview prepends a
+  /// synthetic opening fence (`workOpeningMarkdownFenceBeforeTail`) so it parses
+  /// at all. That synthetic block is the one most likely to copy a fragment, so
+  /// it is numbered from the end and resolved against the real message.
+  func testTailSlicedCodeBlocksCopyTheWholeBlockThroughTheSyntheticFence() {
+    let markdown = codeBlockMarkdown(blockCount: 3, linesPerBlock: 80)
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageTailFullLineBudget,
+      characterBudget: workAssistantMessageTailFullCharacterBudget,
+      anchor: .tail
+    )
+    XCTAssertTrue(preview.isTruncated)
+    XCTAssertTrue(preview.text.hasPrefix("```"), "expected a synthetic opening fence on this tail")
+
+    let fullCode = codeBlockPayloads(of: markdown)
+    let rendered = renderedCodeBlocks(markdown: markdown, preview: preview, id: "assistant-tail-code")
+    XCTAssertFalse(rendered.isEmpty)
+    for (offsetFromEnd, block) in rendered.reversed().enumerated() {
+      XCTAssertEqual(block.source?.countsFromEnd, true)
+      XCTAssertEqual(block.source?.ordinal, offsetFromEnd)
+      XCTAssertEqual(
+        block.source?.resolvedCode(fallback: block.code),
+        fullCode[fullCode.count - 1 - offsetFromEnd]
+      )
+    }
+    // The synthetic-fence block is the fragment; copying it must not yield one.
+    let first = rendered[0]
+    XCTAssertNotEqual(first.code, first.source?.resolvedCode(fallback: first.code))
+  }
+
+  /// A slice that cannot be located falls back to what is on screen rather than
+  /// copying some other block's contents.
+  func testUnresolvableCodeBlockOrdinalFallsBackToTheRenderedSlice() {
+    let markdown = "```swift\nlet a = 1\n```"
+    let source = WorkCodeBlockSource(markdown: markdown, ordinal: 7, countsFromEnd: false)
+    XCTAssertEqual(source.resolvedCode(fallback: "let a = 1"), "let a = 1")
+  }
+
+  func testCodeBlockSourceIdentityDetectsSameLengthAuthoritativeEdits() {
+    let first = WorkCodeBlockSource(
+      markdown: "```swift\nlet a = 1\n```",
+      ordinal: 0,
+      countsFromEnd: false
+    )
+    let second = WorkCodeBlockSource(
+      markdown: "```swift\nlet b = 2\n```",
+      ordinal: 0,
+      countsFromEnd: false
+    )
+
+    XCTAssertNotEqual(first, second)
+  }
+
+  func testCodeBlockOrdinalsCountFromTheEndForATailSlice() {
+    let blocks = parseMarkdownBlocks("```\na\n```\n\ntext\n\n```\nb\n```")
+    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: false).values.sorted(), [0, 1])
+    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true).values.sorted(), [0, 1])
+    let codeIds = blocks.filter { if case .code = $0.kind { return true }; return false }.map(\.id)
+    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true)[codeIds[0]], 1)
+    XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: true)[codeIds[1]], 0)
+  }
+
+  /// The result box shows a slice; the clipboard never does.
+  func testToolResultBoxSeparatesWhatIsShownFromWhatIsCopied() {
+    let resultText = String(repeating: "x", count: workToolResultTruncateLimit + 400)
+    let collapsed = workToolResultBlockText(resultText, expanded: false)
+    XCTAssertTrue(collapsed.didTruncate)
+    XCTAssertLessThan(collapsed.displayed.count, resultText.count)
+    XCTAssertEqual(collapsed.copy, resultText)
+
+    let expanded = workToolResultBlockText(resultText, expanded: true)
+    XCTAssertFalse(expanded.didTruncate)
+    XCTAssertEqual(expanded.displayed, resultText)
+    XCTAssertEqual(expanded.copy, resultText)
+  }
+
+  // MARK: - Hybrid expand ladder
+
+  func testHybridLadderStepsOnceInPlaceThenOffersTheViewer() {
+    XCTAssertEqual(
+      workTruncatedOutputAffordance(isTruncated: true, hasExpandedInPlace: false, isClipped: false),
+      .showMore
+    )
+    XCTAssertEqual(
+      workTruncatedOutputAffordance(isTruncated: true, hasExpandedInPlace: true, isClipped: false),
+      .openFullOutput
+    )
+  }
+
+  /// Nothing truncated and nothing clipped means nothing to offer — the ladder
+  /// must not leave a permanent control under every box.
+  func testHybridLadderOffersNothingWhenTheWholeBoxIsVisible() {
+    XCTAssertEqual(
+      workTruncatedOutputAffordance(isTruncated: false, hasExpandedInPlace: false, isClipped: false),
+      .none
+    )
+    XCTAssertEqual(
+      workTruncatedOutputAffordance(isTruncated: false, hasExpandedInPlace: true, isClipped: false),
+      .none
+    )
+  }
+
+  /// Expanding a box that clips at a fixed height adds text nobody can see, so
+  /// a fully-expanded-but-clipped box goes straight to the viewer.
+  func testHybridLadderOffersTheViewerForAClippedBox() {
+    XCTAssertEqual(
+      workTruncatedOutputAffordance(isTruncated: false, hasExpandedInPlace: true, isClipped: true),
+      .openFullOutput
+    )
+  }
+
+  func testOutputBoxOverflowsCountsWrappedLinesForAWrappingBox() {
+    let short = "one\ntwo\nthree"
+    XCTAssertFalse(workOutputBoxOverflows(short, lineCapacity: 11, columnCapacity: 46))
+
+    let tall = (1...40).map { "line \($0)" }.joined(separator: "\n")
+    XCTAssertTrue(workOutputBoxOverflows(tall, lineCapacity: 11, columnCapacity: 46))
+
+    // One long line wraps into many in a wrapping box…
+    let oneLongLine = String(repeating: "y", count: 46 * 12)
+    XCTAssertTrue(workOutputBoxOverflows(oneLongLine, lineCapacity: 11, columnCapacity: 46))
+    // …and stays one line in a box that scrolls horizontally instead.
+    XCTAssertFalse(workOutputBoxOverflows(oneLongLine, lineCapacity: 11, columnCapacity: nil))
+  }
+
+  func testOutputBoxOverflowsCountsOnlyHardBreaksForADiff() {
+    let diff = (1...30).map { "+ added line \($0)" }.joined(separator: "\n")
+    XCTAssertTrue(workOutputBoxOverflows(diff, lineCapacity: workDiffOutputBoxLineCapacity, columnCapacity: nil))
+    XCTAssertFalse(workOutputBoxOverflows(diff, lineCapacity: 40, columnCapacity: nil))
+    XCTAssertFalse(workOutputBoxOverflows("", lineCapacity: 11, columnCapacity: nil))
+  }
+
+  // MARK: - Viewer search
+
+  func testViewerSearchCountsEveryOccurrenceNotEveryLine() {
+    let lines = ["alpha beta alpha", "gamma", "ALPHA"]
+    XCTAssertEqual(workOutputViewerMatchLines(lines, query: "alpha"), [0, 0, 2])
+    XCTAssertEqual(workOutputViewerMatchLines(lines, query: "delta"), [])
+    XCTAssertEqual(workOutputViewerMatchLines(lines, query: "   "), [])
+  }
+
+  func testViewerSearchStepsWrapAtBothEnds() {
+    XCTAssertEqual(workOutputViewerSteppedMatchIndex(current: 2, delta: 1, count: 3), 0)
+    XCTAssertEqual(workOutputViewerSteppedMatchIndex(current: 0, delta: -1, count: 3), 2)
+    XCTAssertEqual(workOutputViewerSteppedMatchIndex(current: 0, delta: 1, count: 0), 0)
+  }
+
   // MARK: - Helpers
+
+  private struct RenderedCodeBlock {
+    let code: String
+    let source: WorkCodeBlockSource?
+  }
+
+  private func codeBlockMarkdown(blockCount: Int, linesPerBlock: Int) -> String {
+    var parts: [String] = []
+    for block in 1...blockCount {
+      parts.append("Step \(block): here is the change.")
+      parts.append("")
+      parts.append("```swift")
+      parts.append(contentsOf: (1...linesPerBlock).map { "let block\(block)Line\($0) = \($0)" })
+      parts.append("```")
+      parts.append("")
+    }
+    parts.append("That is every change.")
+    return parts.joined(separator: "\n")
+  }
+
+  private func codeBlockPayloads(of markdown: String) -> [String] {
+    parseMarkdownBlocks(markdown).compactMap { block in
+      guard case .code(_, let code) = block.kind else { return nil }
+      return code
+    }
+  }
+
+  /// Runs the real render path so the test covers the plumbing, not just the
+  /// resolver: preview → timeline entries → per-block render models.
+  private func renderedCodeBlocks(
+    markdown: String,
+    preview: WorkAssistantMessagePreview,
+    id: String
+  ) -> [RenderedCodeBlock] {
+    var message = makeAssistantMessage(id: id, markdown: markdown)
+    message.assistantPreview = preview
+    let rendered = workTimelineRenderEntries(
+      from: [makeMessageEntry(message)],
+      streamingAssistantMessageId: nil,
+      splitAssistantMessageId: message.id
+    )
+    return rendered.compactMap { entry in
+      guard case .assistantMarkdownBlock(let model) = entry.payload,
+            case .code(_, let code) = model.block.kind
+      else { return nil }
+      return RenderedCodeBlock(code: code, source: model.codeSource)
+    }
+  }
 
   private struct ShowMoreWalk {
     let taps: Int

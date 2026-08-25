@@ -430,8 +430,8 @@ apps/ios/
 │   │   │                            # WorkPromptStash (composer overflow +
 │   │   │                            #   per-project stash host),
 │   │   │                            # WorkContextUsageViews (turn-end meter),
-│   │   │                            # WorkChatComposerAndInputViews (compacted
-│   │   │                            #   icon-only staged-steer strip + the
+│   │   │                            # WorkChatComposerAndInputViews (always-open
+│   │   │                            #   icon-only queued-steer strip + the
 │   │   │                            #   structured-question card: pinned provider
 │   │   │                            #   row / tab strip above and freeform +
 │   │   │                            #   Send/Decline footer below a
@@ -654,8 +654,63 @@ and is applied through `ScrollPosition` in a non-animated transaction.
 Deliberately not total content height: a reply streaming into the tail grows the
 content at the same time, and a reader scrolled back through history is exactly
 when that happens, so a total-height correction would add the tail's growth and
-overshoot. Bottom-follow, the jump-to-latest pill, and the initial force-pin are
-untouched.
+overshoot. Bottom-follow and the jump-to-latest pill are untouched.
+
+Three rules keep that correction from becoming a teleport. A probe sample that
+describes a *different* row than the armed anchor is no measurement at all, so
+it waits rather than falling through with a zero row shift — that would reduce
+the correction to the reader's own scroll delta and apply it twice. Overlapping
+prepends keep the *first* anchor rather than re-arming on the new leading row:
+its row was pushed down by both insertions, so the displacement measured on it
+already accumulates them. And a correction is a scroll write, so like every
+other one it defers to the reader for the whole interaction — finger-down
+through the end of the fling (`workChatMayWriteScrollOffset`, fed by
+`onScrollPhaseChange`, not by the drag gesture, which ends at finger-up).
+
+**A chat opens where it was left, not at a random offset.** The transcript opens
+at the tail through `defaultScrollAnchor(.bottom, for: .initialOffset)` —
+scoped to the initial offset because the `.sizeChanges` anchor is the
+total-height correction the paragraph above exists to avoid. The force-pin
+remains as belt-and-braces, but it now stays armed until the content size has
+been quiet for 600ms rather than firing on a fixed retry ladder, because
+hydration routinely lands after that ladder ends. It stands down early only for
+a deliberate drag (16pt — the 2pt stickiness deadband is finger jitter on a
+freshly-opened chat). A transcript shorter than the viewport renders from the
+top, desktop-style; a one-entry chat skips the pin entirely.
+
+**A message's truncation budget only ever grows.** The newest assistant message
+renders tail-anchored under a generous budget so a finishing turn is readable in
+place. When a newer message arrives it becomes head-anchored — and the budget it
+already rendered under becomes its floor, so "Show more" can never appear on a
+message the reader has already read in full. Both show-more paths (the split
+controls row and the message bubble) write one shared budget map on the
+transcript, so an expansion survives `LazyVStack` recycling. Expanding grows the
+message downward and holds the tapped row in place; it never re-pins the
+transcript to its bottom.
+
+**Expanding is a two-rung ladder, not an infinite one.** The first "Show more"
+expands in place as above. Anything still bounded after that step offers "Open
+full output" instead of another step (`workTruncatedOutputAffordance`), which
+presents `WorkOutputViewerScreen` — a monospaced, line-numbered, lazily laid out
+reader with a wrap toggle, occurrence-counting search, Copy all and the share
+sheet. The boxed renderers (`WorkStructuredOutputBlock`, `WorkDiffOutputBlock`,
+`WorkInlineDiffPreview`) clip at a fixed height with no inner scroller, so for
+them the second rung is not a preference: another in-place step would add text
+the box cuts away. `workOutputBoxOverflows` decides whether a box is clipping
+without scanning a long result to find out, and a clipping box opens the viewer
+from its header *or* by tapping the clipped region. The viewer is presented once
+per surface through `\.workOutputViewer` rather than by a `fullScreenCover` on
+every transcript row.
+
+**Copy is always the full content, never what is on screen.** The transcript
+renders bounded slices, so a Copy control that echoed its own view silently
+handed over a preview. Fenced code blocks resolve against the message they were
+sliced from by ordinal — counted from the front for a head-anchored preview and
+from the back for a tail-anchored one, which is also the case that carries a
+synthetic opening fence and so is the one most likely to hold a fragment
+(`WorkCodeBlockSource`). Resolution runs at tap time, never per render pass. The
+tool-result box displays its 500-character truncation while `copyText` carries
+the whole result.
 
 **Long replies cost O(tail), not O(message).** `parseMarkdownBlocksForStreaming`
 already split prose at a stable boundary; syntax highlighting now does the same,
@@ -668,6 +723,16 @@ their own small cache instead of the shared 256-entry inline-markdown cache, so
 one long turn cannot evict every completed message and force a main-thread
 re-parse on scrollback; the final revision is promoted. All derived render
 caches drop on `applicationDidReceiveMemoryWarning`.
+
+Two properties make that O(tail) real rather than nominal. Markdown block ids
+are position-stable (`markdown-block-<index>`), not content-derived, so a
+delta does not hand the `LazyVStack` a new identity for a row that is still the
+same row; content changes travel in a separate `digest` field that change
+detection reads. And no derived text is recomputed per refresh: each message
+carries a digest stamped by the (off-main) snapshot fold, previews are cached
+per line budget, and the presentation signature hashes those digests plus each
+preview's shape instead of re-hashing the visible transcript's full text
+several times a second.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -3045,16 +3110,22 @@ the stats and shows update guidance.
   Codex and other adapters reuse compact tool cards; data URIs are never printed
   into the timeline, and stored/mobile compaction byte counts become a short
   "preview omitted" detail.
-- **Tool telemetry is disclosed from turn status, not repeated through the
-  mobile transcript.** `WorkChatSessionView` keeps assistant narration,
-  reasoning, provider-specific cards, and `WorkChangedFilesPanelView` rows in
-  chronological order, but filters normalized `toolGroup` rows from the visible
-  timeline. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView`
-  open the corresponding activity in `WorkTurnActivitySheet`. The live row uses
-  `ViewThatFits` so narrow phones retain the activity verb and monospaced elapsed
-  time without squeezing tool details into the same line. The association is
-  data-driven and never invents file changes for providers that did not emit
-  them.
+- **Tool telemetry keeps one chronological row, and is also disclosed from turn
+  status.** `WorkChatSessionView` draws assistant narration, reasoning,
+  provider-specific cards, `WorkToolCallsPanelView` clusters and
+  `WorkChangedFilesPanelView` rows in chronological order;
+  `workPresentedTimelineEntries` in `WorkTimelineHelpers.swift` is the seam that
+  decides what reaches the visible timeline. It used to drop every normalized
+  `toolGroup` row, which meant a turn whose only work was a `Read` and an
+  approved shell command left no trace in the transcript at all. That rule was
+  written when a cluster had no compact form; a finished cluster is now a single
+  44pt row in the same one-liner grammar the changed-files panel uses, so it
+  stays. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still
+  open the whole turn's activity in `WorkTurnActivitySheet`, where tapping a
+  member reveals its result or output. The live row uses `ViewThatFits` so
+  narrow phones retain the activity verb and monospaced elapsed time without
+  squeezing tool details into the same line. The association is data-driven and
+  never invents file changes for providers that did not emit them.
 - **Active-turn send and Stop use dismissing native popovers.** The in-session
   composer's delivery choices come from `WorkActiveSendCapability` in
   `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical
@@ -3070,17 +3141,46 @@ the stats and shows update guidance.
   strings comes from the capability's `agentLabel` rather than hard-coded
   "Claude". The primary button's icon/label communicates the selected behavior,
   the chevron opens a custom SwiftUI popover, and selection dismisses it
-  immediately. The effective mode is derived from the pick rather than stored, so
-  switching providers mid-chat can never leave a mode selected that the new
-  provider cannot honor; queue-only providers (a single mode is not a choice)
-  keep the plain stage-behind-turn button, matching the desktop composer. When the host advertises
-  additive `chat.interruptWithQueueMode`, Claude Stop likewise becomes a split
-  control for **Stop & clear queue**
+  immediately. The pick is remembered per chat in `WorkActiveSendModeStore`
+  (App Group defaults, same bounded JSON-map mechanism as the composer drafts),
+  so a working habit survives backgrounding and relaunch; a turn starting or
+  ending does not reset it, and a provider change snaps back to that provider's
+  default only when the new provider cannot honor the remembered mode.
+  Queue-only providers (a single mode is not a choice) keep the plain
+  stage-behind-turn button, matching the desktop composer. When the host
+  advertises additive `chat.interruptWithQueueMode`, Claude Stop likewise
+  becomes a split control for **Stop & clear queue**
   and **Stop only**; the per-chat choice is stored in `UserDefaults`, carries
   VoiceOver labels and haptics, and falls back to legacy Stop against older
-  brains. Immediate send still stages once on the host before
-  `chat.dispatchSteer`; if dispatch fails, the one queued message remains and
-  the draft is not restored as a duplicate.
+  brains.
+- **Active-turn sends are atomic, so nothing flashes through the staged strip.**
+  `AgentChatSteerRequest` carries the desktop's `dispatchMode` field
+  (`"inline"` / `"interrupt"`, spelled exactly as the host validates it), and
+  `SyncService.steerChatSession` sends it with the steer itself. A host that can
+  honor it dispatches in the same round-trip and answers `queued: false`, so no
+  queued transcript row is written and no optimistic staged entry is created.
+  The mode is resolved once, before the send, so the branch that resends as a
+  steer after a "turn already active" rejection carries the same mode — losing
+  it there used to downgrade a *Send now* tap into a silently staged message.
+  `workChatAtomicSteerDispatchMode` returns nil for **Send after turn**, for a
+  provider with no such channel, and for a brain that does not advertise
+  `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
+  composer can never request a promotion the strip is hiding the recovery for.
+  A host old enough to advertise `chat.dispatchSteer` but too old to accept
+  `dispatchMode` on `chat.steer` answers `queued: true`; that one case falls
+  back to the legacy two-step promotion rather than dropping the user's choice,
+  and if the promotion fails the single queued message remains and the draft is
+  not restored as a duplicate.
+- **The staged strip is only ever "you queued this".** With active-turn sends
+  atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
+  queue, so it no longer hides behind an accordion: one queued message is a
+  single compact card — waiting glyph, one truncated line of the message, its
+  disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
+  as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
+  a slim `N queued` count above the rows. While a turn is running the clock
+  glyph breathes and the disposition reads "sends when turn ends"; on an idle
+  session it sits still and reads "after turn". The pulse goes through
+  `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full strength.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
   retain `context_compact.postTokens` plus the automatic `context_usage.state`.
