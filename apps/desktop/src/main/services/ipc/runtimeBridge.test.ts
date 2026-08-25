@@ -165,6 +165,11 @@ function sender(id = 42) {
   return {
     id,
     isDestroyed: vi.fn(() => false),
+    // `on`/`off` as well as `once`: the simulator parking holder watches this
+    // webContents for a reload (a main-frame navigation) and takes its
+    // listeners back off when the holder goes.
+    on: vi.fn(),
+    off: vi.fn(),
     once: vi.fn(),
     send: vi.fn(),
   } as any;
@@ -198,8 +203,9 @@ const simulatorSession = {
   claimedAt: "2026-04-29T00:00:01.000Z",
 };
 
-function iosSimulatorServiceStub() {
+function iosSimulatorServiceStub(overrides: Record<string, unknown> = {}) {
   return {
+    ...overrides,
     getStatus: vi.fn(async () => ({
       platform: "darwin",
       supported: true,
@@ -271,10 +277,10 @@ function parkingClaimant(id = 7) {
   };
 }
 
-function registerIpcForSimulator() {
+function registerIpcForSimulator(serviceOverrides: Record<string, unknown> = {}) {
   const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
   registerIpc({
-    getCtx: () => ({ logger, iosSimulatorService: iosSimulatorServiceStub() }) as any,
+    getCtx: () => ({ logger, iosSimulatorService: iosSimulatorServiceStub(serviceOverrides) }) as any,
     getSyncService: () => null,
     switchProjectFromDialog: vi.fn(),
     closeCurrentProject: vi.fn(),
@@ -2131,6 +2137,48 @@ describe("registerIpc sync bridge", () => {
     expect(activeSimulatorParkingWindow()).toBe(claimant);
 
     await release?.(eventForSender());
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // The service checks the single-owner rule "before any teardown so a refused
+  // shutdown leaves the stream and companion of the owning chat untouched". The
+  // IPC handler used to drop the window-parking follow *before* awaiting the
+  // call, so a refusal travelled back to the foreign caller with the owner's
+  // follow already gone — the promise broken from the outside.
+  it("keeps the owner's parking follow when a shutdown is refused", async () => {
+    const shutdown = vi.fn(async () => {
+      throw new Error("IOS_SIMULATOR_OWNED_BY_OTHER_SESSION");
+    });
+    registerIpcForSimulator({ shutdown });
+    installSimulatorSpawn(healthySimulator);
+    desktopCapturerGetSources.mockResolvedValue([simulatorWindowSource()]);
+
+    const claimant = parkingClaimant();
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(eventForSender(), {});
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    await expect(ipcHandlers.get(IPC.iosSimulatorShutdown)?.(eventForSender(), { chatSessionId: "chat-2" }))
+      .rejects.toThrow("IOS_SIMULATOR_OWNED_BY_OTHER_SESSION");
+
+    expect(shutdown).toHaveBeenCalled();
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+  });
+
+  it("drops the parking follow once a shutdown actually releases the session", async () => {
+    const shutdown = vi.fn(async () => ({ released: true, previousSession: null }));
+    registerIpcForSimulator({ shutdown });
+    installSimulatorSpawn(healthySimulator);
+    desktopCapturerGetSources.mockResolvedValue([simulatorWindowSource()]);
+
+    const claimant = parkingClaimant();
+    browserWindowFromWebContents.mockReturnValue(claimant);
+    await ipcHandlers.get(IPC.iosSimulatorListWindowSources)?.(eventForSender(), {});
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+
+    await expect(ipcHandlers.get(IPC.iosSimulatorShutdown)?.(eventForSender(), { chatSessionId: "chat-1" }))
+      .resolves.toEqual({ released: true, previousSession: null });
+
     expect(activeSimulatorParkingWindow()).toBeNull();
   });
 

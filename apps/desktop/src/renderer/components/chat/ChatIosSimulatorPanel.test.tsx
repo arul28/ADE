@@ -1360,6 +1360,41 @@ describe("ChatIosSimulatorPanel", () => {
     expect(constraints.video.mandatory.chromeMediaSourceId).toBe(simulatorWindowSource.id);
   });
 
+  // The host caps each discovery call, not the sequence of them. With a 12s
+  // per-call budget and three sweeps, a genuinely blocked setup used to spin for
+  // ~36s before saying anything at all — the drawer has to own the overall
+  // deadline and stop asking once a whole host budget no longer fits in it.
+  it("stops sweeping for the simulator window once the overall deadline is spent", async () => {
+    const realNow = Date.now.bind(Date);
+    let elapsed = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + elapsed);
+    const { api } = installIosSimulatorApi();
+    // Each sweep burns a full host budget and comes back empty with no verdict
+    // — the shape a blocked setup actually produces.
+    api.listSimulatorWindowSources.mockImplementation(async () => {
+      elapsed += 12_000;
+      return { sources: [], windowState: null, message: null };
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.listSimulatorWindowSources).toHaveBeenCalled(), { timeout: 3_000 });
+    await waitFor(
+      () => expect(screen.getAllByText(/Timed out finding the simulator window/).length).toBeGreaterThan(0),
+      { timeout: 3_000 },
+    );
+    // One sweep, not three: the second would have pushed the wall time past the
+    // deadline before it could return.
+    expect(api.listSimulatorWindowSources).toHaveBeenCalledTimes(1);
+    nowSpy.mockRestore();
+  });
+
   it("warns when ADE cannot refresh the simulator live view", async () => {
     const { api } = installIosSimulatorApi({
       windowState: {
@@ -1667,8 +1702,11 @@ describe("ChatIosSimulatorPanel", () => {
 
   // The lane-scoped surface hides the ownership card and keeps Stop live for a
   // session another chat owns, so identifying as itself would have it refused
-  // by the very rule it is meant to bypass.
-  it("stops a foreign-owned session as its owner on the lane-scoped surface", async () => {
+  // by the very rule it is meant to bypass. It says so outright instead of
+  // reading the owner's id off `getStatus` and wearing it: impersonation logged
+  // the wrong caller, and made "read the owner id, replay it" look like the
+  // supported way past the guard.
+  it("asks the service to stand the ownership rule down on the lane-scoped surface", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const { api } = installIosSimulatorApi();
     api.shutdown.mockResolvedValue({ ok: true });
@@ -1684,8 +1722,14 @@ describe("ChatIosSimulatorPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
 
-    // activeStatus's session is owned by chat-1, not this drawer's chat-2.
-    await waitFor(() => expect(api.shutdown).toHaveBeenCalledWith({ chatSessionId: "chat-1", force: false }));
+    // activeStatus's session is owned by chat-1, not this drawer's chat-2: the
+    // drawer names itself and asks for the bypass, rather than answering "I am
+    // chat-1".
+    await waitFor(() => expect(api.shutdown).toHaveBeenCalledWith({
+      chatSessionId: "chat-2",
+      force: false,
+      ignoreOwnership: true,
+    }));
     confirmSpy.mockRestore();
   });
 

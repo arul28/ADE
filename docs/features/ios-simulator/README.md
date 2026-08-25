@@ -31,9 +31,35 @@ those are the only two paths that call `notifyChatSessionEnded`, so a chat that
 is merely closed or navigated away from still holds the session. `shutdown`
 carries the caller's chat session id (the CLI forwards `$ADE_CHAT_SESSION_ID`),
 and a shutdown from any other chat — or from a caller with no session id at all
-— is refused with the same `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` code unless it
-passes `--force`. The owning chat releases its own session with a plain
-`shutdown`. `launch --force` validates the new target before evicting.
+— is refused with the same `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` code. The
+owning chat releases its own session with a plain `shutdown`.
+
+The guard is cooperative, and the docs should not suggest otherwise: it sorts
+honest callers so no chat ends another's session by accident, and every way of
+stating the intent works.
+
+- `shutdown --force` — the documented escape hatch. It also hard-resets the
+  session: tracked `idb` companions are stopped and `activeLaunchId` is
+  cleared, which is what makes it the answer to a wedged
+  `IOS_SIMULATOR_LAUNCH_IN_PROGRESS`.
+- `shutdown({ ignoreOwnership: true })` — the bypass without the hard reset.
+  ADE's lane-scoped drawer uses it: that surface deliberately drives whatever
+  session its lane is running and hides the ownership card, so it names itself
+  and asks the rule to stand down rather than impersonating the owner. It is
+  reachable from the CLI through the generic `--arg ignoreOwnership=true`
+  escape hatch like any other action argument.
+- Naming the owner's own chat session id. `getStatus` is in the agent-allowed
+  `ios_simulator` action list and reports `activeSession.chatSessionId`, so any
+  caller can read the owner's id and pass it as its own — via `--chat-session`
+  or `--arg chatSessionId=…`. A caller that names the owner *is* the owner as
+  far as the check is concerned.
+- `launch --force`, which validates the new target before evicting, and
+  `attachToChatSession({ takeOver: true })`, which transfers ownership without
+  a teardown at all.
+
+Treat it as a guard rail against accidents, not as a lock: nothing here stops a
+determined caller, and the agent skill tells agents to ask before evicting
+rather than relying on the service to refuse.
 
 ### Build root
 
@@ -126,10 +152,15 @@ The resolved root comes back on the launch result and on the session as
    be created. `renderCurrentPreview()` resolves the match, opens/waits for
    Xcode, then calls `renderPreview()` through Xcode MCP.
 
-9. **Shutdown.** `shutdown({ force? })` stops live-view status, releases the
-   active session, stops idb companion work, clears window parking follow state,
-   and emits `session-released`. The session also releases on its own when the
-   owning chat closes.
+9. **Shutdown.** `shutdown({ chatSessionId?, force?, ignoreOwnership? })` stops
+   live-view status, releases the active session, stops idb companion work,
+   clears window parking follow state, and emits `session-released`. The
+   ownership check runs before any of that, so a refused shutdown leaves the
+   owner's session untouched — including its window-parking follow, which the
+   IPC handler drops only after the call resolves. `force` additionally stops
+   tracked idb companions and clears `activeLaunchId`; `ignoreOwnership` does
+   neither and only stands the ownership check down. The session also releases
+   on its own when the owning chat closes.
 
 ## CLI
 

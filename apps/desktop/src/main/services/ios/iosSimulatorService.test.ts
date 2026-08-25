@@ -394,6 +394,15 @@ describe("iosSimulatorService shutdown contract", () => {
       await launchAsChatA();
       expect(await service.shutdown({ force: true })).toMatchObject({ released: true });
       expect((await service.getStatus()).activeSession).toBeNull();
+
+      // `ignoreOwnership` is the lane-scoped drawer's intent: stop whatever this
+      // lane is running, said in its own name. It steps around the guard without
+      // asking for anything else `force` does, so a caller that only needs the
+      // bypass no longer has to impersonate the owner to get it.
+      await launchAsChatA();
+      expect(await service.shutdown({ chatSessionId: "chat-B", ignoreOwnership: true }))
+        .toMatchObject({ released: true, previousSession: { chatSessionId: "chat-A" } });
+      expect((await service.getStatus()).activeSession).toBeNull();
     } finally {
       service.dispose();
       fs.rmSync(projectRoot, { recursive: true, force: true });

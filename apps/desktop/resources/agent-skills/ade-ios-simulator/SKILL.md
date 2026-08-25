@@ -77,7 +77,7 @@ One chat owns a simulator session at a time. A second launch fails with `IOS_SIM
 
 - Ownership releases automatically only when the owning chat is deleted or archived. Merely closing or navigating away from it does not free the simulator. Once released, re-run `launch`.
 - If the owner is still live and the user wants it taken over: `ade --socket ios-sim shutdown --force --text`, or `launch --force`.
-- A plain `shutdown` from a chat that does not own the session is refused with `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`; only `--force` evicts the owner. Don't force it on your own initiative — ask. Waiting only pays off if the owner is actively finishing; an idle chat holds the session indefinitely, so don't sit in a retry loop.
+- A plain `shutdown` from a chat that does not own the session is refused with `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`. The guard is cooperative, not a lock: it exists so an honest caller cannot end someone else's session by accident. Anything that states the intent gets through — `shutdown --force`, `launch --force`, and equally a caller that passes the owner's own chat session id, which `status` hands to anyone who asks. So the restraint is yours to keep, not the service's to enforce: don't evict another chat on your own initiative, ask. Waiting only pays off if the owner is actively finishing; an idle chat holds the session indefinitely, so don't sit in a retry loop.
 - `claim --lane <lane-id>` is only for attaching an already-running session to a lane. It is not a step in a normal launch.
 
 ## Gotchas

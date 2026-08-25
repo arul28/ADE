@@ -934,14 +934,18 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Aliases: stop, teardown, end, end-session.
 
   Shutdown carries the caller's chat session ($ADE_CHAT_SESSION_ID or
-  --chat-session). Releasing a session owned by a different chat is refused
-  unless --force is passed.
+  --chat-session). Releasing a session owned by a different chat is refused.
+  The check is cooperative — it stops accidents, not determined callers:
+  --force gets through, and so does naming the owner's own chat session id,
+  which "ios-sim status" reports to anyone who asks. Ask before evicting
+  another chat.
 
     $ ade --socket ios-sim shutdown --text
     $ ade --socket ios-sim shutdown --force --text
 
   Flags:
-    --force, -f            Release a session owned by another chat.
+    --force, -f            Release a session owned by another chat, and hard-reset
+                           the launch lock and tracked idb companions with it.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
 `,
   actions: `${ADE_BANNER}
@@ -2245,9 +2249,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   A launched simulator session belongs to one chat at a time. Run
   "ios-sim shutdown" from the owning chat before launching it from a different
-  one; shutting down a session another chat owns is refused unless you pass
-  "shutdown --force", and "launch --force" takes it over in one step. Use
-  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
+  one; shutting down a session another chat owns is refused, and
+  "shutdown --force" or "launch --force" takes it over deliberately. The refusal
+  is a guard rail against accidents, not a lock — see "ios-sim shutdown --help".
+  Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show simulator readiness

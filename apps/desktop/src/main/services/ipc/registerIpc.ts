@@ -117,7 +117,7 @@ import {
   openSimulatorPrivacyPane,
   readSimulatorSessionHint,
   reattachSimulatorWindowForCapture,
-  releaseSimulatorParkingFollow,
+  releaseSimulatorParkingFollowAfter,
   releaseSimulatorParkingHolder,
   retainSimulatorParkingFollow,
   revealSimulatorWindow,
@@ -8357,10 +8357,11 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => {
-    releaseSimulatorParkingFollow();
-    return ensureIosSimulator().shutdown(arg);
-  });
+  // The follow is dropped *after* the shutdown resolves, never before: the
+  // service refuses a foreign caller by throwing, and a refusal must leave the
+  // owning chat's parking follow exactly as it found it.
+  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) =>
+    releaseSimulatorParkingFollowAfter(() => ensureIosSimulator().shutdown(arg)));
 
   ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
 
@@ -8502,9 +8503,11 @@ export function registerIpc({
   // later release a holder it never took — the incumbent drawer's.
   //
   // The sender travels with the holder because it is the only thing that can
-  // report a renderer reload: that destroys the drawer without running its
+  // report a renderer reload: that throws away the drawer without running its
   // release and never closes the window, so a window-scoped count leaked a
-  // holder for the life of the process.
+  // holder for the life of the process. The reload signal is the sender's
+  // main-frame navigation, not `destroyed` — the webContents object outlives
+  // any number of reloads.
   ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: boolean }> => ({
     ok: retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender), event.sender),
   }));

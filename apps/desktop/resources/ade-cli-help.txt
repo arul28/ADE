@@ -1160,9 +1160,10 @@ _    ____  _____
 
   A launched simulator session belongs to one chat at a time. Run
   "ios-sim shutdown" from the owning chat before launching it from a different
-  one; shutting down a session another chat owns is refused unless you pass
-  "shutdown --force", and "launch --force" takes it over in one step. Use
-  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
+  one; shutting down a session another chat owns is refused, and
+  "shutdown --force" or "launch --force" takes it over deliberately. The refusal
+  is a guard rail against accidents, not a lock — see "ios-sim shutdown --help".
+  Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show simulator readiness

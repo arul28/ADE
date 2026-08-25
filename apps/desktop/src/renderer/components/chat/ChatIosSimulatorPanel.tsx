@@ -193,11 +193,33 @@ const MEDIA_ZOOM_STEP = 0.25;
 /** Stream reports active but no new frame landed inside this window. */
 const FRAME_STALL_MS = 3_000;
 /**
- * Host discovery budgets 4s per call and answers with a `message` only for a
- * terminal blocker, so a sweep that simply came back empty is worth repeating —
- * a Simulator window can appear a beat after the app does.
+ * The host answers with a `message` only for a terminal blocker, so a sweep
+ * that simply came back empty is worth repeating — a Simulator window can
+ * appear a beat after the app does.
  */
 const WINDOW_SOURCE_ATTEMPTS = 3;
+/**
+ * Host discovery budgets 12s *per call* (`SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS`
+ * — it has to sit above the ~10.5s of AppleScript ceilings a cold Simulator
+ * costs), and the loop below sweeps up to three times. Per-call budgets alone
+ * therefore bound nothing the user experiences: three full sweeps is ~36s of
+ * spinner before a blocked setup says anything at all.
+ *
+ * So the wall time is bounded here, across attempts, and a sweep is only
+ * started when a whole host budget still fits inside it. The first sweep always
+ * gets its full 12s, which is what a cold start needs; the retries only happen
+ * when the first one came back quickly, which is exactly the case they exist
+ * for.
+ *
+ * Worst case: one 12s sweep, then the deadline refuses a second (13s - 12s
+ * spent leaves 1s, less than a budget), so ~12s to a terminal message —
+ * a fraction under 13s counting the 250ms inter-sweep wait. A fast first sweep
+ * still allows a second and a third, each capped the same way, so the ceiling
+ * holds at ~13s + one sweep's overrun rather than 36s.
+ */
+const WINDOW_SOURCE_TOTAL_DISCOVERY_MS = 13_000;
+/** Mirrors the host's own per-call cap so the deadline above can reason about it. */
+const WINDOW_SOURCE_HOST_BUDGET_MS = 12_000;
 /** Window-state poll cadence: fast while the state is moving, slow once settled. */
 const WINDOW_POLL_FAST_MS = 2_000;
 const WINDOW_POLL_SLOW_MS = 10_000;
@@ -1105,12 +1127,15 @@ export function ChatIosSimulatorPanel({
       // has to name itself or the service refuses its own Stop button as a
       // foreign caller. `ignoreChatOwnership` is the lane-scoped surface, which
       // by design drives whatever session the lane is running and hides the
-      // ownership card — it answers as the current owner so that rule cannot
-      // lock it out of a Stop button it deliberately still shows.
-      const callerChatSessionId = ignoreChatOwnership
-        ? activeSession?.chatSessionId ?? sessionId ?? null
-        : sessionId ?? null;
-      await window.ade.iosSimulator.shutdown({ chatSessionId: callerChatSessionId, force });
+      // ownership card, so it asks the service to stand the rule down — it does
+      // not replay the owner's id as its own. Impersonating the owner worked,
+      // but it logged the wrong caller and taught every other caller that
+      // reading an id off `getStatus` is how you get past the guard.
+      await window.ade.iosSimulator.shutdown({
+        chatSessionId: sessionId ?? null,
+        force,
+        ...(ignoreChatOwnership ? { ignoreOwnership: true } : {}),
+      });
       await refreshStatus();
       setSnapshot(null);
       setSelectedElement(null);
@@ -1121,7 +1146,6 @@ export function ChatIosSimulatorPanel({
       return false;
     }
   }, [
-    activeSession?.chatSessionId,
     controlsDisabled,
     controlsDisabledMessage,
     ignoreChatOwnership,
@@ -1334,8 +1358,8 @@ export function ChatIosSimulatorPanel({
   /**
    * `captureStartRef` is checked on entry and after every await in here, and
    * both awaits are long: `startStream` is a daemon round-trip, and discovery
-   * runs for up to SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS plus the settling
-   * AppleScript. Leaving Interact, losing the session, or closing the drawer
+   * sweeps for up to WINDOW_SOURCE_TOTAL_DISCOVERY_MS plus one host budget's
+   * overrun. Leaving Interact, losing the session, or closing the drawer
    * while it says "Starting the live view" therefore lands React's cleanups
    * *before* this resumes — they see no stream and no hold, and then this took
    * both for a live view nobody is watching, permanently pinning the parking
@@ -1399,7 +1423,17 @@ export function ChatIosSimulatorPanel({
       // permission blocker, no session, or its own budget exhausted — so a message
       // ends the poll. An empty sweep with no message is transient and worth
       // re-asking: the Simulator window is sometimes a beat behind the app.
+      //
+      // The host's budget is per call, so the deadline that bounds what the user
+      // waits for lives here. A sweep is only started when a whole host budget
+      // still fits before it, which keeps the first (cold-start) sweep whole and
+      // stops the third from turning a blocked setup into a silent ~36s spinner.
+      const discoveryDeadlineAt = Date.now() + WINDOW_SOURCE_TOTAL_DISCOVERY_MS;
       for (let attempt = 0; attempt < WINDOW_SOURCE_ATTEMPTS; attempt += 1) {
+        if (attempt > 0 && discoveryDeadlineAt - Date.now() < WINDOW_SOURCE_HOST_BUDGET_MS) {
+          blockerMessage = "Timed out finding the simulator window. Try again.";
+          break;
+        }
         const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
         // Take the parking hold here, once, and not where the stream starts.
         // Discovery is what arms the host's claim, and a holder only counts

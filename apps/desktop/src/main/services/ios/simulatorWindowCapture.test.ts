@@ -65,19 +65,50 @@ function fakeWindow(): FakeWindow {
 
 const asBrowserWindow = (window: FakeWindow) => window as unknown as BrowserWindow;
 
-type FakeSender = SimulatorParkingHolderSender & { destroy: () => void };
+type FakeSender = SimulatorParkingHolderSender & {
+  /** The WebContents object itself goes away: a window or webview teardown. */
+  destroy: () => void;
+  /** The document is swapped under a webContents that survives: a reload. */
+  reload: () => void;
+  /** A `pushState` or fragment jump, which keeps the drawer alive. */
+  navigateInPage: () => void;
+  /** How many listeners are still armed, across both events. */
+  listenerCount: () => number;
+};
 
-/** A renderer's webContents: an id and the one death notice the refcount needs. */
+/**
+ * A renderer's webContents: an id, the two teardown signals, and — the part
+ * that matters for the leak — real add/remove semantics, so a test can see the
+ * listeners a long-lived renderer accumulates.
+ */
 function fakeSender(id: number): FakeSender {
-  const destroyed: Array<() => void> = [];
+  const listeners = new Map<string, Set<(...args: never[]) => void>>();
+  const add = (event: string, listener: (...args: never[]) => void) => {
+    const set = listeners.get(event) ?? new Set();
+    set.add(listener);
+    listeners.set(event, set);
+    return undefined;
+  };
+  const remove = (event: string, listener: (...args: never[]) => void) => {
+    listeners.get(event)?.delete(listener);
+    return undefined;
+  };
+  const emit = (event: string, ...args: unknown[]) => {
+    for (const listener of [...(listeners.get(event) ?? [])]) {
+      (listener as (...rest: unknown[]) => void)(...args);
+    }
+  };
   return {
     id,
-    once: (_event: "destroyed", listener: () => void) => {
-      destroyed.push(listener);
-      return undefined;
-    },
-    destroy: () => {
-      for (const listener of destroyed.splice(0)) listener();
+    on: add as SimulatorParkingHolderSender["on"],
+    off: remove as SimulatorParkingHolderSender["off"],
+    destroy: () => emit("destroyed"),
+    reload: () => emit("did-start-navigation", { isMainFrame: true, isSameDocument: false }),
+    navigateInPage: () => emit("did-start-navigation", { isMainFrame: true, isSameDocument: true }),
+    listenerCount: () => {
+      let total = 0;
+      for (const set of listeners.values()) total += set.size;
+      return total;
     },
   };
 }
@@ -344,11 +375,61 @@ describe("simulator window parking holders", () => {
     expect(activeSimulatorParkingWindow()).toBeNull();
   });
 
-  // A renderer reload destroys the React tree without running any cleanup and
-  // never closes the window, so a window-scoped count kept the holder forever:
-  // every later real release answered false, and every ADE window move went on
-  // repositioning the user's Simulator with no drawer open at all.
-  it("drops a reloaded renderer's holders when its webContents is destroyed", () => {
+  // A renderer reload throws away the React tree without running any cleanup,
+  // and it neither closes the window nor destroys the webContents: the object,
+  // its id and its listeners all survive a navigation. Watching only for
+  // `destroyed` therefore left the pre-reload holder booked under the same
+  // sender id, the reloaded drawer retained on top of it, and the count never
+  // came back to zero — every later real release answered false and every ADE
+  // window move went on repositioning the user's Simulator with no drawer open.
+  it("drops a reloaded renderer's holders when its main frame navigates", () => {
+    const claimant = fakeWindow();
+    const renderer = fakeSender(1);
+    followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), renderer);
+
+    renderer.reload();
+
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // The reload path, played out the way the leak actually presented: the new
+  // document's drawer takes its own holder, and the single release it later
+  // issues has to be enough to drop the follow.
+  it("lets the reloaded drawer's own release drop the follow", () => {
+    const claimant = fakeWindow();
+    const renderer = fakeSender(1);
+    followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), renderer);
+
+    renderer.reload();
+    // The reload dropped the last holder, so the claim went with it; the new
+    // document's drawer re-arms discovery and claims again.
+    followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), renderer);
+
+    expect(releaseSimulatorParkingHolder(asBrowserWindow(claimant), renderer)).toBe(true);
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // `pushState` and fragment jumps keep the document — and the drawer holding
+  // the claim — alive, so they must not be read as a reload.
+  it("keeps the holders of a renderer that navigates in place", () => {
+    const claimant = fakeWindow();
+    const renderer = fakeSender(1);
+    followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), renderer);
+
+    renderer.navigateInPage();
+
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+    expect(releaseSimulatorParkingHolder(asBrowserWindow(claimant), renderer)).toBe(true);
+  });
+
+  // A webview or window teardown is the other way holders die, and it still has
+  // to work — it is what the `closed` sweep cannot see for a webContents that
+  // is not the window's own.
+  it("drops a renderer's holders when its webContents is destroyed", () => {
     const claimant = fakeWindow();
     const renderer = fakeSender(1);
     followSimulatorWindowUnderAde(asBrowserWindow(claimant));
@@ -367,10 +448,26 @@ describe("simulator window parking holders", () => {
     retainSimulatorParkingFollow(asBrowserWindow(claimant), reloaded);
     retainSimulatorParkingFollow(asBrowserWindow(claimant), survivor);
 
-    reloaded.destroy();
+    reloaded.reload();
     expect(activeSimulatorParkingWindow()).toBe(claimant);
 
     expect(releaseSimulatorParkingHolder(asBrowserWindow(claimant), survivor)).toBe(true);
     expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // The renderer outlives every drawer inside it, so a listener armed per
+  // holder and never removed is a permanent accumulation on one webContents:
+  // Node warns at 11 and the leak is real long before that.
+  it("does not stack teardown listeners across drawer open/close cycles", () => {
+    const claimant = fakeWindow();
+    const renderer = fakeSender(1);
+
+    for (let cycle = 0; cycle < 12; cycle += 1) {
+      followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+      retainSimulatorParkingFollow(asBrowserWindow(claimant), renderer);
+      expect(releaseSimulatorParkingHolder(asBrowserWindow(claimant), renderer)).toBe(true);
+    }
+
+    expect(renderer.listenerCount()).toBe(0);
   });
 });

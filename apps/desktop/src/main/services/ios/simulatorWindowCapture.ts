@@ -34,8 +34,13 @@ import type {
  * then a 300 settle), the re-attach park (the same 3900 plus a 600 settle) and
  * the closing re-measure (900) — 10.5s of ceilings. At 4s the re-attach could
  * never run and the handler reported "timed out" before the first sweep had a
- * fair chance. The IPC channel allows 60s, and the drawer polls at most three
- * times, so this is comfortably inside its own transport budget.
+ * fair chance. The IPC channel allows 60s, so this is comfortably inside its
+ * own transport budget.
+ *
+ * This is a *per-call* cap and the drawer sweeps more than once, so it does not
+ * bound what the user waits for on its own — the drawer owns an overall
+ * deadline across its sweeps (`WINDOW_SOURCE_TOTAL_DISCOVERY_MS`) and stops
+ * asking once one call's worth of budget is all that is left.
  */
 export const SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS = 12_000;
 
@@ -455,16 +460,37 @@ let simulatorParkingWindow: BrowserWindow | null = null;
 let simulatorParkingTimer: NodeJS.Timeout | null = null;
 let cleanupSimulatorParkingFollow: (() => void) | null = null;
 
+/** The main-frame navigation facts a reload has to be told apart by. */
+export type SimulatorParkingNavigationDetails = {
+  isMainFrame: boolean;
+  isSameDocument: boolean;
+};
+
+/**
+ * The two teardown signals a holder is dropped on, and their removal.
+ *
+ * Declared as overloads rather than a union so a real Electron `WebContents`
+ * — whose `on`/`off` are themselves overloaded per event — satisfies it.
+ */
+type SimulatorParkingHolderSubscription = {
+  (event: "destroyed", listener: () => void): unknown;
+  (
+    event: "did-start-navigation",
+    listener: (details: SimulatorParkingNavigationDetails) => void,
+  ): unknown;
+};
+
 /**
  * The renderer side of a holder: the `webContents` that asked for it.
  *
  * Structural rather than `WebContents` so a unit test can hand over a plain
- * object — the only two members the refcount needs are the identity and the
- * death notice.
+ * object — the only members the refcount needs are the identity, the two
+ * teardown signals, and a way to stop listening for them.
  */
 export type SimulatorParkingHolderSender = {
   id: number;
-  once: (event: "destroyed", listener: () => void) => unknown;
+  on: SimulatorParkingHolderSubscription;
+  off: SimulatorParkingHolderSubscription;
 };
 
 // How many live capture surfaces depend on the follow, keyed by the renderer
@@ -479,9 +505,26 @@ export type SimulatorParkingHolderSender = {
 // later real release answered false, and every ADE window move kept
 // repositioning the user's Simulator with no drawer open at all.
 const simulatorParkingHolders = new Map<number, number>();
-// webContents ids already wired to a `destroyed` teardown, so a second holder
-// from the same renderer does not stack listeners.
-const simulatorParkingHolderWatched = new Set<number>();
+// webContents ids already wired to their teardown signals, mapped to the
+// unsubscribe that removes them. A second holder from the same renderer must
+// not arm a second pair of listeners, and — because the same long-lived
+// renderer opens and closes the drawer over and over — every pair armed here
+// has to come back off, or a dozen drawer cycles trip Node's max-listeners
+// warning on the one webContents that never goes away.
+const simulatorParkingHolderWatched = new Map<number, () => void>();
+
+function unwatchSimulatorParkingHolder(senderId: number): void {
+  const unsubscribe = simulatorParkingHolderWatched.get(senderId);
+  if (!unsubscribe) return;
+  simulatorParkingHolderWatched.delete(senderId);
+  unsubscribe();
+}
+
+function unwatchAllSimulatorParkingHolders(): void {
+  for (const senderId of [...simulatorParkingHolderWatched.keys()]) {
+    unwatchSimulatorParkingHolder(senderId);
+  }
+}
 
 function totalSimulatorParkingHolders(): number {
   let total = 0;
@@ -528,10 +571,11 @@ export function followSimulatorWindowUnderAde(window: BrowserWindow | null) {
     if (simulatorParkingWindow === window) simulatorParkingWindow = null;
     // The claim is gone, so its holders are too: a closed window must not leave
     // a positive count that the next claimant would have to release its way out
-    // of. Any `destroyed` listener still armed for one of these renderers finds
-    // no entry to drop and does nothing.
+    // of. The listeners come off with them — forgetting the watch entry without
+    // unsubscribing left the real webContents carrying one more pair on every
+    // drawer cycle.
     simulatorParkingHolders.clear();
-    simulatorParkingHolderWatched.clear();
+    unwatchAllSimulatorParkingHolders();
     simulatorAdeSetFrame = null;
     simulatorFollowSuspended = false;
     cleanupSimulatorParkingFollow = null;
@@ -546,6 +590,22 @@ export function activeSimulatorParkingWindow(): BrowserWindow | null {
 /** Drops the follow listeners and forgets the parked frame. Safe to call unparked. */
 export function releaseSimulatorParkingFollow(): void {
   cleanupSimulatorParkingFollow?.();
+}
+
+/**
+ * Runs a shutdown and drops the follow only once it has actually happened.
+ *
+ * `shutdown` enforces the single-owner rule and refuses a foreign caller by
+ * throwing, and the service documents that check as running "before any
+ * teardown so a refused shutdown leaves the stream and companion of the owning
+ * chat untouched". Releasing first broke that promise from the outside: the
+ * refusal travelled back to the caller with the owner's window-parking follow
+ * already torn down.
+ */
+export async function releaseSimulatorParkingFollowAfter<T>(run: () => Promise<T>): Promise<T> {
+  const result = await run();
+  releaseSimulatorParkingFollow();
+  return result;
 }
 
 /**
@@ -569,17 +629,35 @@ export function retainSimulatorParkingFollow(
   if (!window || !sender || activeSimulatorParkingWindow() !== window) return false;
   simulatorParkingHolders.set(sender.id, (simulatorParkingHolders.get(sender.id) ?? 0) + 1);
   if (!simulatorParkingHolderWatched.has(sender.id)) {
-    simulatorParkingHolderWatched.add(sender.id);
-    // A reload destroys this webContents without ever running the renderer's
-    // release, so this is the only signal that its holders are gone.
-    sender.once("destroyed", () => dropSimulatorParkingHoldersFor(sender.id));
+    const onDestroyed = () => dropSimulatorParkingHoldersFor(sender.id);
+    // A reload throws away the React tree — and the drawer's release with it —
+    // without destroying the webContents: the object, its id and its listeners
+    // all survive a navigation, which is exactly why ADE binds this window's
+    // navigation logging once at creation. `destroyed` therefore never fires
+    // for a reload, and watching only for it left the pre-reload holder booked
+    // under the same sender id forever. The new document retains again, so the
+    // count only ever climbed and the follow stayed pinned for the life of the
+    // process.
+    const onNavigated = (details: SimulatorParkingNavigationDetails) => {
+      // A fragment jump or a `pushState` keeps the document — and the drawer
+      // that holds the claim — alive. Only a real document swap in the main
+      // frame takes the holders with it.
+      if (!details?.isMainFrame || details.isSameDocument) return;
+      dropSimulatorParkingHoldersFor(sender.id);
+    };
+    sender.on("destroyed", onDestroyed);
+    sender.on("did-start-navigation", onNavigated);
+    simulatorParkingHolderWatched.set(sender.id, () => {
+      sender.off("destroyed", onDestroyed);
+      sender.off("did-start-navigation", onNavigated);
+    });
   }
   return true;
 }
 
 /** Forgets every holder a renderer took, and drops the follow if it was the last. */
 function dropSimulatorParkingHoldersFor(senderId: number): void {
-  simulatorParkingHolderWatched.delete(senderId);
+  unwatchSimulatorParkingHolder(senderId);
   if (!simulatorParkingHolders.delete(senderId)) return;
   if (totalSimulatorParkingHolders() > 0) return;
   releaseSimulatorParkingFollow();

@@ -4232,12 +4232,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // a refused shutdown leaves the stream and companion of the owning chat
     // untouched. Without it, `ade ios-sim shutdown` — a step in every chat's
     // own instructions — silently evicted whichever other chat was mid-verify.
+    //
+    // Cooperative, not enforced: it separates callers that say who they are, so
+    // one chat cannot end another's session by accident. `force` (which also
+    // hard-resets the launch lock and companions) and `ignoreOwnership` (which
+    // does not) both step around it deliberately, and so does any caller that
+    // names the owner's own id — `getStatus` hands that id to anyone who asks.
     const incomingChatSessionId = shutdownArgs.chatSessionId ?? null;
     if (
       activeSession
       && activeSession.chatSessionId
       && activeSession.chatSessionId !== incomingChatSessionId
       && !shutdownArgs.force
+      && !shutdownArgs.ignoreOwnership
     ) {
       throw new IosSimulatorOwnedBySessionError(activeSession);
     }

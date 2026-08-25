@@ -41,6 +41,23 @@ export type IosSimulatorShutdownArgs = {
    */
   chatSessionId?: string | null;
   force?: boolean | null;
+  /**
+   * Stop for whoever is running, without claiming to be them.
+   *
+   * ADE's lane-scoped simulator surface deliberately drives whatever session
+   * its lane is running and hides the ownership card, so the guard has to step
+   * aside for it. It used to do that by reading the owner's id off `getStatus`
+   * and replaying it as `chatSessionId` — a caller impersonating the owner,
+   * which is both a lie in the logs and a pattern any other caller can copy.
+   * This says what is actually meant, and unlike `force` it asks for nothing
+   * else: no companion sweep, no launch-lock reset.
+   *
+   * It is intent, not permission. The single-owner rule is cooperative — see
+   * `docs/features/ios-simulator/README.md` — and exists to stop one chat
+   * tearing down another's session by accident, not to make a session
+   * un-evictable.
+   */
+  ignoreOwnership?: boolean | null;
 };
 
 export type IosSimulatorShutdownResult = {
