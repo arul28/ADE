@@ -226,6 +226,13 @@ export type RecentProjectLocation = {
   reachable: boolean;
 };
 
+/** The welcome page's human label for a project location. */
+export function welcomeProjectMachineName(location: RecentProjectLocation): string {
+  return location.summary.kind === "remote" && location.summary.remote
+    ? location.machineName || location.summary.remote.runtimeName
+    : "This machine";
+}
+
 export type RecentProjectGroup = {
   id: string;
   displayName: string;
@@ -352,8 +359,8 @@ export function groupRecentProjects(args: {
   }
 
   // A connected machine may know a checkout that has never been opened from
-  // this desktop. Attach it by strict origin identity so the card can say
-  // "Also on …" and the tab switcher can open it immediately.
+  // this desktop. Attach it by strict origin identity so the welcome card can
+  // show the full machine list and open that checkout immediately.
   for (const connection of connections) {
     for (const project of connection.projects ?? []) {
       const origin = cachedGitRemoteIdentity(project.gitOriginUrl);
@@ -380,6 +387,10 @@ export function groupRecentProjects(args: {
       };
       group.locations.push(toLocation(summary, null));
       group.claimedMachines.add(connection.target.id);
+      if (recentTimestamp(summary) > isoTimestamp(group.lastOpenedAt)) {
+        group.lastOpenedAt = summary.lastOpenedAt;
+        group.displayName = summary.displayName;
+      }
     }
   }
 
