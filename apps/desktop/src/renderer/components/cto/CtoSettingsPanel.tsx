@@ -8,7 +8,6 @@ import { CtoPromptPreview } from "./CtoPromptPreview";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { resolveModelSelection } from "./useCtoModelOptions";
 
 function Section({
   title,
@@ -80,8 +79,7 @@ export function CtoSettingsPanel({
             fastModeActive={currentFastMode}
             onFastModeToggle={onFastModeChange}
             onChange={(modelId) => {
-              const selection = resolveModelSelection(modelId, currentReasoningEffort);
-              onModelChange(modelId, selection?.reasoningEffort ?? null);
+              onModelChange(modelId, currentReasoningEffort);
             }}
             onOpenSignIn={onOpenProviderSettings}
           />

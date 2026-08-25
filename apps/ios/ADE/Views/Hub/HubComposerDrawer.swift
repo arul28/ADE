@@ -120,8 +120,8 @@ struct HubInlineComposer: View {
     // in CLI — otherwise open on chat without discarding the preference. Seeding
     // the initial @State here keeps the sessionMode onChange from resetting
     // runtimeMode to the provider default. Switching the destination project
-    // inside the open drawer reloads this per-project mode (see
-    // `reloadSessionMode(forProjectId:)`).
+    // only updates the destination lane; the independent composer settings stay
+    // untouched until the user changes them.
     _sessionMode = State(initialValue: WorkNewSessionModePreferences.resolvedMode(
       stored: WorkNewSessionModePreferences.load(projectId: restoredProjectId),
       modelId: restoredModelId,
@@ -295,29 +295,6 @@ struct HubInlineComposer: View {
             !isDictating else { return }
       collapse()
     }
-    .onChange(of: provider) { _, newProvider in
-      runtimeMode = workDefaultRuntimeMode(provider: newProvider)
-      if !hubChatModelBelongs(modelId, to: hubNormalizedChatProvider(newProvider)) {
-        modelId = hubDefaultChatModelId(provider: newProvider)
-      }
-      if !modelSupportsReasoning(modelId: modelId, provider: newProvider) {
-        reasoningEffort = ""
-      }
-      if !fastModeSupported {
-        codexFastMode = false
-      }
-    }
-    .onChange(of: sessionMode) { _, newMode in
-      normalizeSelection(for: newMode)
-    }
-    .onChange(of: modelId) { _, newModel in
-      if !modelSupportsReasoning(modelId: newModel, provider: provider) {
-        reasoningEffort = ""
-      }
-      if !fastModeSupported {
-        codexFastMode = false
-      }
-    }
     .onChange(of: composerSelection) { _, newValue in
       WorkComposerPreferences.save(newValue)
     }
@@ -340,9 +317,9 @@ struct HubInlineComposer: View {
           provider = sessionMode == .chat
             ? hubNormalizedChatProvider(runtimeProvider)
             : workResolveCliProvider(for: option.id, provider: runtimeProvider)
-          reasoningEffort = pickedReasoning ?? ""
-          codexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
-          runtimeMode = workDefaultRuntimeMode(provider: provider)
+          let nextReasoning = pickedReasoning ?? ""
+          if nextReasoning != reasoningEffort { reasoningEffort = nextReasoning }
+          if pickedFastMode != codexFastMode { codexFastMode = pickedFastMode }
         }
       )
       .environmentObject(syncService)
@@ -506,12 +483,8 @@ struct HubInlineComposer: View {
     return Button {
       guard project.id != pickedProjectId else { return }
       pickedProjectId = project.id
-      // Switching projects resets the lane to that project's default; the user
-      // can still tap a specific lane (or auto-create) below to confirm.
+      // Switching projects resets only that project's lane selection.
       selectedLaneId = defaultLaneId(forProjectId: project.id)
-      // …and restores that project's own last Chat/CLI choice so `submit` never
-      // branches on a stale mode from the previously targeted project.
-      reloadSessionMode(forProjectId: project.id)
     } label: {
       HStack(spacing: 9) {
         HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: isSelected)
@@ -758,14 +731,6 @@ struct HubInlineComposer: View {
 
   @MainActor
   private func onAppearSetup() {
-    // A restored selection (see init) can carry a model only valid in the mode
-    // it was last used in (e.g. a CLI-only Cursor model). The composer starts in
-    // .chat, so normalize only when the restored model is actually disallowed —
-    // a valid restored selection keeps its runtimeMode.
-    let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
-    if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) {
-      normalizeSelection(for: sessionMode)
-    }
     if runtimeMode.isEmpty {
       runtimeMode = workDefaultRuntimeMode(provider: provider)
     }
@@ -799,6 +764,13 @@ struct HubInlineComposer: View {
     let rawText = rawOpener.trimmingCharacters(in: .whitespacesAndNewlines)
     let opener = workChatOutgoingText(rawOpener, attachmentCount: readyAttachments.count)
     guard canStart, !opener.isEmpty, !modelId.isEmpty else { return false }
+    let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
+    guard workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) else {
+      errorMessage = sessionMode == .cli
+        ? "This model is available for chat only. Choose a CLI-capable model."
+        : "This model is available for CLI only. Choose a chat-capable model."
+      return false
+    }
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."
       return false
@@ -898,9 +870,9 @@ struct HubInlineComposer: View {
           provider: provider,
           model: modelId,
           reasoningEffort: normalizedReasoning.isEmpty ? nil : normalizedReasoning,
-          // Send an explicit true/false when fast mode applies so the user's
-          // choice (including an explicit OFF) is honored; nil only when N/A.
-          codexFastMode: fastModeSupported ? codexFastMode : nil,
+          // Preserve the independent preference. Runtime capability checks
+          // belong at request construction, not in the composer state.
+          codexFastMode: codexFastMode,
           piProfileId: piMetadata?.profileId,
           piProviderId: piMetadata?.providerId,
           piModelId: piMetadata?.modelId,
@@ -1108,9 +1080,6 @@ struct HubInlineComposer: View {
       let resolvedProjectId = syncService.activeProject?.id ?? projects[0].id
       pickedProjectId = resolvedProjectId
       selectedLaneId = defaultLaneId(forProjectId: resolvedProjectId)
-      // The seeded mode was for the (now invalid) restored project; realign it
-      // with the project we actually fell back to.
-      reloadSessionMode(forProjectId: resolvedProjectId)
       return
     }
     if !isAutoCreateLane {
@@ -1118,22 +1087,6 @@ struct HubInlineComposer: View {
       if selectedLaneId.isEmpty || !lanes.contains(where: { $0.id == selectedLaneId }) {
         selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
       }
-    }
-  }
-
-  /// Reloads the per-project Chat/CLI interface when the destination project
-  /// changes, so the switcher and the mode `submit` branches on always reflect
-  /// the project actually being targeted (e.g. project A saved Chat, project B
-  /// saved CLI). Applies the same session-only availability fallback as init and
-  /// never writes the store — only an explicit switcher tap persists a choice.
-  private func reloadSessionMode(forProjectId projectId: String) {
-    let resolved = WorkNewSessionModePreferences.resolvedMode(
-      stored: WorkNewSessionModePreferences.load(projectId: projectId),
-      modelId: modelId,
-      provider: provider
-    )
-    if resolved != sessionMode {
-      sessionMode = resolved
     }
   }
 
@@ -1159,32 +1112,6 @@ struct HubInlineComposer: View {
     ADESharedContainer.defaults.set(data, forKey: HubInlineComposer.lastDestinationKey)
   }
 
-  // MARK: Composer normalization (self-contained mirrors of the new-chat screen)
-
-  private func normalizeSelection(for mode: WorkNewSessionMode) {
-    let availabilityMode: WorkCursorAvailabilityMode = mode == .cli ? .cli : .chat
-    if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode),
-       let replacement = workDefaultModelIdForAvailabilityMode(preferredProvider: provider, mode: availabilityMode) {
-      modelId = replacement.modelId
-      provider = mode == .chat
-        ? hubNormalizedChatProvider(replacement.provider)
-        : workResolveCliProvider(for: replacement.modelId, provider: replacement.provider)
-    } else if mode == .chat {
-      provider = hubNormalizedChatProvider(provider)
-      if !hubChatModelBelongs(modelId, to: provider) {
-        modelId = hubDefaultChatModelId(provider: provider)
-      }
-    } else {
-      provider = workResolveCliProvider(for: modelId, provider: provider)
-    }
-    runtimeMode = workDefaultRuntimeMode(provider: provider)
-    if !modelSupportsReasoning(modelId: modelId, provider: provider) {
-      reasoningEffort = ""
-    }
-    if !fastModeSupported {
-      codexFastMode = false
-    }
-  }
 }
 
 // MARK: - File-private helpers (mirror the private new-chat-screen helpers)
@@ -1194,26 +1121,6 @@ struct HubInlineComposer: View {
 /// runtimes instead of silently routing to Claude.
 private func hubNormalizedChatProvider(_ provider: String) -> String {
   workNormalizedChatProvider(provider)
-}
-
-private func hubChatModelBelongs(_ modelId: String, to provider: String) -> Bool {
-  let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard !trimmed.isEmpty else { return false }
-  return workModelCatalogGroupKey(for: trimmed, currentProvider: provider) == provider
-}
-
-private func hubDefaultChatModelId(provider: String) -> String {
-  let family = providerFamilyKey(provider)
-  if let defaultModel = workDefaultCatalogModelId(provider: family) {
-    return defaultModel
-  }
-  switch hubNormalizedChatProvider(provider) {
-  case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.6-sol"
-  case "cursor": return "auto"
-  case "opencode": return "opencode/anthropic/claude-sonnet-5"
-  case "pi": return ""
-  default: return "claude-sonnet-5"
-  }
 }
 
 /// CLI runtimes that accept a reasoning-effort selection (mirrors the new-chat

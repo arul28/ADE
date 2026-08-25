@@ -113,17 +113,11 @@ struct LinearLaunchScreen: View {
           provider = sessionType == .cli
             ? workResolveCliProvider(for: option.id, provider: runtimeProvider)
             : runtimeProvider
-          reasoningEffort = pickedReasoning ?? ""
-          runtimeMode = workDefaultRuntimeMode(provider: provider)
-          codexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
+          let nextReasoning = pickedReasoning ?? ""
+          if nextReasoning != reasoningEffort { reasoningEffort = nextReasoning }
+          if pickedFastMode != codexFastMode { codexFastMode = pickedFastMode }
         }
       )
-    }
-    .onAppear {
-      normalizeSelection(for: sessionType, resetRuntimeMode: false)
-    }
-    .onChange(of: sessionType) { _, newType in
-      normalizeSelection(for: newType)
     }
   }
 
@@ -219,42 +213,19 @@ struct LinearLaunchScreen: View {
     )
   }
 
-  private func normalizeSelection(for type: LinearLaunchSessionType, resetRuntimeMode: Bool = true) {
-    guard type.needsAgentConfig else {
-      codexFastMode = false
-      return
-    }
-
-    let availabilityMode: WorkCursorAvailabilityMode = type == .cli ? .cli : .chat
-    var replacedModel = false
-    if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode),
-       let replacement = workDefaultModelIdForAvailabilityMode(preferredProvider: provider, mode: availabilityMode) {
-      modelId = replacement.modelId
-      modelName = linearPrettyModelName(replacement.modelId)
-      provider = type == .cli
-        ? workResolveCliProvider(for: replacement.modelId, provider: replacement.provider)
-        : replacement.provider
-      selectedModelOption = nil
-      replacedModel = true
-    } else if type == .cli {
-      provider = workResolveCliProvider(for: modelId, provider: provider)
-    }
-
-    if resetRuntimeMode || replacedModel || runtimeMode.isEmpty {
-      runtimeMode = workDefaultRuntimeMode(provider: provider)
-    }
-    if !modelSupportsReasoning(modelId: modelId, provider: provider) {
-      reasoningEffort = ""
-    }
-    if !fastModeSupported {
-      codexFastMode = false
-    }
-  }
-
   // MARK: Launch
 
   private func performLaunch() async {
     guard !busy else { return }
+    if sessionType.needsAgentConfig {
+      let availabilityMode: WorkCursorAvailabilityMode = sessionType == .cli ? .cli : .chat
+      guard workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) else {
+        errorMessage = sessionType == .cli
+          ? "This model is available for chat only. Choose a CLI-capable model."
+          : "This model is available for CLI only. Choose a chat-capable model."
+        return
+      }
+    }
     busy = true
     errorMessage = nil
     ADEHaptics.light()
@@ -283,7 +254,7 @@ struct LinearLaunchScreen: View {
           model: cfg.modelId,
           kickoffText: cfg.kickoff,
           reasoningEffort: cfg.reasoningEffort.isEmpty ? nil : cfg.reasoningEffort,
-          codexFastMode: fastSupported ? cfg.codexFastMode : nil,
+          codexFastMode: cfg.codexFastMode,
           permissionMode: wire.permissionMode,
           interactionMode: wire.interactionMode,
           claudePermissionMode: wire.claudePermissionMode,

@@ -100,7 +100,7 @@ describe("PrResolverLaunchControls", () => {
     expect(props.onPermissionModeChange).toHaveBeenCalledWith("config-toml");
   });
 
-  it("normalizes reasoning and permissions when switching models", async () => {
+  it("changes only the model when switching models", async () => {
     const user = userEvent.setup();
     const props = renderControls({
       modelId: "anthropic/claude-opus-4-8",
@@ -111,7 +111,7 @@ describe("PrResolverLaunchControls", () => {
     await user.click(screen.getByRole("button", { name: "Pick Sonnet" }));
 
     expect(props.onModelChange).toHaveBeenCalledWith("anthropic/claude-sonnet-5");
-    expect(props.onReasoningEffortChange).toHaveBeenCalledWith("medium");
-    expect(props.onPermissionModeChange).toHaveBeenCalledWith("default");
+    expect(props.onReasoningEffortChange).not.toHaveBeenCalled();
+    expect(props.onPermissionModeChange).not.toHaveBeenCalled();
   });
 });

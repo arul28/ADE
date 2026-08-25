@@ -1222,6 +1222,7 @@ function renderAutoCreateDraftPane(args?: {
   onDraftMachineChange?: React.ComponentProps<typeof AgentChatPane>["onDraftMachineChange"];
   onImportedSession?: React.ComponentProps<typeof AgentChatPane>["onImportedSession"];
   initialDraftMachineId?: string | null;
+  laneId?: string | null;
   lanes?: any[];
   project?: { rootPath: string; displayName?: string };
   projectBinding?: OpenProjectBinding;
@@ -1258,7 +1259,7 @@ function renderAutoCreateDraftPane(args?: {
           element={(
             <>
               <AgentChatPane
-                laneId="lane-1"
+                laneId={args?.laneId ?? "lane-1"}
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
@@ -6111,7 +6112,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("keeps Auto-create selected while routing Work tools through Primary", async () => {
+  it("keeps Auto-create selected without changing the lane", async () => {
     installAdeMocks({ sessions: [] });
     const onLaneChange = vi.fn();
     renderAutoCreateDraftPane({ onLaneChange });
@@ -6119,7 +6120,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
+    expect(onLaneChange).not.toHaveBeenCalled();
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
   });
 
@@ -6143,7 +6144,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(list.mock.calls.every(([args]) => args.laneId === "lane-1")).toBe(true);
   });
 
-  it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {
+  it("keeps Auto-create selected when the available lanes have no Primary lane", async () => {
     installAdeMocks({ sessions: [] });
     const onLaneChange = vi.fn();
     renderAutoCreateDraftPane({
@@ -6162,10 +6163,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
+    expect(onLaneChange).not.toHaveBeenCalled();
   });
 
-  it("recovers a bare Auto-create selection from an unavailable persisted machine", async () => {
+  it("keeps machine and lane unchanged for Auto-create on an unavailable machine", async () => {
     installAdeMocks({ sessions: [] });
     const onDraftMachineChange = vi.fn();
     const onLaneChange = vi.fn();
@@ -6178,9 +6179,37 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
-    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
-    expect(screen.queryByText(/selected machine is not currently available/i)).toBeNull();
+    expect(onDraftMachineChange).not.toHaveBeenCalled();
+    expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unavailable draft lane instead of launching against the bound project", async () => {
+    seedRuntimeModelCatalog();
+    const { create } = installAdeMocks({ sessions: [] });
+    const onSessionCreated = vi.fn();
+    renderAutoCreateDraftPane({
+      laneId: "lane-only-on-another-machine",
+      onSessionCreated,
+    });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Do not launch this unavailable lane." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("draft-launch-job").textContent).toContain(
+        "Selected lane is not available on the selected machine",
+      );
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(onSessionCreated).not.toHaveBeenCalled();
   });
 
   it("auto-creates on this computer from a remote-bound tab without rebinding the project", async () => {

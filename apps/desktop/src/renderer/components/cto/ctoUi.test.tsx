@@ -161,8 +161,7 @@ describe("CtoPage settings", () => {
     expect(updateSession).toHaveBeenCalledWith({
       sessionId: "cto-session",
       modelId: "anthropic/claude-opus-4-8",
-      reasoningEffort: null,
-      fastMode: false,
+      fastMode: true,
     });
   });
 

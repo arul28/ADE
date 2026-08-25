@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getModelById, modelSupportsFastMode, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
+import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { settingsRouteFor } from "../settings/settingsManifest";
 
@@ -11,20 +11,6 @@ export type CtoModelSelection = {
   reasoningEffort: string | null;
   supportsFastMode: boolean;
 };
-
-/** Reasoning tier the model supports closest to the caller's preference. */
-export function pickReasoningEffort(
-  modelId: string | null | undefined,
-  preferred: string | null | undefined,
-): string | null {
-  const descriptor = modelId ? getModelById(modelId) : undefined;
-  const tiers = descriptor?.reasoningTiers ?? [];
-  return selectSupportedReasoningEffort({
-    tiers,
-    preferred,
-    advertisedDefault: descriptor?.defaultReasoningEffort,
-  });
-}
 
 /** Resolve a full model selection (provider/model/reasoning) from a model id. */
 export function resolveModelSelection(
@@ -37,7 +23,9 @@ export function resolveModelSelection(
     provider: descriptor.family,
     model: descriptor.shortId ?? descriptor.id.split("/").pop() ?? descriptor.id,
     modelId: descriptor.id,
-    reasoningEffort: pickReasoningEffort(descriptor.id, preferredReasoning),
+    // A model choice must not rewrite the selected thinking level. Runtime
+    // capability handling belongs to launch; the raw preference stays visible.
+    reasoningEffort: preferredReasoning ?? null,
     supportsFastMode: modelSupportsFastMode(descriptor),
   };
 }

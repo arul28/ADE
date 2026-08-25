@@ -97,7 +97,6 @@ import {
   getLocalModelIdTail,
   getLocalProviderDefaultEndpoint,
   getModelById,
-  getModelDescriptorForPermissionMode,
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
   parseLocalProviderFromModelId,
@@ -105,7 +104,6 @@ import {
   resolveCliProviderForModel,
   resolveProviderGroupForModel,
   resolveModelDescriptorForProvider,
-  selectSupportedReasoningEffort,
   type LocalProviderFamily,
   type ModelDescriptor,
   type ProviderFamily,
@@ -1035,25 +1033,6 @@ function formatLocalModelLabel(modelId: string): string {
   return tail.length ? tail : modelId;
 }
 
-function recommendedOpenCodePermissionModeForModel(
-  descriptor: ModelDescriptor | null | undefined,
-): AgentChatOpenCodePermissionMode | null {
-  if (!descriptor?.authTypes.includes("local")) return null;
-  return descriptor.harnessProfile === "guarded" || descriptor.harnessProfile === "read_only"
-    ? "plan"
-    : null;
-}
-
-function shouldResetOpenCodePermissionForModelSwitch(
-  previous: ModelDescriptor | null | undefined,
-  next: ModelDescriptor | null | undefined,
-): boolean {
-  const prevRec = recommendedOpenCodePermissionModeForModel(previous);
-  const nextRec = recommendedOpenCodePermissionModeForModel(next);
-  if (prevRec == null && nextRec == null) return false;
-  return prevRec !== nextRec;
-}
-
 type LocalRuntimeNoticeShape = {
   tone: "success" | "warning";
   title: string;
@@ -1898,19 +1877,6 @@ function writeLastUsedModelId(modelId: string) {
   }
 }
 
-function readLastUsedReasoningEffort(args: {
-  laneId: string | null;
-  modelId: string;
-}): string | null {
-  if (!args.laneId) return null;
-  try {
-    const raw = window.localStorage.getItem(`${LAST_REASONING_KEY_PREFIX}:${args.laneId}:${args.modelId}`);
-    return raw && raw.trim().length ? raw.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
 function writeLastUsedReasoningEffort(args: {
   laneId: string | null;
   modelId: string;
@@ -1936,23 +1902,6 @@ function resolveScopedModelDescriptor(
   const id = modelId?.trim();
   if (!id) return undefined;
   return resolveModelDescriptorWithRuntimeCatalog(id, scopeKey) ?? getModelById(id);
-}
-
-function selectReasoningEffort(args: {
-  tiers: string[];
-  preferred: string | null;
-  modelId?: string | null;
-  catalogScopeKey: string;
-}): string | null {
-  const descriptor = args.modelId
-    ? resolveScopedModelDescriptor(args.modelId, args.catalogScopeKey)
-    : undefined;
-  return selectSupportedReasoningEffort({
-    tiers: args.tiers,
-    preferred: args.preferred,
-    advertisedDefault: descriptor?.defaultReasoningEffort,
-    fallback: args.modelId?.toLowerCase().includes("fable") ? "high" : null,
-  });
 }
 
 function resolveAssistantLabel(
@@ -2461,17 +2410,15 @@ function nativeControlsFromLaunchSource(
 function buildLastLaunchConfig(
   source: Partial<LaunchConfigSessionSource>,
   defaults: NativeControlState,
-  catalogScopeKey: string,
   updatedAt = new Date().toISOString(),
 ): LastLaunchConfig | null {
   const modelId = source.modelId ?? resolveRegistryModelId(source.model);
   if (!modelId) return null;
-  const desc = resolveScopedModelDescriptor(modelId, catalogScopeKey);
   return {
     version: 1,
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
-    fastMode: modelSupportsFastMode(desc) && source.fastMode === true,
+    fastMode: source.fastMode === true,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
     controls: nativeControlsFromLaunchSource(source, defaults),
     updatedAt,
@@ -3395,7 +3342,9 @@ export function AgentChatPane({
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const workDraftStorageKind = normalizeWorkDraftStorageKind();
   const isWorkDraftComposer = forceDraft && embeddedWorkLayout && !lockSessionId && !initialSessionId;
-  const draftLaunchConfigLaneScopeId = isWorkDraftComposer ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
+  // Draft settings belong to the composer, not to the lane or machine that
+  // happens to be selected for its next launch.
+  const draftLaunchConfigLaneScopeId = forceDraft ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
   const initialWorkDraftLaneIdRef = useRef<string | null>(isWorkDraftComposer ? laneId : null);
   const legacyWorkDraftLaneId = isWorkDraftComposer ? initialWorkDraftLaneIdRef.current : null;
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
@@ -3582,7 +3531,6 @@ export function AgentChatPane({
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
   const [opencodePermissionMode, setOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(initialNativeControls.opencodePermissionMode);
   const [droidPermissionMode, setDroidPermissionMode] = useState<AgentChatDroidPermissionMode>(initialNativeControls.droidPermissionMode);
-  const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
   const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(seedAiStatus);
@@ -3915,6 +3863,8 @@ export function AgentChatPane({
   const pendingFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const draftExecutionLanesRef = useRef<RoutedDraftLane[]>([]);
+  const draftExecutionMachineIdRef = useRef<string | null>(null);
+  const draftBoundMachineIdRef = useRef<string | null>(null);
   const draftExecutionBindingRef = useRef<OpenProjectBinding | null>(null);
   const draftExecutionBindingRequiredRef = useRef(false);
   const draftMachineUnavailableRef = useRef(false);
@@ -5244,10 +5194,6 @@ export function AgentChatPane({
     localRuntimeState?.endpoint,
   ]);
 
-  useEffect(() => {
-    prevModelDescRef.current = getModelDescriptorForPermissionMode(modelId);
-  }, [modelId]);
-
   const surfaceMode = presentation?.mode ?? "standard";
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
 
@@ -5422,17 +5368,9 @@ export function AgentChatPane({
   );
 
   const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
-    const desc = resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKey);
-    if (!cursorModelAllowedForDraftKind(desc, workDraftKind)) return;
-    const tiers = desc?.reasoningTiers ?? [];
     setModelId(config.modelId);
-    setReasoningEffort(selectReasoningEffort({
-      tiers,
-      preferred: config.reasoningEffort,
-      modelId: config.modelId,
-      catalogScopeKey: modelCatalogScopeKey,
-    }));
-    setFastModeState(modelSupportsFastMode(desc) && config.fastMode);
+    setReasoningEffort(config.reasoningEffort);
+    setFastModeState(config.fastMode);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -5443,7 +5381,7 @@ export function AgentChatPane({
     setDroidPermissionMode(config.controls.droidPermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, [setFastModeState, workDraftKind, modelCatalogScopeKey]);
+  }, [setFastModeState]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -5603,7 +5541,16 @@ export function AgentChatPane({
     () => effectiveAvailableModelIds.filter((id) => id.startsWith("cursor/")),
     [effectiveAvailableModelIds],
   );
+  const draftCursorModelSelectionError = useMemo(() => {
+    if (!forceDraft || selectedSessionId || lockSessionId || initialSessionId || !modelId) return null;
+    const descriptor = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
+    if (descriptor?.family !== "cursor" || cursorModelAllowedForDraftKind(descriptor, workDraftKind)) return null;
+    return workDraftKind === "cli"
+      ? "This Cursor model is available for chat only. Choose a Cursor CLI model."
+      : "This Cursor model is available for CLI only. Choose a Cursor chat model.";
+  }, [forceDraft, initialSessionId, lockSessionId, modelCatalogScopeKey, modelId, selectedSessionId, workDraftKind]);
   const constrainedModelSelectionError = useMemo(() => {
+    if (draftCursorModelSelectionError) return draftCursorModelSelectionError;
     if (!modelSelectionConstrained) return null;
     if (!effectiveAvailableModelIds.length) {
       return "No models are available for this chat surface.";
@@ -5612,7 +5559,7 @@ export function AgentChatPane({
       return "Select an available model for this chat surface before sending.";
     }
     return null;
-  }, [effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
+  }, [draftCursorModelSelectionError, effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
   const cursorCloudApiAvailable = providerConnections?.cursor?.runtimeAvailable === true
     || aiStatus?.availableProviders?.cursor === true;
   const cursorCloudAvailable = Boolean(laneId)
@@ -6833,7 +6780,7 @@ export function AgentChatPane({
     if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) return;
     const draftKey = draftLaunchConfigScopeKey;
     const latestSessionConfig = sessions[0]
-      ? buildLastLaunchConfig(sessions[0], initialNativeControls, modelCatalogScopeKey)
+      ? buildLastLaunchConfig(sessions[0], initialNativeControls)
       : null;
     const sessionHydrationKey = `${draftKey}:session`;
     if (latestSessionConfig) {
@@ -6948,15 +6895,6 @@ export function AgentChatPane({
     if (selectableModelIds.includes(modelId)) return;
     if (modelSelectionConstrained) return;
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
-    if (modelDesc?.family === "cursor" && !cursorModelAllowedForDraftKind(modelDesc, workDraftKind)) {
-      if (selectedSessionModelId && effectiveAvailableModelIds.includes(selectedSessionModelId)) {
-        setModelId(selectedSessionModelId);
-        return;
-      }
-      const preferred = readLastUsedModelId();
-      setModelId(preferred && effectiveAvailableModelIds.includes(preferred) ? preferred : effectiveAvailableModelIds[0] ?? "");
-      return;
-    }
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
     if (selectedSessionModelId && selectableModelIds.includes(selectedSessionModelId)) {
@@ -6969,26 +6907,7 @@ export function AgentChatPane({
     } else {
       setModelId(selectableModelIds[0]!);
     }
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId, workDraftKind, modelCatalogScopeKey]);
-
-  useEffect(() => {
-    if (!reasoningTiers.length) {
-      if (reasoningEffort !== null) setReasoningEffort(null);
-      return;
-    }
-    if (reasoningEffort && reasoningTiers.includes(reasoningEffort)) return;
-    const preferred = readLastUsedReasoningEffort({ laneId, modelId });
-    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred, modelId, catalogScopeKey: modelCatalogScopeKey }));
-  }, [laneId, modelId, reasoningEffort, reasoningTiers, modelCatalogScopeKey]);
-
-  useEffect(() => {
-    if (!executionModeOptions.length) {
-      if (executionMode !== "focused") setExecutionMode("focused");
-      return;
-    }
-    if (executionModeOptions.some((option) => option.value === executionMode)) return;
-    setExecutionMode(executionModeOptions[0]!.value);
-  }, [executionMode, executionModeOptions]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId, modelCatalogScopeKey]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -8627,46 +8546,21 @@ export function AgentChatPane({
     };
   }, []);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
-    const previousDesc = prevModelDescRef.current;
     const nextDesc = resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey);
-    const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
     const nextModel = nextProvider === "opencode" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
-    const tiers = nextDesc?.reasoningTiers ?? [];
-    const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-    const nextReasoningEffort = selectReasoningEffort({
-      tiers,
-      preferred,
-      modelId: nextModelId,
-      catalogScopeKey: modelCatalogScopeKey,
-    });
-    const nextRec = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
     return {
       nextDesc,
       nextModelId,
       nextModel,
       nextProvider,
-      nextReasoningEffort,
-      nextOpenCodePermissionMode: nextRec,
-      resetOpenCodePermissionToDefault: shouldResetOpenCodePermissionForModelSwitch(previousDesc, nextPermissionDesc),
     };
-  }, [laneId, modelCatalogScopeKey]);
+  }, [modelCatalogScopeKey]);
   const applyModelSelectionSnapshot = useCallback((snapshot: {
     nextModelId: string;
-    nextReasoningEffort: string | null;
-    nextOpenCodePermissionMode?: AgentChatOpenCodePermissionMode | null;
-    resetOpenCodePermissionToDefault?: boolean;
   }) => {
     setModelId(snapshot.nextModelId);
-    setReasoningEffort(snapshot.nextReasoningEffort);
-    const nextOpenCodeMode = snapshot.nextOpenCodePermissionMode ?? null;
-    const targetOpenCodeMode = snapshot.resetOpenCodePermissionToDefault
-      ? (nextOpenCodeMode ?? initialNativeControls.opencodePermissionMode)
-      : nextOpenCodeMode;
-    if (targetOpenCodeMode != null) {
-      setOpenCodePermissionMode(targetOpenCodeMode);
-    }
-  }, [initialNativeControls.opencodePermissionMode]);
+  }, []);
   const notifySessionCreated = useCallback((session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
     if (!onSessionCreated) return;
     // Call synchronously so the parent's lane/session focus state setters land
@@ -8736,19 +8630,10 @@ export function AgentChatPane({
       const launchExecutionMode = options.launchState?.executionMode ?? executionMode;
       const baseNativeControls = options.launchState?.nativeControls ?? currentNativeControls;
       const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
-      const permissionDesc = getModelDescriptorForPermissionMode(launchModelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
       const sessionProfile = resolveChatSessionProfile();
-      const harnessPermissionMode = provider === "opencode"
-        ? recommendedOpenCodePermissionModeForModel(permissionDesc)
-        : null;
-      const launchControls = harnessPermissionMode
-        ? {
-            ...baseNativeControls,
-            opencodePermissionMode: harnessPermissionMode,
-          }
-        : baseNativeControls;
+      const launchControls = baseNativeControls;
       const nativeControlPayload = {
         ...summarizeNativeControls(provider, launchControls),
         ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
@@ -8766,7 +8651,7 @@ export function AgentChatPane({
         modelId: launchModelId,
         sessionProfile,
         reasoningEffort: launchReasoningEffort,
-        ...(modelSupportsFastMode(desc) ? { fastMode: launchFastMode } : {}),
+        fastMode: launchFastMode,
         ...nativeControlPayload,
         ...orchestratorOverrides,
       };
@@ -8821,7 +8706,7 @@ export function AgentChatPane({
         model: created.model,
         modelId: created.modelId ?? launchModelId,
         reasoningEffort: launchReasoningEffort,
-        fastMode: modelSupportsFastMode(desc) && launchFastMode,
+        fastMode: launchFastMode,
         executionMode: launchExecutionMode,
         permissionMode: nativeControlPayload.permissionMode,
         interactionMode: launchControls.interactionMode,
@@ -8833,7 +8718,7 @@ export function AgentChatPane({
         droidPermissionMode: launchControls.droidPermissionMode,
         cursorModeId: launchControls.cursorModeId,
         cursorConfigValues: launchControls.cursorConfigValues,
-      }, initialNativeControls, modelCatalogScopeKey);
+      }, initialNativeControls);
       if (launchConfig) writeLastLaunchConfig(lastLaunchConfigStorageKey, launchConfig);
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
@@ -9314,17 +9199,41 @@ export function AgentChatPane({
       };
     }
     if (!laneId) throw new Error("Select a lane before launching.");
-    const launchLane = draftExecutionLanesRef.current.find((candidate) => candidate.id === laneId)
-      ?? lanes.find((candidate) => candidate.id === laneId);
+    const routedLaunchLane = draftExecutionLanesRef.current.find((candidate) => candidate.id === laneId);
+    const launchLane = routedLaunchLane
+      ?? (
+        draftExecutionMachineIdRef.current === draftBoundMachineIdRef.current
+          ? (availableLanes ?? lanes).find((candidate) => candidate.id === laneId)
+          : undefined
+      );
+    // A direct Work draft can arrive before its lane catalog has hydrated; in
+    // that case the existing lane id is still a valid launch target. Once a
+    // catalog is known, however, a missing lane is an unavailable selection
+    // and must not fall back to the project's root worktree.
+    const laneCatalogLoaded = availableLanes !== undefined || lanes.length > 0;
+    if (
+      !launchLane
+      && (
+        draftExecutionMachineIdRef.current !== draftBoundMachineIdRef.current
+        || laneCatalogLoaded
+      )
+    ) {
+      throw new Error("Selected lane is not available on the selected machine. Choose a lane for that machine.");
+    }
+    const launchWorktreePath =
+      launchLane && "worktreePath" in launchLane && typeof launchLane.worktreePath === "string"
+        ? launchLane.worktreePath
+        : null;
     const laneName = launchLane?.name ?? laneDisplayLabel ?? laneId;
     return {
       laneId,
       laneName,
-      worktreePath: launchLane?.worktreePath ?? projectRoot ?? null,
+      worktreePath: launchWorktreePath ?? projectRoot ?? null,
       autoCreated: false,
     };
   }, [
     canRefreshPinnedProject,
+    availableLanes,
     draftLaunchTargetIsAutoCreate,
     laneDisplayLabel,
     laneId,
@@ -10515,7 +10424,7 @@ export function AgentChatPane({
             modelId: slot.modelId,
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
-            ...(modelSupportsFastMode(desc) ? { fastMode: slot.fastMode } : {}),
+            fastMode: slot.fastMode,
             ...buildNativeControlPayloadForSlot(slot, provider),
           }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
@@ -10863,8 +10772,7 @@ export function AgentChatPane({
         && selectedSessionModelId !== modelId;
       const selectedFastModeChanged =
         Boolean(selectedSessionId)
-        && selectedSession?.provider === "codex"
-        && (selectedSession.fastMode === true) !== fastMode;
+        && (selectedSession?.fastMode === true) !== fastMode;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
@@ -10890,14 +10798,12 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticIfAllowed(sessionId);
-        const desc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
-        const provider = resolveChatRuntimeProvider(desc);
+        const modelUpdate = selectedModelChanged ? { modelId } : {};
+        const fastModeUpdate = selectedFastModeChanged ? { fastMode } : {};
         await window.ade.agentChat.updateSession({
           sessionId,
-          modelId,
-          reasoningEffort,
-          ...(modelSupportsFastMode(desc) ? { fastMode } : {}),
-          ...buildNativeControlPayload(provider),
+          ...modelUpdate,
+          ...fastModeUpdate,
         }, chatRuntimePinRef.current);
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
@@ -11658,10 +11564,7 @@ export function AgentChatPane({
   // machine-qualified option ids the combined selector needed.
   // Auto-create means the same thing on Cursor Cloud as it does here — ADE makes the lane, the
   // agent works in it — so the lane picker is identical either way. Only the machine differs.
-  const draftShelfLanes = useMemo(
-    () => [AUTO_CREATE_LANE_OPTION, ...draftExecutionLanes],
-    [draftExecutionLanes],
-  );
+  const draftShelfLanes = draftLaneSelectorLanes;
   const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
@@ -11714,6 +11617,8 @@ export function AgentChatPane({
     handleDraftMachineChange(nextMachineId);
   }, [handleDraftMachineChange, setCursorCloudMode]);
   draftExecutionLanesRef.current = draftExecutionLanes;
+  draftExecutionMachineIdRef.current = selectedDraftMachineId;
+  draftBoundMachineIdRef.current = boundLaneMachineId;
   draftExecutionBindingRef.current = draftExecutionBinding;
   draftExecutionBindingRequiredRef.current = showDraftLaunchControls;
   draftMachineUnavailableRef.current = draftMachineUnavailable;
@@ -13073,23 +12978,10 @@ export function AgentChatPane({
               }
 
               setSessionMutationKind("model");
-              const nextOpenCodeModeForPayload = snapshot.resetOpenCodePermissionToDefault
-                ? (snapshot.nextOpenCodePermissionMode ?? initialNativeControls.opencodePermissionMode)
-                : snapshot.nextOpenCodePermissionMode;
-              const nextNativeControlPayload = snapshot.nextProvider === "opencode" && nextOpenCodeModeForPayload != null
-                ? {
-                    ...summarizeNativeControls("opencode", {
-                      ...currentNativeControls,
-                      opencodePermissionMode: nextOpenCodeModeForPayload,
-                    }),
-                  }
-                : buildNativeControlPayload(snapshot.nextProvider);
               void window.ade.agentChat.updateSession({
                 sessionId: selectedSessionId,
                 modelId: nextModelId,
-                reasoningEffort: snapshot.nextReasoningEffort,
-                ...(modelSupportsFastMode(snapshot.nextDesc) ? { fastMode: fastModeRef.current } : {}),
-                ...nextNativeControlPayload,
+                ...(options ? { fastMode: fastModeRef.current } : {}),
               }, chatRuntimePinRef.current).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
                 patchSessionSummary(selectedSessionId, {
@@ -13127,7 +13019,7 @@ export function AgentChatPane({
                 void refreshSessions().catch(() => {});
               }).catch((err) => {
                 setModelId(previousModelId);
-                setFastModeState(previousFastMode);
+                if (options) setFastModeState(previousFastMode);
                 void refreshSessions().catch(() => {});
                 setError(err instanceof Error ? err.message : String(err));
               }).finally(() => {
@@ -13333,35 +13225,9 @@ export function AgentChatPane({
             }}
             onParallelSlotModelChange={(index, nextModelId, options) => {
               if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
-              const desc = resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey);
-              const tiers = desc?.reasoningTiers ?? [];
-              const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-              const nextEffort = selectReasoningEffort({
-                tiers,
-                preferred,
-                modelId: nextModelId,
-                catalogScopeKey: modelCatalogScopeKey,
-              });
-              const previousPermissionDesc = getModelDescriptorForPermissionMode(parallelModelSlots[index]?.modelId ?? "");
-              const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
-              const nextRecommendedOpenCodeMode = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
-              const resetOpenCodePermissionToDefault = shouldResetOpenCodePermissionForModelSwitch(
-                previousPermissionDesc,
-                nextPermissionDesc,
-              );
-              const nextExecOpts = getExecutionModeOptions(desc);
               patchParallelSlot(index, {
                 modelId: nextModelId,
-                reasoningEffort: nextEffort,
                 ...(options ? { fastMode: options.fastMode } : {}),
-                executionMode: nextExecOpts.some((o) => o.value === parallelModelSlots[index]?.executionMode)
-                  ? parallelModelSlots[index]!.executionMode
-                  : (nextExecOpts[0]?.value ?? "focused"),
-                ...(resetOpenCodePermissionToDefault
-                  ? {
-                    opencodePermissionMode: nextRecommendedOpenCodeMode ?? initialNativeControls.opencodePermissionMode,
-                  }
-                  : {}),
               });
             }}
             onParallelSlotReasoningChange={(index, effort) => {

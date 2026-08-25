@@ -551,13 +551,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const handleRowSelect = useCallback(
     (modelId: string) => {
       recordUsage(modelId);
-      // Fast mode belongs to the model it was enabled for, so a plain switch to
-      // a different model starts clean instead of inheriting the previous
-      // model's bit. The fast chip re-enables it explicitly (see
-      // `handleFastChipChange`).
-      onSelect(modelId, modelId !== value && fastMode ? { fastMode: false } : undefined);
+      onSelect(modelId);
     },
-    [fastMode, onSelect, recordUsage, value],
+    [onSelect, recordUsage],
   );
 
   const handleListKeyDown = useCallback(

@@ -1833,8 +1833,13 @@ struct WorkModelSelectionPendingCard: View {
           selectedModel = option
           selectedModelId = option.id
           selectedProvider = provider
-          selectedReasoningEffort = pickedReasoning ?? ""
-          selectedCodexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
+          let nextReasoning = pickedReasoning ?? ""
+          if nextReasoning != selectedReasoningEffort {
+            selectedReasoningEffort = nextReasoning
+          }
+          if pickedFastMode != selectedCodexFastMode {
+            selectedCodexFastMode = pickedFastMode
+          }
         }
       )
       .environmentObject(syncService)

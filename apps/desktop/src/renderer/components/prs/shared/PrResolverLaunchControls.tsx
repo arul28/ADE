@@ -2,7 +2,6 @@ import React from "react";
 import {
   getModelById,
   resolveProviderGroupForModel,
-  selectSupportedReasoningEffort,
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../../shared/modelRegistry";
@@ -35,15 +34,6 @@ type PrResolverLaunchControlsProps = PrResolverLaunchControlsBaseProps & (
       onPermissionModeChange: (mode: AiPermissionMode) => void;
     }
 );
-
-function selectReasoningEffortForModel(descriptor: ModelDescriptor | undefined, current: string): string {
-  const tiers = descriptor?.reasoningTiers ?? [];
-  return selectSupportedReasoningEffort({
-    tiers,
-    preferred: current,
-    advertisedDefault: descriptor?.defaultReasoningEffort,
-  }) ?? "";
-}
 
 function permissionOptionsForModel(descriptor: ModelDescriptor | undefined, valueMode: "chat" | "legacy" = "chat") {
   const family = descriptor?.family ?? "opencode";
@@ -170,21 +160,8 @@ export function PrResolverLaunchControls({
   }, [onPermissionModeChange, permissionValueMode, providerGroup]);
 
   const handleModelChange = React.useCallback((nextModelId: string) => {
-    const nextDescriptor = getModelById(nextModelId);
-    const nextReasoning = selectReasoningEffortForModel(nextDescriptor, reasoningEffort);
-    const nextAgentPermission = normalizePermissionModeForModel(permissionMode, nextDescriptor, permissionValueMode);
-    const nextPermission = permissionValueMode === "legacy"
-      ? toLegacyPermissionMode(nextAgentPermission, nextDescriptor ? resolveProviderGroupForModel(nextDescriptor) : "opencode")
-      : nextAgentPermission;
-
     onModelChange(nextModelId);
-    if (nextReasoning !== reasoningEffort) {
-      onReasoningEffortChange(nextReasoning);
-    }
-    if (nextPermission !== permissionMode) {
-      onPermissionModeChange(nextPermission as AiPermissionMode & PrAgentPermissionMode);
-    }
-  }, [onModelChange, onPermissionModeChange, onReasoningEffortChange, permissionMode, permissionValueMode, reasoningEffort]);
+  }, [onModelChange]);
 
   return (
     <div className={cn("flex flex-wrap items-center gap-3", className)}>
