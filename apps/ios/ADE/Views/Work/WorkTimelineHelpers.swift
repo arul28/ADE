@@ -1501,6 +1501,18 @@ func buildWorkTimeline(
     // so this is the first point where a message's text is final.
     var message = message
     message.markdownDigest = workStableDigest(message.markdown)
+    let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
+    let normalizedMarkdown = hasCarriageReturn
+      ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
+      : message.markdown
+    message.markdownCharacterCount = normalizedMarkdown.count
+    message.markdownLineCount = workAssistantMessageLineCount(normalizedMarkdown)
+    message.markdownHasCarriageReturn = hasCarriageReturn
+    message.markdownContainsFence = normalizedMarkdown.contains("```")
+    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalizedMarkdown)
+    let classifier = WorkStreamingMonospacedClassifierState(text: normalizedMarkdown)
+    message.markdownMonospacedClassifier = classifier
+    message.markdownOpenFenceMarker = classifier.openFenceMarker
     return WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
   // Counted, not set-membership: two identical echoes must not both vanish on

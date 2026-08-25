@@ -37,6 +37,10 @@ func workLineHasAlignedColumnGap<S: StringProtocol>(_ line: S) -> Bool {
 /// cheap and exact without rescanning the growing response.
 struct WorkStreamingMonospacedClassifierState: Equatable {
   private(set) var insideFence = false
+  /// The opening marker for the currently unclosed fence, when the streamed
+  /// text ends inside one. Tail previews can reuse this bounded piece of
+  /// metadata instead of rescanning the entire response to reconstruct it.
+  private(set) var openFenceMarker: String? = nil
   private(set) var proseLineCount = 0
   private(set) var alignedColumnLineCount = 0
   private(set) var hasWireframeGlyph = false
@@ -51,6 +55,7 @@ struct WorkStreamingMonospacedClassifierState: Equatable {
   private var pendingHasPipe = false
   private var pendingFencePrefixLength = 0
   private var pendingFenceCandidate = true
+  private var pendingFenceMarker = ""
 
   init(text: String = "") {
     append(text)
@@ -93,14 +98,23 @@ struct WorkStreamingMonospacedClassifierState: Equatable {
       pendingHasNonWhitespace = true
       if character == "`" {
         pendingFencePrefixLength = 1
+        pendingFenceMarker = "`"
       } else {
         pendingFenceCandidate = false
       }
-    } else if pendingFenceCandidate, pendingFencePrefixLength < 3 {
-      if character == "`" {
-        pendingFencePrefixLength += 1
+    } else if pendingFenceCandidate {
+      if pendingFencePrefixLength < 3 {
+        if character == "`" {
+          pendingFencePrefixLength += 1
+          pendingFenceMarker.append(character)
+        } else {
+          pendingFenceCandidate = false
+          pendingFenceMarker = ""
+        }
       } else {
-        pendingFenceCandidate = false
+        // The parser treats any trimmed line beginning with three backticks as
+        // a fence, so retain the (usually tiny) language suffix as well.
+        pendingFenceMarker.append(character)
       }
     }
 
@@ -124,7 +138,13 @@ struct WorkStreamingMonospacedClassifierState: Equatable {
   private mutating func processCompleteLine() {
     let isFence = pendingFenceCandidate && pendingFencePrefixLength >= 3
     if isFence {
-      insideFence.toggle()
+      if insideFence {
+        insideFence = false
+        openFenceMarker = nil
+      } else {
+        insideFence = true
+        openFenceMarker = pendingFenceMarker.trimmingCharacters(in: .whitespaces)
+      }
       resetPendingLine()
       return
     }
@@ -151,11 +171,21 @@ struct WorkStreamingMonospacedClassifierState: Equatable {
     pendingHasPipe = false
     pendingFencePrefixLength = 0
     pendingFenceCandidate = true
+    pendingFenceMarker = ""
   }
 }
 
 func workAssistantMessageUsesMonospacedPreview(_ text: String) -> Bool {
   WorkStreamingMonospacedClassifierState(text: text).usesMonospacedRendering
+}
+
+func workMarkdownTrailingBacktickRun(_ text: String) -> Int {
+  var count = 0
+  for character in text.reversed() {
+    guard character == "`" else { break }
+    count += 1
+  }
+  return count
 }
 
 enum WorkMarkdownBlockKind: Equatable {
@@ -228,6 +258,19 @@ struct WorkCodeBlockSource {
   let markdown: String
   let ordinal: Int
   let countsFromEnd: Bool
+  let markdownIdentity: String
+
+  init(
+    markdown: String,
+    ordinal: Int,
+    countsFromEnd: Bool,
+    markdownIdentity: String? = nil
+  ) {
+    self.markdown = markdown
+    self.ordinal = ordinal
+    self.countsFromEnd = countsFromEnd
+    self.markdownIdentity = markdownIdentity ?? workStableDigest(markdown)
+  }
 
   /// The whole block, or `fallback` when the slice cannot be located (a message
   /// edited between render and tap, or a slice that parsed to more code blocks
@@ -243,13 +286,10 @@ struct WorkCodeBlockSource {
 }
 
 extension WorkCodeBlockSource: Equatable {
-  /// `markdown` is compared by length, not content. It only feeds tap-time
-  /// resolution, and every edit that can reach a rendered block also changes
-  /// the block itself — which the owning row already compares.
   static func == (lhs: WorkCodeBlockSource, rhs: WorkCodeBlockSource) -> Bool {
     lhs.ordinal == rhs.ordinal
       && lhs.countsFromEnd == rhs.countsFromEnd
-      && lhs.markdown.utf8.count == rhs.markdown.utf8.count
+      && lhs.markdownIdentity == rhs.markdownIdentity
   }
 }
 

@@ -145,6 +145,13 @@ struct WorkChatMessage: Identifiable, Equatable {
   var markdownLineCount: Int? = nil
   var markdownHasCarriageReturn: Bool? = nil
   var markdownContainsFence: Bool? = nil
+  /// Number of backticks at the authoritative text's end. This lets a fence
+  /// split across two live deltas be recognized without rescanning the full
+  /// response.
+  var markdownTrailingBacktickRun: Int? = nil
+  /// Opening marker for the currently unclosed fence, if the response ends
+  /// inside one. Tail previews use it to avoid a full-prefix fence scan.
+  var markdownOpenFenceMarker: String? = nil
   /// Incremental fixed-column classification state for the append-only live
   /// path. Completed snapshot messages leave this nil and classify normally.
   var markdownMonospacedClassifier: WorkStreamingMonospacedClassifierState? = nil

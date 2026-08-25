@@ -585,6 +585,21 @@ final class WorkAssistantRenderingTests: XCTestCase {
     XCTAssertEqual(source.resolvedCode(fallback: "let a = 1"), "let a = 1")
   }
 
+  func testCodeBlockSourceIdentityDetectsSameLengthAuthoritativeEdits() {
+    let first = WorkCodeBlockSource(
+      markdown: "```swift\nlet a = 1\n```",
+      ordinal: 0,
+      countsFromEnd: false
+    )
+    let second = WorkCodeBlockSource(
+      markdown: "```swift\nlet b = 2\n```",
+      ordinal: 0,
+      countsFromEnd: false
+    )
+
+    XCTAssertNotEqual(first, second)
+  }
+
   func testCodeBlockOrdinalsCountFromTheEndForATailSlice() {
     let blocks = parseMarkdownBlocks("```\na\n```\n\ntext\n\n```\nb\n```")
     XCTAssertEqual(workCodeBlockOrdinals(blocks, countsFromEnd: false).values.sorted(), [0, 1])

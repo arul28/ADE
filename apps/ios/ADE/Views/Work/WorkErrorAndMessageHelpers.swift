@@ -313,18 +313,35 @@ private enum WorkStreamingMergeResult {
   case replaced(String)
 }
 
-private func workStreamingMergeResult(_ existing: String, _ incoming: String) -> WorkStreamingMergeResult {
+private func workStreamingMergeResult(
+  _ existing: String,
+  _ incoming: String,
+  existingUTF8Length: Int? = nil
+) -> WorkStreamingMergeResult {
   if existing.isEmpty { return .appended(incoming) }
   if incoming.isEmpty { return .unchanged }
-  if existing == incoming { return .unchanged }
-  if incoming.hasPrefix(existing) {
+
+  // Live events are append fragments. Compare byte lengths before asking
+  // `hasPrefix` to inspect either string so the ordinary delta path does not
+  // rescan the entire accumulated response. Cumulative snapshots and replay
+  // recovery still take the bounded fallback paths below.
+  let existingByteCount = existingUTF8Length ?? existing.utf8.count
+  let incomingByteCount = incoming.utf8.count
+  if existingByteCount == incomingByteCount {
+    if existing == incoming { return .unchanged }
+  } else if incomingByteCount > existingByteCount, incoming.hasPrefix(existing) {
     return .appended(String(incoming.dropFirst(existing.count)))
   }
-  if existing.hasPrefix(incoming),
-     workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: existing, incoming: incoming) {
-    return .replaced(incoming)
+  if existingByteCount > incomingByteCount {
+    // This is bounded by the incoming delta in the normal path. Reuse the
+    // result so replay handling does not perform this scan twice.
+    let existingStartsWithIncoming = existing.hasPrefix(incoming)
+    if existingStartsWithIncoming,
+       workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: existing, incoming: incoming) {
+      return .replaced(incoming)
+    }
+    if existingStartsWithIncoming { return .unchanged }
   }
-  if existing.hasPrefix(incoming) { return .unchanged }
   // Keep these as views. `trimmingCharacters` creates a second String copy of
   // the complete assistant response even when only its edges are whitespace.
   // The replay checks below only need the trimmed bounds.
@@ -409,15 +426,17 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
     existingLineCount,
     existingHasCarriageReturn,
     existingContainsFence,
+    existingTrailingBacktickRun,
     mergeResult
-  ): (Int, Int, Bool, Bool, WorkStreamingMergeResult) = {
+  ): (Int, Int, Bool, Bool, Int, WorkStreamingMergeResult) = {
     let existing = message.markdown
     return (
       message.markdownCharacterCount ?? existing.count,
       message.markdownLineCount ?? workAssistantMessageLineCount(existing),
       message.markdownHasCarriageReturn ?? existing.contains("\r"),
       message.markdownContainsFence ?? existing.contains("```"),
-      workStreamingMergeResult(existing, incoming)
+      message.markdownTrailingBacktickRun ?? workMarkdownTrailingBacktickRun(existing),
+      workStreamingMergeResult(existing, incoming, existingUTF8Length: existing.utf8.count)
     )
   }()
 
@@ -434,7 +453,10 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
   message.markdownHasCarriageReturn = mergedHasCarriageReturn
   message.markdownContainsFence = switch mergeResult {
   case .appended:
-    existingContainsFence || incoming.contains("```")
+    existingContainsFence || workStreamingDeltaContainsFence(
+      incoming,
+      precedingBacktickRun: existingTrailingBacktickRun
+    )
   case .replaced:
     message.markdown.contains("```")
   case .unchanged:
@@ -448,9 +470,16 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
     if var classifier = message.markdownMonospacedClassifier {
       classifier.append(appended)
       message.markdownMonospacedClassifier = classifier
+      message.markdownOpenFenceMarker = classifier.openFenceMarker
     } else {
-      message.markdownMonospacedClassifier = WorkStreamingMonospacedClassifierState(text: message.markdown)
+      let classifier = WorkStreamingMonospacedClassifierState(text: message.markdown)
+      message.markdownMonospacedClassifier = classifier
+      message.markdownOpenFenceMarker = classifier.openFenceMarker
     }
+    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRunAfterAppending(
+      appended,
+      precedingRun: existingTrailingBacktickRun
+    )
   } else {
     // Dedup/replay can rewrite rather than append. That path is uncommon, but
     // keeping its counts authoritative is more important than preserving the
@@ -460,10 +489,38 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
       : message.markdown
     message.markdownCharacterCount = normalized.count
     message.markdownLineCount = workAssistantMessageLineCount(normalized)
-    message.markdownMonospacedClassifier = WorkStreamingMonospacedClassifierState(text: normalized)
+    let classifier = WorkStreamingMonospacedClassifierState(text: normalized)
+    message.markdownMonospacedClassifier = classifier
+    message.markdownOpenFenceMarker = classifier.openFenceMarker
+    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalized)
   }
   message.assistantPreview = nil
   return true
+}
+
+private func workMarkdownTrailingBacktickRunAfterAppending(_ appended: String, precedingRun: Int) -> Int {
+  var count = precedingRun
+  for character in appended {
+    if character == "`" {
+      count += 1
+    } else {
+      count = 0
+    }
+  }
+  return count
+}
+
+private func workStreamingDeltaContainsFence(_ incoming: String, precedingBacktickRun: Int) -> Bool {
+  var run = precedingBacktickRun
+  for character in incoming {
+    if character == "`" {
+      run += 1
+      if run >= 3 { return true }
+    } else {
+      run = 0
+    }
+  }
+  return false
 }
 
 private func workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: String, incoming: String) -> Bool {

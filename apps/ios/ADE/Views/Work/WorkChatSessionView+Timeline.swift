@@ -48,8 +48,6 @@ extension WorkChatSessionView {
           expandAssistantMessage(
             messageId: model.messageId,
             nextLineBudget: model.nextLineBudget,
-            controlsRowId: model.id,
-            proxy: proxy
           )
         },
         onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
@@ -68,22 +66,11 @@ extension WorkChatSessionView {
   @MainActor
   func expandAssistantMessage(
     messageId: String,
-    nextLineBudget: Int,
-    controlsRowId: String,
-    proxy: ScrollViewProxy
+    nextLineBudget: Int
   ) {
     assistantLineBudgets[messageId] = nextLineBudget
     assistantHeadAnchorOverrides.insert(messageId)
     refreshTimelinePresentation()
-    // Not animated: the expansion inserts a screenful of text, and animating
-    // the offset onto it reads as the transcript lurching.
-    var transaction = Transaction()
-    transaction.disablesAnimations = true
-    Task { @MainActor in
-      withTransaction(transaction) {
-        proxy.scrollTo(controlsRowId, anchor: .bottom)
-      }
-    }
   }
 
   /// Second rung of the message-level ladder: the whole answer, on its own
@@ -139,9 +126,7 @@ extension WorkChatSessionView {
               messageId: message.id,
               nextLineBudget: workAssistantMessageShowMoreLineBudget(
                 current: assistantLineBudgets[message.id] ?? assistantBudgetFloors[message.id]
-              ),
-              controlsRowId: entry.id,
-              proxy: proxy
+              )
             )
           }
           : nil,

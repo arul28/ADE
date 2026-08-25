@@ -2406,6 +2406,7 @@ private func workTimelinePresentationSignature(
       // block, on every presentation refresh.
       hasher.combine(model.block.digest)
       hasher.combine(model.isStreamingTail)
+      hasher.combine(model.codeSource?.markdownIdentity)
     case .assistantMonospaced(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
@@ -2444,10 +2445,12 @@ private func workTimelineCombineMessageTextSignature(_ message: WorkChatMessage,
     return
   }
 
-  hasher.combine(message.markdown.utf8.count)
   if let digest = message.markdownDigest {
     hasher.combine(digest)
+    hasher.combine(message.markdownCharacterCount)
+    hasher.combine(message.markdownLineCount)
   } else {
+    hasher.combine(message.markdown.utf8.count)
     hasher.combine(message.markdown.hashValue)
   }
 }
@@ -2658,7 +2661,8 @@ func workTimelineRenderEntries(
             WorkCodeBlockSource(
               markdown: message.markdown,
               ordinal: ordinal,
-              countsFromEnd: preview.anchor == .tail
+              countsFromEnd: preview.anchor == .tail,
+              markdownIdentity: "\(message.markdownDigest ?? workStableDigest(message.markdown)):\(message.markdownRevision)"
             )
           }
         )

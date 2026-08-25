@@ -32,6 +32,9 @@ struct WorkMarkdownRenderer: View {
   /// Which end of `fullMarkdown` the slice was taken from. Decides whether code
   /// blocks are numbered from the front or the back.
   var previewAnchor: WorkAssistantMessagePreviewAnchor = .head
+  /// Stable identity for the authoritative source. The chat timeline passes
+  /// its stamped digest/revision so source equality never relies on length.
+  var fullMarkdownIdentity: String? = nil
 
   private var blocks: [WorkMarkdownBlock] {
     if let streamingCacheKey {
@@ -67,7 +70,8 @@ struct WorkMarkdownRenderer: View {
     return WorkCodeBlockSource(
       markdown: fullMarkdown,
       ordinal: ordinal,
-      countsFromEnd: previewAnchor == .tail
+      countsFromEnd: previewAnchor == .tail,
+      markdownIdentity: fullMarkdownIdentity
     )
   }
 }

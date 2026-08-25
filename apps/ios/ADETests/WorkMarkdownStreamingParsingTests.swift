@@ -221,6 +221,25 @@ final class WorkStreamingMonospacedClassifierTests: XCTestCase {
 /// than asserts wall-clock numbers: CI hosts vary, but the optimized path must
 /// remain visible in test logs and in the simulator trace.
 final class WorkStreamingPreviewPerformanceTests: XCTestCase {
+  func testFenceMetadataSurvivesAnOpeningFenceSplitAcrossDeltas() {
+    var message = WorkChatMessage(
+      id: "assistant-split-fence",
+      role: "assistant",
+      markdown: "Intro\n\n",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-1"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("``", to: &message))
+    XCTAssertFalse(message.markdownContainsFence == true)
+    XCTAssertTrue(workApplyStreamingAssistantText("`swift\nroot\n", to: &message))
+
+    XCTAssertTrue(message.markdownContainsFence == true)
+    XCTAssertEqual(message.markdownOpenFenceMarker, "```swift")
+    XCTAssertEqual(message.markdownTrailingBacktickRun, 0)
+  }
+
   func testStreamingAssistantPreviewCostIsReported() {
     let deltaCount = 500
     var optimizedMessage = WorkChatMessage(
