@@ -2940,10 +2940,14 @@ the stats and shows update guidance.
 - **The synced model catalog is sized for the phone.** `ade.agentChat.modelCatalog`
   emits only connected OpenCode providers' models; the full OpenCode directory is
   models.dev in its entirety (~195 providers / ~7.2k models, ~4.85 MB) and shipping
-  it stalled or killed the iOS model picker. A provider block is still emitted for
-  every provider — empty when unconnected — so the phone can still show and offer
-  to connect a provider. Anything that widens what the host puts in this payload
-  has to be weighed against the phone decoding and rendering all of it.
+  it stalled or killed the iOS model picker. The host still emits an empty block
+  for each unconnected provider, but that is for the desktop payload shape — the
+  phone drops them (`providers.filter { !$0.models.isEmpty }`, then the same
+  filter on groups), because iOS has no OpenCode connect flow and an empty row
+  would be a dead end. The phone's connect affordance is a static hint in
+  `WorkModelPickerSheet` pointing at the paired machine, not a catalog block.
+  Anything that widens what the host puts in this payload has to be weighed
+  against the phone decoding and rendering all of it.
 - **Long model lists must be lazy on the phone.** `WorkNewChatSheet`'s model
   section uses a `LazyVStack`: each row materializes two `RoundedRectangle`s and a
   `.glassEffect` layer, and an eager `VStack` builds every one synchronously the
