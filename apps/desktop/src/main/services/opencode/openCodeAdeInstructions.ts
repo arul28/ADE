@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import type { AgentChatPermissionMode } from "../../../shared/types";
@@ -10,18 +9,20 @@ import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
  * ADE's instruction file for a tracked OpenCode CLI session.
  *
  * OpenCode reads `instructions` entries as file paths, so the one ADE
- * contributes has to exist on disk somewhere. It deliberately does NOT live in
- * the lane worktree: that is the user's repository, and an ADE-authored prompt
- * file appearing in `git status` (or worse, in a commit) is not something a
- * launch should do. A machine-local cache directory keyed by worktree keeps it
- * invisible to the repo while staying stable across relaunches and resumes of
- * the same lane.
+ * contributes has to exist on disk somewhere. Two placements are wrong. The lane
+ * worktree is the user's repository — an ADE-authored prompt file showing up in
+ * their `git status` is not something a launch should do. The system temp
+ * directory is world-writable on Linux, and because this path is deliberately
+ * stable and derived from public inputs, another local user could pre-create it
+ * as a symlink and turn an ADE launch into a write through that link.
+ *
+ * `.ade/cache` is ADE's own machine-local, per-project, gitignored area, and is
+ * already where terminal snapshots and chat sessions live.
  */
-const INSTRUCTIONS_DIR_NAME = "ade-opencode-instructions";
+const INSTRUCTIONS_DIR_NAME = "opencode-instructions";
 
-function instructionsDir(): string {
-  const override = process.env.ADE_OPENCODE_INSTRUCTIONS_DIR?.trim();
-  return override ? path.resolve(override) : path.join(os.tmpdir(), INSTRUCTIONS_DIR_NAME);
+function instructionsDir(projectRoot: string): string {
+  return path.join(projectRoot, ".ade", "cache", INSTRUCTIONS_DIR_NAME);
 }
 
 /**
@@ -30,9 +31,12 @@ function instructionsDir(): string {
  * filename, and because OpenCode globs the basename within the parent directory
  * — a name containing `*` or `?` would match the wrong file or nothing at all.
  */
-export function openCodeAdeInstructionsPath(laneWorktreePath: string): string {
-  const key = createHash("sha256").update(laneWorktreePath).digest("hex").slice(0, 16);
-  return path.join(instructionsDir(), `ade-${key}.md`);
+export function openCodeAdeInstructionsPath(args: {
+  projectRoot: string;
+  laneWorktreePath: string;
+}): string {
+  const key = createHash("sha256").update(args.laneWorktreePath).digest("hex").slice(0, 16);
+  return path.join(instructionsDir(args.projectRoot), `ade-${key}.md`);
 }
 
 /**
@@ -77,18 +81,20 @@ export function buildOpenCodeAdeInstructions(args: {
  * preamble — strictly better than failing the launch outright.
  */
 export function ensureOpenCodeAdeInstructionsFile(args: {
+  projectRoot: string;
   laneWorktreePath: string;
   permissionMode: AgentChatPermissionMode | null | undefined;
 }): string | null {
   const worktree = args.laneWorktreePath?.trim();
-  if (!worktree) return null;
-  const target = openCodeAdeInstructionsPath(worktree);
+  const projectRoot = args.projectRoot?.trim();
+  if (!worktree || !projectRoot) return null;
+  const target = openCodeAdeInstructionsPath({ projectRoot, laneWorktreePath: worktree });
   try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
     fs.writeFileSync(target, buildOpenCodeAdeInstructions({
       laneWorktreePath: worktree,
       permissionMode: args.permissionMode,
-    }), "utf8");
+    }), { encoding: "utf8", mode: 0o600 });
     return target;
   } catch {
     return null;

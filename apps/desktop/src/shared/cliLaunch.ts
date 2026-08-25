@@ -1177,13 +1177,13 @@ export const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
  * prompt" rather than a launch failure.
  */
 export function withOpenCodeAdeInstructions(
-  env: Record<string, string> | undefined,
+  launch: { env?: Record<string, string> | undefined; startupCommand?: string | undefined },
   instructionsPath: string | null | undefined,
-): Record<string, string> | undefined {
+): { env?: Record<string, string>; startupCommand?: string } | null {
   const resolved = instructionsPath?.trim();
-  if (!resolved) return env;
+  if (!resolved) return null;
   let config: Record<string, unknown> = {};
-  const existing = env?.[OPENCODE_INLINE_CONFIG_ENV];
+  const existing = launch.env?.[OPENCODE_INLINE_CONFIG_ENV];
   if (existing) {
     try {
       const parsed = JSON.parse(existing) as unknown;
@@ -1193,20 +1193,47 @@ export function withOpenCodeAdeInstructions(
     } catch {
       // A value ADE cannot parse is not ADE's to extend. Leave it untouched
       // rather than dropping whatever the caller meant to send.
-      return env;
+      return null;
     }
   }
   const current = Array.isArray(config.instructions)
     ? config.instructions.filter((entry): entry is string => typeof entry === "string")
     : [];
-  if (current.includes(resolved)) return env;
+  if (current.includes(resolved)) return null;
+  const nextValue = JSON.stringify({ ...config, instructions: [...current, resolved] });
   return {
-    ...(env ?? {}),
-    [OPENCODE_INLINE_CONFIG_ENV]: JSON.stringify({
-      ...config,
-      instructions: [...current, resolved],
-    }),
+    env: { ...(launch.env ?? {}), [OPENCODE_INLINE_CONFIG_ENV]: nextValue },
+    // The startup command carries its own inline `OPENCODE_CONFIG_CONTENT=…`
+    // assignment, and a shell assignment on the command line OVERRIDES the
+    // process environment for that child. Updating only `env` would therefore
+    // silently drop the instructions on every launch that goes through the
+    // typed-command fallback rather than a direct spawn. Both spellings are
+    // rebuilt here so they cannot disagree.
+    ...(launch.startupCommand === undefined
+      ? {}
+      : { startupCommand: withOpenCodeConfigAssignment(launch.startupCommand, nextValue) }),
   };
+}
+
+/** Replace (or insert) the leading inline OpenCode config assignment on a command line. */
+function withOpenCodeConfigAssignment(startupCommand: string, configValue: string): string {
+  if (!startupCommand.trim()) return startupCommand;
+  const tokens = parseCommandLine(startupCommand, { platform: "linux" });
+  if (!tokens.length) return startupCommand;
+  const rest = tokens[0]!.startsWith(`${OPENCODE_INLINE_CONFIG_ENV}=`) ? tokens.slice(1) : tokens;
+  if (!rest.length) return startupCommand;
+  // Only the VALUE is quoted. Quoting `NAME=value` as one word would stop the
+  // shell reading it as an assignment at all and make it the command instead,
+  // so this has to match how openCodeEnvAssignment builds the same prefix. The
+  // remaining arguments round-trip through the quoter that produced them.
+  return [
+    openCodeConfigAssignmentPrefix(configValue),
+    commandArrayToLine(rest, { platform: "linux" }),
+  ].join("");
+}
+
+function openCodeConfigAssignmentPrefix(configValue: string): string {
+  return `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(configValue, { platform: "linux" })} `;
 }
 
 function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
@@ -1225,7 +1252,7 @@ function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | unde
 
 function openCodeEnvAssignment(permissionMode: AgentChatPermissionMode | null | undefined): string {
   const config = openCodeConfigEnv(permissionMode);
-  return config ? `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(config, { platform: "linux" })} ` : "";
+  return config ? openCodeConfigAssignmentPrefix(config) : "";
 }
 
 function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | null | undefined): string[] {

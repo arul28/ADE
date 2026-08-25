@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseCommandLine } from "../../../shared/shell";
 import {
   buildPtyContinuationLaunchFields,
   buildOpenCodeReplayResumeLaunchCommand,
@@ -1677,35 +1678,62 @@ describe("tracked CLI resume helpers", () => {
     });
 
     it("adds ADE's instruction file to the config env without dropping the user's", () => {
-      const env = withOpenCodeAdeInstructions(
-        { OPENCODE_CONFIG_CONTENT: JSON.stringify({ instructions: ["./AGENTS.local.md"], permission: { edit: "allow" } }) },
-        "/tmp/ade/instructions.md",
+      const applied = withOpenCodeAdeInstructions(
+        { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ instructions: ["./AGENTS.local.md"], permission: { edit: "allow" } }) } },
+        "/cache/ade/instructions.md",
       );
 
-      const config = JSON.parse(env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+      const config = JSON.parse(applied?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
         instructions?: string[];
         permission?: Record<string, string>;
       };
       // Verified against opencode 1.18.21: config layers union `instructions`
       // rather than overwriting, so the user's own files must survive.
-      expect(config.instructions).toEqual(["./AGENTS.local.md", "/tmp/ade/instructions.md"]);
+      expect(config.instructions).toEqual(["./AGENTS.local.md", "/cache/ade/instructions.md"]);
       expect(config.permission).toEqual({ edit: "allow" });
     });
 
+    it("rewrites the inline config assignment on the startup command too", () => {
+      // A shell assignment on the command line overrides the process
+      // environment for that child, so patching only `env` would silently drop
+      // the instructions on every launch that goes through the typed-command
+      // fallback instead of a direct spawn.
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "edit",
+        initialPrompt: "Fix the failing test.",
+        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+      });
+      const applied = withOpenCodeAdeInstructions(launch, "/cache/ade/instructions.md");
+
+      expect(applied?.startupCommand).toBeDefined();
+      const [assignment] = parseCommandLine(applied!.startupCommand!, { platform: "linux" });
+      expect(assignment?.startsWith("OPENCODE_CONFIG_CONTENT=")).toBe(true);
+      const inline = JSON.parse(assignment!.slice("OPENCODE_CONFIG_CONTENT=".length)) as {
+        instructions?: string[];
+        permission?: unknown;
+      };
+      expect(inline.instructions).toEqual(["/cache/ade/instructions.md"]);
+      // The permission policy the launch already carried must survive.
+      expect(inline.permission).toEqual(
+        JSON.parse(applied!.env!.OPENCODE_CONFIG_CONTENT!).permission,
+      );
+      expect(applied!.startupCommand).toContain("Fix the failing test.");
+    });
+
     it("creates the config env when a launch had none, and stays idempotent", () => {
-      const first = withOpenCodeAdeInstructions(undefined, "/tmp/ade/instructions.md");
-      expect(JSON.parse(first?.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
-        instructions: ["/tmp/ade/instructions.md"],
+      const first = withOpenCodeAdeInstructions({}, "/cache/ade/instructions.md");
+      expect(JSON.parse(first?.env?.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
+        instructions: ["/cache/ade/instructions.md"],
       });
 
-      const second = withOpenCodeAdeInstructions(first, "/tmp/ade/instructions.md");
-      expect(second).toBe(first);
+      expect(withOpenCodeAdeInstructions({ env: first!.env }, "/cache/ade/instructions.md")).toBeNull();
     });
 
     it("leaves a config value it cannot parse untouched", () => {
       const env = { OPENCODE_CONFIG_CONTENT: "{not json" };
-      expect(withOpenCodeAdeInstructions(env, "/tmp/ade/instructions.md")).toBe(env);
-      expect(withOpenCodeAdeInstructions(env, "   ")).toBe(env);
+      expect(withOpenCodeAdeInstructions({ env }, "/cache/ade/instructions.md")).toBeNull();
+      expect(withOpenCodeAdeInstructions({ env }, "   ")).toBeNull();
     });
   });
 });

@@ -5490,13 +5490,22 @@ export function createPtyService({
       // told it is in edit mode while the CLI runs `--agent plan`.
       if (isOpenCodeToolType(args.toolType ?? null)) {
         const instructionsPath = ensureOpenCodeAdeInstructionsFile({
+          projectRoot,
           laneWorktreePath: worktreePath,
           permissionMode: args.runtimeCliLaunch?.permissionMode
             ?? existingSession?.resumeMetadata?.launch?.permissionMode
             ?? null,
         });
-        const envWithInstructions = withOpenCodeAdeInstructions(effectiveArgs.env, instructionsPath);
-        if (envWithInstructions) effectiveArgs = { ...effectiveArgs, env: envWithInstructions };
+        const withInstructions = withOpenCodeAdeInstructions(
+          {
+            env: effectiveArgs.env,
+            ...(typeof effectiveArgs.startupCommand === "string"
+              ? { startupCommand: effectiveArgs.startupCommand }
+              : {}),
+          },
+          instructionsPath,
+        );
+        if (withInstructions) effectiveArgs = { ...effectiveArgs, ...withInstructions };
       }
       // Snapshot only a real terminal end state before reattach/backfill can
       // overwrite it. A row may still say `running` after its owning brain

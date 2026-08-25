@@ -1952,14 +1952,23 @@ per-request system channel.
   than overwrite it, so ADE's entry is appended to the user's own instruction
   files instead of replacing them (verified against opencode 1.18.21).
 
-`openCodeAdeInstructions.ts` writes the file to a machine-local cache directory
-keyed by lane worktree — deliberately **not** inside the worktree, so an
-ADE-authored prompt never shows up in the user's `git status`. `ptyService.create`
-is the single place it is written, which is what makes a resumed session carry
-the same contract as a fresh one; a resume reads its permission mode from the
-session's own resume metadata, so a plan-mode session is not told it is in edit
-mode while the CLI runs `--agent plan`. A missing file is skipped by OpenCode, so
-a write failure degrades to "no ADE prompt" rather than a failed launch.
+`openCodeAdeInstructions.ts` writes the file to `.ade/cache/opencode-instructions/`
+keyed by lane worktree. Two other placements are wrong: the lane worktree is the
+user's repository, so an ADE-authored prompt would show up in their `git status`;
+and the system temp directory is world-writable on Linux, where a deliberately
+stable, publicly derivable path can be pre-created as a symlink and turn the
+launch into a write through it.
+
+`ptyService.create` is the single place the file is written, which is what makes
+a resumed session carry the same contract as a fresh one; a resume reads its
+permission mode from the session's own resume metadata, so a plan-mode session is
+not told it is in edit mode while the CLI runs `--agent plan`. The path is added
+to **both** the launch `env` and the inline `OPENCODE_CONFIG_CONTENT=…` assignment
+on the startup command — a shell assignment on the command line overrides the
+process environment, so patching only `env` would drop the instructions on every
+launch that goes through the typed-command fallback instead of a direct spawn. A
+missing file is skipped by OpenCode, so a write failure degrades to "no ADE
+prompt" rather than a failed launch.
 
 ## Gotchas
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
+import { parseCommandLine } from "../../../shared/shell";
 import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
 
@@ -1419,7 +1420,18 @@ describe("ptyService", () => {
         startupCommand: "OPENCODE_CONFIG_CONTENT='{}' opencode --continue",
       });
 
-      expect(mockPty.write).toHaveBeenCalledWith("OPENCODE_CONFIG_CONTENT='{}' '/tmp/ADE Runtime/opencode' --continue\r");
+      // The inline assignment is rebuilt to carry ADE's instruction file: a
+      // shell assignment on the command line overrides the process environment,
+      // so leaving the original `{}` here would drop the instructions on this
+      // path. Only the value is quoted, or the shell would read the whole
+      // NAME=value word as the command to run.
+      const written = String(vi.mocked(mockPty.write).mock.calls.at(-1)?.[0] ?? "");
+      const [assignment, ...rest] = parseCommandLine(written.replace(/\r$/, ""), { platform: "linux" });
+      const value = assignment?.slice("OPENCODE_CONFIG_CONTENT=".length) ?? "";
+      expect(assignment?.startsWith("OPENCODE_CONFIG_CONTENT=")).toBe(true);
+      expect((JSON.parse(value) as { instructions?: string[] }).instructions?.[0])
+        .toMatch(/opencode-instructions[\\/]ade-[0-9a-f]{16}\.md$/);
+      expect(rest).toEqual(["/tmp/ADE Runtime/opencode", "--continue"]);
     });
 
     it("exports ADE chat terminal context to spawned shells", async () => {
